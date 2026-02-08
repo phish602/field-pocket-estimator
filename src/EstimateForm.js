@@ -349,7 +349,8 @@ function newLaborLine() {
 
 function safeFilename(s) {
   const base = String(s || "").trim() || "Client";
-  return base.replace(/[\/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  // ✅ ESLint no-useless-escape fix: "/" does not need escaping inside [...]
+  return base.replace(/[/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
 
 // ✅ STRICT: green only when ALL 4 required fields are filled
