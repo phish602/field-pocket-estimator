@@ -1,8 +1,9 @@
 {
+  "framework": "create-react-app",
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
   "routes": [
-    { "src": "/sw\\.js", "dest": "/sw.js" },
-    { "src": "/manifest\\.webmanifest", "dest": "/manifest.webmanifest" },
     { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
+    { "src": "/.*", "dest": "/index.html" }
   ]
 }
