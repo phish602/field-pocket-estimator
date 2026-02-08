@@ -1,0 +1,196 @@
+:root {
+  --bg: #0b0f14;
+  --card: #111827;
+  --card2: #0f172a;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --line: rgba(255, 255, 255, 0.08);
+  --accent: #22c55e;
+  --accent2: #16a34a;
+  --danger: #ef4444;
+}
+
+* { box-sizing: border-box; }
+
+.pe-wrap {
+  min-height: 100vh;
+  background: radial-gradient(1200px 500px at 20% -10%, rgba(34,197,94,0.18), transparent 55%),
+              radial-gradient(900px 400px at 90% 0%, rgba(59,130,246,0.14), transparent 55%),
+              var(--bg);
+  color: var(--text);
+  padding: 28px 16px 40px;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.pe-header {
+  max-width: 720px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pe-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.pe-subtitle {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pe-actions { display: flex; gap: 10px; }
+
+.pe-btn {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+}
+.pe-btn:hover { border-color: rgba(255,255,255,0.18); }
+.pe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.pe-btn-ghost {
+  background: rgba(255,255,255,0.03);
+}
+
+.pe-card {
+  max-width: 720px;
+  margin: 0 auto;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+}
+
+.pe-section { padding: 8px 4px; }
+
+.pe-section-title {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+  font-weight: 800;
+}
+
+.pe-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pe-span-2 { grid-column: span 2; }
+
+.pe-label span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-weight: 700;
+}
+
+.pe-input {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--text);
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.pe-input::placeholder { color: rgba(156,163,175,0.6); }
+
+.pe-input:focus {
+  border-color: rgba(34,197,94,0.55);
+  box-shadow: 0 0 0 4px rgba(34,197,94,0.14);
+}
+
+.pe-textarea { resize: vertical; min-height: 84px; }
+
+.pe-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 14px 0;
+}
+
+.pe-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pe-row-slim { margin-top: 10px; }
+
+.pe-muted { color: var(--muted); font-weight: 700; font-size: 13px; }
+
+.pe-value { font-weight: 900; font-size: 14px; }
+
+.pe-hint {
+  margin-top: 8px;
+  color: rgba(156,163,175,0.85);
+  font-size: 12px;
+}
+
+.pe-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(34,197,94,0.35);
+  background: radial-gradient(500px 180px at 20% 0%, rgba(34,197,94,0.18), transparent 60%),
+              rgba(15, 23, 42, 0.55);
+}
+
+.pe-total-label {
+  font-size: 12px;
+  color: rgba(229,231,235,0.9);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pe-total-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(156,163,175,0.9);
+  font-weight: 700;
+}
+
+.pe-total-right {
+  font-size: 26px;
+  font-weight: 950;
+  letter-spacing: 0.2px;
+  color: #dcfce7;
+  white-space: nowrap;
+}
+
+.pe-footer {
+  max-width: 720px;
+  margin: 10px auto 0;
+  color: rgba(156,163,175,0.75);
+  font-size: 12px;
+  padding: 0 6px;
+}
+
+@media (max-width: 640px) {
+  .pe-grid { grid-template-columns: 1fr; }
+  .pe-span-2 { grid-column: span 1; }
+  .pe-total { flex-direction: column; align-items: flex-start; }
+  .pe-total-right { font-size: 24px; }
+}
