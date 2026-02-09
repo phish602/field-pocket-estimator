@@ -31,80 +31,82 @@ const LABOR_PRESETS = [
 ];
 
 /* =========================
-   SCOPE / NOTES (POWER TEMPLATES)
-   ========================= */
+   SCOPE / NOTES (NO TOKENS, NO BLANKS)
+   =========================
+   Goal:
+   - No fill panel
+   - No [____] blanks
+   - Gives a solid starter scope that user can edit/add to
+ */
 const SCOPE_MASTER_TEMPLATES = [
   {
     key: "industrial",
     label: "Industrial (Master)",
-    text: `Scope (Summary):
-- Provide labor, tools, and supervision to complete work described below.
-- Work area/location: [__________]
-- Quantity / units (as applicable): [__________]
-- Access / constraints: [Normal / Tight / Confined / Elevated / Live plant]
+    text: `Scope / Notes (Starter):
+- Provide labor, tools, supervision, and coordination to complete the described work.
+- Includes field verification of conditions, basic layout, and standard daily cleanup.
+- Work performed in active/industrial environments where access, congestion, and safety requirements may affect production.
 
 Included (General):
-- Mobilization and basic daily cleanup
-- Layout/verification of field conditions prior to work
-- Standard hand tools / consumables (unless noted)
-- Coordination with site contact for work sequencing
-
-Quality / Acceptance:
-- Work performed to standard industry practice and project requirements.
-- Final acceptance based on site walk / owner rep signoff.
+- Mobilization, staging, and reasonable protection of adjacent areas
+- Standard hand tools and typical consumables
+- Coordination with site contact for sequencing and access
+- QA/cleanup at completion
 
 Assumptions:
-- Normal working hours unless noted
+- Work performed during normal working hours unless otherwise noted
 - Clear access and staging area provided by GC/Owner
-- Existing conditions as observed at time of estimate
+- Existing conditions consistent with what is visible/accessible at time of estimate
 
 Exclusions:
 - Hidden/unforeseen conditions
-- Rework due to changes in scope or direction
-- Permits/engineering unless noted
-- Specialty testing/inspections unless noted
+- Rework due to scope changes or direction changes
+- Permits/engineering/testing/inspections unless specifically included
+- Specialty trades unless listed in scope
 
-Notes:
-- [__________]
-`,
+Job specifics (edit/add):
+- Location/area:
+- Quantities:
+- Constraints/access:
+- Schedule expectations:`,
   },
   {
     key: "commercial",
     label: "Commercial (Master)",
-    text: `Scope (Summary):
-- Provide labor and supervision to complete work described below.
-- Area/location: [__________]
-- Quantity / units: [__________]
+    text: `Scope / Notes (Starter):
+- Provide labor and supervision to complete the described work in a commercial setting.
+- Includes reasonable protection, standard tools, and cleanup.
 
 Included:
-- Protect adjacent areas as reasonable
-- Standard tools and cleanup
+- Field verification of conditions prior to work
+- Standard tools/consumables and daily cleanup
 - Coordination with on-site contact
 
 Assumptions:
-- Work performed during normal hours unless noted
-- Access and staging available
+- Normal working hours unless otherwise noted
+- Access and staging available as needed
 
 Exclusions:
 - Permits/engineering
-- Hidden damage / unforeseen conditions
+- Hidden damage/unforeseen conditions
 - Specialty trades unless listed
 
-Notes:
-- [__________]
-`,
+Job specifics (edit/add):
+- Areas/rooms:
+- Quantities:
+- Constraints/access:
+- Schedule expectations:`,
   },
   {
     key: "service",
     label: "Service / T&M Style (Master)",
-    text: `Service Scope (Summary):
-- Dispatch labor to perform requested service/repair work.
-- Location/area: [__________]
-- Issue/goal: [__________]
+    text: `Scope / Notes (Starter):
+- Dispatch labor to perform requested service/repair work and basic troubleshooting as needed.
+- Work is performed under typical time-and-material assumptions unless otherwise stated.
 
 Included:
-- Troubleshooting/assessment as needed
-- Perform repairs/adjustments within approved limits
+- Assessment/troubleshooting within reasonable limits
+- Repairs/adjustments consistent with the described request
 - Cleanup
 
 Assumptions:
@@ -113,17 +115,21 @@ Assumptions:
 
 Exclusions:
 - Hidden damage
-- Major replacement work unless authorized
+- Major replacement work unless authorized in writing
 
-Notes:
-- [__________]
-`,
+Job specifics (edit/add):
+- Location/area:
+- Problem statement:
+- Desired outcome:
+- Constraints/access:`,
   },
 ];
 
 /* =========================
    TEMPLATE ADD-ONS (TRADE INSERTS)
-   ========================= */
+   =========================
+   NOTE: removed tokens like [DRYWALL_LEVEL]
+ */
 const SCOPE_TRADE_INSERTS = [
   {
     key: "genericLabor",
@@ -131,8 +137,7 @@ const SCOPE_TRADE_INSERTS = [
     text: `Trade Insert: Generic Labor
 - Provide general labor to support the described scope (handling, staging, cleanup, assistance).
 - Perform basic tasks as directed under supervision (non-licensed/non-specialty unless specified).
-- Productivity dependent on site access, congestion, and coordination.
-`,
+- Productivity dependent on site access, congestion, and coordination.`,
   },
   {
     key: "painting",
@@ -141,8 +146,7 @@ const SCOPE_TRADE_INSERTS = [
 - Surface prep as required (masking, patch/spot prep, sanding as needed).
 - Apply primer/finish coats per specified system.
 - Cut-in/roll/spray methods as appropriate for area and conditions.
-- Touch-up and cleanup upon completion.
-`,
+- Touch-up and cleanup upon completion.`,
   },
   {
     key: "demoCrew",
@@ -151,18 +155,16 @@ const SCOPE_TRADE_INSERTS = [
 - Provide labor for selective demolition/removal of specified items/areas.
 - Protect adjacent finishes and active areas as reasonable.
 - Debris staged in designated area; haul-off/dump fees by others unless included.
-- Unknown/hidden conditions (behind walls/ceilings/slabs) excluded unless authorized.
-`,
+- Unknown/hidden conditions (behind walls/ceilings/slabs) excluded unless authorized.`,
   },
   {
     key: "drywall",
     label: "Drywall (Insert)",
     text: `Trade Insert: Drywall
 - Install drywall per scope (hang, fasten, and finish as specified).
-- Tape/finish level per project requirements (Level [__]).
+- Tape/finish level per project requirements.
 - Cutouts for penetrations as required.
-- Final texture/paint by others unless included.
-`,
+- Final texture/paint by others unless included.`,
   },
   {
     key: "framing",
@@ -171,8 +173,7 @@ const SCOPE_TRADE_INSERTS = [
 - Layout and install framing per scope (metal/wood as specified).
 - Anchor/fasten to existing structure as required.
 - Field verification of dimensions and conditions prior to build.
-- Engineering/structural design by others unless included.
-`,
+- Engineering/structural design by others unless included.`,
   },
   {
     key: "insulation",
@@ -181,8 +182,7 @@ const SCOPE_TRADE_INSERTS = [
 - Furnish/install insulation per scope (batt/blown/spray as specified).
 - Seal/fit around penetrations as required for typical installation.
 - Vapor barrier/air sealing by others unless included.
-- Specialty testing excluded unless included.
-`,
+- Specialty testing excluded unless included.`,
   },
   {
     key: "finishCarpentry",
@@ -191,8 +191,7 @@ const SCOPE_TRADE_INSERTS = [
 - Install finish carpentry items per scope (trim, base, casing, doors/hardware if specified).
 - Scribe and fit to existing conditions as needed.
 - Caulk/fill as required for finish readiness.
-- Final paint/stain by others unless included.
-`,
+- Final paint/stain by others unless included.`,
   },
   {
     key: "flooring",
@@ -200,8 +199,7 @@ const SCOPE_TRADE_INSERTS = [
     text: `Trade Insert: Flooring
 - Install flooring per scope (LVP/tile/carpet/epoxy as specified).
 - Subfloor assumed suitable; leveling/moisture mitigation excluded unless included.
-- Transitions and edge details installed as specified.
-`,
+- Transitions and edge details installed as specified.`,
   },
   {
     key: "hvac",
@@ -209,17 +207,15 @@ const SCOPE_TRADE_INSERTS = [
     text: `Trade Insert: HVAC
 - Install/modify HVAC components per scope (duct, units, diffusers, thermostats as specified).
 - Start-up/commissioning/TAB by others unless included.
-- Permits/engineering excluded unless included.
-`,
+- Permits/engineering excluded unless included.`,
   },
   {
     key: "plumbing",
     label: "Plumbing (Insert)",
     text: `Trade Insert: Plumbing
 - Install/modify plumbing per scope (water, waste/vent, fixtures as specified).
-- Tie-ins coordinated with site contact; shutdown windows by others unless included.
-- Permits/engineering excluded unless included.
-`,
+- Tie-ins coordinated with site contact; shutdown windows coordinated with site contact.
+- Permits/engineering excluded unless included.`,
   },
   {
     key: "controls",
@@ -227,8 +223,7 @@ const SCOPE_TRADE_INSERTS = [
     text: `Trade Insert: Controls / BAS / Instrumentation
 - Install/terminate controls wiring and devices per scope (sensors, actuators, controllers as specified).
 - Point-to-point checkout and basic functional verification as specified.
-- Programming/graphics/commissioning by others unless included.
-`,
+- Programming/graphics/commissioning by others unless included.`,
   },
 
   // Original industrial inserts
@@ -243,8 +238,7 @@ const SCOPE_TRADE_INSERTS = [
 
 Optional Add-Ons (if needed):
 - Welding procedure/QC documentation
-- Specialty consumables or exotic alloys
-`,
+- Specialty consumables or exotic alloys`,
   },
   {
     key: "pipefitting",
@@ -253,8 +247,7 @@ Optional Add-Ons (if needed):
 - Field measure, fit, and install piping/spools as required.
 - Support/hanger coordination as required.
 - Tie-ins/shutdown windows coordinated with site contact.
-- Final alignment and leak checks per project requirements (testing if specified).
-`,
+- Final alignment and leak checks per project requirements (testing if specified).`,
   },
   {
     key: "orbital",
@@ -263,8 +256,7 @@ Optional Add-Ons (if needed):
 - Provide setup and operation for orbital welding as required.
 - Prep, purge, and fit-up to achieve acceptable weld conditions.
 - Weld parameters and acceptance per project requirements.
-- Production rate dependent on access, prep quality, and purge conditions.
-`,
+- Production rate dependent on access, prep quality, and purge conditions.`,
   },
   {
     key: "ironwork",
@@ -273,8 +265,7 @@ Optional Add-Ons (if needed):
 - Layout, fit, and install steel/structural members as required.
 - Bolt-up and/or weld connections per project requirements.
 - Field modifications as needed within reason.
-- Final plumb/level verification as required.
-`,
+- Final plumb/level verification as required.`,
   },
   {
     key: "electrical",
@@ -283,8 +274,7 @@ Optional Add-Ons (if needed):
 - Install/terminate electrical components as required (circuits, devices, panels, controls as specified).
 - Verify power, labeling, and basic functionality per project requirements.
 - Work coordinated around lockout/tagout and site safety requirements.
-- Materials/fixtures by owner/GC unless included.
-`,
+- Materials/fixtures by owner/GC unless included.`,
   },
   {
     key: "rigging",
@@ -293,8 +283,7 @@ Optional Add-Ons (if needed):
 - Provide rigging labor to support lifts/moves as required.
 - Lift planning and execution coordinated with site contact.
 - Standard rigging gear as typical (specialty gear if specified).
-- Work dependent on access, pick points, and site constraints.
-`,
+- Work dependent on access, pick points, and site constraints.`,
   },
   {
     key: "heavyEquipment",
@@ -302,8 +291,7 @@ Optional Add-Ons (if needed):
     text: `Trade Insert: Heavy Machinery / Equipment Ops
 - Provide operator(s) for equipment as required (lift/grade/haul/support).
 - Production dependent on site access, weather, and staging/logistics.
-- Fuel/transport/permits excluded unless included.
-`,
+- Fuel/transport/permits excluded unless included.`,
   },
   {
     key: "concrete",
@@ -312,8 +300,7 @@ Optional Add-Ons (if needed):
 - Form, place, finish, and cure concrete work as specified.
 - Subgrade and reinforcement by others unless included.
 - Finish level and cure method per project requirements.
-- Production dependent on access, weather, and site readiness.
-`,
+- Production dependent on access, weather, and site readiness.`,
   },
   {
     key: "demo",
@@ -322,21 +309,44 @@ Optional Add-Ons (if needed):
 - Selective demo/removal of specified items/areas.
 - Protect adjacent areas as reasonable.
 - Debris staging and haul-off as specified (or excluded).
-- Unknown conditions behind walls/ceilings excluded.
-`,
+- Unknown/hidden conditions behind walls/ceilings excluded.`,
   },
 ];
 
 /* =========================
-   QUICK NOTES (BOTTOM ONLY)
+   QUICK NOTES (BOTTOM ONLY, NO BLANKS)
    ========================= */
 const QUICK_NOTES = [
-  { key: "schedule", label: "+ Schedule", line: "Schedule: Estimated start ___ / completion ___" },
-  { key: "exclusions", label: "+ Exclusions", line: "Exclusions: Hidden/unforeseen conditions not included unless written." },
-  { key: "payment", label: "+ Payment", line: "Payment: ___% deposit / balance due upon completion (or Net ___ days)." },
-  { key: "change", label: "+ Change Orders", line: "Change Orders: Additional work requires written approval; pricing/schedule may change." },
-  { key: "safety", label: "+ Safety", line: "Safety: Work performed per site safety requirements (PPE, LOTO, hot work, confined space if applicable)." },
-  { key: "access", label: "+ Access", line: "Access: Pricing assumes reasonable access and staging; delays due to access constraints may affect cost." },
+  {
+    key: "schedule",
+    label: "+ Schedule",
+    line: "Schedule: Target start ASAP; duration dependent on access, approvals, and material lead times.",
+  },
+  {
+    key: "exclusions",
+    label: "+ Exclusions",
+    line: "Exclusions: Hidden/unforeseen conditions not included unless authorized by written change order.",
+  },
+  {
+    key: "payment",
+    label: "+ Payment",
+    line: "Payment: 30% deposit / balance due upon completion (Net terms by approval).",
+  },
+  {
+    key: "change",
+    label: "+ Change Orders",
+    line: "Change Orders: Additional work requires written approval; pricing and schedule may change.",
+  },
+  {
+    key: "safety",
+    label: "+ Safety",
+    line: "Safety: Work performed per site safety requirements (PPE, LOTO, hot work, confined space if applicable).",
+  },
+  {
+    key: "access",
+    label: "+ Access",
+    line: "Access: Pricing assumes reasonable access and staging; delays due to access constraints may affect cost.",
+  },
 ];
 
 function todayISO() {
@@ -349,7 +359,6 @@ function newLaborLine() {
 
 function safeFilename(s) {
   const base = String(s || "").trim() || "Client";
-  // ✅ ESLint no-useless-escape fix: "/" does not need escaping inside [...]
   return base.replace(/[/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
 
@@ -360,6 +369,17 @@ function isCompanyComplete(p) {
   const emailOk = Boolean(p?.email && String(p.email).trim());
   const addrOk = Boolean(p?.address && String(p.address).trim());
   return nameOk && phoneOk && emailOk && addrOk;
+}
+
+function warnCompanyIncomplete() {
+  alert(
+    "Company Profile Incomplete\n\n" +
+      "To proceed to the estimator, please complete ALL required fields:\n" +
+      "• Company name\n" +
+      "• Phone\n" +
+      "• Email\n" +
+      "• Address"
+  );
 }
 
 function clampPct(n) {
@@ -389,53 +409,8 @@ function containsExact(text, needle) {
 
 /**
  * ✅ PDF extraction
- * We want:
- *  - Scope Summary section (first one)
- *  - ALL Trade Insert blocks (every occurrence)
+ * We want ALL Trade Insert blocks (every occurrence) so we can show them on PDF (only if present).
  */
-function extractScopeSummary(fullText) {
-  const t = String(fullText || "");
-
-  const start = t.indexOf("Scope (Summary):");
-  if (start >= 0) {
-    const after = t.slice(start);
-
-    const stopHeaders = [
-      "\n\nIncluded",
-      "\n\nIncluded (",
-      "\n\nQuality",
-      "\n\nAssumptions",
-      "\n\nExclusions",
-      "\n\nNotes:",
-      "\n\nTrade Insert:",
-    ];
-
-    let stopAt = after.length;
-    for (const h of stopHeaders) {
-      const idx = after.indexOf(h);
-      if (idx > 0) stopAt = Math.min(stopAt, idx);
-    }
-
-    return after.slice(0, stopAt).trim();
-  }
-
-  const start2 = t.indexOf("Service Scope (Summary):");
-  if (start2 >= 0) {
-    const after = t.slice(start2);
-
-    const stopHeaders = ["\n\nIncluded", "\n\nAssumptions", "\n\nExclusions", "\n\nNotes:", "\n\nTrade Insert:"];
-    let stopAt = after.length;
-    for (const h of stopHeaders) {
-      const idx = after.indexOf(h);
-      if (idx > 0) stopAt = Math.min(stopAt, idx);
-    }
-
-    return after.slice(0, stopAt).trim();
-  }
-
-  return "";
-}
-
 function extractAllTradeInserts(fullText) {
   const t = String(fullText || "");
   const marker = "Trade Insert:";
@@ -456,7 +431,6 @@ function extractAllTradeInserts(fullText) {
     pos = idx + marker.length;
   }
 
-  // de-dupe exact repeats (common when people re-insert the same block)
   const uniq = [];
   for (const b of pieces) {
     if (!uniq.includes(b)) uniq.push(b);
@@ -465,19 +439,21 @@ function extractAllTradeInserts(fullText) {
   return uniq;
 }
 
-/**
- * ✅ Logo resize for crisp logos (no squish)
- * - keeps PNG when source is PNG (best)
- * - never upscales
- * - big clamps so you keep resolution for PDF
- */
+function extractScopeNotesForPdf(fullText) {
+  let t = String(fullText || "").trim();
+  if (!t) return "";
+
+  const inserts = extractAllTradeInserts(t);
+  for (const ins of inserts) {
+    t = t.replace(ins, "");
+  }
+
+  t = t.replace(/\n{3,}/g, "\n\n").trim();
+  return t;
+}
+
 function resizeLogoFile(file, opts = {}) {
-  const {
-    maxWidth = 1600,
-    maxHeight = 500,
-    jpegQuality = 0.95,
-    forcePng = false,
-  } = opts;
+  const { maxWidth = 1600, maxHeight = 500, jpegQuality = 0.95, forcePng = false } = opts;
 
   return new Promise((resolve) => {
     if (!file) return resolve("");
@@ -489,7 +465,6 @@ function resizeLogoFile(file, opts = {}) {
         const iw = Number(img.width) || 1;
         const ih = Number(img.height) || 1;
 
-        // never upscale
         const scale = Math.min(maxWidth / iw, maxHeight / ih, 1);
         const outW = Math.max(1, Math.round(iw * scale));
         const outH = Math.max(1, Math.round(ih * scale));
@@ -510,10 +485,7 @@ function resizeLogoFile(file, opts = {}) {
         const keepPng = forcePng || originalType.includes("png");
         const mime = keepPng ? "image/png" : "image/jpeg";
 
-        const dataUrl =
-          mime === "image/jpeg"
-            ? canvas.toDataURL(mime, jpegQuality)
-            : canvas.toDataURL(mime);
+        const dataUrl = mime === "image/jpeg" ? canvas.toDataURL(mime, jpegQuality) : canvas.toDataURL(mime);
 
         resolve(dataUrl);
       };
@@ -539,14 +511,12 @@ const PROFILE_KEY = "field-pocket-profile";
 
 export default function EstimateForm() {
   const [profile, setProfile] = useState({
-    // REQUIRED (for green indicator + PDF export)
     companyName: "",
     phone: "",
     email: "",
     address: "",
 
-    // OPTIONAL
-    logoDataUrl: "", // ✅ resized/compressed
+    logoDataUrl: "",
     roc: "",
     attn: "",
     website: "",
@@ -556,37 +526,28 @@ export default function EstimateForm() {
 
   const [step, setStep] = useState("estimate"); // "profile" | "estimate"
 
-  // Job info
   const [date, setDate] = useState(todayISO());
   const [client, setClient] = useState("");
   const [description, setDescription] = useState("");
 
-  // Scope template selectors
   const [masterScopeKey, setMasterScopeKey] = useState("");
   const [tradeInsertKey, setTradeInsertKey] = useState("");
 
-  // ✅ Editable Additional Notes text
   const [additionalNotesText, setAdditionalNotesText] = useState("");
 
-  // Labor
   const [laborLines, setLaborLines] = useState([newLaborLine()]);
 
-  // Multiplier (preset/custom)
   const [laborMultiplier, setLaborMultiplier] = useState(1);
   const [multiplierMode, setMultiplierMode] = useState("preset");
   const [customMultiplier, setCustomMultiplier] = useState("1");
 
-  // Materials / risk
   const [materialsCost, setMaterialsCost] = useState("");
-  const [hazardPct, setHazardPct] = useState(""); // ✅ percent (labor only)
+  const [hazardPct, setHazardPct] = useState("");
 
-  // Materials markup %
   const [materialsMarkupPct, setMaterialsMarkupPct] = useState("20");
 
-  // History
   const [history, setHistory] = useState([]);
 
-  // Load profile + history
   useEffect(() => {
     const savedProfile = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null");
     if (savedProfile && typeof savedProfile === "object") {
@@ -614,17 +575,19 @@ export default function EstimateForm() {
     setHistory(savedHistory);
   }, []);
 
-  // Persist profile automatically
   useEffect(() => {
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
   }, [profile]);
 
-  const effectiveMultiplier =
-    multiplierMode === "custom"
-      ? Number(customMultiplier) || 1
-      : Number(laborMultiplier) || 1;
+  useEffect(() => {
+    if (step === "estimate" && !isCompanyComplete(profile)) {
+      setStep("profile");
+    }
+  }, [step, profile]);
 
-  // ✅ Two-pass calc so hazard can be % of LABOR ONLY (laborAdjusted)
+  const effectiveMultiplier =
+    multiplierMode === "custom" ? Number(customMultiplier) || 1 : Number(laborMultiplier) || 1;
+
   const {
     laborBase,
     laborAdjusted,
@@ -635,13 +598,7 @@ export default function EstimateForm() {
     hazardPctNormalized,
     hazardEnabled,
   } = useMemo(() => {
-    const base = calculateEstimateWithLaborLines(
-      laborLines,
-      materialsCost,
-      effectiveMultiplier,
-      0,
-      materialsMarkupPct
-    );
+    const base = calculateEstimateWithLaborLines(laborLines, materialsCost, effectiveMultiplier, 0, materialsMarkupPct);
 
     const pct = clampPct(hazardPct);
     const enabled = pct > 0;
@@ -668,7 +625,6 @@ export default function EstimateForm() {
     };
   }, [laborLines, materialsCost, effectiveMultiplier, hazardPct, materialsMarkupPct]);
 
-  // Labor helpers
   const addLaborLine = () => {
     if (laborLines.length >= 10) return;
     setLaborLines([...laborLines, newLaborLine()]);
@@ -680,29 +636,21 @@ export default function EstimateForm() {
   };
 
   const updateLaborLine = (i, key, value) => {
-    setLaborLines((prev) =>
-      prev.map((l, idx) => (idx === i ? { ...l, [key]: value } : l))
-    );
+    setLaborLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, [key]: value } : l)));
   };
 
   const applyLaborPresetByLabel = (i, selectedLabel) => {
     if (!selectedLabel) return;
-    setLaborLines((prev) =>
-      prev.map((l, idx) => (idx === i ? { ...l, label: selectedLabel } : l))
-    );
+    setLaborLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, label: selectedLabel } : l)));
   };
 
   const duplicateLaborLine = (i) => {
-    setLaborLines((prev) =>
-      prev.map((l, idx) => (idx === i ? { ...l, qty: (Number(l.qty) || 1) + 1 } : l))
-    );
+    setLaborLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, qty: (Number(l.qty) || 1) + 1 } : l)));
   };
 
   const decrementLaborQty = (i) => {
     setLaborLines((prev) =>
-      prev.map((l, idx) =>
-        idx === i ? { ...l, qty: Math.max(1, (Number(l.qty) || 1) - 1) } : l
-      )
+      prev.map((l, idx) => (idx === i ? { ...l, qty: Math.max(1, (Number(l.qty) || 1) - 1) } : l))
     );
   };
 
@@ -710,7 +658,28 @@ export default function EstimateForm() {
     return laborLines.reduce((sum, l) => sum + (Number(l.qty) || 1), 0);
   }, [laborLines]);
 
-  // Scope template helpers
+  const countMasterTemplatesInText = (text) => {
+    const t = String(text || "");
+    let count = 0;
+    for (const m of SCOPE_MASTER_TEMPLATES) {
+      if (m?.text && t.includes(m.text)) count += 1;
+    }
+    return count;
+  };
+
+  const countTradeInsertsInText = (text) => {
+    return extractAllTradeInserts(text).length;
+  };
+
+  const warnMultipleTemplates = (kind, countAlready) => {
+    return window.confirm(
+      `${kind} already added.\n\n` +
+        `You currently have ${countAlready} ${kind.toLowerCase()} block(s) in your scope box.\n` +
+        `Adding more can make the scope messy and harder to read.\n\n` +
+        `Add anyway?`
+    );
+  };
+
   const insertBlock = (blockText) => {
     if (!blockText) return;
     setDescription((prev) => {
@@ -723,20 +692,19 @@ export default function EstimateForm() {
     const t = SCOPE_MASTER_TEMPLATES.find((x) => x.key === key);
     if (!t) return;
 
-    if (containsExact(description, t.text)) {
-      const ok = window.confirm(
-        "That master template text already appears in your scope box.\n\nAdd it again anyway?"
-      );
+    const existingMasters = countMasterTemplatesInText(description);
+    const isDuplicate = containsExact(description, t.text);
+
+    if (isDuplicate) {
+      const ok = window.confirm("That master template text already appears in your scope box.\n\nAdd it again anyway?");
       if (!ok) return;
-    } else {
-      const hasAnySummary =
-        description.includes("Scope (Summary):") || description.includes("Service Scope (Summary):");
-      if (hasAnySummary) {
-        const ok = window.confirm(
-          "A scope summary already appears in the box.\n\nAdding another master template may get messy.\n\nAdd anyway?"
-        );
-        if (!ok) return;
-      }
+      insertBlock(t.text);
+      return;
+    }
+
+    if (existingMasters >= 1) {
+      const ok = warnMultipleTemplates("Master template", existingMasters);
+      if (!ok) return;
     }
 
     insertBlock(t.text);
@@ -746,25 +714,30 @@ export default function EstimateForm() {
     const t = SCOPE_TRADE_INSERTS.find((x) => x.key === key);
     if (!t) return;
 
-    if (containsExact(description, t.text)) {
-      const ok = window.confirm(
-        "That trade insert already appears in your scope box.\n\nAdd it again anyway?"
-      );
+    const existingInserts = countTradeInsertsInText(description);
+    const isDuplicate = containsExact(description, t.text);
+
+    if (isDuplicate) {
+      const ok = window.confirm("That trade insert already appears in your scope box.\n\nAdd it again anyway?");
+      if (!ok) return;
+      insertBlock(t.text);
+      return;
+    }
+
+    if (existingInserts >= 1) {
+      const ok = warnMultipleTemplates("Trade insert", existingInserts);
       if (!ok) return;
     }
 
     insertBlock(t.text);
   };
 
-  // ✅ Additional Notes (editable): buttons append text, but user can type too
   const addAdditionalNoteLine = (line) => {
     const current = String(additionalNotesText || "");
     const already = current.includes(line);
 
     if (already) {
-      const ok = window.confirm(
-        "That note already appears in Additional Notes.\n\nAdd it again anyway?"
-      );
+      const ok = window.confirm("That note already appears in Additional Notes.\n\nAdd it again anyway?");
       if (!ok) return;
     }
 
@@ -776,7 +749,6 @@ export default function EstimateForm() {
 
   const clearAdditionalNotes = () => setAdditionalNotesText("");
 
-  // RESET (does not touch company)
   const resetForm = () => {
     setDate(todayISO());
     setClient("");
@@ -793,7 +765,6 @@ export default function EstimateForm() {
     setMaterialsMarkupPct("20");
   };
 
-  // Save / load
   const saveEstimate = () => {
     const entry = {
       id: Date.now(),
@@ -843,16 +814,12 @@ export default function EstimateForm() {
     setMultiplierMode(e.multiplierMode || "preset");
     setLaborMultiplier(Number(e.laborMultiplier) || 1);
     setCustomMultiplier(
-      e.customMultiplier !== undefined && e.customMultiplier !== null
-        ? String(e.customMultiplier)
-        : "1"
+      e.customMultiplier !== undefined && e.customMultiplier !== null ? String(e.customMultiplier) : "1"
     );
 
     setMaterialsCost(e.materialsCost ?? "");
     setMaterialsMarkupPct(
-      e.materialsMarkupPct !== undefined && e.materialsMarkupPct !== null
-        ? String(e.materialsMarkupPct)
-        : "20"
+      e.materialsMarkupPct !== undefined && e.materialsMarkupPct !== null ? String(e.materialsMarkupPct) : "20"
     );
 
     setHazardPct(e.hazardPct !== undefined && e.hazardPct !== null ? String(e.hazardPct) : "");
@@ -875,7 +842,6 @@ export default function EstimateForm() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
   };
 
-  // Multiplier dropdown handler
   const handleMultiplierSelect = (value) => {
     if (value === "custom") {
       setMultiplierMode("custom");
@@ -889,7 +855,6 @@ export default function EstimateForm() {
 
   const companyGreen = isCompanyComplete(profile);
 
-  // PDF helpers
   const drawFrame = (doc) => {
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -899,7 +864,6 @@ export default function EstimateForm() {
     doc.rect(8, 8, pageWidth - 16, pageHeight - 16);
   };
 
-  // PDF
   const exportPDF = () => {
     if (!companyGreen) {
       const go = window.confirm(
@@ -917,8 +881,6 @@ export default function EstimateForm() {
     const SHADE = [245, 245, 245];
     const TEXT_MUTED = [80, 80, 80];
 
-    drawFrame(doc);
-
     const companyName = (profile.companyName || "").trim() || "Company Name";
     const contactBits = [profile.phone, profile.email].filter(Boolean).join(" • ");
     const addressLine = (profile.address || "").trim();
@@ -930,72 +892,84 @@ export default function EstimateForm() {
     ].filter(Boolean);
     const optionalLine = optionalBits.join(" • ");
 
-    // Header band (shaded)
-    doc.setFillColor(...SHADE);
-    doc.rect(8, 10, pageWidth - 16, 30, "F");
+    // ✅ FIX: ONLY show "ESTIMATE" on page 1.
+    // Page 2+ shows NOTHING in that spot (prevents collisions on continuation pages).
+    const drawHeader = () => {
+      drawFrame(doc);
 
-    // ✅ Logo (left) — BIGGER BOX + PERFECT ASPECT (prevents “squish”)
-    if (profile.logoDataUrl) {
-      try {
-        const imgType = detectDataUrlType(profile.logoDataUrl);
+      doc.setFillColor(...SHADE);
+      doc.rect(8, 10, pageWidth - 16, 30, "F");
 
-        // Bigger bounding box (wider + a bit taller)
-        // If your logo is a long text banner, this is what fixes the "squished" look.
-        const boxX = 12;
-        const boxY = 12;
-        const boxW = 82; // wider
-        const boxH = 26; // taller
+      if (profile.logoDataUrl) {
+        try {
+          const imgType = detectDataUrlType(profile.logoDataUrl);
 
-        const props = doc.getImageProperties(profile.logoDataUrl);
-        const iw = Number(props?.width) || 1;
-        const ih = Number(props?.height) || 1;
+          const boxX = 12;
+          const boxY = 12;
+          const boxW = 82;
+          const boxH = 26;
 
-        const scale = Math.min(boxW / iw, boxH / ih);
-        const drawW = iw * scale;
-        const drawH = ih * scale;
+          const props = doc.getImageProperties(profile.logoDataUrl);
+          const iw = Number(props?.width) || 1;
+          const ih = Number(props?.height) || 1;
 
-        const x = boxX + (boxW - drawW) / 2;
-        const y = boxY + (boxH - drawH) / 2;
+          const scale = Math.min(boxW / iw, boxH / ih);
+          const drawW = iw * scale;
+          const drawH = ih * scale;
 
-        doc.addImage(profile.logoDataUrl, imgType, x, y, drawW, drawH);
-      } catch {
-        // ignore logo rendering errors
+          const x = boxX + (boxW - drawW) / 2;
+          const y = boxY + (boxH - drawH) / 2;
+
+          doc.addImage(profile.logoDataUrl, imgType, x, y, drawW, drawH);
+        } catch {
+          // ignore
+        }
       }
-    }
 
-    doc.setTextColor(20, 20, 20);
-    doc.setFontSize(18);
-    doc.text(companyName, pageWidth / 2, 22, { align: "center" });
+      doc.setTextColor(20, 20, 20);
+      doc.setFontSize(18);
+      doc.text(companyName, pageWidth / 2, 22, { align: "center" });
 
-    doc.setFontSize(10);
-    doc.setTextColor(...TEXT_MUTED);
-    if (contactBits) doc.text(contactBits, pageWidth / 2, 28, { align: "center" });
-    if (addressLine) doc.text(addressLine, pageWidth / 2, 33, { align: "center" });
-    if (optionalLine) doc.text(optionalLine, pageWidth / 2, 38, { align: "center" });
+      doc.setFontSize(10);
+      doc.setTextColor(...TEXT_MUTED);
+      if (contactBits) doc.text(contactBits, pageWidth / 2, 28, { align: "center" });
+      if (addressLine) doc.text(addressLine, pageWidth / 2, 33, { align: "center" });
+      if (optionalLine) doc.text(optionalLine, pageWidth / 2, 38, { align: "center" });
 
-    doc.setTextColor(20, 20, 20);
-    doc.setFontSize(14);
-    doc.text("ESTIMATE", pageWidth / 2, 50, { align: "center" });
+      doc.setTextColor(20, 20, 20);
 
-    doc.setDrawColor(...BORDER);
-    doc.line(14, 54, pageWidth - 14, 54);
+      const pageNum = doc.getCurrentPageInfo?.().pageNumber || 1;
 
-    // Extract only what you want on invoice
-    const scopeSummary = extractScopeSummary(description);
+      // ✅ Page 1 only
+      if (pageNum === 1) {
+        doc.setFontSize(14);
+        doc.text("ESTIMATE", pageWidth / 2, 50, { align: "center" });
+      }
+      // ✅ Page 2+ intentionally prints NOTHING here
+
+      doc.setDrawColor(...BORDER);
+      doc.line(14, 54, pageWidth - 14, 54);
+    };
+
     const tradeInserts = extractAllTradeInserts(description);
-    const tradeInsertText = tradeInserts.length ? tradeInserts.join("\n\n") : "-";
+    const tradeInsertText = tradeInserts.length ? tradeInserts.join("\n\n") : "";
+    const scopeNotes = extractScopeNotesForPdf(description) || "-";
     const attn = String(profile.attn || "").trim();
 
-    // Job info table
+    const hasTradeInserts = tradeInserts.length > 0;
+
+    const jobRows = [
+      ["Date", date || "-"],
+      ...(attn ? [["Attn", attn]] : []),
+      ["Client", client || "-"],
+      ["Scope / Notes", scopeNotes],
+      ...(hasTradeInserts ? [["Trade Insert(s)", tradeInsertText]] : []),
+    ];
+
     autoTable(doc, {
       startY: 58,
-      body: [
-        ["Date", date || "-"],
-        ...(attn ? [["Attn", attn]] : []),
-        ["Client", client || "-"],
-        ["Scope Summary", scopeSummary || "-"],
-        ["Trade Insert(s)", tradeInsertText],
-      ],
+      head: [["Job Info", ""]],
+      body: jobRows,
       theme: "grid",
       styles: {
         fontSize: 11,
@@ -1005,14 +979,21 @@ export default function EstimateForm() {
         lineWidth: 0.1,
         textColor: [20, 20, 20],
       },
+      headStyles: {
+        fillColor: SHADE,
+        textColor: [20, 20, 20],
+        fontStyle: "bold",
+      },
       columnStyles: {
-        0: { cellWidth: 34, fontStyle: "bold", fillColor: SHADE },
+        0: { cellWidth: 34, fontStyle: "bold", fillColor: [255, 255, 255] },
         1: { cellWidth: pageWidth - 28 - 34 },
       },
-      margin: { left: 14, right: 14 },
+      margin: { top: 58, left: 14, right: 14, bottom: 14 },
+      willDrawPage: () => {
+        drawHeader();
+      },
     });
 
-    // Totals table
     const summaryRows = [
       ["Labor", money.format(laborAdjusted)],
       ["Materials", money.format(materialsBilled)],
@@ -1024,6 +1005,7 @@ export default function EstimateForm() {
 
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 8,
+      head: [["Totals", ""]],
       body: summaryRows,
       theme: "grid",
       styles: {
@@ -1033,21 +1015,28 @@ export default function EstimateForm() {
         lineWidth: 0.1,
         textColor: [20, 20, 20],
       },
+      headStyles: {
+        fillColor: SHADE,
+        textColor: [20, 20, 20],
+        fontStyle: "bold",
+      },
       columnStyles: {
         0: { cellWidth: pageWidth - 28 - 60 },
         1: { cellWidth: 60, halign: "right" },
       },
-      margin: { left: 14, right: 14 },
+      margin: { top: 58, left: 14, right: 14, bottom: 14 },
       didParseCell: (data) => {
-        if (data.row.index === summaryRows.length - 1) {
+        if (data.section === "body" && data.row.index === summaryRows.length - 1) {
           data.cell.styles.fillColor = SHADE;
           data.cell.styles.fontStyle = "bold";
           data.cell.styles.fontSize = 13;
         }
       },
+      willDrawPage: () => {
+        drawHeader();
+      },
     });
 
-    // ✅ Small-print footer + Additional Notes (NO TABLE)
     const marginLeft = 14;
     const marginRight = 14;
     const usableWidth = pageWidth - marginLeft - marginRight;
@@ -1058,14 +1047,16 @@ export default function EstimateForm() {
 
     let y = doc.lastAutoTable.finalY + 10;
 
+    const newPage = () => {
+      doc.addPage();
+      drawHeader();
+      y = 62;
+    };
+
     const ensureSpace = (neededLines = 1) => {
-      const bottom = pageHeight - 14; // inside frame
+      const bottom = pageHeight - 14;
       const neededHeight = neededLines * 4.2;
-      if (y + neededHeight > bottom) {
-        doc.addPage();
-        drawFrame(doc);
-        y = 18;
-      }
+      if (y + neededHeight > bottom) newPage();
     };
 
     doc.setFontSize(9);
@@ -1080,8 +1071,13 @@ export default function EstimateForm() {
 
     if (notesHas) {
       ensureSpace(1);
+      doc.setFontSize(10);
+      doc.setTextColor(20, 20, 20);
       doc.text("Additional Notes:", marginLeft, y);
-      y += 4.2;
+      y += 5;
+
+      doc.setFontSize(9);
+      doc.setTextColor(...TEXT_MUTED);
 
       const paragraphs = notesRaw
         .split(/\n\s*\n/g)
@@ -1090,6 +1086,20 @@ export default function EstimateForm() {
 
       for (const p of paragraphs) {
         const lines = doc.splitTextToSize(`• ${p}`, usableWidth);
+
+        const bottom = pageHeight - 14;
+        const neededHeight = lines.length * 4.2 + 1.5;
+        if (y + neededHeight > bottom) {
+          newPage();
+          doc.setFontSize(10);
+          doc.setTextColor(20, 20, 20);
+          doc.text("Additional Notes (continued):", marginLeft, y);
+          y += 5;
+
+          doc.setFontSize(9);
+          doc.setTextColor(...TEXT_MUTED);
+        }
+
         ensureSpace(lines.length);
         doc.text(lines, marginLeft, y);
         y += lines.length * 4.2 + 1.5;
@@ -1158,7 +1168,17 @@ export default function EstimateForm() {
           </div>
 
           <div className="pe-actions">
-            <button className="pe-btn" type="button" onClick={() => setStep("estimate")}>
+            <button
+              className="pe-btn"
+              type="button"
+              onClick={() => {
+                if (!requiredComplete) {
+                  warnCompanyIncomplete();
+                  return;
+                }
+                setStep("estimate");
+              }}
+            >
               Continue →
             </button>
           </div>
@@ -1209,7 +1229,6 @@ export default function EstimateForm() {
               Optional
             </div>
 
-            {/* ✅ Logo upload (auto-resize BEFORE saving) */}
             <div className="pe-row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div className="pe-muted" style={{ minWidth: 140 }}>
                 Company logo (optional)
@@ -1296,8 +1315,18 @@ export default function EstimateForm() {
 
             <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
               <div className="pe-muted">Saved automatically. PDF export requires all required fields complete.</div>
-              <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setStep("estimate")}>
-                Back →
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                onClick={() => {
+                  if (!requiredComplete) {
+                    warnCompanyIncomplete();
+                    return;
+                  }
+                  setStep("estimate");
+                }}
+              >
+                Continue →
               </button>
             </div>
           </section>
@@ -1358,13 +1387,13 @@ export default function EstimateForm() {
           <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setStep("profile")}>
             Edit Company
           </button>
-          <button className="pe-btn pe-btn-ghost" onClick={resetForm}>
+          <button className="pe-btn pe-btn-ghost" onClick={resetForm} type="button">
             New / Clear
           </button>
-          <button className="pe-btn" onClick={saveEstimate}>
+          <button className="pe-btn" onClick={saveEstimate} type="button">
             Save
           </button>
-          <button className="pe-btn pe-btn-ghost" onClick={exportPDF}>
+          <button className="pe-btn pe-btn-ghost" onClick={exportPDF} type="button">
             PDF
           </button>
         </div>
@@ -1377,7 +1406,12 @@ export default function EstimateForm() {
 
           <div className="pe-grid">
             <input className="pe-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            <input className="pe-input" value={client} onChange={(e) => setClient(e.target.value)} placeholder="Client" />
+            <input
+              className="pe-input"
+              value={client}
+              onChange={(e) => setClient(e.target.value)}
+              placeholder="Client"
+            />
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
@@ -1425,7 +1459,12 @@ export default function EstimateForm() {
               ))}
             </select>
 
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setDescription("")} title="Clear scope/notes">
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => setDescription("")}
+              title="Clear scope/notes"
+            >
               Clear Scope Box
             </button>
           </div>
@@ -1435,7 +1474,7 @@ export default function EstimateForm() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Scope / notes (templates insert here)"
-            style={{ minHeight: 320 }}
+            style={{ minHeight: 320, marginTop: 10 }}
           />
         </section>
 
@@ -1445,7 +1484,7 @@ export default function EstimateForm() {
         <section className="pe-section">
           <div className="pe-row">
             <div className="pe-section-title">Labor</div>
-            <button className="pe-btn" onClick={addLaborLine}>
+            <button className="pe-btn" onClick={addLaborLine} type="button">
               + Add labor
             </button>
           </div>
@@ -1456,7 +1495,12 @@ export default function EstimateForm() {
 
             return (
               <div key={i} className="pe-grid" style={{ marginTop: 8 }}>
-                <select className="pe-input" value={l.label || ""} onChange={(e) => applyLaborPresetByLabel(i, e.target.value)} title="Role">
+                <select
+                  className="pe-input"
+                  value={l.label || ""}
+                  onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
+                  title="Role"
+                >
                   <option value="">Select role…</option>
                   {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
                   {LABOR_PRESETS.map((p) => (
@@ -1466,23 +1510,43 @@ export default function EstimateForm() {
                   ))}
                 </select>
 
-                <input className="pe-input" placeholder="Hours" value={l.hours} onChange={(e) => updateLaborLine(i, "hours", e.target.value)} />
-                <input className="pe-input" placeholder="Rate" value={l.rate} onChange={(e) => updateLaborLine(i, "rate", e.target.value)} />
+                <input
+                  className="pe-input"
+                  placeholder="Hours"
+                  value={l.hours}
+                  onChange={(e) => updateLaborLine(i, "hours", e.target.value)}
+                />
+                <input
+                  className="pe-input"
+                  placeholder="Rate"
+                  value={l.rate}
+                  onChange={(e) => updateLaborLine(i, "rate", e.target.value)}
+                />
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <div className="pe-muted" title="Headcount on this line" style={{ minWidth: 54 }}>
                     x{Number(l.qty) || 1}
                   </div>
 
-                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => decrementLaborQty(i)} title="Decrease headcount (min 1)">
+                  <button
+                    className="pe-btn pe-btn-ghost"
+                    type="button"
+                    onClick={() => decrementLaborQty(i)}
+                    title="Decrease headcount (min 1)"
+                  >
                     -
                   </button>
 
-                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateLaborLine(i)} title="Duplicate laborer on this SAME line (does not add a new row)">
+                  <button
+                    className="pe-btn pe-btn-ghost"
+                    type="button"
+                    onClick={() => duplicateLaborLine(i)}
+                    title="Duplicate laborer on this SAME line (does not add a new row)"
+                  >
                     Duplicate
                   </button>
 
-                  <button className="pe-btn pe-btn-ghost" onClick={() => removeLaborLine(i)}>
+                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeLaborLine(i)}>
                     Remove
                   </button>
                 </div>
@@ -1503,7 +1567,11 @@ export default function EstimateForm() {
           <div className="pe-section-title">Special Conditions</div>
 
           <div className="pe-grid">
-            <select className="pe-input" value={multiplierSelectValue} onChange={(e) => handleMultiplierSelect(e.target.value)}>
+            <select
+              className="pe-input"
+              value={multiplierSelectValue}
+              onChange={(e) => handleMultiplierSelect(e.target.value)}
+            >
               <option value="1">Standard (1.00×)</option>
               <option value="1.1">Difficult access (1.10×)</option>
               <option value="1.2">High-risk / PPE (1.20×)</option>
@@ -1511,12 +1579,23 @@ export default function EstimateForm() {
               <option value="custom">Custom…</option>
             </select>
 
-            <input className="pe-input" value={hazardPct} onChange={(e) => setHazardPct(e.target.value)} placeholder="Hazard / risk % of LABOR (ex: 30)" title="Percent of adjusted labor only" />
+            <input
+              className="pe-input"
+              value={hazardPct}
+              onChange={(e) => setHazardPct(e.target.value)}
+              placeholder="Hazard / risk % of LABOR (ex: 30)"
+              title="Percent of adjusted labor only"
+            />
           </div>
 
           {multiplierMode === "custom" && (
             <div className="pe-grid" style={{ marginTop: 8 }}>
-              <input className="pe-input" value={customMultiplier} onChange={(e) => setCustomMultiplier(e.target.value)} placeholder="Custom labor multiplier (ex: 1.18)" />
+              <input
+                className="pe-input"
+                value={customMultiplier}
+                onChange={(e) => setCustomMultiplier(e.target.value)}
+                placeholder="Custom labor multiplier (ex: 1.18)"
+              />
               <div />
             </div>
           )}
@@ -1541,8 +1620,18 @@ export default function EstimateForm() {
           <div className="pe-section-title">Materials</div>
 
           <div className="pe-grid">
-            <input className="pe-input" value={materialsCost} onChange={(e) => setMaterialsCost(e.target.value)} placeholder="Materials cost" />
-            <input className="pe-input" value={materialsMarkupPct} onChange={(e) => setMaterialsMarkupPct(e.target.value)} placeholder="Markup % (ex: 20)" />
+            <input
+              className="pe-input"
+              value={materialsCost}
+              onChange={(e) => setMaterialsCost(e.target.value)}
+              placeholder="Materials cost"
+            />
+            <input
+              className="pe-input"
+              value={materialsMarkupPct}
+              onChange={(e) => setMaterialsMarkupPct(e.target.value)}
+              placeholder="Markup % (ex: 20)"
+            />
           </div>
 
           <div className="pe-row pe-row-slim">
@@ -1624,7 +1713,13 @@ export default function EstimateForm() {
             <div className="pe-section-title" style={{ marginBottom: 0 }}>
               Saved Estimates
             </div>
-            <button className="pe-btn pe-btn-ghost" onClick={clearAllEstimates} disabled={history.length === 0} title={history.length === 0 ? "No saved estimates" : "Delete all saved estimates"}>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={clearAllEstimates}
+              disabled={history.length === 0}
+              title={history.length === 0 ? "No saved estimates" : "Delete all saved estimates"}
+            >
               Clear All
             </button>
           </div>
@@ -1634,11 +1729,21 @@ export default function EstimateForm() {
           <div style={{ display: "grid", gap: 8 }}>
             {history.map((e) => (
               <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button className="pe-btn pe-btn-ghost" onClick={() => loadEstimate(e)} style={{ flex: 1, textAlign: "left" }}>
+                <button
+                  className="pe-btn pe-btn-ghost"
+                  type="button"
+                  onClick={() => loadEstimate(e)}
+                  style={{ flex: 1, textAlign: "left" }}
+                >
                   {e.date} — {e.client || "Unnamed"} — {money.format(e.total)}
                 </button>
 
-                <button className="pe-btn pe-btn-ghost" onClick={() => deleteEstimate(e.id)} title="Delete this saved estimate">
+                <button
+                  className="pe-btn pe-btn-ghost"
+                  type="button"
+                  onClick={() => deleteEstimate(e.id)}
+                  title="Delete this saved estimate"
+                >
                   Delete
                 </button>
               </div>
