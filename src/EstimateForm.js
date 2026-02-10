@@ -359,7 +359,7 @@ function newLaborLine() {
 
 function safeFilename(s) {
   const base = String(s || "").trim() || "Client";
-  return base.replace(/[/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
+  return base.replace(/[\/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
 
 // ✅ STRICT: green only when ALL 4 required fields are filled
@@ -525,6 +525,172 @@ export default function EstimateForm() {
   });
 
   const [step, setStep] = useState("estimate"); // "profile" | "estimate"
+
+  // ✅ Language toggle (manual, default English)
+  const [lang, setLang] = useState("en");
+
+  const STRINGS = {
+    en: {
+      language: "Language",
+      english: "English",
+      spanish: "Spanish",
+
+      appTitle: "Field Pocket Estimator",
+      subProfile: "Company header for PDF",
+      subEstimator: "Fast numbers. No fluff.",
+
+      companyComplete: "Company complete",
+      companyIncomplete: "Company incomplete",
+      requiredCompleteTitle: "Required company fields complete",
+      requiredIncompleteTitle: "Fill all required company fields to enable PDF export",
+      pdfEnabledTitle: "Required company info is complete — PDF export enabled",
+      pdfDisabledTitle: "Fill Company name, Phone, Email, Address to enable PDF export",
+
+      continueArrow: "Continue →",
+      editCompany: "Edit Company",
+      newClear: "New / Clear",
+      save: "Save",
+      pdf: "PDF",
+
+      companyProfileTitle: "Company Profile (for PDF)",
+      requiredText: "Required (must be filled to export PDF)",
+      optionalText: "Optional",
+      companyLogoOptional: "Company logo (optional)",
+      removeLogo: "Remove logo",
+      savedAuto: "Saved automatically. PDF export requires all required fields complete.",
+
+      phCompanyNameReq: "Company name (required)",
+      phPhoneReq: "Phone (required) 555-555-5555",
+      phEmailReq: "Email (required)",
+      phAddressReq: "Address (required)",
+      phRocOpt: "ROC # (optional)",
+      phAttnOpt: "Attn / Contact (optional)",
+      phWebsiteOpt: "Website (optional)",
+      phEinOpt: "EIN / Tax ID (optional)",
+      phTermsOpt: "Default terms (optional) ex: Net 15",
+
+      jobInfo: "Job Info",
+      templateOptional: "Template (optional)…",
+      templateAddonOptional: "Template add-on (optional)…",
+      clearScopeBox: "Clear Scope Box",
+      phClient: "Client",
+      phScope: "Scope / notes (templates insert here)",
+
+      labor: "Labor",
+      addLabor: "+ Add labor",
+      selectRole: "Select role…",
+      phHours: "Hours",
+      phRate: "Rate",
+      decrease: "-",
+      duplicate: "Duplicate",
+      remove: "Remove",
+      baseLabor: "Base labor",
+
+      specialConditions: "Special Conditions",
+      hazardPlaceholder: "Hazard / risk % of LABOR (ex: 30)",
+      customLaborPlaceholder: "Custom labor multiplier (ex: 1.18)",
+      adjustedLabor: "Adjusted labor",
+      hazardRowLabel: "Hazard / risk",
+
+      materials: "Materials",
+      phMaterialsCost: "Materials cost",
+      phMarkup: "Markup % (ex: 20)",
+      materialsBilled: "Materials billed",
+
+      estimateTotal: "Estimate Total",
+      additionalNotes: "Additional Notes",
+      clearNotes: "Clear Notes",
+      phAdditionalNotes: "Type any additional notes here… (the + buttons will append too)",
+      notesPdfHint: "These print on the PDF as small text (not a table).",
+
+      savedEstimates: "Saved Estimates",
+      clearAll: "Clear All",
+      noSaved: "No saved estimates.",
+      unnamed: "Unnamed",
+      delete: "Delete",
+    },
+    es: {
+      language: "Idioma",
+      english: "Inglés",
+      spanish: "Español",
+
+      appTitle: "Estimador de Bolsillo",
+      subProfile: "Encabezado de empresa para PDF",
+      subEstimator: "Números rápidos. Sin relleno.",
+
+      companyComplete: "Empresa completa",
+      companyIncomplete: "Empresa incompleta",
+      requiredCompleteTitle: "Campos requeridos completos",
+      requiredIncompleteTitle: "Complete todos los campos requeridos para habilitar el PDF",
+      pdfEnabledTitle: "Información completa — PDF habilitado",
+      pdfDisabledTitle: "Complete Empresa, Teléfono, Email y Dirección para habilitar el PDF",
+
+      continueArrow: "Continuar →",
+      editCompany: "Editar Empresa",
+      newClear: "Nuevo / Limpiar",
+      save: "Guardar",
+      pdf: "PDF",
+
+      companyProfileTitle: "Perfil de Empresa (para PDF)",
+      requiredText: "Requerido (debe llenarse para exportar PDF)",
+      optionalText: "Opcional",
+      companyLogoOptional: "Logo de la empresa (opcional)",
+      removeLogo: "Quitar logo",
+      savedAuto: "Se guarda automáticamente. Para exportar PDF, complete todos los campos requeridos.",
+
+      phCompanyNameReq: "Nombre de empresa (requerido)",
+      phPhoneReq: "Teléfono (requerido) 555-555-5555",
+      phEmailReq: "Email (requerido)",
+      phAddressReq: "Dirección (requerido)",
+      phRocOpt: "ROC # (opcional)",
+      phAttnOpt: "Atn. / Contacto (opcional)",
+      phWebsiteOpt: "Sitio web (opcional)",
+      phEinOpt: "EIN / ID fiscal (opcional)",
+      phTermsOpt: "Términos por defecto (opcional) ej: Net 15",
+
+      jobInfo: "Información del Trabajo",
+      templateOptional: "Plantilla (opcional)…",
+      templateAddonOptional: "Complemento de plantilla (opcional)…",
+      clearScopeBox: "Limpiar Alcance",
+      phClient: "Cliente",
+      phScope: "Alcance / notas (las plantillas se insertan aquí)",
+
+      labor: "Mano de Obra",
+      addLabor: "+ Agregar mano de obra",
+      selectRole: "Seleccionar rol…",
+      phHours: "Horas",
+      phRate: "Tarifa",
+      decrease: "-",
+      duplicate: "Duplicar",
+      remove: "Quitar",
+      baseLabor: "Mano de obra base",
+
+      specialConditions: "Condiciones Especiales",
+      hazardPlaceholder: "Riesgo % de MANO DE OBRA (ej: 30)",
+      customLaborPlaceholder: "Multiplicador personalizado (ej: 1.18)",
+      adjustedLabor: "Mano de obra ajustada",
+      hazardRowLabel: "Riesgo",
+
+      materials: "Materiales",
+      phMaterialsCost: "Costo de materiales",
+      phMarkup: "Margen % (ej: 20)",
+      materialsBilled: "Materiales facturados",
+
+      estimateTotal: "Total Estimado",
+      additionalNotes: "Notas Adicionales",
+      clearNotes: "Limpiar Notas",
+      phAdditionalNotes: "Escriba notas adicionales aquí… (los botones + también agregan)",
+      notesPdfHint: "Estas se imprimen en el PDF como texto pequeño (no tabla).",
+
+      savedEstimates: "Estimaciones Guardadas",
+      clearAll: "Borrar Todo",
+      noSaved: "No hay estimaciones guardadas.",
+      unnamed: "Sin nombre",
+      delete: "Eliminar",
+    },
+  };
+
+  const t = (key) => (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || key;
 
   const [date, setDate] = useState(todayISO());
   const [client, setClient] = useState("");
@@ -1124,8 +1290,8 @@ export default function EstimateForm() {
       <div className="pe-wrap">
         <header className="pe-header">
           <div>
-            <div className="pe-title">Field Pocket Estimator</div>
-            <div className="pe-subtitle">Company header for PDF</div>
+            <div className="pe-title">{t("appTitle")}</div>
+            <div className="pe-subtitle">{t("subProfile")}</div>
 
             <div
               style={{
@@ -1146,11 +1312,7 @@ export default function EstimateForm() {
                   borderRadius: 999,
                   border: "1px solid rgba(0,0,0,0.12)",
                 }}
-                title={
-                  requiredComplete
-                    ? "Required company fields complete"
-                    : "Fill all required company fields to enable PDF export"
-                }
+                title={requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle")}
               >
                 <span
                   aria-hidden="true"
@@ -1162,12 +1324,36 @@ export default function EstimateForm() {
                     display: "inline-block",
                   }}
                 />
-                <span>{requiredComplete ? "Company complete" : "Company incomplete"}</span>
+                <span>{requiredComplete ? t("companyComplete") : t("companyIncomplete")}</span>
               </span>
             </div>
           </div>
 
           <div className="pe-actions">
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="pe-muted" style={{ fontSize: 12 }}>
+                {t("language")}:
+              </span>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                onClick={() => setLang("en")}
+                aria-pressed={lang === "en"}
+                title="English"
+              >
+                EN
+              </button>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                onClick={() => setLang("es")}
+                aria-pressed={lang === "es"}
+                title="Español"
+              >
+                ES
+              </button>
+            </div>
+
             <button
               className="pe-btn"
               type="button"
@@ -1179,17 +1365,17 @@ export default function EstimateForm() {
                 setStep("estimate");
               }}
             >
-              Continue →
+              {t("continueArrow")}
             </button>
           </div>
         </header>
 
         <main className="pe-card">
           <section className="pe-section">
-            <div className="pe-section-title">Company Profile (for PDF)</div>
+            <div className="pe-section-title">{t("companyProfileTitle")}</div>
 
             <div className="pe-muted" style={{ marginBottom: 8 }}>
-              Required (must be filled to export PDF)
+              {t("requiredText")}
             </div>
 
             <div className="pe-grid">
@@ -1197,13 +1383,13 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={profile.companyName}
                 onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
-                placeholder="Company name (required)"
+                placeholder={t("phCompanyNameReq")}
               />
               <input
                 className="pe-input"
                 value={profile.phone}
                 onChange={(e) => setProfile((p) => ({ ...p, phone: formatPhoneUS(e.target.value) }))}
-                placeholder="Phone (required) 555-555-5555"
+                placeholder={t("phPhoneReq")}
                 inputMode="numeric"
               />
             </div>
@@ -1213,25 +1399,25 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={profile.email}
                 onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
-                placeholder="Email (required)"
+                placeholder={t("phEmailReq")}
               />
               <input
                 className="pe-input"
                 value={profile.address}
                 onChange={(e) => setProfile((p) => ({ ...p, address: e.target.value }))}
-                placeholder="Address (required)"
+                placeholder={t("phAddressReq")}
               />
             </div>
 
             <div className="pe-divider" style={{ margin: "14px 0" }} />
 
             <div className="pe-muted" style={{ marginBottom: 8 }}>
-              Optional
+              {t("optionalText")}
             </div>
 
             <div className="pe-row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div className="pe-muted" style={{ minWidth: 140 }}>
-                Company logo (optional)
+                {t("companyLogoOptional")}
               </div>
 
               <input
@@ -1261,7 +1447,7 @@ export default function EstimateForm() {
                     onClick={() => setProfile((p) => ({ ...p, logoDataUrl: "" }))}
                     title="Remove saved logo"
                   >
-                    Remove logo
+                    {t("removeLogo")}
                   </button>
 
                   <img
@@ -1278,13 +1464,13 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={profile.roc}
                 onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))}
-                placeholder="ROC # (optional)"
+                placeholder={t("phRocOpt")}
               />
               <input
                 className="pe-input"
                 value={profile.attn}
                 onChange={(e) => setProfile((p) => ({ ...p, attn: e.target.value }))}
-                placeholder="Attn / Contact (optional)"
+                placeholder={t("phAttnOpt")}
               />
             </div>
 
@@ -1293,13 +1479,13 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={profile.website}
                 onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
-                placeholder="Website (optional)"
+                placeholder={t("phWebsiteOpt")}
               />
               <input
                 className="pe-input"
                 value={profile.ein}
                 onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
-                placeholder="EIN / Tax ID (optional)"
+                placeholder={t("phEinOpt")}
               />
             </div>
 
@@ -1308,13 +1494,13 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={profile.terms}
                 onChange={(e) => setProfile((p) => ({ ...p, terms: e.target.value }))}
-                placeholder="Default terms (optional) ex: Net 15"
+                placeholder={t("phTermsOpt")}
               />
               <div />
             </div>
 
             <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
-              <div className="pe-muted">Saved automatically. PDF export requires all required fields complete.</div>
+              <div className="pe-muted">{t("savedAuto")}</div>
               <button
                 className="pe-btn pe-btn-ghost"
                 type="button"
@@ -1326,7 +1512,7 @@ export default function EstimateForm() {
                   setStep("estimate");
                 }}
               >
-                Continue →
+                {t("continueArrow")}
               </button>
             </div>
           </section>
@@ -1340,8 +1526,8 @@ export default function EstimateForm() {
     <div className="pe-wrap">
       <header className="pe-header">
         <div>
-          <div className="pe-title">Field Pocket Estimator</div>
-          <div className="pe-subtitle">Fast numbers. No fluff.</div>
+          <div className="pe-title">{t("appTitle")}</div>
+          <div className="pe-subtitle">{t("subEstimator")}</div>
 
           <div
             style={{
@@ -1362,11 +1548,7 @@ export default function EstimateForm() {
                 borderRadius: 999,
                 border: "1px solid rgba(0,0,0,0.12)",
               }}
-              title={
-                companyGreen
-                  ? "Required company info is complete — PDF export enabled"
-                  : "Fill Company name, Phone, Email, Address to enable PDF export"
-              }
+              title={companyGreen ? t("pdfEnabledTitle") : t("pdfDisabledTitle")}
             >
               <span
                 aria-hidden="true"
@@ -1378,23 +1560,47 @@ export default function EstimateForm() {
                   display: "inline-block",
                 }}
               />
-              <span>{companyGreen ? "Company complete" : "Company incomplete"}</span>
+              <span>{companyGreen ? t("companyComplete") : t("companyIncomplete")}</span>
             </span>
           </div>
         </div>
 
         <div className="pe-actions">
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span className="pe-muted" style={{ fontSize: 12 }}>
+              {t("language")}:
+            </span>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => setLang("en")}
+              aria-pressed={lang === "en"}
+              title="English"
+            >
+              EN
+            </button>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => setLang("es")}
+              aria-pressed={lang === "es"}
+              title="Español"
+            >
+              ES
+            </button>
+          </div>
+
           <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setStep("profile")}>
-            Edit Company
+            {t("editCompany")}
           </button>
           <button className="pe-btn pe-btn-ghost" onClick={resetForm} type="button">
-            New / Clear
+            {t("newClear")}
           </button>
           <button className="pe-btn" onClick={saveEstimate} type="button">
-            Save
+            {t("save")}
           </button>
           <button className="pe-btn pe-btn-ghost" onClick={exportPDF} type="button">
-            PDF
+            {t("pdf")}
           </button>
         </div>
       </header>
@@ -1402,16 +1608,11 @@ export default function EstimateForm() {
       <main className="pe-card">
         {/* JOB INFO */}
         <section className="pe-section">
-          <div className="pe-section-title">Job Info</div>
+          <div className="pe-section-title">{t("jobInfo")}</div>
 
           <div className="pe-grid">
             <input className="pe-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            <input
-              className="pe-input"
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              placeholder="Client"
-            />
+            <input className="pe-input" value={client} onChange={(e) => setClient(e.target.value)} placeholder={t("phClient")} />
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
@@ -1429,7 +1630,7 @@ export default function EstimateForm() {
               }}
               title="Template (optional)"
             >
-              <option value="">Template (optional)…</option>
+              <option value="">{t("templateOptional")}</option>
               {SCOPE_MASTER_TEMPLATES.map((t) => (
                 <option key={t.key} value={t.key}>
                   {t.label}
@@ -1451,7 +1652,7 @@ export default function EstimateForm() {
               }}
               title="Template add-on (optional)"
             >
-              <option value="">Template add-on (optional)…</option>
+              <option value="">{t("templateAddonOptional")}</option>
               {SCOPE_TRADE_INSERTS.map((t) => (
                 <option key={t.key} value={t.key}>
                   {t.label}
@@ -1465,7 +1666,7 @@ export default function EstimateForm() {
               onClick={() => setDescription("")}
               title="Clear scope/notes"
             >
-              Clear Scope Box
+              {t("clearScopeBox")}
             </button>
           </div>
 
@@ -1473,7 +1674,7 @@ export default function EstimateForm() {
             className="pe-input pe-textarea"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Scope / notes (templates insert here)"
+            placeholder={t("phScope")}
             style={{ minHeight: 320, marginTop: 10 }}
           />
         </section>
@@ -1483,9 +1684,9 @@ export default function EstimateForm() {
         {/* LABOR */}
         <section className="pe-section">
           <div className="pe-row">
-            <div className="pe-section-title">Labor</div>
+            <div className="pe-section-title">{t("labor")}</div>
             <button className="pe-btn" onClick={addLaborLine} type="button">
-              + Add labor
+              {t("addLabor")}
             </button>
           </div>
 
@@ -1501,7 +1702,7 @@ export default function EstimateForm() {
                   onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
                   title="Role"
                 >
-                  <option value="">Select role…</option>
+                  <option value="">{t("selectRole")}</option>
                   {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
                   {LABOR_PRESETS.map((p) => (
                     <option key={p.key} value={p.label}>
@@ -1512,13 +1713,13 @@ export default function EstimateForm() {
 
                 <input
                   className="pe-input"
-                  placeholder="Hours"
+                  placeholder={t("phHours")}
                   value={l.hours}
                   onChange={(e) => updateLaborLine(i, "hours", e.target.value)}
                 />
                 <input
                   className="pe-input"
-                  placeholder="Rate"
+                  placeholder={t("phRate")}
                   value={l.rate}
                   onChange={(e) => updateLaborLine(i, "rate", e.target.value)}
                 />
@@ -1534,7 +1735,7 @@ export default function EstimateForm() {
                     onClick={() => decrementLaborQty(i)}
                     title="Decrease headcount (min 1)"
                   >
-                    -
+                    {t("decrease")}
                   </button>
 
                   <button
@@ -1543,11 +1744,11 @@ export default function EstimateForm() {
                     onClick={() => duplicateLaborLine(i)}
                     title="Duplicate laborer on this SAME line (does not add a new row)"
                   >
-                    Duplicate
+                    {t("duplicate")}
                   </button>
 
                   <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeLaborLine(i)}>
-                    Remove
+                    {t("remove")}
                   </button>
                 </div>
               </div>
@@ -1555,7 +1756,7 @@ export default function EstimateForm() {
           })}
 
           <div className="pe-row pe-row-slim">
-            <div className="pe-muted">Base labor</div>
+            <div className="pe-muted">{t("baseLabor")}</div>
             <div className="pe-value">{money.format(laborBase)}</div>
           </div>
         </section>
@@ -1564,7 +1765,7 @@ export default function EstimateForm() {
 
         {/* SPECIAL CONDITIONS */}
         <section className="pe-section">
-          <div className="pe-section-title">Special Conditions</div>
+          <div className="pe-section-title">{t("specialConditions")}</div>
 
           <div className="pe-grid">
             <select
@@ -1583,7 +1784,7 @@ export default function EstimateForm() {
               className="pe-input"
               value={hazardPct}
               onChange={(e) => setHazardPct(e.target.value)}
-              placeholder="Hazard / risk % of LABOR (ex: 30)"
+              placeholder={t("hazardPlaceholder")}
               title="Percent of adjusted labor only"
             />
           </div>
@@ -1594,20 +1795,22 @@ export default function EstimateForm() {
                 className="pe-input"
                 value={customMultiplier}
                 onChange={(e) => setCustomMultiplier(e.target.value)}
-                placeholder="Custom labor multiplier (ex: 1.18)"
+                placeholder={t("customLaborPlaceholder")}
               />
               <div />
             </div>
           )}
 
           <div className="pe-row pe-row-slim">
-            <div className="pe-muted">Adjusted labor</div>
+            <div className="pe-muted">{t("adjustedLabor")}</div>
             <div className="pe-value">{money.format(laborAdjusted)}</div>
           </div>
 
           {hazardEnabled && (
             <div className="pe-row pe-row-slim">
-              <div className="pe-muted">Hazard / risk ({hazardPctNormalized}% of labor)</div>
+              <div className="pe-muted">
+                {t("hazardRowLabel")} ({hazardPctNormalized}% of labor)
+              </div>
               <div className="pe-value">{money.format(hazardFeeDollar)}</div>
             </div>
           )}
@@ -1617,25 +1820,27 @@ export default function EstimateForm() {
 
         {/* MATERIALS */}
         <section className="pe-section">
-          <div className="pe-section-title">Materials</div>
+          <div className="pe-section-title">{t("materials")}</div>
 
           <div className="pe-grid">
             <input
               className="pe-input"
               value={materialsCost}
               onChange={(e) => setMaterialsCost(e.target.value)}
-              placeholder="Materials cost"
+              placeholder={t("phMaterialsCost")}
             />
             <input
               className="pe-input"
               value={materialsMarkupPct}
               onChange={(e) => setMaterialsMarkupPct(e.target.value)}
-              placeholder="Markup % (ex: 20)"
+              placeholder={t("phMarkup")}
             />
           </div>
 
           <div className="pe-row pe-row-slim">
-            <div className="pe-muted">Materials billed ({normalizedMarkupPct}%)</div>
+            <div className="pe-muted">
+              {t("materialsBilled")} ({normalizedMarkupPct}%)
+            </div>
             <div className="pe-value">{money.format(materialsBilled)}</div>
           </div>
         </section>
@@ -1646,7 +1851,7 @@ export default function EstimateForm() {
         <section className="pe-section">
           <div className="pe-total">
             <div>
-              <div className="pe-total-label">Estimate Total</div>
+              <div className="pe-total-label">{t("estimateTotal")}</div>
               <div className="pe-total-meta">
                 {laborLines.length} labor line(s)
                 {totalLaborers !== laborLines.length ? ` • ${totalLaborers} laborer(s)` : ""}
@@ -1664,7 +1869,7 @@ export default function EstimateForm() {
         {/* ADDITIONAL NOTES (BOTTOM ONLY) */}
         <section className="pe-section">
           <div className="pe-row">
-            <div className="pe-section-title">Additional Notes</div>
+            <div className="pe-section-title">{t("additionalNotes")}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <button
                 className="pe-btn pe-btn-ghost"
@@ -1673,7 +1878,7 @@ export default function EstimateForm() {
                 disabled={!String(additionalNotesText || "").trim()}
                 title={!String(additionalNotesText || "").trim() ? "No notes to clear" : "Clear all notes"}
               >
-                Clear Notes
+                {t("clearNotes")}
               </button>
             </div>
           </div>
@@ -1696,12 +1901,12 @@ export default function EstimateForm() {
             className="pe-input pe-textarea"
             value={additionalNotesText}
             onChange={(e) => setAdditionalNotesText(e.target.value)}
-            placeholder="Type any additional notes here… (the + buttons will append too)"
+            placeholder={t("phAdditionalNotes")}
             style={{ marginTop: 10, minHeight: 160 }}
           />
 
           <div className="pe-muted" style={{ marginTop: 6 }}>
-            These print on the PDF as small text (not a table).
+            {t("notesPdfHint")}
           </div>
         </section>
 
@@ -1711,7 +1916,7 @@ export default function EstimateForm() {
         <section className="pe-section">
           <div className="pe-row" style={{ marginTop: 0 }}>
             <div className="pe-section-title" style={{ marginBottom: 0 }}>
-              Saved Estimates
+              {t("savedEstimates")}
             </div>
             <button
               className="pe-btn pe-btn-ghost"
@@ -1720,11 +1925,11 @@ export default function EstimateForm() {
               disabled={history.length === 0}
               title={history.length === 0 ? "No saved estimates" : "Delete all saved estimates"}
             >
-              Clear All
+              {t("clearAll")}
             </button>
           </div>
 
-          {history.length === 0 && <div className="pe-muted">No saved estimates.</div>}
+          {history.length === 0 && <div className="pe-muted">{t("noSaved")}</div>}
 
           <div style={{ display: "grid", gap: 8 }}>
             {history.map((e) => (
@@ -1735,7 +1940,7 @@ export default function EstimateForm() {
                   onClick={() => loadEstimate(e)}
                   style={{ flex: 1, textAlign: "left" }}
                 >
-                  {e.date} — {e.client || "Unnamed"} — {money.format(e.total)}
+                  {e.date} — {e.client || t("unnamed")} — {money.format(e.total)}
                 </button>
 
                 <button
@@ -1744,7 +1949,7 @@ export default function EstimateForm() {
                   onClick={() => deleteEstimate(e.id)}
                   title="Delete this saved estimate"
                 >
-                  Delete
+                  {t("delete")}
                 </button>
               </div>
             ))}
