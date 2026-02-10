@@ -4,6 +4,8 @@ import autoTable from "jspdf-autotable";
 import { calculateEstimateWithLaborLines } from "./estimate";
 import "./EstimateForm.css";
 
+const APP_TITLE = "Field Pocket Estimator";
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -32,12 +34,7 @@ const LABOR_PRESETS = [
 
 /* =========================
    SCOPE / NOTES (NO TOKENS, NO BLANKS)
-   =========================
-   Goal:
-   - No fill panel
-   - No [____] blanks
-   - Gives a solid starter scope that user can edit/add to
- */
+   ========================= */
 const SCOPE_MASTER_TEMPLATES = [
   {
     key: "industrial",
@@ -127,9 +124,7 @@ Job specifics (edit/add):
 
 /* =========================
    TEMPLATE ADD-ONS (TRADE INSERTS)
-   =========================
-   NOTE: removed tokens like [DRYWALL_LEVEL]
- */
+   ========================= */
 const SCOPE_TRADE_INSERTS = [
   {
     key: "genericLabor",
@@ -225,8 +220,6 @@ const SCOPE_TRADE_INSERTS = [
 - Point-to-point checkout and basic functional verification as specified.
 - Programming/graphics/commissioning by others unless included.`,
   },
-
-  // Original industrial inserts
   {
     key: "welding",
     label: "Welding (General Insert)",
@@ -314,39 +307,15 @@ Optional Add-Ons (if needed):
 ];
 
 /* =========================
-   QUICK NOTES (BOTTOM ONLY, NO BLANKS)
+   QUICK NOTES (BOTTOM ONLY)
    ========================= */
 const QUICK_NOTES = [
-  {
-    key: "schedule",
-    label: "+ Schedule",
-    line: "Schedule: Target start ASAP; duration dependent on access, approvals, and material lead times.",
-  },
-  {
-    key: "exclusions",
-    label: "+ Exclusions",
-    line: "Exclusions: Hidden/unforeseen conditions not included unless authorized by written change order.",
-  },
-  {
-    key: "payment",
-    label: "+ Payment",
-    line: "Payment: 30% deposit / balance due upon completion (Net terms by approval).",
-  },
-  {
-    key: "change",
-    label: "+ Change Orders",
-    line: "Change Orders: Additional work requires written approval; pricing and schedule may change.",
-  },
-  {
-    key: "safety",
-    label: "+ Safety",
-    line: "Safety: Work performed per site safety requirements (PPE, LOTO, hot work, confined space if applicable).",
-  },
-  {
-    key: "access",
-    label: "+ Access",
-    line: "Access: Pricing assumes reasonable access and staging; delays due to access constraints may affect cost.",
-  },
+  { key: "schedule", label: "+ Schedule", line: "Schedule: Target start ASAP; duration dependent on access, approvals, and material lead times." },
+  { key: "exclusions", label: "+ Exclusions", line: "Exclusions: Hidden/unforeseen conditions not included unless authorized by written change order." },
+  { key: "payment", label: "+ Payment", line: "Payment: 30% deposit / balance due upon completion (Net terms by approval)." },
+  { key: "change", label: "+ Change Orders", line: "Change Orders: Additional work requires written approval; pricing and schedule may change." },
+  { key: "safety", label: "+ Safety", line: "Safety: Work performed per site safety requirements (PPE, LOTO, hot work, confined space if applicable)." },
+  { key: "access", label: "+ Access", line: "Access: Pricing assumes reasonable access and staging; delays due to access constraints may affect cost." },
 ];
 
 function todayISO() {
@@ -362,7 +331,6 @@ function safeFilename(s) {
   return base.replace(/[\/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
 
-// ✅ STRICT: green only when ALL 4 required fields are filled
 function isCompanyComplete(p) {
   const nameOk = Boolean(p?.companyName && String(p.companyName).trim());
   const phoneOk = Boolean(p?.phone && String(p.phone).trim());
@@ -371,24 +339,12 @@ function isCompanyComplete(p) {
   return nameOk && phoneOk && emailOk && addrOk;
 }
 
-function warnCompanyIncomplete() {
-  alert(
-    "Company Profile Incomplete\n\n" +
-      "To proceed to the estimator, please complete ALL required fields:\n" +
-      "• Company name\n" +
-      "• Phone\n" +
-      "• Email\n" +
-      "• Address"
-  );
-}
-
 function clampPct(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return Math.max(0, Math.min(100, x));
 }
 
-// ✅ Phone auto-hyphens: 555-555-5555
 function formatPhoneUS(input) {
   const digits = String(input || "").replace(/\D/g, "").slice(0, 10);
   const a = digits.slice(0, 3);
@@ -407,10 +363,6 @@ function containsExact(text, needle) {
   return t.includes(n);
 }
 
-/**
- * ✅ PDF extraction
- * We want ALL Trade Insert blocks (every occurrence) so we can show them on PDF (only if present).
- */
 function extractAllTradeInserts(fullText) {
   const t = String(fullText || "");
   const marker = "Trade Insert:";
@@ -422,8 +374,6 @@ function extractAllTradeInserts(fullText) {
     if (idx < 0) break;
 
     const after = t.slice(idx);
-
-    // end at first double-newline AFTER the marker block, or end-of-text
     const end = after.indexOf("\n\n");
     const block = (end > 0 ? after.slice(0, end) : after).trim();
 
@@ -435,7 +385,6 @@ function extractAllTradeInserts(fullText) {
   for (const b of pieces) {
     if (!uniq.includes(b)) uniq.push(b);
   }
-
   return uniq;
 }
 
@@ -444,9 +393,7 @@ function extractScopeNotesForPdf(fullText) {
   if (!t) return "";
 
   const inserts = extractAllTradeInserts(t);
-  for (const ins of inserts) {
-    t = t.replace(ins, "");
-  }
+  for (const ins of inserts) t = t.replace(ins, "");
 
   t = t.replace(/\n{3,}/g, "\n\n").trim();
   return t;
@@ -515,7 +462,6 @@ export default function EstimateForm() {
     phone: "",
     email: "",
     address: "",
-
     logoDataUrl: "",
     roc: "",
     attn: "",
@@ -529,23 +475,26 @@ export default function EstimateForm() {
   // ✅ Language toggle (manual, default English)
   const [lang, setLang] = useState("en");
 
+  // ✅ Mobile layout detection to prevent header overlap
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.innerWidth <= 520;
+  });
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 520);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // ✅ i18n strings (UI + ALL alerts/confirms)
   const STRINGS = {
     en: {
       language: "Language",
-      english: "English",
-      spanish: "Spanish",
-
-      appTitle: "Field Pocket Estimator",
       subProfile: "Company header for PDF",
       subEstimator: "Fast numbers. No fluff.",
-
       companyComplete: "Company complete",
       companyIncomplete: "Company incomplete",
-      requiredCompleteTitle: "Required company fields complete",
-      requiredIncompleteTitle: "Fill all required company fields to enable PDF export",
-      pdfEnabledTitle: "Required company info is complete — PDF export enabled",
-      pdfDisabledTitle: "Fill Company name, Phone, Email, Address to enable PDF export",
-
       continueArrow: "Continue →",
       editCompany: "Edit Company",
       newClear: "New / Clear",
@@ -598,6 +547,7 @@ export default function EstimateForm() {
       materialsBilled: "Materials billed",
 
       estimateTotal: "Estimate Total",
+
       additionalNotes: "Additional Notes",
       clearNotes: "Clear Notes",
       phAdditionalNotes: "Type any additional notes here… (the + buttons will append too)",
@@ -608,23 +558,38 @@ export default function EstimateForm() {
       noSaved: "No saved estimates.",
       unnamed: "Unnamed",
       delete: "Delete",
+
+      // ✅ popups
+      kindMaster: "Master template",
+      kindTrade: "Trade insert",
+
+      alertCompanyIncomplete:
+        "Company Profile Incomplete\n\nTo proceed to the estimator, please complete ALL required fields:\n• Company name\n• Phone\n• Email\n• Address",
+
+      confirmPdfNeedsCompany:
+        "Company info incomplete.\n\nPDF export requires ALL required fields:\n- Company name\n- Phone\n- Email\n- Address\n\nGo to Company Profile now?",
+
+      confirmDuplicateMaster:
+        "That master template text already appears in your scope box.\n\nAdd it again anyway?",
+      confirmDuplicateTrade:
+        "That trade insert already appears in your scope box.\n\nAdd it again anyway?",
+
+      confirmAlreadyAddedBlock:
+        "{kind} already added.\n\nYou currently have {count} {kindLower} block(s) in your scope box.\nAdding more can make the scope messy and harder to read.\n\nAdd anyway?",
+
+      confirmNoteAlready:
+        "That note already appears in Additional Notes.\n\nAdd it again anyway?",
+
+      confirmDeleteOne: "Delete this saved estimate?",
+      confirmDeleteAll: "Delete ALL saved estimates?",
     },
+
     es: {
       language: "Idioma",
-      english: "Inglés",
-      spanish: "Español",
-
-      appTitle: "Estimador de Bolsillo",
       subProfile: "Encabezado de empresa para PDF",
       subEstimator: "Números rápidos. Sin relleno.",
-
       companyComplete: "Empresa completa",
       companyIncomplete: "Empresa incompleta",
-      requiredCompleteTitle: "Campos requeridos completos",
-      requiredIncompleteTitle: "Complete todos los campos requeridos para habilitar el PDF",
-      pdfEnabledTitle: "Información completa — PDF habilitado",
-      pdfDisabledTitle: "Complete Empresa, Teléfono, Email y Dirección para habilitar el PDF",
-
       continueArrow: "Continuar →",
       editCompany: "Editar Empresa",
       newClear: "Nuevo / Limpiar",
@@ -677,6 +642,7 @@ export default function EstimateForm() {
       materialsBilled: "Materiales facturados",
 
       estimateTotal: "Total Estimado",
+
       additionalNotes: "Notas Adicionales",
       clearNotes: "Limpiar Notas",
       phAdditionalNotes: "Escriba notas adicionales aquí… (los botones + también agregan)",
@@ -687,10 +653,42 @@ export default function EstimateForm() {
       noSaved: "No hay estimaciones guardadas.",
       unnamed: "Sin nombre",
       delete: "Eliminar",
+
+      // ✅ popups
+      kindMaster: "Plantilla maestra",
+      kindTrade: "Inserto de oficio",
+
+      alertCompanyIncomplete:
+        "Perfil de Empresa Incompleto\n\nPara continuar al estimador, complete TODOS los campos requeridos:\n• Nombre de empresa\n• Teléfono\n• Email\n• Dirección",
+
+      confirmPdfNeedsCompany:
+        "Información de empresa incompleta.\n\nPara exportar PDF se requieren TODOS los campos:\n- Nombre de empresa\n- Teléfono\n- Email\n- Dirección\n\n¿Ir a Perfil de Empresa ahora?",
+
+      confirmDuplicateMaster:
+        "Ese texto de plantilla maestra ya aparece en el cuadro de alcance.\n\n¿Agregarlo otra vez?",
+      confirmDuplicateTrade:
+        "Ese inserto de oficio ya aparece en el cuadro de alcance.\n\n¿Agregarlo otra vez?",
+
+      confirmAlreadyAddedBlock:
+        "{kind} ya fue agregado.\n\nActualmente tienes {count} bloque(s) de {kindLower} en el cuadro de alcance.\nAgregar más puede hacerlo desordenado y difícil de leer.\n\n¿Agregar de todos modos?",
+
+      confirmNoteAlready:
+        "Esa nota ya aparece en Notas Adicionales.\n\n¿Agregarla otra vez?",
+
+      confirmDeleteOne: "¿Eliminar esta estimación guardada?",
+      confirmDeleteAll: "¿Eliminar TODAS las estimaciones guardadas?",
     },
   };
 
   const t = (key) => (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || key;
+
+  const fmt = (s, vars = {}) =>
+    String(s || "").replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? String(vars[k]) : `{${k}}`));
+
+  const alertT = (key, vars) => alert(fmt(t(key), vars));
+  const confirmT = (key, vars) => window.confirm(fmt(t(key), vars));
+
+  const warnCompanyIncomplete = () => alertT("alertCompanyIncomplete");
 
   const [date, setDate] = useState(todayISO());
   const [client, setClient] = useState("");
@@ -700,7 +698,6 @@ export default function EstimateForm() {
   const [tradeInsertKey, setTradeInsertKey] = useState("");
 
   const [additionalNotesText, setAdditionalNotesText] = useState("");
-
   const [laborLines, setLaborLines] = useState([newLaborLine()]);
 
   const [laborMultiplier, setLaborMultiplier] = useState(1);
@@ -711,7 +708,6 @@ export default function EstimateForm() {
   const [hazardPct, setHazardPct] = useState("");
 
   const [materialsMarkupPct, setMaterialsMarkupPct] = useState("20");
-
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
@@ -722,9 +718,7 @@ export default function EstimateForm() {
         phone: savedProfile.phone || "",
         email: savedProfile.email || "",
         address: savedProfile.address || "",
-
         logoDataUrl: savedProfile.logoDataUrl || "",
-
         roc: savedProfile.roc || "",
         attn: savedProfile.attn || "",
         website: savedProfile.website || "",
@@ -825,25 +819,20 @@ export default function EstimateForm() {
   }, [laborLines]);
 
   const countMasterTemplatesInText = (text) => {
-    const t = String(text || "");
+    const tt = String(text || "");
     let count = 0;
     for (const m of SCOPE_MASTER_TEMPLATES) {
-      if (m?.text && t.includes(m.text)) count += 1;
+      if (m?.text && tt.includes(m.text)) count += 1;
     }
     return count;
   };
 
-  const countTradeInsertsInText = (text) => {
-    return extractAllTradeInserts(text).length;
-  };
+  const countTradeInsertsInText = (text) => extractAllTradeInserts(text).length;
 
-  const warnMultipleTemplates = (kind, countAlready) => {
-    return window.confirm(
-      `${kind} already added.\n\n` +
-        `You currently have ${countAlready} ${kind.toLowerCase()} block(s) in your scope box.\n` +
-        `Adding more can make the scope messy and harder to read.\n\n` +
-        `Add anyway?`
-    );
+  const warnMultipleTemplates = (kindKey, countAlready) => {
+    const kind = kindKey === "master" ? t("kindMaster") : t("kindTrade");
+    const kindLower = kind.toLowerCase();
+    return confirmT("confirmAlreadyAddedBlock", { kind, kindLower, count: countAlready });
   };
 
   const insertBlock = (blockText) => {
@@ -855,47 +844,47 @@ export default function EstimateForm() {
   };
 
   const applyMasterTemplate = (key) => {
-    const t = SCOPE_MASTER_TEMPLATES.find((x) => x.key === key);
-    if (!t) return;
+    const temp = SCOPE_MASTER_TEMPLATES.find((x) => x.key === key);
+    if (!temp) return;
 
     const existingMasters = countMasterTemplatesInText(description);
-    const isDuplicate = containsExact(description, t.text);
+    const isDuplicate = containsExact(description, temp.text);
 
     if (isDuplicate) {
-      const ok = window.confirm("That master template text already appears in your scope box.\n\nAdd it again anyway?");
+      const ok = confirmT("confirmDuplicateMaster");
       if (!ok) return;
-      insertBlock(t.text);
+      insertBlock(temp.text);
       return;
     }
 
     if (existingMasters >= 1) {
-      const ok = warnMultipleTemplates("Master template", existingMasters);
+      const ok = warnMultipleTemplates("master", existingMasters);
       if (!ok) return;
     }
 
-    insertBlock(t.text);
+    insertBlock(temp.text);
   };
 
   const applyTradeInsert = (key) => {
-    const t = SCOPE_TRADE_INSERTS.find((x) => x.key === key);
-    if (!t) return;
+    const temp = SCOPE_TRADE_INSERTS.find((x) => x.key === key);
+    if (!temp) return;
 
     const existingInserts = countTradeInsertsInText(description);
-    const isDuplicate = containsExact(description, t.text);
+    const isDuplicate = containsExact(description, temp.text);
 
     if (isDuplicate) {
-      const ok = window.confirm("That trade insert already appears in your scope box.\n\nAdd it again anyway?");
+      const ok = confirmT("confirmDuplicateTrade");
       if (!ok) return;
-      insertBlock(t.text);
+      insertBlock(temp.text);
       return;
     }
 
     if (existingInserts >= 1) {
-      const ok = warnMultipleTemplates("Trade insert", existingInserts);
+      const ok = warnMultipleTemplates("trade", existingInserts);
       if (!ok) return;
     }
 
-    insertBlock(t.text);
+    insertBlock(temp.text);
   };
 
   const addAdditionalNoteLine = (line) => {
@@ -903,7 +892,7 @@ export default function EstimateForm() {
     const already = current.includes(line);
 
     if (already) {
-      const ok = window.confirm("That note already appears in Additional Notes.\n\nAdd it again anyway?");
+      const ok = confirmT("confirmNoteAlready");
       if (!ok) return;
     }
 
@@ -938,16 +927,13 @@ export default function EstimateForm() {
       client,
       description,
       additionalNotesText,
-
       laborLines,
       multiplierMode,
       laborMultiplier,
       customMultiplier,
-
       materialsCost,
       materialsMarkupPct,
       hazardPct,
-
       total,
     };
 
@@ -963,7 +949,6 @@ export default function EstimateForm() {
 
     setMasterScopeKey("");
     setTradeInsertKey("");
-
     setAdditionalNotesText(e.additionalNotesText ?? "");
 
     const normalizedLaborLines = Array.isArray(e.laborLines)
@@ -992,7 +977,7 @@ export default function EstimateForm() {
   };
 
   const deleteEstimate = (id) => {
-    const ok = window.confirm("Delete this saved estimate?");
+    const ok = confirmT("confirmDeleteOne");
     if (!ok) return;
 
     const updated = history.filter((x) => x.id !== id);
@@ -1001,7 +986,7 @@ export default function EstimateForm() {
   };
 
   const clearAllEstimates = () => {
-    const ok = window.confirm("Delete ALL saved estimates?");
+    const ok = confirmT("confirmDeleteAll");
     if (!ok) return;
 
     setHistory([]);
@@ -1032,9 +1017,7 @@ export default function EstimateForm() {
 
   const exportPDF = () => {
     if (!companyGreen) {
-      const go = window.confirm(
-        "Company info incomplete.\n\nPDF export requires ALL required fields:\n- Company name\n- Phone\n- Email\n- Address\n\nGo to Company Profile now?"
-      );
+      const go = confirmT("confirmPdfNeedsCompany");
       if (go) setStep("profile");
       return;
     }
@@ -1058,8 +1041,6 @@ export default function EstimateForm() {
     ].filter(Boolean);
     const optionalLine = optionalBits.join(" • ");
 
-    // ✅ FIX: ONLY show "ESTIMATE" on page 1.
-    // Page 2+ shows NOTHING in that spot (prevents collisions on continuation pages).
     const drawHeader = () => {
       drawFrame(doc);
 
@@ -1106,12 +1087,10 @@ export default function EstimateForm() {
 
       const pageNum = doc.getCurrentPageInfo?.().pageNumber || 1;
 
-      // ✅ Page 1 only
       if (pageNum === 1) {
         doc.setFontSize(14);
         doc.text("ESTIMATE", pageWidth / 2, 50, { align: "center" });
       }
-      // ✅ Page 2+ intentionally prints NOTHING here
 
       doc.setDrawColor(...BORDER);
       doc.line(14, 54, pageWidth - 14, 54);
@@ -1155,9 +1134,7 @@ export default function EstimateForm() {
         1: { cellWidth: pageWidth - 28 - 34 },
       },
       margin: { top: 58, left: 14, right: 14, bottom: 14 },
-      willDrawPage: () => {
-        drawHeader();
-      },
+      willDrawPage: () => drawHeader(),
     });
 
     const summaryRows = [
@@ -1198,9 +1175,7 @@ export default function EstimateForm() {
           data.cell.styles.fontSize = 13;
         }
       },
-      willDrawPage: () => {
-        drawHeader();
-      },
+      willDrawPage: () => drawHeader(),
     });
 
     const marginLeft = 14;
@@ -1290,7 +1265,8 @@ export default function EstimateForm() {
       <div className="pe-wrap">
         <header className="pe-header">
           <div>
-            <div className="pe-title">{t("appTitle")}</div>
+            {/* ✅ Title stays ENGLISH always */}
+            <div className="pe-title">{APP_TITLE}</div>
             <div className="pe-subtitle">{t("subProfile")}</div>
 
             <div
@@ -1301,6 +1277,7 @@ export default function EstimateForm() {
                 gap: 8,
                 alignItems: "center",
                 opacity: 0.95,
+                flexWrap: "wrap",
               }}
             >
               <span
@@ -1312,7 +1289,11 @@ export default function EstimateForm() {
                   borderRadius: 999,
                   border: "1px solid rgba(0,0,0,0.12)",
                 }}
-                title={requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle")}
+                title={
+                  requiredComplete
+                    ? "Required company fields complete"
+                    : "Fill all required company fields to enable PDF export"
+                }
               >
                 <span
                   aria-hidden="true"
@@ -1326,33 +1307,39 @@ export default function EstimateForm() {
                 />
                 <span>{requiredComplete ? t("companyComplete") : t("companyIncomplete")}</span>
               </span>
+
+              {/* ✅ Mobile: language toggle under status to avoid overlap */}
+              {isMobile && (
+                <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                  <span className="pe-muted" style={{ fontSize: 12 }}>
+                    {t("language")}:
+                  </span>
+                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("en")}>
+                    EN
+                  </button>
+                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("es")}>
+                    ES
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="pe-actions">
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span className="pe-muted" style={{ fontSize: 12 }}>
-                {t("language")}:
-              </span>
-              <button
-                className="pe-btn pe-btn-ghost"
-                type="button"
-                onClick={() => setLang("en")}
-                aria-pressed={lang === "en"}
-                title="English"
-              >
-                EN
-              </button>
-              <button
-                className="pe-btn pe-btn-ghost"
-                type="button"
-                onClick={() => setLang("es")}
-                aria-pressed={lang === "es"}
-                title="Español"
-              >
-                ES
-              </button>
-            </div>
+          <div className="pe-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            {/* ✅ Desktop: language toggle stays in actions */}
+            {!isMobile && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span className="pe-muted" style={{ fontSize: 12 }}>
+                  {t("language")}:
+                </span>
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("en")}>
+                  EN
+                </button>
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("es")}>
+                  ES
+                </button>
+              </div>
+            )}
 
             <button
               className="pe-btn"
@@ -1526,7 +1513,8 @@ export default function EstimateForm() {
     <div className="pe-wrap">
       <header className="pe-header">
         <div>
-          <div className="pe-title">{t("appTitle")}</div>
+          {/* ✅ Title stays ENGLISH always */}
+          <div className="pe-title">{APP_TITLE}</div>
           <div className="pe-subtitle">{t("subEstimator")}</div>
 
           <div
@@ -1537,6 +1525,7 @@ export default function EstimateForm() {
               gap: 8,
               alignItems: "center",
               opacity: 0.95,
+              flexWrap: "wrap",
             }}
           >
             <span
@@ -1548,7 +1537,11 @@ export default function EstimateForm() {
                 borderRadius: 999,
                 border: "1px solid rgba(0,0,0,0.12)",
               }}
-              title={companyGreen ? t("pdfEnabledTitle") : t("pdfDisabledTitle")}
+              title={
+                companyGreen
+                  ? "Required company info is complete — PDF export enabled"
+                  : "Fill Company name, Phone, Email, Address to enable PDF export"
+              }
             >
               <span
                 aria-hidden="true"
@@ -1562,33 +1555,37 @@ export default function EstimateForm() {
               />
               <span>{companyGreen ? t("companyComplete") : t("companyIncomplete")}</span>
             </span>
+
+            {isMobile && (
+              <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                <span className="pe-muted" style={{ fontSize: 12 }}>
+                  {t("language")}:
+                </span>
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("en")}>
+                  EN
+                </button>
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("es")}>
+                  ES
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="pe-actions">
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span className="pe-muted" style={{ fontSize: 12 }}>
-              {t("language")}:
-            </span>
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => setLang("en")}
-              aria-pressed={lang === "en"}
-              title="English"
-            >
-              EN
-            </button>
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => setLang("es")}
-              aria-pressed={lang === "es"}
-              title="Español"
-            >
-              ES
-            </button>
-          </div>
+        <div className="pe-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          {!isMobile && (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span className="pe-muted" style={{ fontSize: 12 }}>
+                {t("language")}:
+              </span>
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("en")}>
+                EN
+              </button>
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setLang("es")}>
+                ES
+              </button>
+            </div>
+          )}
 
           <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setStep("profile")}>
             {t("editCompany")}
@@ -1631,9 +1628,9 @@ export default function EstimateForm() {
               title="Template (optional)"
             >
               <option value="">{t("templateOptional")}</option>
-              {SCOPE_MASTER_TEMPLATES.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
+              {SCOPE_MASTER_TEMPLATES.map((tt) => (
+                <option key={tt.key} value={tt.key}>
+                  {tt.label}
                 </option>
               ))}
             </select>
@@ -1653,19 +1650,14 @@ export default function EstimateForm() {
               title="Template add-on (optional)"
             >
               <option value="">{t("templateAddonOptional")}</option>
-              {SCOPE_TRADE_INSERTS.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
+              {SCOPE_TRADE_INSERTS.map((tt) => (
+                <option key={tt.key} value={tt.key}>
+                  {tt.label}
                 </option>
               ))}
             </select>
 
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => setDescription("")}
-              title="Clear scope/notes"
-            >
+            <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setDescription("")} title="Clear scope/notes">
               {t("clearScopeBox")}
             </button>
           </div>
@@ -1696,12 +1688,7 @@ export default function EstimateForm() {
 
             return (
               <div key={i} className="pe-grid" style={{ marginTop: 8 }}>
-                <select
-                  className="pe-input"
-                  value={l.label || ""}
-                  onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
-                  title="Role"
-                >
+                <select className="pe-input" value={l.label || ""} onChange={(e) => applyLaborPresetByLabel(i, e.target.value)} title="Role">
                   <option value="">{t("selectRole")}</option>
                   {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
                   {LABOR_PRESETS.map((p) => (
@@ -1711,39 +1698,19 @@ export default function EstimateForm() {
                   ))}
                 </select>
 
-                <input
-                  className="pe-input"
-                  placeholder={t("phHours")}
-                  value={l.hours}
-                  onChange={(e) => updateLaborLine(i, "hours", e.target.value)}
-                />
-                <input
-                  className="pe-input"
-                  placeholder={t("phRate")}
-                  value={l.rate}
-                  onChange={(e) => updateLaborLine(i, "rate", e.target.value)}
-                />
+                <input className="pe-input" placeholder={t("phHours")} value={l.hours} onChange={(e) => updateLaborLine(i, "hours", e.target.value)} />
+                <input className="pe-input" placeholder={t("phRate")} value={l.rate} onChange={(e) => updateLaborLine(i, "rate", e.target.value)} />
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <div className="pe-muted" title="Headcount on this line" style={{ minWidth: 54 }}>
                     x{Number(l.qty) || 1}
                   </div>
 
-                  <button
-                    className="pe-btn pe-btn-ghost"
-                    type="button"
-                    onClick={() => decrementLaborQty(i)}
-                    title="Decrease headcount (min 1)"
-                  >
+                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => decrementLaborQty(i)} title="Decrease headcount (min 1)">
                     {t("decrease")}
                   </button>
 
-                  <button
-                    className="pe-btn pe-btn-ghost"
-                    type="button"
-                    onClick={() => duplicateLaborLine(i)}
-                    title="Duplicate laborer on this SAME line (does not add a new row)"
-                  >
+                  <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateLaborLine(i)} title="Duplicate laborer on this SAME line (does not add a new row)">
                     {t("duplicate")}
                   </button>
 
@@ -1768,11 +1735,7 @@ export default function EstimateForm() {
           <div className="pe-section-title">{t("specialConditions")}</div>
 
           <div className="pe-grid">
-            <select
-              className="pe-input"
-              value={multiplierSelectValue}
-              onChange={(e) => handleMultiplierSelect(e.target.value)}
-            >
+            <select className="pe-input" value={multiplierSelectValue} onChange={(e) => handleMultiplierSelect(e.target.value)}>
               <option value="1">Standard (1.00×)</option>
               <option value="1.1">Difficult access (1.10×)</option>
               <option value="1.2">High-risk / PPE (1.20×)</option>
@@ -1780,23 +1743,12 @@ export default function EstimateForm() {
               <option value="custom">Custom…</option>
             </select>
 
-            <input
-              className="pe-input"
-              value={hazardPct}
-              onChange={(e) => setHazardPct(e.target.value)}
-              placeholder={t("hazardPlaceholder")}
-              title="Percent of adjusted labor only"
-            />
+            <input className="pe-input" value={hazardPct} onChange={(e) => setHazardPct(e.target.value)} placeholder={t("hazardPlaceholder")} title="Percent of adjusted labor only" />
           </div>
 
           {multiplierMode === "custom" && (
             <div className="pe-grid" style={{ marginTop: 8 }}>
-              <input
-                className="pe-input"
-                value={customMultiplier}
-                onChange={(e) => setCustomMultiplier(e.target.value)}
-                placeholder={t("customLaborPlaceholder")}
-              />
+              <input className="pe-input" value={customMultiplier} onChange={(e) => setCustomMultiplier(e.target.value)} placeholder={t("customLaborPlaceholder")} />
               <div />
             </div>
           )}
@@ -1823,18 +1775,8 @@ export default function EstimateForm() {
           <div className="pe-section-title">{t("materials")}</div>
 
           <div className="pe-grid">
-            <input
-              className="pe-input"
-              value={materialsCost}
-              onChange={(e) => setMaterialsCost(e.target.value)}
-              placeholder={t("phMaterialsCost")}
-            />
-            <input
-              className="pe-input"
-              value={materialsMarkupPct}
-              onChange={(e) => setMaterialsMarkupPct(e.target.value)}
-              placeholder={t("phMarkup")}
-            />
+            <input className="pe-input" value={materialsCost} onChange={(e) => setMaterialsCost(e.target.value)} placeholder={t("phMaterialsCost")} />
+            <input className="pe-input" value={materialsMarkupPct} onChange={(e) => setMaterialsMarkupPct(e.target.value)} placeholder={t("phMarkup")} />
           </div>
 
           <div className="pe-row pe-row-slim">
@@ -1866,7 +1808,7 @@ export default function EstimateForm() {
 
         <div className="pe-divider" />
 
-        {/* ADDITIONAL NOTES (BOTTOM ONLY) */}
+        {/* ADDITIONAL NOTES */}
         <section className="pe-section">
           <div className="pe-row">
             <div className="pe-section-title">{t("additionalNotes")}</div>
@@ -1885,13 +1827,7 @@ export default function EstimateForm() {
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
             {QUICK_NOTES.map((b) => (
-              <button
-                key={b.key}
-                className="pe-btn pe-btn-ghost"
-                type="button"
-                onClick={() => addAdditionalNoteLine(b.line)}
-                title="Adds to Additional Notes (warns if already present)"
-              >
+              <button key={b.key} className="pe-btn pe-btn-ghost" type="button" onClick={() => addAdditionalNoteLine(b.line)} title="Adds to Additional Notes (warns if already present)">
                 {b.label}
               </button>
             ))}
@@ -1934,21 +1870,11 @@ export default function EstimateForm() {
           <div style={{ display: "grid", gap: 8 }}>
             {history.map((e) => (
               <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button
-                  className="pe-btn pe-btn-ghost"
-                  type="button"
-                  onClick={() => loadEstimate(e)}
-                  style={{ flex: 1, textAlign: "left" }}
-                >
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => loadEstimate(e)} style={{ flex: 1, textAlign: "left" }}>
                   {e.date} — {e.client || t("unnamed")} — {money.format(e.total)}
                 </button>
 
-                <button
-                  className="pe-btn pe-btn-ghost"
-                  type="button"
-                  onClick={() => deleteEstimate(e.id)}
-                  title="Delete this saved estimate"
-                >
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => deleteEstimate(e.id)} title="Delete this saved estimate">
                   {t("delete")}
                 </button>
               </div>
