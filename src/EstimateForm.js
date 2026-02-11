@@ -2044,7 +2044,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   
 
-  const exportPDF = async () => {
+  const exportPDF = async (mode = "download") => {
     triggerHaptic();
 
     if (!companyGreen) {
@@ -2547,10 +2547,50 @@ const jobRows = [
     writeWrapped(footer, 9, TEXT_MUTED);
 
     const filePrefix = docType === "invoice" ? "Invoice" : "Estimate";
-    doc.save(`${filePrefix}-${safeFilename(client)}-${pdfLang}-${Date.now()}.pdf`);
+    const filename = `${filePrefix}-${safeFilename(client)}-${pdfLang}-${Date.now()}.pdf`;
 
+    if (mode === "share") {
+      try {
+        const blob = doc.output("blob");
+        // iOS share sheets want a File when available
+        let file;
+        try {
+          file = new File([blob], filename, { type: "application/pdf" });
+        } catch {
+          file = null;
+        }
 
-  };
+        const canShareFiles =
+          typeof navigator !== "undefined" &&
+          !!navigator.share &&
+          !!navigator.canShare &&
+          file &&
+          navigator.canShare({ files: [file] });
+
+        if (canShareFiles) {
+          await navigator.share({
+            files: [file],
+            title: filename,
+            text: docType === "invoice" ? "Invoice PDF" : "Estimate PDF",
+          });
+        } else {
+          // Fallback: open the PDF in a new tab (user can then share/print from the system viewer)
+          const url = URL.createObjectURL(blob);
+          window.open(url, "_blank");
+          setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        }
+      } catch (err) {
+        // Last-resort fallback: download
+        try {
+          doc.save(filename);
+        } catch {
+          window.alert("Could not share or download the PDF on this device.");
+        }
+      }
+      return;
+    }
+
+    doc.save(filename);};
 
   const LanguageToggle = () => {
     const setLangUi = (next) => {
@@ -3030,8 +3070,12 @@ const jobRows = [
           
 
 
-          <button className="pe-btn pe-btn-ghost" onClick={exportPDF} type="button">
+          <button className="pe-btn pe-btn-ghost" onClick={() => exportPDF("download")} type="button">
             {t("pdf")}
+          </button>
+
+          <button className="pe-btn pe-btn-ghost" onClick={() => exportPDF("share")} type="button">
+            {lang === "es" ? "Compartir" : "Share"}
           </button>
         </div>
       </header>
