@@ -1554,6 +1554,9 @@ const THEME_KEY = "field-pocket-theme"; // "auto" | "light" | "dark"
 const SHOW_COSTS_KEY = "field-pocket-show-costs"; // "1" | "0"
 const INVOICE_SEQ_KEY = "field-pocket-invoice-seq";
 const LAST_INVOICE_NUM_KEY = "field-pocket-last-invoice-number";
+const LABOR_COST_TOTAL_KEY = "field-pocket-labor-cost-total";
+const MATERIALS_COST_TOTAL_KEY = "field-pocket-materials-cost-total";
+
 
 function LanguageGate({ t, setLanguage }) {
   return (
