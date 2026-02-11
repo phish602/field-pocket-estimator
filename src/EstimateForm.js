@@ -2550,37 +2550,41 @@ const jobRows = [
     const filename = `${filePrefix}-${safeFilename(client)}-${pdfLang}-${Date.now()}.pdf`;
 
     if (mode === "share") {
+      // IMPORTANT (iOS home screen / standalone):
+      // Opening a blob URL often lands in the PDF viewer with disabled controls.
+      // Prefer Web Share with a File attachment; otherwise fall back to download.
       try {
-        const blob = doc.output("blob");
-        // iOS share sheets want a File when available
-        let file;
+        // More compatible than doc.output("blob") on iOS:
+        const ab = doc.output("arraybuffer");
+        const blob = new Blob([ab], { type: "application/pdf" });
+
+        // iOS share sheets prefer a File when possible
+        let file = null;
         try {
           file = new File([blob], filename, { type: "application/pdf" });
         } catch {
           file = null;
         }
 
-        const canShareFiles =
-          typeof navigator !== "undefined" &&
-          !!navigator.share &&
-          !!navigator.canShare &&
-          file &&
-          navigator.canShare({ files: [file] });
+        const hasShare = typeof navigator !== "undefined" && !!navigator.share;
 
-        if (canShareFiles) {
-          await navigator.share({
-            files: [file],
-            title: filename,
-            text: docType === "invoice" ? "Invoice PDF" : "Estimate PDF",
-          });
-        } else {
-          // Fallback: open the PDF in a new tab (user can then share/print from the system viewer)
-          const url = URL.createObjectURL(blob);
-          window.open(url, "_blank");
-          setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        if (hasShare && file) {
+          // Some browsers don't expose navigator.canShare; still try share() first.
+          try {
+            await navigator.share({
+              files: [file],
+              title: filename,
+              text: docType === "invoice" ? "Invoice PDF" : "Estimate PDF",
+            });
+            return;
+          } catch {
+            // fall through to download
+          }
         }
-      } catch (err) {
-        // Last-resort fallback: download
+
+        // Fallback: download (user can then share/print from Files)
+        doc.save(filename);
+      } catch {
         try {
           doc.save(filename);
         } catch {
