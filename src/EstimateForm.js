@@ -1126,6 +1126,24 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+
+function formatDateMMDDYYYY(iso) {
+  const s = String(iso || "").trim();
+  if (!s) return "";
+  const m = s.match(/^\s*(\d{4})-(\d{2})-(\d{2})\s*$/);
+  if (m) return `${m[2]}-${m[3]}-${m[1]}`;
+  // fallback for unexpected formats
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yyyy = String(d.getFullYear());
+    return `${mm}-${dd}-${yyyy}`;
+  }
+  return s;
+}
+
+
 function newLaborLine() {
   return { label: "", hours: "", rate: "", qty: 1 };
 }
@@ -1984,13 +2002,25 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   const companyGreen = isCompanyComplete(profile);
 
+  // PDF frame inset (keeps border away from the page edge)
+  const FRAME_INSET = 14;
+
+
+  // Keep all tables inside the same inset so grid borders never protrude past the frame
+  const TABLE_INSET = FRAME_INSET + 6;
   const drawFrame = (doc) => {
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
+
+    const INNER_W = pageWidth - TABLE_INSET * 2;
+
+    // NOTE: TABLE_INSET is defined once above (shared by all tables) so we don’t accidentally
+    // reference an out-of-scope INNER_W later in exportPDF.
+
     const BORDER = [210, 210, 210];
     doc.setDrawColor(...BORDER);
     doc.setLineWidth(0.5);
-    doc.rect(8, 8, pageWidth - 16, pageHeight - 16);
+    doc.rect(FRAME_INSET, FRAME_INSET, pageWidth - FRAME_INSET * 2, pageHeight - FRAME_INSET * 2);
   };
 
   // ✅ NEW: build itemized materials lines for PDF (between Scope and Trade Inserts)
@@ -2055,6 +2085,8 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
 
+    const INNER_W = pageWidth - TABLE_INSET * 2;
+
     const BORDER = [210, 210, 210];
     const SHADE = [245, 245, 245];
     const TEXT_MUTED = [90, 90, 90];
@@ -2080,16 +2112,16 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       drawFrame(doc);
 
       doc.setFillColor(...SHADE);
-      doc.rect(8, 10, pageWidth - 16, 72, "F");
+      doc.rect(FRAME_INSET, FRAME_INSET + 2, pageWidth - FRAME_INSET * 2, 70, "F");
 
       if (profile.logoDataUrl) {
         try {
           const imgType = detectDataUrlType(profile.logoDataUrl);
 
           // Logo box (match the "classic" layout: bigger, square-ish, left of the centered header)
-          const boxX = 44;
-          const boxY = 12;
-          const boxW = 70;
+          const boxX = 106;
+          const boxY = FRAME_INSET + 2;
+          const boxW = 86;
           const boxH = 70;
 
           const props = doc.getImageProperties(profile.logoDataUrl);
@@ -2130,7 +2162,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       }
 
       doc.setDrawColor(...BORDER);
-      doc.line(14, 108, pageWidth - 14, 108);
+      doc.line(FRAME_INSET + 6, 108, pageWidth - (FRAME_INSET + 6), 108);
 
       // Debug (safe to keep; comment out if you don't want it)
       // doc.setFontSize(8);
@@ -2329,7 +2361,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
 
 const jobRows = [
-      [tPdf("pdfDate"), date || "-"],
+      [tPdf("pdfDate"), formatDateMMDDYYYY(date) || "-"],
       ...(attn ? [[tPdf("pdfAttn"), attn]] : []),
       [tPdf("pdfClient"), client || "-"],
       [tPdf("pdfScope"), scopeNotes],
@@ -2362,9 +2394,9 @@ const jobRows = [
       },
       columnStyles: {
         0: { cellWidth: 70, fontStyle: "bold", fillColor: [255, 255, 255] },
-        1: { cellWidth: pageWidth - 28 - 70 },
+        1: { cellWidth: INNER_W - 70 },
       },
-      margin: { top: 114, left: 14, right: 14, bottom: 14 },
+      margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
       willDrawPage: () => {
         drawHeader();
       },
@@ -2397,10 +2429,10 @@ const jobRows = [
         fontStyle: "bold",
       },
       columnStyles: {
-        0: { cellWidth: pageWidth - 28 - 90 },
+        0: { cellWidth: INNER_W - 90 },
         1: { cellWidth: 90, halign: "right", overflow: "visible" },
       },
-      margin: { top: 114, left: 14, right: 14, bottom: 14 },
+      margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
       didParseCell: (data) => {
         if (data.section === "body" && data.row.index === summaryRows.length - 1) {
           data.cell.styles.fillColor = SHADE;
