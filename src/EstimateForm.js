@@ -4,6 +4,130 @@ import autoTable from "jspdf-autotable";
 import { calculateEstimateWithLaborLines } from "./estimate";
 import "./EstimateForm.css";
 
+
+
+const POP_CSS = `
+/* ===== Field Pocket Estimator – “A + C” polish pack (DARK-SAFE) =====
+   Goal: add depth + pop WITHOUT changing your app's base theme colors.
+   This file should NOT force a white background.
+*/
+
+
+
+/* iOS light/dark form controls hint */
+:root[data-pe-theme="light"]{ color-scheme: light; }
+:root[data-pe-theme="dark"]{ color-scheme: dark; }
+
+/* Header: glassy dark panel + subtle blueprint grid */
+.pe-header{
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-radius: 16px;
+  padding: 14px 14px 12px;
+  background:
+    linear-gradient(180deg, rgba(10,12,16,0.72), rgba(10,12,16,0.55)),
+    linear-gradient(rgba(110, 200, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(110, 200, 255, 0.06) 1px, transparent 1px);
+  background-size: auto, 22px 22px, 22px 22px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow:
+    0 10px 26px rgba(0,0,0,0.40),
+    0 2px 6px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+
+/* Blueprint corner brackets */
+.pe-header::before,
+.pe-header::after{
+  content:"";
+  position:absolute;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(110, 200, 255, 0.22);
+  border-radius: 6px;
+  pointer-events:none;
+}
+.pe-header::before{ left: 10px; top: 10px; border-right:none; border-bottom:none; }
+.pe-header::after{ right: 10px; top: 10px; border-left:none; border-bottom:none; }
+
+/* Title: weight + underline sweep (one-time) */
+.pe-header .pe-title{
+  letter-spacing: 0.25px;
+  position: relative;
+  display: inline-block;
+}
+.pe-header.pe-sweep .pe-title::after{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:-6px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    rgba(34,197,94,0.0),
+    rgba(34,197,94,0.75),
+    rgba(59,130,246,0.75),
+    rgba(59,130,246,0.0)
+  );
+  transform: translateX(-110%);
+  animation: peSweep 550ms ease-out 90ms forwards;
+}
+@keyframes peSweep{
+  to{ transform: translateX(110%); }
+}
+
+/* Subtitle “Fast numbers. No fluff.” */
+.pe-subtitle{
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  font-weight: 800;
+  opacity: 0.82;
+}
+
+/* Cards / sections: add depth without changing existing background color */
+.pe-card{
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+@media (hover:hover){
+  .pe-card:hover{
+    transform: translateY(-1px);
+    box-shadow: 0 14px 34px rgba(0,0,0,0.42);
+  }
+}
+
+/* Inputs: slight inset highlight (no background override) */
+.pe-input{
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+}
+
+/* Buttons: press recoil + clearer separation */
+.pe-btn{
+  border-radius: 12px;
+  transition: transform 80ms ease, filter 120ms ease, box-shadow 120ms ease;
+  box-shadow: 0 6px 14px rgba(0,0,0,0.35);
+}
+.pe-btn-ghost{
+  box-shadow: 0 4px 10px rgba(0,0,0,0.28);
+}
+.pe-btn:active{
+  transform: scale(0.97);
+  filter: brightness(0.98);
+}
+@media (hover:hover){
+  .pe-btn:hover{ filter: brightness(1.02); }
+}
+`;
+function PopStyles(){ return <style>{POP_CSS}</style>; }
+
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -18,7 +142,7 @@ function detectDefaultLang() {
   try {
     const nav = String(navigator?.language || "").toLowerCase();
     if (nav.startsWith("es")) return "es";
-  } catch {
+  } catch (e) {
     // ignore
   }
   return "en";
@@ -28,11 +152,47 @@ function loadSavedLang() {
   try {
     const v = localStorage.getItem(LANG_KEY);
     if (v === "en" || v === "es") return v;
-  } catch {
+  } catch (e) {
     // ignore
   }
   return "";
 }
+
+
+function detectDefaultTheme() {
+  try {
+    const mq =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : null;
+    if (mq && mq.matches) return "dark";
+  } catch (e) {
+    // ignore
+  }
+  return "light";
+}
+
+function loadSavedTheme() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v === "auto" || v === "light" || v === "dark") return v;
+  } catch (e) {
+    // ignore
+  }
+  return "auto";
+}
+
+function applyThemeToRoot(theme) {
+  try {
+    const root = document.documentElement;
+    if (!root) return;
+    const effective = theme === "auto" ? detectDefaultTheme() : theme;
+    root.setAttribute("data-pe-theme", effective);
+  } catch (e) {
+    // ignore
+  }
+}
+
 
 const I18N = {
   en: {
@@ -81,7 +241,7 @@ const I18N = {
     editCompany: "Edit Company",
     newClear: "New / Clear",
     save: "Save",
-    pdf: "PDF",
+    pdf: "PDF Viewer",
     removeLogo: "Remove logo",
     clearScopeBox: "Clear Scope Box",
     addLabor: "+ Add labor",
@@ -129,12 +289,12 @@ const I18N = {
     materialsModeBlanket: "Blanket materials",
     materialsModeItemized: "Itemized materials",
     materialsItemizedHelp:
-      "Use itemized materials when you need to line-item critical material. Qty × charge totals into the estimate.",
+      "Use itemized materials when you need to line-item critical material. Qty × price totals into the estimate.",
     addMaterialItem: "+ Add material item",
     materialDesc: "Description",
     materialQty: "Qty",
     materialCostInternal: "Cost (internal)",
-    materialCharge: "Charge (each)",
+    materialCharge: "Price (each)",
     materialsItemizedTotal: "Itemized materials total",
 
     // misc UI text
@@ -258,7 +418,7 @@ const I18N = {
     editCompany: "Editar empresa",
     newClear: "Nuevo / Limpiar",
     save: "Guardar",
-    pdf: "PDF",
+    pdf: "Visor PDF",
     removeLogo: "Quitar logo",
     clearScopeBox: "Limpiar alcance",
     addLabor: "+ Agregar mano de obra",
@@ -311,7 +471,7 @@ const I18N = {
     materialDesc: "Descripción",
     materialQty: "Cant.",
     materialCostInternal: "Costo (interno)",
-    materialCharge: "Cargo (c/u)",
+    materialCharge: "Precio (c/u)",
     materialsItemizedTotal: "Total de materiales por partida",
 
     // misc UI text
@@ -396,7 +556,7 @@ function triggerHaptic() {
     if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
       navigator.vibrate(10);
     }
-  } catch {
+  } catch (e) {
     // ignore
   }
 }
@@ -1150,13 +1310,34 @@ function newLaborLine() {
 
 // ✅ NEW: itemized materials rows
 function newMaterialItem() {
-  return { desc: "", qty: 1, cost: "", charge: "" }; // cost = internal (not on PDF); charge = per-unit billed amount
+  return { desc: "", qty: 1, charge: "" }; // charge = per-unit billed amount
 }
 
 function safeFilename(s) {
   const base = String(s || "").trim() || "Client";
   return base.replace(/[\/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
+
+
+function nextInvoiceNumber() {
+  const d = new Date();
+  const yyyy = String(d.getFullYear());
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+
+  let seq = 1;
+  try {
+    const prev = Number(localStorage.getItem(INVOICE_SEQ_KEY) || 0);
+    seq = Number.isFinite(prev) ? prev + 1 : 1;
+    localStorage.setItem(INVOICE_SEQ_KEY, String(seq));
+  } catch (e) {
+    seq = 1;
+  }
+
+  const seqStr = String(seq).padStart(4, "0");
+  return `INV-${yyyy}${mm}${dd}-${seqStr}`;
+}
+
 
 // ✅ STRICT: green only when ALL 4 required fields are filled
 function isCompanyComplete(p) {
@@ -1369,11 +1550,16 @@ function detectDataUrlType(dataUrl) {
 
 const STORAGE_KEY = "field-pocket-estimates";
 const PROFILE_KEY = "field-pocket-profile";
+const THEME_KEY = "field-pocket-theme"; // "auto" | "light" | "dark"
+const SHOW_COSTS_KEY = "field-pocket-show-costs"; // "1" | "0"
+const INVOICE_SEQ_KEY = "field-pocket-invoice-seq";
+const LAST_INVOICE_NUM_KEY = "field-pocket-last-invoice-number";
 
 function LanguageGate({ t, setLanguage }) {
   return (
         <div className="pe-wrap">
-          <header className="pe-header">
+      <PopStyles />
+          <header className="pe-header pe-sweep">
             <div>
               <h1 className="pe-title">Field Pocket Estimator</h1>
               <div className="pe-subtitle">{t("chooseLanguageTitle")}</div>
@@ -1451,7 +1637,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const [openaiKey, setOpenaiKey] = useState(() => {
     try {
       return String(localStorage.getItem("field-pocket-openai-key") || "");
-    } catch {
+    } catch (e) {
       return "";
     }
   });
@@ -1461,10 +1647,11 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       const v = String(openaiKey || "").trim();
       if (v) localStorage.setItem("field-pocket-openai-key", v);
       else localStorage.removeItem("field-pocket-openai-key");
-    } catch {
+    } catch (e) {
       // ignore
     }
   }, [openaiKey]);
+
 
 
   const FIELD_STACK = { display: "grid", gap: 4 };
@@ -1530,7 +1717,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     try {
       if (lang === "en" || lang === "es") localStorage.setItem(LANG_KEY, lang);
       else localStorage.removeItem(LANG_KEY);
-    } catch {
+    } catch (e) {
       // ignore
     }
   }, [lang]);
@@ -1551,8 +1738,99 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   const [step, setStep] = useState(() => (forceProfileOnMount ? "profile" : "estimate")); // "profile" | "estimate"
 
+  // ✅ NEW: keep “Advanced” settings on their own screen (avoid cluttering estimator)
+  const [view, setView] = useState("estimate"); // "estimate" | "advanced"
+
+  useEffect(() => {
+    if (step !== "estimate" && view !== "estimate") setView("estimate");
+  }, [step, view]);
+
   // ✅ NEW: estimate vs invoice mode (UI + PDF)
   const [docType, setDocType] = useState("estimate"); // "estimate" | "invoice"
+
+  // ✅ NEW: invoice number (auto generated for invoices)
+  const [invoiceNumber, setInvoiceNumber] = useState(() => {
+    try {
+      return String(localStorage.getItem(LAST_INVOICE_NUM_KEY) || "");
+    } catch (e) {
+      return "";
+    }
+  });
+
+  // ✅ NEW: theme + advanced true-cost toggle
+  const [theme, setTheme] = useState(() => loadSavedTheme());
+  const [showCosts, setShowCosts] = useState(() => {
+    try {
+      return localStorage.getItem(SHOW_COSTS_KEY) === "1";
+    } catch (e) {
+      return false;
+    }
+  });
+
+  // ✅ NEW: internal totals (entered in Advanced screen only)
+  const [laborCostTotal, setLaborCostTotal] = useState(() => {
+    try {
+      return String(localStorage.getItem(LABOR_COST_TOTAL_KEY) || "");
+    } catch (e) {
+      return "";
+    }
+  });
+
+  const [materialsCostTotal, setMaterialsCostTotal] = useState(() => {
+    try {
+      return String(localStorage.getItem(MATERIALS_COST_TOTAL_KEY) || "");
+    } catch (e) {
+      return "";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (e) {
+      // ignore
+    }
+    applyThemeToRoot(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SHOW_COSTS_KEY, showCosts ? "1" : "0");
+    } catch (e) {
+      // ignore
+    }
+  }, [showCosts]);
+
+  useEffect(() => {
+    try {
+      const v = String(laborCostTotal || "").trim();
+      if (v) localStorage.setItem(LABOR_COST_TOTAL_KEY, v);
+      else localStorage.removeItem(LABOR_COST_TOTAL_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }, [laborCostTotal]);
+
+  useEffect(() => {
+    try {
+      const v = String(materialsCostTotal || "").trim();
+      if (v) localStorage.setItem(MATERIALS_COST_TOTAL_KEY, v);
+      else localStorage.removeItem(MATERIALS_COST_TOTAL_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }, [materialsCostTotal]);
+
+  useEffect(() => {
+    try {
+      const v = String(invoiceNumber || "").trim();
+      if (v) localStorage.setItem(LAST_INVOICE_NUM_KEY, v);
+      else localStorage.removeItem(LAST_INVOICE_NUM_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }, [invoiceNumber]);
+
 
   const [date, setDate] = useState(todayISO());
   const [client, setClient] = useState("");
@@ -1731,6 +2009,30 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const totalLaborers = useMemo(() => {
     return laborLines.reduce((sum, l) => sum + (Number(l.qty) || 1), 0);
   }, [laborLines]);
+
+
+  // ✅ NEW: true-cost capture + gross margin
+  const laborTrueCost = useMemo(() => {
+    const n = Number(laborCostTotal);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }, [laborCostTotal]);
+
+  const materialsTrueCost = useMemo(() => {
+    const n = Number(materialsCostTotal);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }, [materialsCostTotal]);
+
+  const totalTrueCost = useMemo(() => {
+    return (Number(laborTrueCost) || 0) + (Number(materialsTrueCost) || 0);
+  }, [laborTrueCost, materialsTrueCost]);
+
+  const grossMarginPct = useMemo(() => {
+    const billed = Number(total) || 0;
+    if (!(billed > 0)) return "0";
+    const gm = ((billed - (Number(totalTrueCost) || 0)) / billed) * 100;
+    if (!Number.isFinite(gm)) return "0";
+    return String(gm.toFixed(1)).replace(/\.0$/, "");
+  }, [total, totalTrueCost]);
 
   const countMasterTemplatesInText = (text) => {
     const tt = String(text || "");
@@ -1955,7 +2257,6 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       ? e.materialItems.map((it) => ({
           desc: it?.desc ?? "",
           qty: Math.max(1, Number(it?.qty) || 1),
-          cost: it?.cost ?? "",
           charge: it?.charge ?? "",
         }))
       : [newMaterialItem()];
@@ -2044,8 +2345,86 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   
 
+
+  const exportCSV = () => {
+    triggerHaptic();
+
+    const rows = [];
+    const csvCell = (x) => {
+      const s = String(x ?? "");
+      const needs = /[",\n]/.test(s);
+      const escaped = s.replace(/"/g, '""');
+      return needs ? `"${escaped}"` : escaped;
+    };
+    const push = (arr) => rows.push(arr.map(csvCell).join(","));
+
+    push(["Field Pocket Estimator Export"]);
+    push(["Document", docType === "invoice" ? "Invoice" : "Estimate"]);
+    if (docType === "invoice" && invoiceNumber) push(["Invoice #", invoiceNumber]);
+    push(["Date", date]);
+    push(["Client", client]);
+
+    push([]);
+    push(["Totals"]);
+    push(["Labor (billed)", laborAdjusted]);
+    push(["Materials (billed)", materialsBilled]);
+    push(["Hazard fee", hazardFeeDollar]);
+    push(["Total (billed)", total]);
+
+    if (showCosts) {
+      push([]);
+      push(["True Cost / Margin"]);
+      push(["Labor true cost", laborTrueCost]);
+      push(["Materials true cost", materialsTrueCost]);
+      push(["Total true cost", totalTrueCost]);
+      push(["Gross margin %", grossMarginPct]);
+    }
+
+    push([]);
+    push(["Labor Lines"]);
+    push(["Role", "Qty", "Hours", "Rate"]);
+    (laborLines || []).forEach((l) => {
+      push([l.label, l.qty, l.hours, l.rate]);
+    });
+
+    push([]);
+    push(["Materials"]);
+    if (materialsMode === "itemized") {
+      push(["Description", "Qty", "Price (each)"]);
+      (materialItems || []).forEach((it) => {
+        push([it.desc, it.qty, it.charge]);
+      });
+    } else {
+      push(["Materials cost", effectiveMaterialsCost]);
+      push(["Markup %", effectiveMaterialsMarkupPct]);
+    }
+
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const filePrefix = docType === "invoice" ? "Invoice" : "Estimate";
+    const invPart = docType === "invoice" && invoiceNumber ? `-${invoiceNumber}` : "";
+    a.href = url;
+    a.download = `${filePrefix}${invPart}-${safeFilename(client)}-${date}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const exportPDF = async (mode = "download") => {
     triggerHaptic();
+
+
+    // ✅ Invoice number (only for invoices)
+    let invNum = "";
+    if (docType === "invoice") {
+      invNum = String(invoiceNumber || "").trim();
+      if (!invNum) {
+        invNum = nextInvoiceNumber();
+        setInvoiceNumber(invNum);
+      }
+    }
 
     if (!companyGreen) {
       const go = window.confirm(t("pdfCompanyIncompleteConfirm"));
@@ -2136,7 +2515,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
           const y = boxY + (boxH - drawH) / 2;
 
           doc.addImage(profile.logoDataUrl, imgType, x, y, drawW, drawH);
-        } catch {
+        } catch (e) {
           // ignore logo issues
         }
       }
@@ -2159,6 +2538,11 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
         doc.setFontSize(14);
         const titleKey = docType === "invoice" ? "pdfDocInvoice" : "pdfDocEstimate";
         doc.text(tPdf(titleKey), jobInfoCenterX(), 102, { align: "center" });
+        if (docType === "invoice" && invNum) {
+          doc.setFontSize(10);
+          doc.setTextColor(40, 40, 40);
+          doc.text(`${pdfLang === "es" ? "Factura" : "Invoice"} # ${invNum}`, jobInfoCenterX(), 118, { align: "center" });
+        }
       }
 
       doc.setDrawColor(...BORDER);
@@ -2187,7 +2571,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
             .trim()
             .replace(/\/+$/, "");
           return base ? `${base}/api/translate` : "/api/translate";
-        } catch {
+        } catch (e) {
           return "/api/translate";
         }
       };
@@ -2243,7 +2627,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
         if (!apiKey) {
           try {
             apiKey = String(localStorage.getItem("OPENAI_API_KEY") || "").trim();
-          } catch {
+          } catch (e) {
             apiKey = "";
           }
         }
@@ -2286,7 +2670,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
         // Backend missing → try no-key fallback first (LibreTranslate)
         try {
           return await callLibreTranslate();
-        } catch {
+        } catch (e) {
           // ignore and try OpenAI (if key exists)
         }
 
@@ -2299,13 +2683,13 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
         try {
           const openaiOut = await callOpenAI();
           if (openaiOut !== "__NO_KEY__") return openaiOut;
-        } catch {
+        } catch (e) {
           // ignore
         }
 
         try {
           return await callLibreTranslate();
-        } catch {
+        } catch (e) {
           return "__MISSING_API__";
         }
       }
@@ -2547,7 +2931,8 @@ const jobRows = [
     writeWrapped(footer, 9, TEXT_MUTED);
 
     const filePrefix = docType === "invoice" ? "Invoice" : "Estimate";
-    const filename = `${filePrefix}-${safeFilename(client)}-${pdfLang}-${Date.now()}.pdf`;
+    const invPart = docType === "invoice" && invNum ? `-${invNum}` : "";
+    const filename = `${filePrefix}${invPart}-${safeFilename(client)}-${pdfLang}-${Date.now()}.pdf`;
 
     if (mode === "share") {
       // IMPORTANT (iOS home screen / standalone):
@@ -2562,7 +2947,7 @@ const jobRows = [
         let file = null;
         try {
           file = new File([blob], filename, { type: "application/pdf" });
-        } catch {
+        } catch (e) {
           file = null;
         }
 
@@ -2577,17 +2962,17 @@ const jobRows = [
               text: docType === "invoice" ? "Invoice PDF" : "Estimate PDF",
             });
             return;
-          } catch {
+          } catch (e) {
             // fall through to download
           }
         }
 
         // Fallback: download (user can then share/print from Files)
         doc.save(filename);
-      } catch {
+      } catch (e) {
         try {
           doc.save(filename);
-        } catch {
+        } catch (e) {
           window.alert("Could not share or download the PDF on this device.");
         }
       }
@@ -2639,6 +3024,63 @@ const jobRows = [
           aria-pressed={lang === "es"}
         >
           ES
+        </button>
+      </div>
+    );
+  };
+
+
+  const ThemeToggle = () => {
+    const wrapStyle = {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: 2,
+      borderRadius: 999,
+      border: "1px solid rgba(0,0,0,0.12)",
+      background: "rgba(255,255,255,0.45)",
+    };
+
+    const btnStyle = (active) => ({
+      padding: "8px 12px",
+      borderRadius: 999,
+      border: "none",
+      cursor: "pointer",
+      fontWeight: 800,
+      background: active ? "rgba(0,0,0,0.12)" : "transparent",
+    });
+
+    const setThemeSafe = (next) => {
+      triggerHaptic();
+      if (next !== "auto" && next !== "light" && next !== "dark") return;
+      setTheme(next);
+    };
+
+    return (
+      <div style={wrapStyle} title={lang === "es" ? "Tema" : "Theme"}>
+        <button
+          type="button"
+          onClick={() => setThemeSafe("auto")}
+          style={btnStyle(theme === "auto")}
+          aria-pressed={theme === "auto"}
+        >
+          A
+        </button>
+        <button
+          type="button"
+          onClick={() => setThemeSafe("light")}
+          style={btnStyle(theme === "light")}
+          aria-pressed={theme === "light"}
+        >
+          ☀
+        </button>
+        <button
+          type="button"
+          onClick={() => setThemeSafe("dark")}
+          style={btnStyle(theme === "dark")}
+          aria-pressed={theme === "dark"}
+        >
+          🌙
         </button>
       </div>
     );
@@ -2706,13 +3148,250 @@ const jobRows = [
     );
   };
 
+  const grossNumbers = useMemo(() => {
+    if (!showCosts) {
+      return {
+        laborCost: 0,
+        materialsCostTrue: 0,
+        totalCost: 0,
+        revenue: Number(total) || 0,
+        grossProfit: 0,
+        grossMarginPct: 0,
+      };
+    }
+
+    const laborCost = Number(laborTrueCost) || 0;
+    const materialsCostTrue = Number(materialsTrueCost) || 0;
+
+    const revenue = Number(total) || 0;
+    const totalCost = laborCost + materialsCostTrue;
+    const grossProfit = revenue - totalCost;
+    const grossMarginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
+
+    return { laborCost, materialsCostTrue, totalCost, revenue, grossProfit, grossMarginPct };
+  }, [showCosts, laborLines, materialsMode, materialItems, materialsCost, total]);
+
+  const AdvancedScreen = () => {
+    return (
+      <div>
+        <div className="pe-section" style={{ paddingTop: 0 }}>
+          <div className="pe-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <span>{lang === "es" ? "Avanzado" : "Advanced"}</span>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => {
+                triggerHaptic();
+                setView("estimate");
+              }}
+            >
+              {lang === "es" ? "Volver al estimador" : "Back to estimator"}
+            </button>
+          </div>
+
+          <div className="pe-muted" style={{ marginTop: 6 }}>
+            {lang === "es"
+              ? "Ajustes y opciones avanzadas (se guardan en este dispositivo)."
+              : "Settings and advanced options (saved on this device)."}
+          </div>
+        </div>
+
+        <section className="pe-section">
+          <div className="pe-section-title">{lang === "es" ? "Apariencia" : "Appearance"}</div>
+          <div className="pe-row" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>{lang === "es" ? "Tema" : "Theme"}</div>
+            <ThemeToggle />
+          </div>
+        </section>
+
+        <section className="pe-section">
+          <div className="pe-section-title">{lang === "es" ? "Documento" : "Document"}</div>
+
+          <div className="pe-row" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("docTypeLabel")}</div>
+              <DocTypeToggle />
+            </div>
+
+            {docType === "invoice" && (
+              <div className="pe-grid">
+                <div style={FIELD_STACK}>
+                  <div style={FIELD_LABEL}>{lang === "es" ? "Número de factura" : "Invoice number"}</div>
+                  <input
+                    className="pe-input"
+                    value={invoiceNumber}
+                    onChange={(e) => setInvoiceNumber(String(e.target.value || ""))}
+                    placeholder="INV-YYYYMMDD-0001"
+                  />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
+                  <button
+                    className="pe-btn pe-btn-ghost"
+                    type="button"
+                    onClick={() => {
+                      triggerHaptic();
+                      const next = nextInvoiceNumber();
+                      setInvoiceNumber(next);
+                    }}
+                  >
+                    {lang === "es" ? "Generar" : "Generate"}
+                  </button>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {lang === "es" ? "Se usa en PDF/CSV." : "Used on PDF/CSV."}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="pe-section">
+          <div className="pe-section-title">{lang === "es" ? "Costos reales / Margen" : "True costs / Margin"}</div>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none" }}>
+            <input
+              type="checkbox"
+              checked={showCosts}
+              onChange={(e) => {
+                triggerHaptic();
+                setShowCosts(Boolean(e.target.checked));
+              }}
+            />
+            <span style={{ fontWeight: 700 }}>
+              {lang === "es" ? "Mostrar campos de costo (interno)" : "Show cost fields (internal)"}
+            </span>
+          </label>
+
+          <div className="pe-muted" style={{ marginTop: 6 }}>
+            {lang === "es"
+              ? "Activa costos internos para calcular margen. No se imprime en el PDF."
+              : "Enable internal costs so you can calculate gross margin. Not printed on the PDF."}
+          </div>
+
+          {showCosts && (
+            <div className="pe-card" style={{ marginTop: 12, padding: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "end" }}>
+                <div style={FIELD_STACK}>
+                  <div style={FIELD_LABEL}>
+                    {lang === "es" ? "Costo total de mano de obra (interno)" : "Labor total cost (internal)"}
+                  </div>
+                  <input
+                    className="pe-input"
+                    value={laborCostTotal}
+                    onChange={(e) => setLaborCostTotal(e.target.value)}
+                    onBlur={(e) => setLaborCostTotal(normalizeMoneyInput(e.target.value))}
+                    placeholder={MONEY_PH}
+                    inputMode="decimal"
+                    title={lang === "es" ? "No se imprime en el PDF" : "Not printed on the PDF"}
+                  />
+                </div>
+
+                <div style={FIELD_STACK}>
+                  <div style={FIELD_LABEL}>
+                    {lang === "es" ? "Costo total de materiales (interno)" : "Materials total cost (internal)"}
+                  </div>
+                  <input
+                    className="pe-input"
+                    value={materialsCostTotal}
+                    onChange={(e) => setMaterialsCostTotal(e.target.value)}
+                    onBlur={(e) => setMaterialsCostTotal(normalizeMoneyInput(e.target.value))}
+                    placeholder={MONEY_PH}
+                    inputMode="decimal"
+                    title={lang === "es" ? "No se imprime en el PDF" : "Not printed on the PDF"}
+                  />
+                </div>
+              </div>
+
+              <div className="pe-muted" style={{ marginTop: 8 }}>
+                {lang === "es"
+                  ? "Estos costos son totales (no por línea). Se usan solo para cálculo de margen."
+                  : "These are TOTAL costs (not per-line). Used only for margin calculations."}
+              </div>
+
+              <hr style={{ margin: "12px 0", border: 0, borderTop: "1px solid rgba(255,255,255,0.10)" }} />
+
+              <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Ingresos (Total)" : "Revenue (Total)"}</span>
+                  <strong>{money.format(grossNumbers.revenue || 0)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Costo de mano de obra" : "Labor cost"}</span>
+                  <span>{money.format(grossNumbers.laborCost || 0)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Costo de materiales" : "Materials cost"}</span>
+                  <span>{money.format(grossNumbers.materialsCostTrue || 0)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Costo total" : "Total cost"}</span>
+                  <span>{money.format(grossNumbers.totalCost || 0)}</span>
+                </div>
+                <hr style={{ opacity: 0.25 }} />
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Utilidad bruta" : "Gross profit"}</span>
+                  <strong>{money.format(grossNumbers.grossProfit || 0)}</strong>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span>{lang === "es" ? "Margen bruto" : "Gross margin"}</span>
+                  <strong>{(grossNumbers.grossMarginPct || 0).toFixed(1)}%</strong>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="pe-section">
+          <div className="pe-section-title">{lang === "es" ? "Materiales" : "Materials"}</div>
+
+          <div className="pe-grid">
+            <div style={FIELD_STACK}>
+              <div style={FIELD_LABEL}>{t("materialsMode")}</div>
+              <select className="pe-input" value={materialsMode} onChange={(e) => setMaterialsMode(e.target.value)}>
+                <option value="blanket">{t("materialsModeBlanket")}</option>
+                <option value="itemized">{t("materialsModeItemized")}</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section className="pe-section">
+          <div className="pe-section-title">{lang === "es" ? "Datos" : "Data"}</div>
+
+          <div className="pe-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="pe-btn pe-btn-ghost" onClick={exportCSV} type="button">
+              {lang === "es" ? "Exportar CSV" : "Export CSV"}
+            </button>
+
+            <button className="pe-btn pe-btn-ghost" onClick={() => exportPDF("download")} type="button">
+              {t("pdf")}
+            </button>
+
+            <button className="pe-btn pe-btn-ghost" onClick={() => exportPDF("share")} type="button">
+              {lang === "es" ? "Compartir PDF" : "Share PDF"}
+            </button>
+          </div>
+
+          <div className="pe-muted" style={{ marginTop: 6 }}>
+            {lang === "es"
+              ? "CSV incluye desglose (incluye costos internos solo si están activados)."
+              : "CSV includes a breakdown (and includes internal costs only if enabled)."}
+          </div>
+        </section>
+      </div>
+    );
+  };
+
+
   // STEP 1: COMPANY PROFILE
   if (step === "profile") {
     const requiredComplete = isCompanyComplete(profile);
 
     return (
       <div className="pe-wrap">
-        <header className="pe-header">
+      <PopStyles />
+        <header className="pe-header pe-sweep">
           <div style={{ marginTop: -10 }}>
             <div className="pe-title">Field Pocket Estimator</div>
             <div className="pe-subtitle">{t("subtitleProfile")}</div>
@@ -3004,7 +3683,8 @@ const jobRows = [
   // STEP 2: ESTIMATOR
   return (
     <div className="pe-wrap">
-      <header className="pe-header">
+      <PopStyles />
+      <header className="pe-header pe-sweep">
         <div style={{ marginTop: -10 }}>
           <div className="pe-title">Field Pocket Estimator</div>
           <div className="pe-subtitle">{t("subtitleEstimator")}</div>
@@ -3041,11 +3721,28 @@ const jobRows = [
                   display: "inline-block",
                 }}
               />
-              <span>{companyGreen ? t("companyComplete") : t("companyIncomplete")}</span>
+              <span>{companyGreen ? t("companyComplete") : t("companyIncomplete")}
+              {docType === "invoice" && invoiceNumber ? (
+                <span className="pe-pill" style={{ borderColor: "rgba(0,0,0,0.18)" }}>
+                  {lang === "es" ? "Factura" : "Invoice"} # {invoiceNumber}
+                </span>
+              ) : null}</span>
             </span>
           </div>
 
           <DocTypeToggle />
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => {
+                triggerHaptic();
+                setShowCosts((v) => !v);
+              }}
+              aria-pressed={showCosts}
+              title={lang === "es" ? "Mostrar costo real + margen" : "Show true cost + gross margin"}
+            >
+              {showCosts ? (lang === "es" ? "Costo: ON" : "Costs: ON") : (lang === "es" ? "Costo: OFF" : "Costs: OFF")}
+            </button>
         </div>
 
         <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -3070,6 +3767,17 @@ const jobRows = [
             {t("save")}
           </button>
 
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            onClick={() => {
+              triggerHaptic();
+              setView((v) => (v === "advanced" ? "estimate" : "advanced"));
+            }}
+          >
+            {lang === "es" ? (view === "advanced" ? "Estimador" : "Avanzado") : (view === "advanced" ? "Estimator" : "Advanced")}
+          </button>
+
           {/* ✅ NEW: PDF export language + translate toggle */}
           
 
@@ -3078,13 +3786,15 @@ const jobRows = [
             {t("pdf")}
           </button>
 
-          <button className="pe-btn pe-btn-ghost" onClick={() => exportPDF("share")} type="button">
-            {lang === "es" ? "Compartir" : "Share"}
-          </button>
         </div>
       </header>
 
       <main className="pe-card">
+        {view === "advanced" ? (
+          <AdvancedScreen />
+        ) : (
+          <>
+
         {/* JOB INFO */}
         <section className="pe-section">
           <div className="pe-section-title">{t("jobInfo")}</div>
@@ -3210,7 +3920,8 @@ const jobRows = [
             const hasLegacyLabel = l.label && !presetLabels.includes(l.label);
 
             return (
-              <div key={i} className="pe-grid" style={{ marginTop: 8 }}>
+              <div key={i} style={{ marginTop: 8 }}>
+                <div className="pe-grid">
                 <div style={FIELD_STACK}>
                   <div style={FIELD_LABEL}>{lang === "es" ? "Rol" : "Role"}</div>
                   <select
@@ -3243,14 +3954,17 @@ const jobRows = [
 
                 <div style={FIELD_STACK}>
                   <div style={FIELD_LABEL}>{t("rate")}</div>
-                  <input
-                    className="pe-input"
-                    placeholder={t("rate")}
-                    value={l.rate}
-                    onChange={(e) => updateLaborLine(i, "rate", e.target.value)}
-                    onBlur={(e) => updateLaborLine(i, "rate", normalizeMoneyInput(e.target.value))}
-                    inputMode="decimal"
-                  />
+
+                    <input
+                      className="pe-input"
+                      placeholder={t("rate")}
+                      value={l.rate}
+                      onChange={(e) => updateLaborLine(i, "rate", e.target.value)}
+                      onBlur={(e) => updateLaborLine(i, "rate", normalizeMoneyInput(e.target.value))}
+                      inputMode="decimal"
+                    />
+
+                </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -3483,7 +4197,6 @@ const jobRows = [
               <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
                 {materialItems.map((it, i) => {
                   const qtyVal = Math.max(1, Number(it.qty) || 1);
-                  const costVal = it.cost ?? "";
                   const eachVal = Number(it.charge) || 0;
                   const lineTotal = qtyVal * eachVal;
 
@@ -3509,13 +4222,13 @@ const jobRows = [
                         />
                       </div>
 
-                      {/* Bottom row: qty + (internal) cost + charge */}
+                      {/* Bottom row: qty + price(each) */}
 
                       <div
                         style={{
                           marginTop: 8,
                           display: "grid",
-                          gridTemplateColumns: "56px 1.2fr 1.2fr 40px",
+                          gridTemplateColumns: "1fr 1fr 40px",
                           gap: 8,
                           alignItems: "end",
                         }}
@@ -3535,24 +4248,6 @@ const jobRows = [
                               </option>
                             ))}
                           </select>
-                        </div>
-
-                        <div style={{ ...FIELD_STACK }}>
-                          <div style={{ ...FIELD_LABEL }}>{t("materialCostInternal")}</div>
-                          <input
-                            className="pe-input"
-                            value={costVal}
-                            onChange={(e) => updateMaterialItem(i, "cost", e.target.value)}
-                            onBlur={(e) => updateMaterialItem(i, "cost", normalizeMoneyInput(e.target.value))}
-                            placeholder={MONEY_PH}
-                            inputMode="decimal"
-                            title={
-                              lang === "es"
-                                ? "Costo interno (no se imprime en PDF)"
-                                : "Internal cost (not printed on PDF)"
-                            }
-                            style={{ width: "100%" }}
-                          />
                         </div>
 
                         <div style={{ ...FIELD_STACK }}>
@@ -3628,6 +4323,8 @@ const jobRows = [
                 {materialsMode === "itemized" && itemizedMaterialsTotal > 0
                   ? ` • 1x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
                   : ""}
+
+                {showCosts && Number(total) > 0 ? ` • GM ${grossMarginPct}% • Cost ${money.format(totalTrueCost)}` : ""}
               </div>
             </div>
             <div className="pe-total-right">{money.format(total)}</div>
@@ -3750,7 +4447,9 @@ const jobRows = [
             ))}
           </div>
         </section>
-      </main>
+                </>
+        )}
+</main>
     </div>
   );
 }
