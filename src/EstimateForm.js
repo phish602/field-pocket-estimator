@@ -1,3 +1,5 @@
+// @ts-nocheck
+/* eslint-disable */
 import { useEffect, useMemo, useRef, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -217,6 +219,48 @@ const money = new Intl.NumberFormat("en-US", {
    LANGUAGE / I18N (MANUAL TOGGLE)
    ========================= */
 const LANG_KEY = "field-pocket-lang";
+/* =========================
+   UI COLLAPSE STATE (PERSISTED)
+   Default: collapsed (false)
+   ========================= */
+const UI_STATE_KEY = "fpe-ui";
+function uiLoadBool(key, fallback = false) {
+  try {
+    const v = localStorage.getItem(`${UI_STATE_KEY}:${key}`);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    // ignore
+  }
+  return fallback;
+}
+function uiSaveBool(key, value) {
+  try {
+    localStorage.setItem(`${UI_STATE_KEY}:${key}`, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
+function uiLoadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(`${UI_STATE_KEY}:${key}`);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed ?? fallback;
+  } catch {
+    // ignore
+  }
+  return fallback;
+}
+function uiSaveJson(key, value) {
+  try {
+    localStorage.setItem(`${UI_STATE_KEY}:${key}`, JSON.stringify(value ?? null));
+  } catch {
+    // ignore
+  }
+}
+
 
 function detectDefaultLang() {
   try {
@@ -436,6 +480,7 @@ const I18N = {
     client: "Client",
 
     customerName: "Customer",
+    customerAttn: "Attn (optional)",
     customerPhone: "Customer phone (optional)",
     customerEmail: "Customer email (optional)",
     customerAddress: "Customer address",
@@ -446,6 +491,7 @@ const I18N = {
     projectAddress: "Project address",
     projectSameAsCustomer: "Same as customer address",
     recentCustomers: "Recent customers",
+    recentEstimates: "Recent estimates",
     customerOrganizer: "Customer organizer",
     noCustomers: "No saved customers yet. Export a PDF to auto-save one.",
     scopePlaceholder: "Scope / notes (templates insert here)",
@@ -529,6 +575,7 @@ const I18N = {
     pdfTotalsHead: "Totals",
     pdfDate: "Date",
     pdfAttn: "Attn",
+    pdfClientAttn: "Attn (Client)",
     pdfClient: "Client",
     pdfLocation: "Location",
     pdfProjectName: "Project",
@@ -639,6 +686,7 @@ const I18N = {
     client: "Cliente",
 
     customerName: "Cliente",
+    customerAttn: "Atn. (opcional)",
     customerPhone: "Teléfono (opcional)",
     customerEmail: "Correo (opcional)",
     customerAddress: "Dirección del cliente",
@@ -649,6 +697,7 @@ const I18N = {
     projectAddress: "Dirección del proyecto",
     projectSameAsCustomer: "Igual que la dirección del cliente",
     recentCustomers: "Clientes recientes",
+    recentEstimates: "Estimaciones recientes",
     customerOrganizer: "Organizador de clientes",
     noCustomers: "Aún no hay clientes guardados. Exporta un PDF para guardarlo automáticamente.",
     scopePlaceholder: "Alcance / notas (las plantillas se insertan aquí)",
@@ -732,6 +781,7 @@ const I18N = {
     pdfTotalsHead: "Totales",
     pdfDate: "Fecha",
     pdfAttn: "Atn.",
+    pdfClientAttn: "Atn. (Cliente)",
     pdfClient: "Cliente",
     pdfLocation: "Ubicación",
     pdfProjectName: "Proyecto",
@@ -2169,11 +2219,15 @@ function upsertCustomer(list, data) {
   if (!name) return next;
 
   const key = _normKey(name);
-  const idx = next.findIndex((c) => _normKey(c?.name) === key);
+  const dataId = String(data?.id || "").trim();
+  const idxById = dataId ? next.findIndex((c) => String(c?.id) === dataId) : -1;
+  const idxByName = next.findIndex((c) => _normKey(c?.name) === key);
+  const idx = idxById >= 0 ? idxById : idxByName;
 
   const payload = {
-    id: idx >= 0 ? (next[idx]?.id || `c_${_nowTs()}`) : `c_${_nowTs()}`,
+    id: idx >= 0 ? (next[idx]?.id || (dataId || `c_${_nowTs()}`)) : (dataId || `c_${_nowTs()}`),
     name,
+    attn: String(data?.attn || "").trim(),
     phone: String(data?.phone || "").trim(),
     email: String(data?.email || "").trim(),
     address: String(data?.address || "").trim(),
@@ -2205,75 +2259,51 @@ function deleteCustomer(list, id) {
 
 function LanguageGate({ t, setLanguage }) {
   return (
-        <div className="pe-wrap">
+    <div className="pe-wrap">
       <PopStyles />
       <PagePerimeterSnake />
-          <header className="pe-header pe-sweep">
-            <div>
-              <h1 className="pe-title">Field Pocket Estimator</h1>
-              <div className="pe-subtitle">{t("chooseLanguageTitle")}</div>
-            </div>
-  
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end" }}>
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: 3,
-                  borderRadius: 999,
-                  border: "1px solid rgba(0,0,0,0.12)",
-                  background: "rgba(255,255,255,0.55)",
-                  boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.08)",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHaptic();
-                    setLanguage("en");
-                  }}
-                  style={{
-                    padding: "8px 14px",
-                    borderRadius: 999,
-                    border: "1px solid rgba(0,0,0,0.18)",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    background: "rgba(0,0,0,0.08)",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.16)",
-                    color: "rgba(0,0,0,0.92)",
-                  }}
-                >
-                  EN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHaptic();
-                    setLanguage("es");
-                  }}
-                  style={{
-                    padding: "8px 14px",
-                    borderRadius: 999,
-                    border: "1px solid rgba(0,0,0,0.18)",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    background: "rgba(0,0,0,0.08)",
-                    boxShadow: "0 1px 2px rgba(0,0,0,0.16)",
-                    color: "rgba(0,0,0,0.92)",
-                  }}
-                >
-                  ES
-                </button>
-              </div>
-            </div>
-          </header>
-  
-          <div className="pe-card" style={{ marginTop: 18 }}>
-            <div style={{ fontSize: 14, opacity: 0.85, lineHeight: 1.35 }}>{t("chooseLanguageBody")}</div>
+      
+
+      <header className="pe-header pe-sweep">
+        <div style={{ marginTop: -10 }}>
+          <div className="pe-title">Field Pocket Estimator</div>
+          <div className="pe-subtitle">{t("subtitle")}</div>
+        </div>
+      </header>
+
+      <main className="pe-main">
+        <div className="pe-card">
+          <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 10 }}>
+            {t("chooseLanguageTitle") || "Choose Language"}
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="pe-btn pe-btn-primary"
+              style={{ minWidth: 180, flex: "1 1 180px", maxWidth: 220, padding: "12px 14px" }}
+              onClick={() => setLanguage("en")}
+            >
+              English
+            </button>
+            <button
+              type="button"
+              className="pe-btn"
+              style={{ minWidth: 180, flex: "1 1 180px", maxWidth: 220, padding: "12px 14px" }}
+              onClick={() => setLanguage("es")}
+            >
+              Español
+            </button>
+                  
+                </div>
+
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.35 }}>
+            {t("languageRequiredHint") ||
+              "Language selection is required before using the estimator."}
           </div>
         </div>
-      );
+      </main>
+    </div>
+  );
 }
 
 function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount = false }) {
@@ -2389,6 +2419,54 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   // ✅ NEW: keep “Advanced” settings on their own screen (avoid cluttering estimator)
   const [view, setView] = useState("estimate"); // "estimate" | "advanced"
+
+  // ✅ AI Draft Mode (Beta) — full-screen guided workflow (remembers last session until cleared)
+  const [showAIDraft, setShowAIDraft] = useState(false);
+  const [aiTrade, setAiTrade] = useState("painting"); // future: drywall, flooring, etc.
+  const [aiInput, setAiInput] = useState("");
+  const [aiMessages, setAiMessages] = useState(() => uiLoadJson("aiDraftMessages", []));
+  const [aiDraftState, setAiDraftState] = useState(() =>
+    uiLoadJson("aiDraftState", {
+      trade: "painting",
+      scopeType: "", // "interior" | "exterior"
+      rooms: "",
+      sqft: "",
+      ceilingHeight: "",
+      coats: "2",
+      prep: "light", // "light" | "medium" | "heavy"
+      includeCeilings: null,
+      includeTrimDoors: null,
+      stance: "mid", // "low" | "mid" | "high"
+      complexity: "normal", // "simple" | "normal" | "cutup"
+      needForeman: "", // "yes" | "no"
+      extStories: "", // for exterior: "1" | "2" or height
+    })
+  );
+  const aiLastPushRef = useRef({ key: "", t: 0 });
+  const aiChatScrollRef = useRef(null);
+  // Persist AI Draft Mode session (remember last conversation until user clears)
+  useEffect(() => {
+    uiSaveJson("aiDraftMessages", aiMessages);
+  }, [aiMessages]);
+  useEffect(() => {
+    uiSaveJson("aiDraftState", aiDraftState);
+  }, [aiDraftState]);
+
+  // Auto-scroll chat to bottom when new messages arrive (only while modal is open)
+  const aiChatRef = useRef(null);
+  useEffect(() => {
+    if (!showAIDraft) return;
+    const el = aiChatRef.current;
+    if (!el) return;
+    try {
+      el.scrollTop = el.scrollHeight;
+    } catch {
+      // ignore
+    }
+  }, [aiMessages, showAIDraft]);
+
+
+
 
   useEffect(() => {
     if (step !== "estimate" && view !== "estimate") setView("estimate");
@@ -2526,6 +2604,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   // ✅ Customer extras (saved on export)
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
+  const [customerAttn, setCustomerAttn] = useState("");
   const [billingDiff, setBillingDiff] = useState(false);
   const [billingAddress, setBillingAddress] = useState("");
   const [customerTermsDays, setCustomerTermsDays] = useState(0);
@@ -2535,6 +2614,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const [projectName, setProjectName] = useState("");
   const [projectNumber, setProjectNumber] = useState("");
   const [projectAddress, setProjectAddress] = useState("");
+  const [lastManualProjectAddress, setLastManualProjectAddress] = useState("");
   const [projectAddressSameAsCustomer, setProjectAddressSameAsCustomer] = useState(true);
 
 
@@ -2543,23 +2623,100 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     setClient(String(c.name || ""));
     setCustomerPhone(String(c.phone || ""));
     setCustomerEmail(String(c.email || ""));
+    setCustomerAttn(String(c.attn || ""));
     setLocation(String(c.address || "")); // job location default
     setBillingDiff(Boolean(c.billingDiff));
     setBillingAddress(String(c.billingAddress || ""));
     setProjectName(String(c.projectName || ""));
     setProjectNumber(String(c.projectNumber || ""));
-    setProjectAddress(String(c.projectAddress || ""));
-    setProjectAddressSameAsCustomer(
-      typeof c.projectSameAsCustomer === "boolean"
-        ? Boolean(c.projectSameAsCustomer)
-        : String(c.projectAddress || "").trim() === ""
-    );
+    const _custProjAddr = String(c.projectAddress || "");
+    const _custSameAs = typeof c.projectSameAsCustomer === "boolean"
+      ? Boolean(c.projectSameAsCustomer)
+      : _custProjAddr.trim() === "";
+    setProjectAddress(_custSameAs ? "" : _custProjAddr);
+    setLastManualProjectAddress(_custSameAs ? "" : _custProjAddr);
+    setProjectAddressSameAsCustomer(_custSameAs);
   }
+
+  function buildCustomerFromForm(idOverride) {
+    const name = String(client || "").trim();
+    return {
+      id: idOverride ? String(idOverride) : undefined,
+      name,
+      attn: String(customerAttn || "").trim(),
+      phone: String(customerPhone || "").trim(),
+      email: String(customerEmail || "").trim(),
+      address: String(location || "").trim(),
+      billingDiff: Boolean(billingDiff),
+      billingAddress: String(billingAddress || "").trim(),
+      termsDays: Number(customerTermsDays || 0) || 0,
+      projectName: String(projectName || "").trim(),
+      projectNumber: String(projectNumber || "").trim(),
+      projectSameAsCustomer: Boolean(projectAddressSameAsCustomer),
+      projectAddress: projectAddressSameAsCustomer ? "" : String(projectAddress || "").trim(),
+    };
+  }
+
+  function saveCustomerFromEstimator() {
+    const isNew = Boolean(customerCreating) || !selectedCustomerId;
+    const payload = buildCustomerFromForm(isNew ? undefined : selectedCustomerId);
+
+    if (!payload.name) {
+      alert(lang === "es" ? "El nombre del cliente es obligatorio." : "Customer name is required.");
+      return;
+    }
+
+    const next = upsertCustomer(customers, payload);
+    setCustomers(next);
+
+    const saved =
+      payload.id
+        ? next.find((c) => String(c?.id) === String(payload.id))
+        : next.find((c) => _normKey(c?.name) === _normKey(payload.name));
+
+    const savedId = String(saved?.id || "");
+    if (savedId) {
+      setSelectedCustomerId(savedId);
+    }
+
+    setCustomerCreating(false);
+    setCustomerEditing(false);
+    setCustomerPanelOpen(false);
+
+    // Ensure form fields reflect saved customer (in case name normalization created a new record)
+    if (saved) applyCustomerToForm(saved);
+  }
+
+  function cancelCustomerEstimatorEdit() {
+    if (selectedCustomerId && !customerCreating) {
+      const found = customers.find((c) => String(c?.id) === String(selectedCustomerId));
+      if (found) applyCustomerToForm(found);
+      setCustomerPanelOpen(false);
+      return;
+    }
+
+    // Cancel new customer
+    setCustomerCreating(false);
+    setCustomerPanelOpen(false);
+    setSelectedCustomerId("");
+    setClient("");
+    setCustomerPhone("");
+    setCustomerEmail("");
+    setLocation("");
+    setCustomerAttn("");
+    setBillingDiff(false);
+    setBillingAddress("");
+    setCustomerTermsDays(0);
+  }
+
   // ✅ Saved customers (managed in Advanced, auto-saved on PDF export)
   const [customers, setCustomers] = useState(() => loadSavedCustomers());
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
+  const [customerSelectQuery, setCustomerSelectQuery] = useState("");
+  const [recentEstimateId, setRecentEstimateId] = useState("");
+  const [customerPanelOpen, setCustomerPanelOpen] = useState(() => uiLoadBool("customerPanelOpen", false));
   const [customerCreating, setCustomerCreating] = useState(false);
+  const [customerEditing, setCustomerEditing] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
 
   // ✅ Derived payment terms (days) from current customer draft (used for saving + PDF due calc)
@@ -2567,7 +2724,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
 
   
   // ✅ Advanced: Customer organizer UI state (collapsible + search/sort)
-  const [customersOrganizerOpen, setCustomersOrganizerOpen] = useState(false);
+  const [customersOrganizerOpen, setCustomersOrganizerOpen] = useState(() => uiLoadBool("customersOrganizerOpen", false));
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerSort, setCustomerSort] = useState("recent"); // "recent" | "az"
 
@@ -2587,6 +2744,34 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     if (!q) return customersSorted;
     return customersSorted.filter((c) => String(c?.name || "").toLowerCase().includes(q));
   }, [customersSorted, customerSearch]);
+
+  const recentCustomersTop = useMemo(() => {
+    return Array.isArray(customersSorted) ? customersSorted.slice(0, 8) : [];
+  }, [customersSorted]);
+
+  const recentCustomerIds = useMemo(() => {
+    const ids = new Set();
+    (Array.isArray(recentCustomersTop) ? recentCustomersTop : []).forEach((c) => ids.add(String(c?.id)));
+    return ids;
+  }, [recentCustomersTop]);
+
+  const customersNonRecent = useMemo(() => {
+    if (!recentCustomerIds.size) return customersSorted;
+    return customersSorted.filter((c) => !recentCustomerIds.has(String(c?.id)));
+  }, [customersSorted, recentCustomerIds]);
+
+  const customersSelectFiltered = useMemo(() => {
+    const q = String(customerSelectQuery || "").trim().toLowerCase();
+    if (!q) return customersSorted;
+    return customersSorted.filter((c) => {
+      const name = String(c?.name || "").toLowerCase();
+      const email = String(c?.email || "").toLowerCase();
+      const phone = String(c?.phone || "").toLowerCase();
+      return name.includes(q) || email.includes(q) || phone.includes(q);
+    });
+  }, [customersSorted, customerSelectQuery]);
+
+
 // Persist customers list (must come AFTER customers is initialized)
   useEffect(() => {
     saveCustomers(customers);
@@ -2608,11 +2793,19 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const [laborLines, setLaborLines] = useState([newLaborLine()]);
 
   
-  const [laborOpen, setLaborOpen] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [laborOpen, setLaborOpen] = useState(() => uiLoadBool("laborOpen", false));
+  const [historyOpen, setHistoryOpen] = useState(() => uiLoadBool("historyOpen", false));
 
   // ✅ Field Calculator (construction quick-math + conversions)
-  const [calcOpen, setCalcOpen] = useState(false);
+  const [calcOpen, setCalcOpen] = useState(() => uiLoadBool("calcOpen", false));
+
+  // Persist collapsible UI state (default collapsed)
+  useEffect(() => uiSaveBool("customerPanelOpen", customerPanelOpen), [customerPanelOpen]);
+  useEffect(() => uiSaveBool("customersOrganizerOpen", customersOrganizerOpen), [customersOrganizerOpen]);
+  useEffect(() => uiSaveBool("laborOpen", laborOpen), [laborOpen]);
+  useEffect(() => uiSaveBool("historyOpen", historyOpen), [historyOpen]);
+  useEffect(() => uiSaveBool("calcOpen", calcOpen), [calcOpen]);
+
   const [calcInput, setCalcInput] = useState("");
   const [calcResult, setCalcResult] = useState("");
   const [calcListening, setCalcListening] = useState(false);
@@ -2676,6 +2869,12 @@ const [laborMultiplier, setLaborMultiplier] = useState(1);
   const [materialsMarkupPct, setMaterialsMarkupPct] = useState("20");
 
   const [history, setHistory] = useState([]);
+
+  // ✅ Track which saved estimate is currently loaded (so Save can overwrite vs create new)
+  const [currentEstimateId, setCurrentEstimateId] = useState(null);
+  const [savePromptOpen, setSavePromptOpen] = useState(false);
+
+  const [pdfPromptOpen, setPdfPromptOpen] = useState(false);
 
   // ✅ NEW: per-textarea heights (touch + drag to resize)
   const [scopeBoxHeight, setScopeBoxHeight] = useState(320);
@@ -2799,6 +2998,8 @@ const [laborMultiplier, setLaborMultiplier] = useState(1);
 
   const addLaborLine = () => {
     triggerHaptic();
+    // If labor section is collapsed, expand it when the user adds a line.
+    try { setLaborOpen(true); } catch {}
     if (laborLines.length >= 10) return;
     setLaborLines([...laborLines, newLaborLine()]);
   };
@@ -3034,6 +3235,8 @@ const totalTrueCost = useMemo(() => {
   const resetForm = () => {
     triggerHaptic();
 
+    setCurrentEstimateId(null);
+
     // Keep whichever doc type the user is on.
     // New / Clear should reload the last-saved number for that doc type.
     // docType already in scope
@@ -3044,6 +3247,7 @@ const totalTrueCost = useMemo(() => {
 setProjectName("");
     setProjectNumber("");
     setProjectAddress("");
+    setLastManualProjectAddress("");
     setProjectAddressSameAsCustomer(true);
     setDescription("");
     setMasterScopeKey("");
@@ -3102,10 +3306,9 @@ setProjectName("");
     }
   };
 
-  const saveEstimate = () => {
-    triggerHaptic();
+  const buildEstimateEntry = (idOverride) => {
     const entry = {
-      id: Date.now(),
+      id: typeof idOverride === "number" ? idOverride : Date.now(),
       customerId: selectedCustomerId || "",
       customerSnapshot: customerDraft
         ? {
@@ -3125,6 +3328,8 @@ setProjectName("");
               typeof customerDraft.projectSameAsCustomer === "boolean"
                 ? Boolean(customerDraft.projectSameAsCustomer)
                 : String(customerDraft.projectAddress || "").trim() === "",
+            // ✅ Customer ATTN (persisted snapshot for this estimate)
+            attn: String(customerDraft.attn || ""),
           }
         : null,
 
@@ -3148,7 +3353,7 @@ setProjectName("");
       laborMultiplier,
       customMultiplier,
 
-      // ✅ NEW: materials mode + itemized rows
+      // ✅ materials mode + itemized rows
       materialsMode,
       materialItems,
 
@@ -3159,13 +3364,49 @@ setProjectName("");
       total,
     };
 
-    const updated = [entry, ...history].slice(0, 25);
+    return entry;
+  };
+
+  const commitEstimateSave = (mode) => {
+    triggerHaptic();
+
+    const isOverwrite = mode === "overwrite" && typeof currentEstimateId === "number";
+    const entry = buildEstimateEntry(isOverwrite ? currentEstimateId : undefined);
+
+    // Overwrite: replace existing entry (and move it to top). New: prepend.
+    let updated;
+    if (isOverwrite) {
+      const without = history.filter((h) => Number(h.id) !== Number(currentEstimateId));
+      updated = [entry, ...without].slice(0, 25);
+    } else {
+      updated = [entry, ...history].slice(0, 25);
+    }
+
     setHistory(updated);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+    // After saving, treat this estimate as the current one (so subsequent saves can overwrite cleanly)
+    setCurrentEstimateId(Number(entry.id));
+  };
+
+  const handleSaveClick = () => {
+    // If we loaded an existing estimate, make it explicit whether Save will overwrite or create a new entry.
+    if (typeof currentEstimateId === "number") {
+      setSavePromptOpen(true);
+      return;
+    }
+    // Otherwise, Save creates a new estimate.
+    commitEstimateSave("new");
+  };
+
+  const saveEstimate = () => {
+    // Backwards-compat (in case any older handler still calls saveEstimate)
+    handleSaveClick();
   };
 
   const loadEstimate = (e) => {
     triggerHaptic();
+    setCurrentEstimateId(e && typeof e.id === "number" ? Number(e.id) : null);
     setDate(e.date);
     setClient(e.client);
     setLocation(e.location || "");
@@ -3189,12 +3430,13 @@ setProjectName("");
     }
 setProjectName(e.projectName || "");
     setProjectNumber(e.projectNumber || "");
-    setProjectAddress(e.projectAddress || "");
-    setProjectAddressSameAsCustomer(
-      typeof e.projectAddressSameAsCustomer === "boolean"
-        ? Boolean(e.projectAddressSameAsCustomer)
-        : String(e.projectAddress || "").trim() === ""
-    );
+    const _eProjAddr = String(e.projectAddress || "");
+    const _eSameAs = typeof e.projectAddressSameAsCustomer === "boolean"
+      ? Boolean(e.projectAddressSameAsCustomer)
+      : _eProjAddr.trim() === "";
+    setProjectAddress(_eSameAs ? "" : _eProjAddr);
+    setLastManualProjectAddress(_eSameAs ? "" : _eProjAddr);
+    setProjectAddressSameAsCustomer(_eSameAs);
     setDescription(e.description);
 
     setMasterScopeKey("");
@@ -3252,6 +3494,34 @@ setProjectName(e.projectName || "");
     const updated = history.filter((x) => x.id !== id);
     setHistory(updated);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  };
+
+  const duplicateEstimate = (e) => {
+    triggerHaptic();
+    if (!e || typeof e !== "object") return;
+
+    // Create a brand-new numeric id (your app uses numeric ids)
+    const newId = Date.now() + Math.floor(Math.random() * 1000);
+
+    const copy = {
+      ...e,
+      id: newId,
+      // stamp as "now" so it sorts to the top and feels new
+      date: todayISO(),
+    };
+
+    // (Optional) make it obvious in the saved list without changing customer name:
+    // Append "(Copy)" to project name if present, otherwise leave as-is.
+    if (copy.projectName && typeof copy.projectName === "string" && !copy.projectName.includes("(Copy)")) {
+      copy.projectName = copy.projectName.trim() ? `${copy.projectName.trim()} (Copy)` : copy.projectName;
+    }
+
+    const updated = [copy, ...history].slice(0, 25);
+    setHistory(updated);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+
+    // Load the duplicated estimate immediately
+    loadEstimate(copy);
   };
 
   const clearAllEstimates = () => {
@@ -3573,26 +3843,49 @@ setProjectName(e.projectName || "");
         doc.text(numValue || "-", metaLeft + colW * 0.5, valueY, { align: "center" });
         doc.text(dateValue ? formatDateMMDDYYYY(dateValue) : "-", metaLeft + colW * 1.5, valueY, { align: "center" });
         doc.text(dueValue ? formatDateMMDDYYYY(dueValue) : "-", metaLeft + colW * 2.5, valueY, { align: "center" });
-      } else {
-        // Estimate: simple, legible text (no boxes, no "Due")
-        const estLabel = "ESTIMATE #";
-        const estValue = String(estimateNumber || "").trim() || "-";
-        const dateValue = String(date || "").trim();
+      } 
+else {
+  // Estimate: match Invoice-style boxed meta table (3 columns)
+  doc.setDrawColor(...BORDER);
+  doc.setLineWidth(0.7);
+  doc.rect(metaLeft, metaTop, metaW, metaH);
 
-        doc.setTextColor(25, 25, 25);
-        doc.setFont(undefined, "bold");
-        doc.setFontSize(10);
+  // 3 equal columns
+  const colW = metaW / 3;
+  doc.line(metaLeft + colW, metaTop, metaLeft + colW, metaTop + metaH);
+  doc.line(metaLeft + colW * 2, metaTop, metaLeft + colW * 2, metaTop + metaH);
 
-        const line1Y = metaTop + 12;
-        const line2Y = metaTop + 26;
+  // 2 rows
+  doc.line(metaLeft, metaMidY, metaLeft + metaW, metaMidY);
 
-        // Right-aligned within the same meta box width, but NO rectangle drawn
-        doc.text(`${estLabel} ${estValue}`, metaRight, line1Y, { align: "right" });
-        doc.setFont(undefined, "normal");
-        doc.text(`DATE ${dateValue ? formatDateMMDDYYYY(dateValue) : "-"}`, metaRight, line2Y, { align: "right" });
-      }
+  const labelY = metaTop + 12;
+  const valueY = metaTop + metaH - 8;
 
-      // Divider line under header area
+  const numLabel = pdfLang === "es" ? "ESTIMACIÓN #" : "ESTIMATE #";
+  const dateLabel = pdfLang === "es" ? "FECHA" : "DATE";
+  const poLabel = pdfLang === "es" ? "OC" : "PO";
+
+  const numValue = String(estimateNumber || "").trim() || "-";
+  const dateValue = String(date || "").trim();
+  const poValue = String(poNumber || "").trim();
+
+  // Labels
+  doc.setTextColor(25, 25, 25);
+  doc.setFontSize(10);
+  doc.setFont(undefined, "bold");
+  doc.text(numLabel, metaLeft + colW * 0.5, labelY, { align: "center" });
+  doc.text(dateLabel, metaLeft + colW * 1.5, labelY, { align: "center" });
+  doc.text(poLabel, metaLeft + colW * 2.5, labelY, { align: "center" });
+
+  // Values
+  doc.setFont(undefined, "normal");
+  doc.setFontSize(10);
+  doc.text(numValue || "-", metaLeft + colW * 0.5, valueY, { align: "center" });
+  doc.text(dateValue ? formatDateMMDDYYYY(dateValue) : "-", metaLeft + colW * 1.5, valueY, { align: "center" });
+  doc.text(poValue || "-", metaLeft + colW * 2.5, valueY, { align: "center" });
+}
+
+// Divider line under header area
       doc.setDrawColor(...BORDER);
       doc.setLineWidth(0.6);
       doc.line(FRAME_INSET, HEADER_BOTTOM_Y, pageWidth - FRAME_INSET, HEADER_BOTTOM_Y);
@@ -3832,6 +4125,7 @@ setProjectName(e.projectName || "");
     const tradeInserts = extractAllTradeInserts(descriptionForPdf);
     const tradeInsertText = tradeInserts.length ? tradeInserts.join("\n\n") : "";
     const attn = String(profile.attn || "").trim();
+    const clientAttn = String(customerAttn || "").trim();
 
     const hasTradeInserts = tradeInserts.length > 0;
 
@@ -3840,6 +4134,7 @@ const jobRows = [
       [tPdf("pdfDate"), formatDateMMDDYYYY(date) || "-"],
       ...(attn ? [[tPdf("pdfAttn"), attn]] : []),
       [tPdf("pdfClient"), client || "-"],
+      ...(clientAttn ? [[tPdf("pdfClientAttn"), clientAttn]] : []),
       ...(docType === "invoice" && location ? [[tPdf("pdfLocation"), location]] : []),
       // ✅ Project (shown on PDF)
       ...(String(projectName || "").trim() ? [[tPdf("pdfProjectName"), String(projectName || "").trim()]] : []),
@@ -3851,103 +4146,149 @@ const jobRows = [
       })()),
       ...(String(poNumber || "").trim() ? [[tPdf("pdfPO"), String(poNumber || "").trim()]] : []),
 
-      // Estimates only: Scope/Notes + Trade Inserts
-      ...(docType !== "invoice" ? [[tPdf("pdfScope"), scopeNotes]] : []),
-      ...(docType !== "invoice" && hasTradeInserts ? [[tPdf("pdfTradeInserts"), tradeInsertText]] : []),
+      // Estimates: Scope/Notes + Trade Inserts are rendered as their own sections (below Job Info)
     ];
 
     // =========================
-    // JOB / INVOICE HEADER BLOCK
+// JOB HEADER BLOCK (Invoice-style layout)
+// =========================
+if (docType === "invoice" || docType === "estimate") {
+  const billToLabel = pdfLang === "es" ? "FACTURAR A" : "BILL TO";
+  const customerLabel = pdfLang === "es" ? "CLIENTE" : "CUSTOMER";
+  const projectLabel = pdfLang === "es" ? "PROYECTO" : "PROJECT";
+
+  const custName = String(client || "").trim();
+  const custAddr = String(location || "").trim();
+  const billAddr = billingDiff ? String(billingAddress || "").trim() : custAddr;
+
+  const attnLine = String(customerAttn || "").trim();
+
+  const billToText = [custName, attnLine ? `ATTN: ${attnLine}` : "", billAddr]
+    .filter(Boolean)
+    .join("\n") || "-";
+  const customerText = [custName, attnLine ? `ATTN: ${attnLine}` : "", custAddr].filter(Boolean).join("\n") || "-";
+
+  const projectBits = [];
+  const pName = String(projectName || "").trim();
+  const pNum = String(projectNumber || "").trim();
+  const pAddr = (() => {
+    const useCust = Boolean(projectAddressSameAsCustomer);
+    const addr = useCust ? String(location || "").trim() : String(projectAddress || "").trim();
+    return addr;
+  })();
+
+  if (pName) projectBits.push(pName);
+  if (pNum) projectBits.push(pNum);
+  if (pAddr) projectBits.push(pAddr);
+
+  const projectText = projectBits.join("\n") || "-";
+
+  autoTable(doc, {
+    startY: 114,
+    head: [[billToLabel, customerLabel, projectLabel]],
+    body: [[billToText, customerText, projectText]],
+    theme: "plain",
+    tableLineWidth: 0,
+    tableLineColor: [255, 255, 255],
+    styles: {
+      fontSize: 10.5,
+      cellPadding: 4,
+      lineWidth: 0,
+      lineColor: [255, 255, 255],
+      fillColor: [255, 255, 255],
+      textColor: [20, 20, 20],
+      valign: "top",
+    },
+    headStyles: {
+      fillColor: [255, 255, 255],
+      textColor: [20, 20, 20],
+      fontStyle: "bold",
+      lineWidth: 0,
+    },
+    bodyStyles: { lineWidth: 0, fillColor: [255, 255, 255] },
+    alternateRowStyles: { fillColor: [255, 255, 255] },
+    margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
+    willDrawPage: () => {
+      drawHeader();
+    },
+  });
+} else {
+  // Fallback: single-column job info table (shouldn't normally be hit)
+  autoTable(doc, {
+    startY: 114,
+    head: [[tPdf("pdfJobInfoHead"), ""]],
+    body: jobRows,
+    theme: "plain",
+    tableLineWidth: 0,
+    tableLineColor: [255, 255, 255],
+    styles: {
+      fontSize: 10.5,
+      cellPadding: 5,
+      valign: "top",
+      lineColor: [255, 255, 255],
+      lineWidth: 0,
+      fillColor: [255, 255, 255],
+      textColor: [20, 20, 20],
+    },
+    headStyles: {
+      fillColor: [255, 255, 255],
+      textColor: [20, 20, 20],
+      fontStyle: "bold",
+      lineWidth: 0,
+    },
+    bodyStyles: { lineWidth: 0, fillColor: [255, 255, 255] },
+    alternateRowStyles: { fillColor: [255, 255, 255] },
+    columnStyles: {
+      0: { cellWidth: 70, fontStyle: "bold", fillColor: [255, 255, 255] },
+      1: { cellWidth: INNER_W - 70 },
+    },
+    margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
+    willDrawPage: () => {
+      drawHeader();
+    },
+  });
+}
+
     // =========================
-    if (docType === "invoice") {
-      const billToLabel = pdfLang === "es" ? "FACTURAR A" : "BILL TO";
-      const customerLabel = pdfLang === "es" ? "CLIENTE" : "CUSTOMER";
-      const projectLabel = pdfLang === "es" ? "PROYECTO" : "PROJECT";
-
-      const custName = String(client || "").trim();
-      const custAddr = String(location || "").trim();
-      const billAddr = billingDiff ? String(billingAddress || "").trim() : custAddr;
-
-      const billToText = [custName, billAddr].filter(Boolean).join("\n") || "-";
-      const customerText = [custName, custAddr].filter(Boolean).join("\n") || "-";
-      const projectBits = [];
-      const pName = String(projectName || "").trim();
-      const pNum = String(projectNumber || "").trim();
-      const pAddr = (() => {
-        const useCust = Boolean(projectAddressSameAsCustomer);
-        const addr = useCust ? String(location || "").trim() : String(projectAddress || "").trim();
-        return addr;
-      })();
-
-      if (pName) projectBits.push(pName);
-      if (pNum) projectBits.push(pNum);
-      if (pAddr) projectBits.push(pAddr);
-
-      const projectText = projectBits.join("\n") || "-";
+    // ESTIMATE: TRADE INSERTS (separate section)
+    // =========================
+    const tradeRawForPdf = String(tradeInsertText || "").trim();
+    if (docType === "estimate" && hasTradeInserts && tradeRawForPdf) {
+      let tradeStartY = (doc.lastAutoTable?.finalY || 114) + 10;
+      const minTradeBlock = 60;
+      const remainingForTrade = pageHeight - TABLE_INSET - tradeStartY;
+      if (remainingForTrade < minTradeBlock) {
+        doc.addPage();
+        drawHeader();
+        tradeStartY = 114;
+      }
 
       autoTable(doc, {
-        startY: 114,
-        head: [[billToLabel, customerLabel, projectLabel]],
-        body: [[billToText, customerText, projectText]],
+        startY: tradeStartY,
+        head: [[pdfLang === "es" ? "INSERCIONES DE OFICIO" : "TRADE INSERTS"]],
+        body: [[tradeRawForPdf]],
         theme: "plain",
-        tableLineWidth: 0,
-        tableLineColor: [255, 255, 255],
         styles: {
           fontSize: 10.5,
-          cellPadding: 4,
-          lineWidth: 0,
+          cellPadding: 6,
+          valign: "top",
           lineColor: [255, 255, 255],
+          lineWidth: 0,
           fillColor: [255, 255, 255],
           textColor: [20, 20, 20],
-          valign: "top",
         },
         headStyles: {
-          fillColor: [255, 255, 255],
+          fillColor: [242, 244, 247],
           textColor: [20, 20, 20],
           fontStyle: "bold",
           lineWidth: 0,
         },
         bodyStyles: { lineWidth: 0, fillColor: [255, 255, 255] },
-        alternateRowStyles: { fillColor: [255, 255, 255] },
         margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
         willDrawPage: () => {
           drawHeader();
         },
       });
-    } else {
-autoTable(doc, {
-      startY: 114,
-      head: [[tPdf("pdfJobInfoHead"), ""]],
-      body: jobRows,
-      theme: "plain",
-      tableLineWidth: 0,
-      tableLineColor: [255, 255, 255],
-      styles: {
-        fontSize: 10.5,
-        cellPadding: 5,
-        valign: "top",
-        lineColor: [255, 255, 255],
-        lineWidth: 0,
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-      },
-      headStyles: {
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-        fontStyle: "bold",
-        lineWidth: 0,
-      },
-      bodyStyles: { lineWidth: 0, fillColor: [255, 255, 255] },
-      alternateRowStyles: { fillColor: [255, 255, 255] },
-      columnStyles: {
-        0: { cellWidth: 70, fontStyle: "bold", fillColor: [255, 255, 255] },
-        1: { cellWidth: INNER_W - 70 },
-      },
-      margin: { top: 114, left: TABLE_INSET, right: TABLE_INSET, bottom: TABLE_INSET },
-      willDrawPage: () => {
-        drawHeader();
-      },
-    });
     }
 
     
@@ -4148,7 +4489,12 @@ const summaryRows = [
     if (hazardEnabled) {
       summaryRows.push([tPdf("pdfHazard", hazardPctNormalized), money.format(hazardFeeDollar)]);
     }
-    summaryRows.push([tPdf("pdfTotal"), money.format(total)]);
+    // Estimates: label the final line clearly
+    const totalLabelForPdf =
+      docType === "estimate"
+        ? (pdfLang === "es" ? "Total estimado" : "Estimated total")
+        : tPdf("pdfTotal");
+    summaryRows.push([totalLabelForPdf, money.format(total)]);
 
 
     // Prevent "Totals" header orphaning at bottom of page (head-only on prior page)
@@ -4371,6 +4717,25 @@ const summaryRows = [
       // ignore
     }
 
+
+if (mode === "view") {
+  try {
+    const ab = doc.output("arraybuffer");
+    const blob = new Blob([ab], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    // Open PDF in a new tab/window for preview
+    window.open(url, "_blank", "noopener,noreferrer");
+    // Revoke later to avoid breaking the open tab immediately
+    setTimeout(() => {
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    }, 60000);
+  } catch (e) {
+    // If preview fails, fall back to download
+    try { doc.save(filename); } catch (e2) {}
+  }
+  return;
+}
+
     if (mode === "share") {
       // IMPORTANT (iOS home screen / standalone):
       // Opening a blob URL often lands in the PDF viewer with disabled controls.
@@ -4393,12 +4758,24 @@ const summaryRows = [
         if (hasShare && file) {
           // Some browsers don't expose navigator.canShare; still try share() first.
           try {
-            await navigator.share({
+            const sharePromise = navigator.share({
               files: [file],
               title: filename,
               text: docType === "invoice" ? "Invoice PDF" : "Estimate PDF",
             });
-            return;
+
+            // If share() returns a Promise, stop here and fallback to download only if it rejects.
+            if (sharePromise && typeof sharePromise.then === "function") {
+              sharePromise.catch(() => {
+                try {
+                  doc.save(filename);
+                } catch (e2) {
+                  window.alert("Could not share or download the PDF on this device.");
+                }
+              });
+              return;
+            }
+            // If share() doesn't return a Promise for some reason, just proceed to download fallback.
           } catch (e) {
             // fall through to download
           }
@@ -4416,7 +4793,8 @@ const summaryRows = [
       return;
     }
 
-    doc.save(filename);};
+    doc.save(filename);
+  };
 
   const LanguageToggle = () => {
     const setLangUi = (next) => {
@@ -4605,7 +4983,574 @@ const laborCost = Number(laborTrueCost) || 0;
     return { laborCost, materialsCostTrue, totalCost, revenue, grossProfit, grossMarginPct };
   }, [laborLines, materialsMode, materialItems, materialsCost, total]);
 
-  const advancedScreen = (
+  
+  /* =========================
+     AI DRAFT MODE (BETA) — LOCAL RULES ENGINE (NO API YET)
+     Guided conversation that collects key variables, then generates draft lines.
+     ========================= */
+
+  const AI_DRAFT_DEFAULTS = useMemo(
+    () => ({
+      trade: aiTrade || "painting",
+      scopeType: "",
+      rooms: "",
+      sqft: "",
+      ceilingHeight: "",
+      coats: "2",
+      prep: "light",
+      includeCeilings: null,
+      includeTrimDoors: null,
+      stance: "mid",
+      complexity: "normal",
+      needForeman: "",
+    }),
+    [aiTrade]
+  );
+const aiReady = useMemo(() => {
+    const s = aiDraftState || AI_DRAFT_DEFAULTS;
+    const hasScope = s.scopeType === "interior" || s.scopeType === "exterior";
+    const hasSize = Boolean(String(s.sqft || "").trim()) || Boolean(String(s.rooms || "").trim());
+    const hasCeil = Boolean(String(s.ceilingHeight || "").trim());
+    const hasCoats = Boolean(String(s.coats || "").trim());
+    const hasPrep = Boolean(String(s.prep || "").trim());
+    const needsCeil = s.scopeType === "interior";
+    const needsExtStories = s.scopeType === "exterior";
+    const hasCeilFinal = needsCeil ? hasCeil : true;
+    const hasExt = needsExtStories ? (Boolean(String(s.extStories || "").trim()) || Boolean(String(s.sqft || "").trim())) : true;
+    return hasScope && hasSize && hasCeilFinal && hasCoats && hasPrep && hasExt;
+  }, [aiDraftState, AI_DRAFT_DEFAULTS]);
+
+  function aiPush(role, text) {
+    const clean = String(text || "");
+    const key = `${role}|${clean}`;
+    const now = Date.now();
+// Strong de-dupe: if the last assistant message is identical, don't spam the chat.
+if (role === "assistant") {
+  try {
+    const last = Array.isArray(aiMessages) && aiMessages.length ? aiMessages[aiMessages.length - 1] : null;
+    if (last && last.role === "assistant" && String(last.text || "") === clean) return;
+  } catch {
+    // ignore
+  }
+}
+    // De-dupe identical consecutive messages (React StrictMode / double-invoke protection)
+    if (aiLastPushRef.current && aiLastPushRef.current.key === key && now - aiLastPushRef.current.t < 800) {
+      return;
+    }
+    aiLastPushRef.current = { key, t: now };
+    const msg = { id: `${now}-${Math.random().toString(16).slice(2)}`, role, text: clean };
+    setAiMessages((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      // also guard against same last item
+      const last = list[list.length - 1];
+      if (last && last.role === role && String(last.text || "") === clean) return list;
+      return [...list, msg];
+    });
+  }
+
+  function aiClearSession() {
+    triggerHaptic();
+    setAiInput("");
+    setAiMessages([]);
+    setAiDraftState({ ...AI_DRAFT_DEFAULTS });
+  }
+
+  function aiOpen() {
+    triggerHaptic();
+    setShowAIDraft(true);
+    // Start a fresh guided prompt only if empty
+    setAiMessages((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      if (list.length > 0) return list;
+      // seed
+      const hello =
+        lang === "es"
+          ? "Modo Borrador IA (Beta). Dime del trabajo y te guío con preguntas cortas."
+          : "AI Draft Mode (Beta). Tell me about the job and I’ll guide you with quick questions.";
+      return [{ id: `seed-${Date.now()}`, role: "assistant", text: hello }];
+    });
+    setAiDraftState((prev) => ({ ...AI_DRAFT_DEFAULTS, ...(prev || {}) }));
+  }
+
+  function aiClose() {
+    triggerHaptic();
+    setShowAIDraft(false);
+  }
+
+  function _aiNorm(s) {
+    return String(s || "").toLowerCase();
+  }
+
+  function _aiParseNumberFromWords(s) {
+    // minimal english number words (one..twelve) for "two coats"
+    const map = {
+      one: 1,
+      two: 2,
+      three: 3,
+      four: 4,
+      five: 5,
+      six: 6,
+      seven: 7,
+      eight: 8,
+      nine: 9,
+      ten: 10,
+      eleven: 11,
+      twelve: 12,
+    };
+    const w = _aiNorm(s).trim();
+    return map[w] || null;
+  }
+
+  function aiApplyTextToStatePure(prev0, text) {
+    const raw = String(text || "");
+    const s = _aiNorm(raw);
+
+    const prev = prev0 || { ...AI_DRAFT_DEFAULTS };
+    const next = { ...prev };
+
+      // trade detection (future)
+      if (/\b(paint|painting|repaint|pintar|pintura)\b/.test(s)) next.trade = "painting";
+
+      // scope type
+      if (/\b(interior|inside|indoors|int)\b/.test(s) || /\b(interior|adentro|interiores)\b/.test(s)) next.scopeType = "interior";
+      if (/\b(exterior|outside|outdoors|ext)\b/.test(s) || /\b(exterior|afuera|exteriores)\b/.test(s)) next.scopeType = "exterior";
+
+      // include toggles
+      if (/\b(ceiling|ceilings|techo|techos)\b/.test(s)) next.includeCeilings = true;
+      if (/\b(walls only|solo paredes|sólo paredes)\b/.test(s)) next.includeCeilings = false;
+      if (/\b(trim|baseboard|baseboards|doors|door|molding|moulding|marcos|puertas|zoclo|zócalo)\b/.test(s)) next.includeTrimDoors = true;
+
+      // prep
+      if (/\b(light prep|light repair|minor prep|touch up|touch-up|ligera|leve)\b/.test(s)) next.prep = "light";
+      if (/\b(medium prep|moderate|med)\b/.test(s) || /\b(media)\b/.test(s)) next.prep = "medium";
+      if (/\b(heavy prep|heavy repair|a lot of patch|lots of patch|heavy)\b/.test(s) || /\b(pesada|fuerte)\b/.test(s)) next.prep = "heavy";
+
+      // stance
+      if (/\b(lowball|low)\b/.test(s) || /\b(barato|competitivo)\b/.test(s)) next.stance = "low";
+      if (/\b(mid|middle|standard|typical)\b/.test(s) || /\b(normal|estandar|estándar)\b/.test(s)) next.stance = "mid";
+      if (/\b(high|safe|padded)\b/.test(s) || /\b(seguro|con margen)\b/.test(s)) next.stance = "high";
+
+      // complexity
+      if (/\b(simple|open|easy)\b/.test(s) || /\b(sencillo|fácil)\b/.test(s)) next.complexity = "simple";
+      if (/\b(cut[-\s]?up|lots of corners|detailed)\b/.test(s) || /\b(recortado|muchos cortes)\b/.test(s)) next.complexity = "cutup";
+      if (/\b(normal|standard)\b/.test(s) || /\b(normal)\b/.test(s)) next.complexity = "normal";
+
+      // bedrooms / rooms
+      const bedMatch = s.match(/(\d+)\s*(bed|bedroom|br)\b/);
+      const roomMatchEs = s.match(/(\d+)\s*(recamara|recámaras|recamara(s)?|habitacion|habitaciones)\b/);
+      if (bedMatch && bedMatch[1]) next.rooms = String(parseInt(bedMatch[1], 10) || "");
+      if (roomMatchEs && roomMatchEs[1]) next.rooms = String(parseInt(roomMatchEs[1], 10) || "");
+
+      // sqft
+      const sqftMatch = s.match(/(\d{3,5})\s*(sq\s*ft|sqft|sf)\b/);
+      if (sqftMatch && sqftMatch[1]) next.sqft = String(parseInt(sqftMatch[1], 10) || "");
+
+      // exterior stories / levels (accept "1 story", "2 stories", "one story", "dos pisos", etc.)
+      const storiesMatch = s.match(/\b(\d)\s*(story|stories|level|levels|floor|floors|pisos?|planta|plantas)\b/);
+      if (storiesMatch && storiesMatch[1]) next.extStories = String(parseInt(storiesMatch[1], 10) || "");
+      else {
+        const wStory = s.match(/\b(one|two|three)\s*(story|stories|level|levels|floor|floors)\b/);
+        if (wStory && wStory[1]) {
+          const n = _aiParseNumberFromWords(wStory[1]);
+          if (n) next.extStories = String(n);
+        }
+        const wPisos = s.match(/\b(uno|dos|tres)\s*(piso|pisos|planta|plantas)\b/);
+        if (wPisos && wPisos[1]) {
+          const mapEs = { uno: 1, dos: 2, tres: 3 };
+          const n = mapEs[wPisos[1]];
+          if (n) next.extStories = String(n);
+        }
+      }
+
+
+      // ceiling height
+      const ceilMatch = s.match(/(\d{1,2})\s*(ft|feet)\s*(ceil|ceiling|ceilings)\b/);
+      const ceilMatch2 = s.match(/(\d{1,2})\s*(ft|feet)\b/); // fallback if they just say "8ft"
+      if (ceilMatch && ceilMatch[1]) next.ceilingHeight = String(parseInt(ceilMatch[1], 10) || "");
+      else if (!next.ceilingHeight && ceilMatch2 && ceilMatch2[1]) next.ceilingHeight = String(parseInt(ceilMatch2[1], 10) || "");
+
+      // coats
+      const coatsMatch = s.match(/(\d+)\s*(coat|coats|manos)\b/);
+      if (coatsMatch && coatsMatch[1]) next.coats = String(parseInt(coatsMatch[1], 10) || "");
+      else {
+        // "two coats"
+        const word = s.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(coat|coats)\b/);
+        if (word && word[1]) {
+          const n = _aiParseNumberFromWords(word[1]);
+          if (n) next.coats = String(n);
+        }
+      }
+
+
+      // context-aware: if user replies with just a number or yes/no, map it to the next missing field
+      const justNum = raw.trim().match(/^\s*(\d{1,5})\s*$/);
+      const looseNum = justNum ? null : raw.match(/(\d{1,5})/); // e.g. "1 story", "8ft", "1800 sqft"
+      const picked = justNum?.[1] || looseNum?.[1];
+      if (picked) {
+        const n = parseInt(picked, 10);
+        if (!String(prev.scopeType || "").trim()) {
+          // wait for interior/exterior (number doesn't help)
+        } else if (!String(prev.sqft || "").trim() && !String(prev.rooms || "").trim()) {
+          // size: interior -> bedrooms or sqft; exterior -> sqft (or stories handled separately)
+          if (prev.scopeType === "exterior") {
+            if (n >= 500) next.sqft = String(n);
+            else if (n >= 1 && n <= 3) next.extStories = String(n); // allow 1–3 as stories/levels
+          } else {
+            if (n >= 500) next.sqft = String(n);
+            else next.rooms = String(Math.max(1, n));
+          }
+        } else if (prev.scopeType === "interior" && !String(prev.ceilingHeight || "").trim()) {
+          // ceiling height in feet
+          if (n >= 7 && n <= 20) next.ceilingHeight = String(n);
+        } else if (prev.scopeType === "exterior" && !String(prev.extStories || "").trim()) {
+          // exterior: 1/2 stories or height
+          if (n === 1 || n === 2) next.extStories = String(n);
+          else if (n >= 7 && n <= 35) next.extStories = String(n);
+        } else if (!String(prev.coats || "").trim()) {
+          if (n >= 1 && n <= 6) next.coats = String(n);
+        }
+      }
+
+      // context-aware yes/no for ceilings / trim
+      if (prev.scopeType === "interior" && prev.includeCeilings === null) {
+        if (/\b(yes|yep|yeah|y|si|sí|s|include)\b/.test(s)) next.includeCeilings = true;
+        if (/\b(no|nah|n|walls only)\b/.test(s)) next.includeCeilings = false;
+        if (/\bwalls\s*(and|&)\s*ceilings\b/.test(s)) next.includeCeilings = true;
+      }
+      if (prev.includeTrimDoors === null) {
+        if (/\b(yes|yep|yeah|y|si|sí|s|include)\b/.test(s)) next.includeTrimDoors = true;
+        if (/\b(no|nah|n)\b/.test(s)) next.includeTrimDoors = false;
+        if (/\b(trim|baseboard|doors?)\b/.test(s)) next.includeTrimDoors = true;
+      }
+
+      // context-aware yes/no for foreman
+      if (!String(prev.needForeman || "").trim()) {
+        if (/\b(yes|yep|yeah|y|si|sí|s)\b/.test(s)) next.needForeman = "yes";
+        if (/\b(no|nah|n)\b/.test(s)) next.needForeman = "no";
+      }
+
+    return next;
+  }
+
+  function aiApplyTextToState(text) {
+    setAiDraftState((prev0) => aiApplyTextToStatePure(prev0, text));
+  }
+
+  function aiNextQuestion(state) {
+    const s = state || AI_DRAFT_DEFAULTS;
+    if (!(s.scopeType === "interior" || s.scopeType === "exterior")) {
+      return lang === "es" ? "¿Interior o exterior?" : "Interior or exterior?";
+    }
+    if (!String(s.sqft || "").trim() && !String(s.rooms || "").trim()) {
+      if (s.scopeType === "exterior") {
+        return lang === "es" ? "¿Cuántos pies² (aprox)? (si no sabes, dime 1 o 2 pisos)" : "Approx total square feet? (if unsure, tell me 1 or 2 stories)";
+      }
+      return lang === "es" ? "¿Cuántas recámaras (o cuántos pies²)?" : "How many bedrooms (or total square feet)?";
+    }
+    if (s.scopeType === "interior" && !String(s.ceilingHeight || "").trim()) {
+      return lang === "es" ? "¿Altura de techo? (por ejemplo: 8)" : "Ceiling height? (for example: 8)";
+    }
+    if (s.scopeType === "exterior" && !String(s.extStories || "").trim() && !String(s.sqft || "").trim()) {
+      return lang === "es" ? "¿Es 1 o 2 pisos? (o dime altura en pies)" : "Is it 1 or 2 stories? (or tell me height in feet)";
+    }
+    if (!String(s.coats || "").trim()) {
+      return lang === "es" ? "¿Cuántas manos/capas?" : "How many coats?";
+    }
+    if (!String(s.prep || "").trim()) {
+      return lang === "es" ? "¿Preparación: ligera, media o pesada?" : "Prep level: light, medium, or heavy?";
+    }
+
+    // Optional detail questions (one at a time)
+    if (s.scopeType === "interior" && typeof s.includeCeilings !== "boolean") {
+      return lang === "es" ? "¿Incluye techos? (sí/no)" : "Include ceilings? (yes/no)";
+    }
+    if (typeof s.includeTrimDoors !== "boolean") {
+      return lang === "es" ? "¿Incluye molduras/puertas? (sí/no)" : "Include trim/doors? (yes/no)";
+    }
+    if (!String(s.needForeman || "").trim()) {
+      return lang === "es" ? "¿Necesitas capataz/foreman? (sí/no)" : "Do you need a foreman? (yes/no)";
+    }
+    return "";
+  }
+
+  function aiSuggestedChips() { return []; }
+
+  function aiSubmit(text) {
+    const v = String(text || "").trim();
+    if (!v) return;
+    triggerHaptic();
+
+    // user message
+    aiPush("user", v);
+    setAiInput("");
+
+    const uiState = aiDraftState || AI_DRAFT_DEFAULTS;
+
+    const toNum = (x) => {
+      const s = String(x ?? "").trim();
+      if (!s) return null;
+      const n = Number(s.replace(/,/g, ""));
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const toBool = (x) => {
+      if (typeof x === "boolean") return x;
+      const s = String(x ?? "").trim().toLowerCase();
+      if (!s) return null;
+      if (["true", "yes", "y", "yep", "yeah", "si"].includes(s)) return true;
+      if (["false", "no", "n", "nope", "nah"].includes(s)) return false;
+      return null;
+    };
+
+    const serverState = {
+      trade: uiState.trade || "painting",
+      scopeType: uiState.scopeType || null,
+      scopeBasis: uiState.scopeBasis || null,
+      rooms: toNum(uiState.rooms),
+      sqft: toNum(uiState.sqft),
+      stories: toNum(uiState.extStories ?? uiState.stories),
+      ceilingHeightFt: toNum(uiState.ceilingHeight),
+      coats: toNum(uiState.coats),
+      prep: uiState.prep || null,
+      includeCeilings: toBool(uiState.includeCeilings),
+      includeTrimDoors: toBool(uiState.includeTrimDoors),
+      needForeman: toBool(uiState.needForeman),
+    };
+
+    fetch("/api/ai-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: v,
+        state: serverState,
+        lang: lang || "en",
+      }),
+    })
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!r.ok || !data) {
+          const err = (data && (data.error || data.detail)) || `HTTP ${r.status}`;
+          throw new Error(err);
+        }
+        return data;
+      })
+      .then((data) => {
+        const patch = (data && data.patch) || {};
+        const nextQ = String(data?.nextQuestion || "").trim();
+        const status = String(data?.status || "").trim();
+
+        // Merge patch into UI draft state (keep stance/complexity fields etc.)
+        setAiDraftState((prevUI) => {
+          const p = prevUI || AI_DRAFT_DEFAULTS;
+          const merged = {
+            ...p,
+            trade: patch.trade || p.trade,
+            scopeType: patch.scopeType ?? p.scopeType,
+            scopeBasis: patch.scopeBasis ?? p.scopeBasis,
+            rooms: patch.rooms === null || patch.rooms === undefined ? p.rooms : String(patch.rooms),
+            sqft: patch.sqft === null || patch.sqft === undefined ? p.sqft : String(patch.sqft),
+            extStories: patch.stories === null || patch.stories === undefined ? p.extStories : String(patch.stories),
+            ceilingHeight: patch.ceilingHeightFt === null || patch.ceilingHeightFt === undefined ? p.ceilingHeight : String(patch.ceilingHeightFt),
+            coats: patch.coats === null || patch.coats === undefined ? p.coats : String(patch.coats),
+            prep: patch.prep ?? p.prep,
+            includeCeilings: patch.includeCeilings === null || patch.includeCeilings === undefined ? p.includeCeilings : patch.includeCeilings,
+            includeTrimDoors: patch.includeTrimDoors === null || patch.includeTrimDoors === undefined ? p.includeTrimDoors : patch.includeTrimDoors,
+            needForeman: patch.needForeman === null || patch.needForeman === undefined ? p.needForeman : patch.needForeman,
+          };
+          return merged;
+        });
+
+        // Optional one-liner context
+        if (status) {
+          aiPush("assistant", status);
+        }
+
+        if (nextQ) {
+          aiPush("assistant", nextQ);
+        } else {
+          aiPush(
+            "assistant",
+            lang === "es"
+              ? "Perfecto. Cuando quieras, presiona “Generar borrador”."
+              : "Perfect. When you’re ready, press “Generate draft”."
+          );
+        }
+      })
+      .catch((e) => {
+        aiPush(
+          "assistant",
+          lang === "es"
+            ? `No pude conectar con el servidor IA. (${String(e?.message || e)})`
+            : `I couldn’t reach the AI server. (${String(e?.message || e)})`
+        );
+      });
+  }
+
+  function generatePaintingDraft(state) {
+    const s = state || AI_DRAFT_DEFAULTS;
+
+    const stance = s.stance || "mid";
+    const complexity = s.complexity || "normal";
+    const prep = s.prep || "light";
+
+    const coats = Math.max(1, parseInt(String(s.coats || "2"), 10) || 2);
+    const ceilingH = Math.max(7, Math.min(20, parseInt(String(s.ceilingHeight || "8"), 10) || 8));
+
+    // determine base sqft (floor area) if missing
+    let floorSqft = parseInt(String(s.sqft || ""), 10);
+    if (!Number.isFinite(floorSqft) || floorSqft <= 0) {
+      const rooms = Math.max(1, parseInt(String(s.rooms || "3"), 10) || 3);
+      // very rough default: 3br ~= 1600-2200 depending; start mid ~ 1900 and scale
+      floorSqft = 900 + rooms * 350; // 2br 1600, 3br 1950, 4br 2300
+    }
+
+    // wall surface factor; scales with ceiling height
+    const wallFactorBase = 2.6 * (ceilingH / 8);
+    let wallArea = floorSqft * wallFactorBase;
+
+    // include ceilings (approx ceiling area = floor area)
+    let ceilingArea = s.includeCeilings ? floorSqft : 0;
+
+    // complexity productivity
+    const baseSqftPerHour =
+      complexity === "simple" ? 200 : complexity === "cutup" ? 120 : 160;
+
+    const prepMult = prep === "heavy" ? 1.6 : prep === "medium" ? 1.25 : 1.0;
+
+    // coats multiplier: first coat 1.0, each additional coat ~0.75
+    const coatsMult = 1 + Math.max(0, coats - 1) * 0.75;
+
+    // stance affects padding
+    const stanceMult = stance === "low" ? 0.92 : stance === "high" ? 1.10 : 1.0;
+
+    const paintableArea = wallArea + ceilingArea;
+
+    const laborHours = (paintableArea / baseSqftPerHour) * coatsMult * prepMult * stanceMult;
+
+    // gallons (coverage ~350 sqft/gal per coat) + waste
+    const waste = stance === "low" ? 1.05 : stance === "high" ? 1.15 : 1.10;
+    const gallons = Math.max(1, Math.ceil((paintableArea / 350) * coats * waste));
+
+    // materials estimate (customer-facing charge) — simple placeholder totals
+    const matChargeBase = gallons * 45 + 40; // paint + sundries
+    const matCostBase = gallons * 22 + 20; // internal
+    const matCharge = matChargeBase * stanceMult;
+    const matCost = matCostBase * stanceMult;
+
+    const scopeBits = [];
+    scopeBits.push(s.scopeType === "exterior" ? "Exterior" : "Interior");
+    scopeBits.push(s.includeCeilings ? (lang === "es" ? "paredes + techos" : "walls + ceilings") : (lang === "es" ? "solo paredes" : "walls only"));
+    if (s.includeTrimDoors) scopeBits.push(lang === "es" ? "incluye trim/puertas" : "includes trim/doors");
+    scopeBits.push(`${coats} ${lang === "es" ? "manos" : "coats"}`);
+    scopeBits.push(`${prep} ${lang === "es" ? "prep" : "prep"}`);
+    scopeBits.push(`${ceilingH}ft`);
+
+    const assumptionsLine =
+      lang === "es"
+        ? `Borrador IA (Beta) — Supuestos: ${scopeBits.join(" • ")} • ${floorSqft} pies² (aprox) • ${gallons} gal (aprox)`
+        : `AI Draft (Beta) — Assumptions: ${scopeBits.join(" • ")} • ~${floorSqft} sqft • ~${gallons} gal`;
+
+    const laborLinesToAdd = [];
+
+    // Labor roles: always "Painter", optionally "Foreman"
+    const painterLabel = lang === "es" ? "Pintor" : "Painter";
+    const foremanLabel = lang === "es" ? "Capataz / Foreman" : "Foreman";
+
+    const needForeman = String(s.needForeman || "").toLowerCase() === "yes";
+    const foremanHours = needForeman ? Math.max(2, laborHours * 0.15) : 0;
+
+    if (needForeman) {
+      laborLinesToAdd.push({
+        label: foremanLabel,
+        hours: normalizeHoursInput(foremanHours),
+        rate: "",
+        internalRate: "",
+        qty: 1,
+      });
+    }
+
+    laborLinesToAdd.push({
+      label: painterLabel,
+      hours: normalizeHoursInput(laborHours),
+      rate: "",
+      internalRate: "",
+      qty: 1,
+    });
+
+
+    return {
+      laborLinesToAdd,
+      materials: {
+        charge: normalizeMoneyInput(matCharge),
+        cost: normalizeMoneyInput(matCost),
+        gallons,
+      },
+      assumptionsLine,
+    };
+  }
+
+  function aiGenerateDraft() {
+    triggerHaptic();
+    const s = aiDraftState || AI_DRAFT_DEFAULTS;
+    if (String(s.trade || "painting") !== "painting") {
+      alert(lang === "es" ? "Por ahora, el borrador IA solo soporta Pintura (Beta)." : "For now, AI Draft supports Painting only (Beta).");
+      return;
+    }
+    if (!aiReady) {
+      const q = aiNextQuestion(s);
+      aiPush("assistant", q || (lang === "es" ? "Faltan datos. Intenta otra vez." : "Missing info. Try again."));
+      return;
+    }
+
+    const draft = generatePaintingDraft(s);
+
+    // apply to labor lines (replace if it's just the default empty line)
+    setLaborLines((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      const isSingleEmpty =
+        list.length === 1 &&
+        !String(list[0]?.label || "").trim() &&
+        !String(list[0]?.hours || "").trim() &&
+        !String(list[0]?.rate || "").trim();
+      return isSingleEmpty ? draft.laborLinesToAdd : [...list, ...draft.laborLinesToAdd];
+    });
+
+    // materials (respect current mode)
+    if (materialsMode === "itemized") {
+      setMaterialItems((prev) => {
+        const list = Array.isArray(prev) ? [...prev] : [];
+        const isSingleEmpty = list.length === 1 && !String(list[0]?.desc || "").trim() && !String(list[0]?.charge || "").trim();
+        const row = {
+          desc: lang === "es" ? `Pintura y suministros (aprox) — ${draft.materials.gallons} gal` : `Paint & sundries (approx) — ${draft.materials.gallons} gal`,
+          qty: 1,
+          cost: draft.materials.cost,
+          charge: draft.materials.charge,
+        };
+        return isSingleEmpty ? [row] : [...list, row];
+      });
+    } else {
+      // blanket materials cost = add charge (customer facing)
+      setMaterialsCost((prev) => {
+        const existing = Number(String(prev || "").replace(/[^0-9.\-]/g, "")) || 0;
+        const add = Number(String(draft.materials.charge || "").replace(/[^0-9.\-]/g, "")) || 0;
+        return normalizeMoneyInput(existing + add);
+      });
+    }
+
+    // append assumptions into scope/notes (job description) if empty or not already added
+    setDescription((prev) => {
+      const base = String(prev || "");
+      if (!base.trim()) return draft.assumptionsLine;
+      if (base.includes("AI Draft") || base.includes("Borrador IA")) return base;
+      return `${base}\n\n${draft.assumptionsLine}`;
+    });
+
+    setLaborOpen(true); // expand labor on draft generate
+    aiPush("assistant", lang === "es" ? "Dime del trabajo y te guío con preguntas cortas." : "Tell me about the job and I’ll guide you with quick questions.");
+    setShowAIDraft(false);
+  }
+
+const advancedScreen = (
       <div>
         <div className="pe-section" style={{ paddingTop: 0 }}>
           <div className="pe-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -4628,6 +5573,34 @@ const laborCost = Number(laborTrueCost) || 0;
               : "Settings and advanced options (saved on this device)."}
           </div>
         </div>
+
+        {/* ✅ AI Draft Mode (Beta) */}
+        <section className="pe-section">
+          <div className="pe-row" style={{ alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div className="pe-section-title" style={{ marginBottom: 4 }}>
+                {lang === "es" ? "Modo Borrador IA (Beta)" : "AI Draft Mode (Beta)"}
+              </div>
+              <div className="pe-muted">
+                {lang === "es"
+                  ? "Conversación guiada para crear un borrador rápido (Pintura primero)."
+                  : "Guided conversation to generate a fast draft (Painting first)."}
+              </div>
+            </div>
+            <button
+              className="pe-btn"
+              type="button"
+              onClick={() => {
+                aiOpen();
+              }}
+              title={lang === "es" ? "Abrir Modo IA" : "Open AI Draft Mode"}
+            >
+              {lang === "es" ? "Abrir" : "Open"}
+            </button>
+          </div>
+        </section>
+
+
 
         
         {/* ✅ Customer organizer (Advanced) */}
@@ -4672,7 +5645,7 @@ const laborCost = Number(laborTrueCost) || 0;
                 <>
                   <div className="pe-grid" style={{ marginTop: 10 }}>
                     <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-                      <div style={FIELD_LABEL}>{lang === "es" ? "Buscar cliente" : "Search customer"}</div>
+                      <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Buscar cliente" : "Search customer"}</div>
                       <input
                         className="pe-input"
                         value={customerSearch}
@@ -4681,27 +5654,42 @@ const laborCost = Number(laborTrueCost) || 0;
                       />
                     </div>
 
-                    <div style={FIELD_STACK}>
-                      <div style={FIELD_LABEL}>{lang === "es" ? "Ordenar" : "Sort"}</div>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Ordenar" : "Sort"}</div>
                       <select className="pe-input" value={customerSort} onChange={(e) => setCustomerSort(e.target.value)}>
                         <option value="recent">{lang === "es" ? "Más recientes" : "Most recent"}</option>
                         <option value="az">A–Z</option>
                       </select>
                     </div>
 
-                    <div style={FIELD_STACK}>
-                      <div style={FIELD_LABEL}>{t("recentCustomers")}</div>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("recentCustomers")}</div>
                       <select
                         className="pe-input"
                         value={selectedCustomerId}
                         onChange={(e) => setSelectedCustomerId(e.target.value)}
                       >
                         <option value="">{lang === "es" ? "Seleccionar…" : "Select…"}</option>
-                        {customersFiltered.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
+                        {String(customerSearch || "").trim()
+                          ? customersFiltered.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))
+                          : [
+                              ...recentCustomersTop.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {`${c.name}${lang === "es" ? " (reciente)" : " (recent)"}`}
+                                </option>
+                              )),
+                              ...customersFiltered
+                                .filter((c) => !recentCustomersTop.some((r) => String(r.id) === String(c.id)))
+                                .map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}
+                                  </option>
+                                )),
+                            ]}
                       </select>
                     </div>
                   </div>
@@ -4709,8 +5697,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   {customerDraft ? (
                     <>
                       <div className="pe-grid" style={{ marginTop: 10 }}>
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{t("customerName")}</div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerName")}</div>
                           <input
                             className="pe-input"
                             value={customerDraft.name || ""}
@@ -4718,8 +5706,8 @@ const laborCost = Number(laborTrueCost) || 0;
                           />
                         </div>
 
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{t("customerPhone")}</div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerPhone")}</div>
                           <input
                             className="pe-input"
                             value={customerDraft.phone || ""}
@@ -4727,8 +5715,8 @@ const laborCost = Number(laborTrueCost) || 0;
                           />
                         </div>
 
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{t("customerEmail")}</div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerEmail")}</div>
                           <input
                             className="pe-input"
                             value={customerDraft.email || ""}
@@ -4737,7 +5725,7 @@ const laborCost = Number(laborTrueCost) || 0;
                         </div>
 
                         <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-                          <div style={FIELD_LABEL}>{t("customerAddress")}</div>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerAddress")}</div>
                           <textarea
                             className="pe-input"
                             rows={2}
@@ -4747,8 +5735,8 @@ const laborCost = Number(laborTrueCost) || 0;
                         </div>
 
 
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{lang === "es" ? "Términos de pago" : "Payment terms"}</div>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Términos de pago" : "Payment terms"}</div>
                           <select
                             className="pe-input"
                             value={String(customerDraft.termsDays ?? 0)}
@@ -4778,7 +5766,7 @@ const laborCost = Number(laborTrueCost) || 0;
 
                         {customerDraft.billingDiff ? (
                           <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-                            <div style={FIELD_LABEL}>{lang === "es" ? "Dirección de facturación" : "Billing address"}</div>
+                            <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Dirección de facturación" : "Billing address"}</div>
                             <textarea
                               className="pe-input"
                               rows={2}
@@ -4787,35 +5775,7 @@ const laborCost = Number(laborTrueCost) || 0;
                             />
                           </div>
                         ) : null}
-
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{lang === "es" ? "Proyecto" : "Project name"}</div>
-                          <input
-                            className="pe-input"
-                            value={customerDraft.projectName || ""}
-                            onChange={(e) => setCustomerDraft((d) => ({ ...(d || {}), projectName: e.target.value }))}
-                          />
-                        </div>
-
-                        <div style={FIELD_STACK}>
-                          <div style={FIELD_LABEL}>{lang === "es" ? "Proyecto #" : "Project #"}</div>
-                          <input
-                            className="pe-input"
-                            value={customerDraft.projectNumber || ""}
-                            onChange={(e) => setCustomerDraft((d) => ({ ...(d || {}), projectNumber: e.target.value }))}
-                          />
-                        </div>
-
-                        <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-                          <div style={FIELD_LABEL}>{lang === "es" ? "Dirección del proyecto" : "Project address"}</div>
-                          <textarea
-                            className="pe-input"
-                            rows={2}
-                            value={customerDraft.projectAddress || ""}
-                            onChange={(e) => setCustomerDraft((d) => ({ ...(d || {}), projectAddress: e.target.value }))}
-                          />
-                        </div>
-                      </div>
+</div>
 
                       <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
                         <button
@@ -4931,8 +5891,8 @@ const laborCost = Number(laborTrueCost) || 0;
 
             {docType === "invoice" && (
               <div className="pe-grid">
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{lang === "es" ? "Número de factura" : "Invoice number"}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Número de factura" : "Invoice number"}</div>
                   <input
                     className="pe-input"
                     value={invoiceNumber}
@@ -5164,12 +6124,354 @@ const laborCost = Number(laborTrueCost) || 0;
           </div>
         </section>
 
+
+        {/* Field Calculator (Beta) — kept in Advanced, bottom */}
+                <section className="pe-section">
+          <div className="pe-row" style={{ marginTop: 0, alignItems: "flex-start" }}>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => setCalcOpen((v) => !v)}
+              aria-expanded={calcOpen}
+              style={{ flex: 1, textAlign: "left", paddingLeft: 0 }}
+              title={calcOpen ? (lang === "es" ? "Ocultar" : "Collapse") : (lang === "es" ? "Mostrar" : "Expand")}
+            >
+              <div className="pe-section-title" style={{ marginBottom: 0 }}>
+                {calcOpen ? "▾ " : "▸ "}
+                {lang === "es" ? "Calculadora de obra (Beta)" : "Field Calculator (Beta)"}
+              </div>
+              {!calcOpen && (
+                <div className="pe-collapsible-summary">
+                  {lang === "es"
+                    ? "Fracciones • cm↔in • ft/in"
+                    : "Fractions • cm↔in • ft/in"}
+                </div>
+              )}
+            </button>
+          </div>
+
+          {calcOpen && (
+            <div style={{ marginTop: 10 }}>
+              <div className="pe-row" style={{ gap: 10, alignItems: "center" }}>
+                <input
+                  className="pe-input"
+                  value={calcInput}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setCalcInput(v);
+                    setCalcResult(v ? solveFieldCalc(v) : "");
+                  }}
+                  placeholder={
+                    lang === "es"
+                      ? 'Ej: "30 cm a pulgadas"  •  "12 3/8 + 5/16"'
+                      : 'Ex: "30 cm to inches"  •  "12 3/8 + 5/16"'
+                  }
+                  style={{ flex: 1 }}
+                />
+
+                {canUseSpeech && (
+                  <button
+                    type="button"
+                    className={"pe-btn " + (calcListening ? "pe-btn-danger" : "pe-btn-secondary")}
+                    onClick={calcListening ? stopCalcVoice : startCalcVoice}
+                    title={calcListening ? (lang === "es" ? "Detener" : "Stop") : (lang === "es" ? "Hablar" : "Speak")}
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    {calcListening ? (lang === "es" ? "■" : "■") : (lang === "es" ? "🎙" : "🎙")}
+                  </button>
+                )}
+              </div>
+
+              {!!calcResult && (
+                <div
+                  className="pe-card"
+                  style={{
+                    marginTop: 10,
+                    padding: 12,
+                    borderRadius: 12,
+                    fontSize: 14,
+                    opacity: 0.92,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                    {lang === "es" ? "Resultado" : "Result"}
+                  </div>
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.35 }}>{calcResult}</div>
+                </div>
+              )}
+
+              <div className="pe-help" style={{ marginTop: 10 }}>
+                {lang === "es"
+                  ? 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm a pulgadas'
+                  : 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm to inches'}
+              </div>
+            </div>
+          )}
+        </section>
+
         </div>
     );
 
 
 
-  // STEP 1: COMPANY PROFILE
+  
+  // ✅ AI Draft Mode (Beta) — show as a full-screen workflow from ANY step (profile or estimator)
+  if (showAIDraft) {
+    return (
+      <div className="pe-wrap">
+        <PopStyles />
+        <PagePerimeterSnake />
+              <div
+                role="dialog"
+                aria-modal="true"
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 9999,
+                  background: "rgba(10,12,16,0.92)",
+                  backdropFilter: "blur(14px)",
+                  WebkitBackdropFilter: "blur(14px)",
+                  color: "#e5e7eb",
+                  overflow: "auto",
+                  padding: 14,
+                }}
+              >
+                <div className="pe-card" style={{ maxWidth: 980, margin: "0 auto", background: "rgba(15,18,25,0.75)", border: "1px solid rgba(255,255,255,0.08)", boxShadow: "0 20px 50px rgba(0,0,0,0.45)", color: "#e5e7eb" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "10px 12px",
+                      borderBottom: "1px solid rgba(255,255,255,0.10)",
+                      position: "sticky",
+                      top: 0,
+                      background: "rgba(10,12,16,0.92)",
+                  backdropFilter: "blur(14px)",
+                  WebkitBackdropFilter: "blur(14px)",
+                  color: "#e5e7eb",
+                      zIndex: 2,
+                    }}
+                  >
+                    <button className="pe-btn pe-btn-ghost" type="button" onClick={aiClose}>
+                      {lang === "es" ? "Volver" : "Back"}
+                    </button>
+
+                    <div style={{ textAlign: "center", lineHeight: 1.15 }}>
+                      <div style={{ fontWeight: 800 }}>{lang === "es" ? "Modo Borrador IA (Beta)" : "AI Draft Mode (Beta)"}</div>
+                      <div className="pe-muted" style={{ fontSize: 12 }}>
+                        {lang === "es" ? "Conversación guiada → borrador" : "Guided conversation → draft"}
+                      </div>
+                    </div>
+
+                    <button className="pe-btn pe-btn-ghost" type="button" onClick={aiClearSession}>
+                      {lang === "es" ? "Nuevo / Limpiar" : "New / Clear"}
+                    </button>
+                  </div>
+
+                  <div style={{ padding: 12, display: "grid", gap: 10 }}>
+                    {/* Controls */}
+                    <div style={{ display: "grid", gap: 10 }}>
+                      <div className="pe-grid" style={{ gap: 10 }}>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Trade" : "Trade"}</div>
+                          <select
+                            className="pe-input"
+                            value={aiTrade}
+                            onChange={(e) => {
+                              triggerHaptic();
+                              const v = String(e.target.value || "painting");
+                              setAiTrade(v);
+                              setAiDraftState((prev) => ({ ...(prev || {}), trade: v }));
+                            }}
+                          >
+                            <option value="painting">{lang === "es" ? "Pintura (Beta)" : "Painting (Beta)"}</option>
+                            <option value="drywall" disabled>
+                              {lang === "es" ? "Drywall (próximamente)" : "Drywall (coming soon)"}
+                            </option>
+                            <option value="flooring" disabled>
+                              {lang === "es" ? "Pisos (próximamente)" : "Flooring (coming soon)"}
+                            </option>
+                          </select>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Estilo" : "Stance"}</div>
+                          <select
+                            className="pe-input"
+                            value={aiDraftState?.stance || "mid"}
+                            onChange={(e) => {
+                              triggerHaptic();
+                              const v = String(e.target.value || "mid");
+                              setAiDraftState((p) => ({ ...(p || {}), stance: v }));
+                            }}
+                          >
+                            <option value="low">{lang === "es" ? "Bajo (competitivo)" : "Low (aggressive)"}</option>
+                            <option value="mid">{lang === "es" ? "Medio (típico)" : "Mid (typical)"}</option>
+                            <option value="high">{lang === "es" ? "Alto (seguro)" : "High (safe)"}</option>
+                          </select>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Complejidad" : "Complexity"}</div>
+                          <select
+                            className="pe-input"
+                            value={aiDraftState?.complexity || "normal"}
+                            onChange={(e) => {
+                              triggerHaptic();
+                              const v = String(e.target.value || "normal");
+                              setAiDraftState((p) => ({ ...(p || {}), complexity: v }));
+                            }}
+                          >
+                            <option value="simple">{lang === "es" ? "Sencillo" : "Simple"}</option>
+                            <option value="normal">{lang === "es" ? "Normal" : "Normal"}</option>
+                            <option value="cutup">{lang === "es" ? "Recortado" : "Cut-up"}</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="pe-grid" style={{ gap: 10 }}>
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Preparación" : "Prep"}</div>
+                          <select
+                            className="pe-input"
+                            value={aiDraftState?.prep || "light"}
+                            onChange={(e) => {
+                              triggerHaptic();
+                              const v = String(e.target.value || "light");
+                              setAiDraftState((p) => ({ ...(p || {}), prep: v }));
+                            }}
+                          >
+                            <option value="light">{lang === "es" ? "Ligera" : "Light"}</option>
+                            <option value="medium">{lang === "es" ? "Media" : "Medium"}</option>
+                            <option value="heavy">{lang === "es" ? "Pesada" : "Heavy"}</option>
+                          </select>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Incluir" : "Include"}</div>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(aiDraftState?.includeCeilings)}
+                                onChange={(e) => {
+                                  triggerHaptic();
+                                  setAiDraftState((p) => ({ ...(p || {}), includeCeilings: Boolean(e.target.checked) }));
+                                }}
+                              />
+                              <span>{lang === "es" ? "Techos" : "Ceilings"}</span>
+                            </label>
+
+                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(aiDraftState?.includeTrimDoors)}
+                                onChange={(e) => {
+                                  triggerHaptic();
+                                  setAiDraftState((p) => ({ ...(p || {}), includeTrimDoors: Boolean(e.target.checked) }));
+                                }}
+                              />
+                              <span>{lang === "es" ? "Trim/Puertas" : "Trim/Doors"}</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Tip" : "Tip"}</div>
+                          <div className="pe-muted" style={{ fontSize: 12 }}>
+                            {lang === "es"
+                              ? "Mejor si dices: trade + tamaño + techo + manos + preparación."
+                              : "Best results: trade + size + ceiling height + coats + prep."}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Chat */}
+                    <div ref={aiChatRef}
+                      style={{
+                        border: "1px solid rgba(0,0,0,0.10)",
+                        borderRadius: 12,
+                        padding: 10,
+                        minHeight: 220,
+                        maxHeight: 340,
+                        overflow: "auto",
+                        background: "rgba(0,0,0,0.02)",
+                      }}
+                    >
+                      {(aiMessages || []).map((m) => (
+                        <div
+                          key={m.id}
+                          style={{
+                            display: "flex",
+                            justifyContent: m.role === "user" ? "flex-end" : "flex-start",
+                            marginBottom: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              maxWidth: "92%",
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              background: m.role === "user" ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.06)",
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {m.text}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Input */}
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                      <textarea
+                        className="pe-input"
+                        value={aiInput}
+                        onChange={(e) => setAiInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          // Enter submits; Shift+Enter inserts newline
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            aiSubmit(aiInput);
+                          }
+                        }}
+                        placeholder={
+                          lang === "es"
+                            ? "Describe el trabajo… (ej: “Pintar 3 recámaras, 8ft, 2 manos, prep ligera”)"
+                            : "Describe the job… (ex: “Paint 3 bedrooms, 8ft, 2 coats, light prep”)"
+                        }
+                        rows={2}
+                        style={{ flex: 1, resize: "vertical" }}
+                      />
+                      <button className="pe-btn" type="button" onClick={() => aiSubmit(aiInput)}>
+                        {lang === "es" ? "Enviar" : "Send"}
+                      </button>
+                    </div>
+
+                    {/* Generate */}
+                    <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center" }}>
+                      <div className="pe-muted" style={{ fontSize: 12 }}>
+                        {aiReady
+                          ? lang === "es"
+                            ? "Listo para generar borrador."
+                            : "Ready to generate draft."
+                          : aiNextQuestion(aiDraftState)}
+                      </div>
+                      <button className="pe-btn" type="button" onClick={aiGenerateDraft} disabled={!aiReady}>
+                        {lang === "es" ? "Generar borrador" : "Generate draft"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+      </div>
+    );
+  }
+
+// STEP 1: COMPANY PROFILE
   if (step === "profile") {
     const requiredComplete = isCompanyComplete(profile);
 
@@ -5177,7 +6479,7 @@ const laborCost = Number(laborTrueCost) || 0;
       <div className="pe-wrap">
       <PopStyles />
       <PagePerimeterSnake />
-        <header className="pe-header pe-sweep">
+      <header className="pe-header pe-sweep">
           <div style={{ marginTop: -10 }}>
             <div className="pe-title">Field Pocket Estimator</div>
             <div className="pe-subtitle">{t("subtitleProfile")}</div>
@@ -5248,8 +6550,8 @@ const laborCost = Number(laborTrueCost) || 0;
 
             <form autoComplete="on" onSubmit={(e) => e.preventDefault()}>
 <div className="pe-grid">
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("companyNameReq")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("companyNameReq")}</div>
                 <input
                   className="pe-input"
                   id="companyName"
@@ -5260,8 +6562,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   placeholder={lang === "es" ? "Nombre de la empresa" : "Company name"}
                 />
               </div>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("phoneReq")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("phoneReq")}</div>
                 <input
                   className="pe-input"
                   type="tel"
@@ -5279,8 +6581,8 @@ const laborCost = Number(laborTrueCost) || 0;
             </div>
 
             <div className="pe-grid" style={{ marginTop: 8 }}>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("emailReq")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("emailReq")}</div>
                 <input
                   className="pe-input"
                   type="email"
@@ -5296,8 +6598,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   placeholder={lang === "es" ? "Correo electrónico" : "Email"}
                 />
               </div>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("addressReq")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("addressReq")}</div>
                 <input
                   className="pe-input"
                   id="address"
@@ -5367,8 +6669,8 @@ const laborCost = Number(laborTrueCost) || 0;
             </div>
 
             <div className="pe-grid" style={{ marginTop: 10 }}>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("rocOpt")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("rocOpt")}</div>
                 <input
                   className="pe-input"
                   value={profile.roc}
@@ -5376,8 +6678,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   placeholder={lang === "es" ? "ROC #" : "ROC #"}
                 />
               </div>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("attnOpt")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("attnOpt")}</div>
                 <input
                   className="pe-input"
                   value={profile.attn}
@@ -5388,8 +6690,8 @@ const laborCost = Number(laborTrueCost) || 0;
             </div>
 
             <div className="pe-grid" style={{ marginTop: 8 }}>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("websiteOpt")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("websiteOpt")}</div>
                 <input
                   className="pe-input"
                   value={profile.website}
@@ -5397,8 +6699,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   placeholder={lang === "es" ? "Sitio web" : "Website"}
                 />
               </div>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("einOpt")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("einOpt")}</div>
                 <input
                   className="pe-input"
                   value={profile.ein}
@@ -5447,7 +6749,196 @@ const laborCost = Number(laborTrueCost) || 0;
     <div className="pe-wrap">
       <PopStyles />
       <PagePerimeterSnake />
-      <header className="pe-header pe-sweep">
+      
+      {savePromptOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.72)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 12,
+          }}
+          onClick={() => {
+            triggerHaptic();
+            setSavePromptOpen(false);
+          }}
+        >
+          <div
+            style={{
+              background: "#0b1220",
+              color: "#ffffff",
+              borderRadius: 18,
+              maxWidth: 560,
+              width: "100%",
+              padding: 16,
+              boxShadow: "0 18px 48px rgba(0,0,0,0.45)",
+              border: "1px solid rgba(255,255,255,0.10)",
+            }}
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 8 }}>
+              {lang === "es" ? "Guardar" : "Save"}
+            </div>
+
+            <div style={{ lineHeight: 1.35, marginBottom: 14, fontSize: 14, opacity: 0.92 }}>
+              {lang === "es"
+                ? "Ya cargaste una estimación guardada. Elige: Sobrescribir para actualizarla, o Guardar como nueva para crear una copia separada."
+                : "You have a saved estimate loaded. Choose: Overwrite to update it, or Save as New to create a separate copy."}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-primary"
+                style={{ minWidth: 160, flex: "1 1 160px", padding: "12px 14px" }}
+                onClick={() => {
+                  triggerHaptic();
+                  setSavePromptOpen(false);
+                  commitEstimateSave("overwrite");
+                }}
+              >
+                {lang === "es" ? "Sobrescribir" : "Overwrite"}
+              </button>
+
+              <button
+                type="button"
+                className="pe-btn"
+                style={{ minWidth: 160, flex: "1 1 160px", padding: "12px 14px" }}
+                style={{ minWidth: 160, flex: "1 1 160px", padding: "12px 14px" }}
+                onClick={() => {
+                  triggerHaptic();
+                  setSavePromptOpen(false);
+                  commitEstimateSave("new");
+                }}
+              >
+                {lang === "es" ? "Guardar como nueva" : "Save as New"}
+              </button>
+
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  triggerHaptic();
+                  setSavePromptOpen(false);
+                }}
+              >
+                {lang === "es" ? "Cancelar" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+{pdfPromptOpen && (
+  <div
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.72)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 10000,
+      padding: 12,
+    }}
+    onClick={() => {
+      triggerHaptic();
+      setPdfPromptOpen(false);
+    }}
+  >
+    <div
+      style={{
+        width: "min(520px, 96vw)",
+        background: "#0b1220",
+        border: "1px solid rgba(255,255,255,0.14)",
+        borderRadius: 16,
+        padding: 16,
+        boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
+        color: "#fff",
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>
+        {lang === "es" ? "Exportar PDF" : "Export PDF"}
+      </div>
+      <div style={{ opacity: 0.9, lineHeight: 1.35, marginBottom: 14 }}>
+        {lang === "es"
+          ? "Elige una opción: cancelar, ver el PDF, o compartir/descargar."
+          : "Choose an option: cancel, preview the PDF, or share/download."}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
+        }}
+      >
+        <button
+          type="button"
+          className="pe-btn pe-btn-ghost"
+          style={{
+            background: "transparent",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.22)",
+          }}
+          onClick={() => {
+            triggerHaptic();
+            setPdfPromptOpen(false);
+          }}
+        >
+          {lang === "es" ? "Cancelar" : "Cancel"}
+        </button>
+
+        <button
+          type="button"
+          className="pe-btn pe-btn-ghost"
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.22)",
+          }}
+          onClick={() => {
+            triggerHaptic();
+            setPdfPromptOpen(false);
+            exportPDF("view");
+          }}
+        >
+          {lang === "es" ? "Ver PDF" : "View PDF"}
+        </button>
+
+        <button
+          type="button"
+          className="pe-btn"
+          style={{
+            background: "linear-gradient(180deg, rgba(59,130,246,0.95), rgba(37,99,235,0.95))",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.18)",
+          }}
+          onClick={() => {
+            triggerHaptic();
+            const hasShare = typeof navigator !== "undefined" && !!navigator.share;
+            setPdfPromptOpen(false);
+            exportPDF(hasShare ? "share" : "download");
+          }}
+        >
+          {(() => {
+            const hasShare = typeof navigator !== "undefined" && !!navigator.share;
+            if (lang === "es") return hasShare ? "Compartir PDF" : "Descargar PDF";
+            return hasShare ? "Share PDF" : "Download PDF";
+          })()}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+<header className="pe-header pe-sweep">
         <div style={{ marginTop: -10 }}>
           <div className="pe-title">Field Pocket Estimator</div>
           <div className="pe-subtitle">{t("subtitleEstimator")}</div>
@@ -5493,7 +6984,7 @@ const laborCost = Number(laborTrueCost) || 0;
             {t("newClear")}
           </button>
 
-          <button className="pe-btn" onClick={saveEstimate} type="button">
+          <button className="pe-btn" onClick={handleSaveClick} type="button">
             {t("save")}
           </button>
 
@@ -5513,12 +7004,8 @@ const laborCost = Number(laborTrueCost) || 0;
 
 
           <button className="pe-btn pe-btn-ghost" onClick={() => {
-              const share = window.confirm(
-                lang === "es"
-                  ? "OK: Compartir PDF\nCancelar: Ver PDF"
-                  : "OK: Share PDF\nCancel: View PDF"
-              );
-              exportPDF(share ? "share" : "download");
+              triggerHaptic();
+              setPdfPromptOpen(true);
             }} type="button">
             {t("pdf")}
           </button>
@@ -5537,52 +7024,112 @@ const laborCost = Number(laborTrueCost) || 0;
           {/* ✅ Recent customers (tap-to-fill) */}
           <div className="pe-grid">
             <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-              <div style={FIELD_LABEL}>{t("recentCustomers")}</div>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("recentEstimates")}</div>
               <select
                 className="pe-input"
-                value={selectedCustomerId}
+                value={recentEstimateId}
                 onChange={(e) => {
                   const id = e.target.value;
-                  setSelectedCustomerId(id);
-                  const found = customers.find((c) => String(c?.id) === String(id));
+                  setRecentEstimateId(id);
+                  const found = history.find((h) => String(h?.id) === String(id));
                   if (!found) return;
-                  setClient(found.name || "");
-                  setCustomerPhone(found.phone || "");
-                  setCustomerEmail(found.email || "");
-                  setLocation(found.address || "");
-                  setBillingDiff(Boolean(found.billingDiff));
-                  setBillingAddress(found.billingAddress || "");
-                  setCustomerTermsDays(Number.isFinite(Number(found.termsDays)) ? Number(found.termsDays) : 0);
-                  setProjectName(found.projectName || "");
-                  setProjectNumber(found.projectNumber || "");
-                  setProjectAddress(found.projectAddress || "");
+                  loadEstimate(found);
+                  // act like an action menu (reset back to placeholder)
+                  setTimeout(() => setRecentEstimateId(""), 50);
                 }}
               >
-                <option value="">{customers.length ? (lang === "es" ? "Seleccionar…" : "Select…") : (lang === "es" ? "Sin clientes" : "No customers")}</option>
-                {customers.slice(0, 20).map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
+                <option value="">{lang === "es" ? "Seleccionar…" : "Select…"}</option>
+                {history.slice(0, 10).map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {(h.client || (h.customerSnapshot && h.customerSnapshot.name) || (lang === "es" ? "Estimación" : "Estimate")) +
+                      (h.date ? ` — ${h.date}` : "")}
                   </option>
                 ))}
               </select>
               <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
-                {customers.length ? (lang === "es" ? "Se guarda automáticamente al exportar PDF." : "Auto-saves on PDF export.") : t("noCustomers")}
+                {history.length
+                  ? (lang === "es" ? "Carga una estimación reciente." : "Load a recent estimate.")
+                  : (lang === "es" ? "No hay estimaciones guardadas aún." : "No saved estimates yet.")}
               </div>
             </div>
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{lang === "es" ? "Fecha" : "Date"}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Fecha" : "Date"}</div>
               <input className="pe-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </div>
 
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>PO#</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>PO#</div>
               <input className="pe-input" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder={lang === "es" ? "PO# (opcional)" : "PO# (optional)"} />
+            </div>
+
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Proyecto" : "Project name"}</div>
+              <input
+                className="pe-input"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder={lang === "es" ? "Nombre del proyecto (opcional)" : "Project name (optional)"}
+              />
+            </div>
+
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Proyecto #" : "Project #"}</div>
+              <input
+                className="pe-input"
+                value={projectNumber}
+                onChange={(e) => setProjectNumber(e.target.value)}
+                placeholder={lang === "es" ? "Proyecto # (opcional)" : "Project # (optional)"}
+              />
+            </div>
+
+                        {/* Project location/address */}
+            <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Ubicación/Dirección del proyecto" : "Project location/address"}</div>
+
+              {!projectAddressSameAsCustomer && (
+                <textarea
+                  className="pe-input"
+                  rows={2}
+                  value={projectAddress}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setProjectAddress(v);
+                    setLastManualProjectAddress(v);
+                  }}
+                  placeholder={lang === "es" ? "Dirección del proyecto (opcional)" : "Project address (optional)"}
+                />
+              )}
+
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: -2 }}>
+                <input
+                  type="checkbox"
+                  checked={projectAddressSameAsCustomer}
+                  onChange={(e) => {
+                    const checked = Boolean(e.target.checked);
+                    if (checked) {
+                      // switching to "same as customer": stash manual address and hide field
+                      if (!projectAddressSameAsCustomer) {
+                        setLastManualProjectAddress(String(projectAddress || ""));
+                      }
+                      setProjectAddressSameAsCustomer(true);
+                      setProjectAddress("");
+                    } else {
+                      // switching to manual: restore last manual value
+                      setProjectAddressSameAsCustomer(false);
+                      setProjectAddress(String(lastManualProjectAddress || ""));
+                    }
+                  }}
+                />
+                <div style={{ fontSize: 12, opacity: 0.9 }}>
+                  {lang === "es" ? "Igual que la dirección del cliente" : "Same as customer address"}
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* ✅ Customer */}
+{/* ✅ Customer */}
           <div className="pe-grid" style={{ marginTop: 10 }}>
             {/* section break */}
             <div style={{ gridColumn: "1 / -1", paddingTop: 8, marginTop: 2, borderTop: "1px solid rgba(255,255,255,0.10)" }}>
@@ -5591,8 +7138,15 @@ const laborCost = Number(laborTrueCost) || 0;
               </div>
             </div>
 
-            <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-              <div style={FIELD_LABEL}>{lang === "es" ? "Seleccionar cliente" : "Select customer"}</div>
+                        <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Seleccionar cliente" : "Select customer"}</div>
+              <input
+                className="pe-input"
+                value={customerSelectQuery}
+                onChange={(e) => setCustomerSelectQuery(e.target.value)}
+                placeholder={lang === "es" ? "Buscar cliente..." : "Search customer..."}
+                style={{ marginBottom: 6 }}
+              />
               <select
                 className="pe-input"
                 value={customerCreating ? "__new__" : (selectedCustomerId || "")}
@@ -5610,6 +7164,7 @@ const laborCost = Number(laborTrueCost) || 0;
                     setCustomerPhone("");
                     setCustomerEmail("");
                     setLocation("");
+                    setCustomerAttn("");
                     setBillingDiff(false);
                     setBillingAddress("");
                     return;
@@ -5632,58 +7187,89 @@ const laborCost = Number(laborTrueCost) || 0;
                 }}
               >
                 <option value="">{lang === "es" ? "— Seleccionar —" : "— Select —"}</option>
-                {customersSorted.length ? (
-                  <optgroup label={lang === "es" ? "Guardados" : "Saved"}>
-                    {customersSorted.map((c) => (
+
+                {String(customerSelectQuery || "").trim() ? (
+                  <optgroup label={lang === "es" ? "Resultados" : "Results"}>
+                    {customersSelectFiltered.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>
                     ))}
                   </optgroup>
-                ) : null}
+                    ) : null}
+
+                    {customersSorted.length ? (
+                      <optgroup label={lang === "es" ? "Guardados" : "Saved"}>
+                        {customersNonRecent.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+
                 <option value="__new__">{lang === "es" ? "➕ Crear nuevo" : "➕ Create new"}</option>
               </select>
-
-              {selectedCustomerId && !customerCreating && !customerPanelOpen ? (
+            </div>
                 <div className="pe-muted" style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {client || ""}
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2, whiteSpace: "pre-wrap" }}>{location || ""}</div>
+                    {selectedCustomerId ? (
+                      <>
+                        <div style={{ fontWeight: 800, lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {client || ""}
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2, whiteSpace: "pre-wrap" }}>{location || ""}</div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 13, opacity: 0.9 }}>
+                        {lang === "es" ? "Sin cliente seleccionado." : "No customer selected."}
+                      </div>
+                    )}
                   </div>
-                  <button type="button" className="pe-btn pe-btn-lite" onClick={() => setCustomerPanelOpen(true)}>
-                    {lang === "es" ? "Editar" : "Edit"}
+                  <button
+                    type="button"
+                    className="pe-btn pe-btn-lite"
+                    onClick={() => {
+                      setCustomerCreating(false);
+                      setCustomerEditing(false);
+                      setCustomerPanelOpen(true);
+                    }}
+                  >
+                    {selectedCustomerId ? (lang === "es" ? "Cambiar" : "Change") : (lang === "es" ? "Seleccionar" : "Select")}
                   </button>
                 </div>
-              ) : null}
-            </div>
 
-            {(customerCreating || customerPanelOpen || !selectedCustomerId) ? (
+            {(customerCreating || customerEditing) ? (
               <>
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{t("customerName")}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerName")}</div>
               <input className="pe-input" value={client} onChange={(e) => setClient(e.target.value)} placeholder={lang === "es" ? "Cliente" : "Customer"} />
             </div>
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{t("customerPhone")}</div>
+            
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerAttn")}</div>
+              <input className="pe-input" value={customerAttn} onChange={(e) => setCustomerAttn(e.target.value)} placeholder={lang === "es" ? "Atn." : "Attn"} />
+            </div>
+
+<div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerPhone")}</div>
               <input className="pe-input" value={customerPhone} onChange={(e) => setCustomerPhone(formatPhoneUS(e.target.value))} placeholder={lang === "es" ? "Teléfono" : "Phone"} />
             </div>
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{t("customerEmail")}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerEmail")}</div>
               <input className="pe-input" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} placeholder={lang === "es" ? "Correo" : "Email"} />
             </div>
 
             <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-              <div style={FIELD_LABEL}>{t("customerAddress")}</div>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customerAddress")}</div>
               <input className="pe-input" value={location} onChange={(e) => setLocation(e.target.value)} placeholder={lang === "es" ? "Dirección" : "Address"} />
             </div>
 
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{lang === "es" ? "Términos de pago" : "Payment terms"}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Términos de pago" : "Payment terms"}</div>
               <select className="pe-input" value={String(customerTermsDays)} onChange={(e) => setCustomerTermsDays(parseInt(String(e.target.value || "0"), 10) || 0)}>
                 <option value="0">{lang === "es" ? "Al recibir" : "Due upon receipt"}</option>
                 <option value="15">{lang === "es" ? "Neto 15" : "Net 15"}</option>
@@ -5705,63 +7291,36 @@ const laborCost = Number(laborTrueCost) || 0;
 
             {billingDiff ? (
               <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-                <div style={FIELD_LABEL}>{t("billingAddress")}</div>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("billingAddress")}</div>
                 <input className="pe-input" value={billingAddress} onChange={(e) => setBillingAddress(e.target.value)} placeholder={lang === "es" ? "Dirección de facturación" : "Billing address"} />
               </div>
             ) : null}
-                {!customerCreating && selectedCustomerId ? (
-                  <div style={{ gridColumn: "1 / -1", marginTop: 6, display: "flex", justifyContent: "flex-end" }}>
-                    <button type="button" className="pe-btn pe-btn-lite" onClick={() => setCustomerPanelOpen(false)}>
-                      {lang === "es" ? "Listo" : "Done"}
+                {(customerCreating || customerEditing) ? (
+                  <div style={{ gridColumn: "1 / -1", marginTop: 8, display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+                    <button type="button" className="pe-btn pe-btn-ghost" onClick={cancelCustomerEstimatorEdit}>
+                      {lang === "es" ? "Cancelar" : "Cancel"}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-lite"
+                      onClick={saveCustomerFromEstimator}
+                      disabled={!String(client || "").trim()}
+                      title={!String(client || "").trim() ? (lang === "es" ? "Requiere nombre" : "Name required") : ""}
+                      style={!String(client || "").trim() ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
+                    >
+                      {customerCreating || !selectedCustomerId
+                        ? (lang === "es" ? "Guardar cliente" : "Save customer")
+                        : (lang === "es" ? "Guardar cambios" : "Save changes")}
                     </button>
                   </div>
                 ) : null}
+
               </>
             ) : null}
           </div>
 
-          {/* ✅ Project */}
-          <div className="pe-grid" style={{ marginTop: 10 }}>
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{t("projectName")}</div>
-              <input className="pe-input" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder={lang === "es" ? "Proyecto" : "Project"} />
-            </div>
-
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{t("projectNumber")}</div>
-              <input className="pe-input" value={projectNumber} onChange={(e) => setProjectNumber(e.target.value)} placeholder={lang === "es" ? "Número" : "Number"} />
-            </div>
-
-            <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-              <div className="pe-row" style={{ justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <div style={FIELD_LABEL}>{t("projectAddress")}</div>
-                <label className="pe-row" style={{ gap: 8, alignItems: "center", margin: 0 }}>
-                  <input
-                    type="checkbox"
-                    checked={projectAddressSameAsCustomer}
-                    onChange={(e) => setProjectAddressSameAsCustomer(e.target.checked)}
-                  />
-                  <span className="pe-muted" style={{ fontSize: 12 }}>
-                    {t("projectSameAsCustomer")}
-                  </span>
-                </label>
-              </div>
-
-              {!projectAddressSameAsCustomer ? (
-                <input
-                  className="pe-input"
-                  value={projectAddress}
-                  onChange={(e) => setProjectAddress(e.target.value)}
-                  placeholder={lang === "es" ? "Dirección del proyecto" : "Project address"}
-                />
-              ) : (
-                <div className="pe-muted" style={{ marginTop: 6 }}>
-                  {lang === "es" ? "Usando la dirección del cliente" : "Using customer address"}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
+          </section>
 
         <div className="pe-divider" />
 
@@ -5771,7 +7330,7 @@ const laborCost = Number(laborTrueCost) || 0;
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
               <div style={{ ...FIELD_STACK, flex: "1 1 260px", minWidth: 0 }}>
-                <div style={FIELD_LABEL}>{lang === "es" ? "Plantilla" : "Template"}</div>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Plantilla" : "Template"}</div>
                 <select
                   className="pe-input"
                   style={{ width: "100%" }}
@@ -5795,7 +7354,7 @@ const laborCost = Number(laborTrueCost) || 0;
               </div>
 
               <div style={{ ...FIELD_STACK, flex: "1 1 260px", minWidth: 0 }}>
-                <div style={FIELD_LABEL}>{lang === "es" ? "Insertar oficio" : "Trade insert"}</div>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Insertar oficio" : "Trade insert"}</div>
                 <select
                   className="pe-input"
                   style={{ width: "100%" }}
@@ -5830,8 +7389,8 @@ const laborCost = Number(laborTrueCost) || 0;
             </div>
 
             <div style={{ marginTop: 10 }}>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{lang === "es" ? "Alcance / notas" : "Scope / notes"}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Alcance / notas" : "Scope / notes"}</div>
                 <ResizableTextarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
@@ -5891,8 +7450,8 @@ const laborCost = Number(laborTrueCost) || 0;
             return (
               <div key={i} style={{ marginTop: 8 }}>
                 <div className="pe-grid">
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{lang === "es" ? "Rol" : "Role"}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Rol" : "Role"}</div>
                   <select
                     className="pe-input"
                     value={l.label || ""}
@@ -5909,8 +7468,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   </select>
                 </div>
 
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{t("hours")}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("hours")}</div>
                   <input
                     className="pe-input"
                     placeholder={t("hours")}
@@ -5921,8 +7480,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   />
                 </div>
 
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{t("rate")}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("rate")}</div>
 
                     <input
                       className="pe-input"
@@ -5936,8 +7495,8 @@ const laborCost = Number(laborTrueCost) || 0;
                 </div>
 
                 {(
-                  <div style={FIELD_STACK}>
-                    <div style={FIELD_LABEL}>
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>
                       {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
                       <span
                         className="pe-muted"
@@ -6005,7 +7564,22 @@ const laborCost = Number(laborTrueCost) || 0;
             <div className="pe-muted">{lang === "es" ? "Mano de obra base" : "Base labor"}</div>
             <div className="pe-value">{money.format(laborBase)}</div>
           </div>
-        </section>
+        
+          {/* Bottom collapse control (Labor section) */}
+          {laborOpen && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setLaborOpen(false)}
+                title={lang === "es" ? "Colapsar" : "Collapse"}
+                style={{ padding: "6px 10px" }}
+              >
+                {lang === "es" ? "Colapsar" : "Collapse"} ▴
+              </button>
+            </div>
+          )}
+</section>
 
         <div className="pe-divider" />
 
@@ -6014,8 +7588,8 @@ const laborCost = Number(laborTrueCost) || 0;
           <div className="pe-section-title">{t("specialConditions")}</div>
 
           <div className="pe-grid">
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{lang === "es" ? "Condición" : "Condition"}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Condición" : "Condition"}</div>
               <select
                 className="pe-input"
                 value={multiplierSelectValue}
@@ -6029,8 +7603,8 @@ const laborCost = Number(laborTrueCost) || 0;
               </select>
             </div>
 
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{t("hazardPct")}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("hazardPct")}</div>
               <input
                 className="pe-input"
                 value={hazardPct}
@@ -6045,8 +7619,8 @@ const laborCost = Number(laborTrueCost) || 0;
 
           {multiplierMode === "custom" && (
             <div className="pe-grid" style={{ marginTop: 8 }}>
-              <div style={FIELD_STACK}>
-                <div style={FIELD_LABEL}>{t("customMultiplier")}</div>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("customMultiplier")}</div>
                 <input
                   className="pe-input"
                   value={customMultiplier}
@@ -6075,6 +7649,7 @@ const laborCost = Number(laborTrueCost) || 0;
               <div className="pe-value">{money.format(hazardFeeDollar)}</div>
             </div>
           )}
+
         </section>
 
         <div className="pe-divider" />
@@ -6145,8 +7720,8 @@ const laborCost = Number(laborTrueCost) || 0;
           {materialsMode === "blanket" && (
             <>
               <div className="pe-grid" style={{ marginTop: 10 }}>
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{t("materialsCost")}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("materialsCost")}</div>
                   <input
                     className="pe-input"
                     value={materialsCost}
@@ -6157,8 +7732,8 @@ const laborCost = Number(laborTrueCost) || 0;
                   />
                 </div>
 
-                <div style={FIELD_STACK}>
-                  <div style={FIELD_LABEL}>{t("markupPct")}</div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("markupPct")}</div>
                   <input
                     className="pe-input"
                     value={materialsMarkupPct}
@@ -6211,8 +7786,8 @@ const laborCost = Number(laborTrueCost) || 0;
                         background: "rgba(0,0,0,0.12)",
                       }}
                     >
-                      <div style={FIELD_STACK}>
-                        <div style={FIELD_LABEL}>{t("materialDesc")}</div>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("materialDesc")}</div>
                         <input
                           className="pe-input"
                           value={it.desc}
@@ -6397,8 +7972,8 @@ const laborCost = Number(laborTrueCost) || 0;
           </div>
 
           <div style={{ marginTop: 10 }}>
-            <div style={FIELD_STACK}>
-              <div style={FIELD_LABEL}>{lang === "es" ? "Notas adicionales" : "Additional notes"}</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Notas adicionales" : "Additional notes"}</div>
               <ResizableTextarea
                 value={additionalNotesText}
                 onChange={(e) => setAdditionalNotesText(e.target.value)}
@@ -6484,6 +8059,15 @@ const laborCost = Number(laborTrueCost) || 0;
                     <button
                       className="pe-btn pe-btn-ghost"
                       type="button"
+                      onClick={() => duplicateEstimate(e)}
+                      title={lang === "es" ? "Duplicar esta estimación" : "Duplicate this estimate"}
+                    >
+                      {t("duplicate")}
+                    </button>
+
+                    <button
+                      className="pe-btn pe-btn-ghost"
+                      type="button"
                       onClick={() => deleteEstimate(e.id)}
                       title={lang === "es" ? "Eliminar esta estimación" : "Delete this saved estimate"}
                     >
@@ -6495,97 +8079,14 @@ const laborCost = Number(laborTrueCost) || 0;
             </>
           )}
         </section>
-        {/* Field Calculator */}
-        <section className="pe-section">
-          <div className="pe-row" style={{ marginTop: 0, alignItems: "flex-start" }}>
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => setCalcOpen((v) => !v)}
-              aria-expanded={calcOpen}
-              style={{ flex: 1, textAlign: "left", paddingLeft: 0 }}
-              title={calcOpen ? (lang === "es" ? "Ocultar" : "Collapse") : (lang === "es" ? "Mostrar" : "Expand")}
-            >
-              <div className="pe-section-title" style={{ marginBottom: 0 }}>
-                {calcOpen ? "▾ " : "▸ "}
-                {lang === "es" ? "Calculadora de obra (Beta)" : "Field Calculator (Beta)"}
-              </div>
-              {!calcOpen && (
-                <div className="pe-collapsible-summary">
-                  {lang === "es"
-                    ? "Fracciones • cm↔in • ft/in"
-                    : "Fractions • cm↔in • ft/in"}
-                </div>
-              )}
-            </button>
-          </div>
-
-          {calcOpen && (
-            <div style={{ marginTop: 10 }}>
-              <div className="pe-row" style={{ gap: 10, alignItems: "center" }}>
-                <input
-                  className="pe-input"
-                  value={calcInput}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setCalcInput(v);
-                    setCalcResult(v ? solveFieldCalc(v) : "");
-                  }}
-                  placeholder={
-                    lang === "es"
-                      ? 'Ej: "30 cm a pulgadas"  •  "12 3/8 + 5/16"'
-                      : 'Ex: "30 cm to inches"  •  "12 3/8 + 5/16"'
-                  }
-                  style={{ flex: 1 }}
-                />
-
-                {canUseSpeech && (
-                  <button
-                    type="button"
-                    className={"pe-btn " + (calcListening ? "pe-btn-danger" : "pe-btn-secondary")}
-                    onClick={calcListening ? stopCalcVoice : startCalcVoice}
-                    title={calcListening ? (lang === "es" ? "Detener" : "Stop") : (lang === "es" ? "Hablar" : "Speak")}
-                    style={{ whiteSpace: "nowrap" }}
-                  >
-                    {calcListening ? (lang === "es" ? "■" : "■") : (lang === "es" ? "🎙" : "🎙")}
-                  </button>
-                )}
-              </div>
-
-              {!!calcResult && (
-                <div
-                  className="pe-card"
-                  style={{
-                    marginTop: 10,
-                    padding: 12,
-                    borderRadius: 12,
-                    fontSize: 14,
-                    opacity: 0.92,
-                  }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                    {lang === "es" ? "Resultado" : "Result"}
-                  </div>
-                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.35 }}>{calcResult}</div>
-                </div>
-              )}
-
-              <div className="pe-help" style={{ marginTop: 10 }}>
-                {lang === "es"
-                  ? 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm a pulgadas'
-                  : 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm to inches'}
-              </div>
-            </div>
-          )}
-        </section>
-
-                </>
+        {/* Field Calculator moved to Advanced (bottom) */}
+          </>
         )}
-</main>
+      </main>
     </div>
   );
-}
 
+}
 export default function EstimateForm() {
   // language init: localStorage first; otherwise Spanish-first based on device language
   const [lang, setLang] = useState(() => {
