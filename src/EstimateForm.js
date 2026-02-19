@@ -2306,7 +2306,7 @@ function LanguageGate({ t, setLanguage }) {
   );
 }
 
-function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount = false }) {
+function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount = false, embeddedInShell = false }) {
 
 
 
@@ -2418,7 +2418,25 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const [step, setStep] = useState(() => (forceProfileOnMount ? "profile" : "estimate")); // "profile" | "estimate"
 
   // ✅ NEW: keep “Advanced” settings on their own screen (avoid cluttering estimator)
-  const [view, setView] = useState("estimate"); // "estimate" | "advanced"
+  const [view, setView] = useState("estimate");
+
+  // Shell actions (hamburger/menu) can navigate EstimateForm without EstimateForm rendering its own header buttons.
+  useEffect(() => {
+    const onShell = (e) => {
+      const d = e?.detail || {};
+      const action = d.action;
+      if (action === "openAdvanced") setView("advanced");
+      if (action === "openEstimate") setView("estimate");
+      if (action === "openProfile") setStep("profile");
+      if (action === "newClear") resetForm();
+      if (action === "save") handleSaveClick();
+      if (action === "pdf") setPdfPromptOpen(true);
+    };
+    window.addEventListener("pe-shell-action", onShell);
+    return () => window.removeEventListener("pe-shell-action", onShell);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+ // "estimate" | "advanced"
 
   // ✅ AI Draft Mode (Beta) — full-screen guided workflow (remembers last session until cleared)
   const [showAIDraft, setShowAIDraft] = useState(false);
@@ -5886,7 +5904,7 @@ const advancedScreen = (
           <div className="pe-row" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div>
               <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("docTypeLabel")}</div>
-              <DocTypeToggle />
+              {!embeddedInShell && <DocTypeToggle />}
             </div>
 
             {docType === "invoice" && (
@@ -6217,7 +6235,34 @@ const advancedScreen = (
   
   // ✅ AI Draft Mode (Beta) — show as a full-screen workflow from ANY step (profile or estimator)
   if (showAIDraft) {
-    return (
+    useEffect(() => {
+    if (!embeddedInShell) return;
+    try {
+      window.__FPE_EMBED_API = {
+        __owner: "EstimateForm",
+        goProfile: () => setStep("profile"),
+        toggleAdvanced: () => setView((v) => (v === "advanced" ? "estimate" : "advanced")),
+        openPdf: () => setPdfPromptOpen(true),
+        save: () => handleSaveClick(),
+        newClear: () => resetForm(),
+        toggleDocType: () => setDocType((d) => (d === "invoice" ? "estimate" : "invoice")),
+        setDocType: (next) => setDocType(next === "invoice" ? "invoice" : "estimate"),
+      };
+    } catch {
+      // ignore
+    }
+    return () => {
+      try {
+        if (window.__FPE_EMBED_API && window.__FPE_EMBED_API.__owner === "EstimateForm") {
+          delete window.__FPE_EMBED_API;
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, [embeddedInShell]);
+
+  return (
       <div className="pe-wrap">
         <PopStyles />
         <PagePerimeterSnake />
@@ -6521,7 +6566,8 @@ const advancedScreen = (
             </div>
           </div>
 
-          <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+  {!embeddedInShell && (
+                <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <LanguageToggle />
             <button
               className="pe-btn"
@@ -6538,6 +6584,7 @@ const advancedScreen = (
               {t("continueArrow")}
             </button>
           </div>
+      )}
         </header>
 
         <main className="pe-card">
@@ -6938,80 +6985,8 @@ const advancedScreen = (
   </div>
 )}
 
-<header className="pe-header pe-sweep">
-        <div style={{ marginTop: -10 }}>
-          <div className="pe-title">Field Pocket Estimator</div>
-          <div className="pe-subtitle">{t("subtitleEstimator")}</div>
 
-          <div
-            style={{
-              marginTop: 4,
-              fontSize: 12,
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              opacity: 0.95,
-              flexWrap: "wrap",
-            }}
-          >
-            {docType === "invoice" ? (
-              <span className="pe-pill" style={{ borderColor: "rgba(0,0,0,0.18)" }}>
-                {lang === "es" ? "Factura" : "Invoice"} # {invoiceNumber || "(auto)"}
-              </span>
-            ) : (
-              <span className="pe-pill" style={{ borderColor: "rgba(0,0,0,0.18)" }}>
-                {lang === "es" ? "Estimación" : "Estimate"} # {estimateNumber || "(optional)"}
-              </span>
-            )}
-          </div>
-
-          <DocTypeToggle />
-        </div>
-
-        <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button
-            className="pe-btn pe-btn-ghost"
-            type="button"
-            onClick={() => {
-              triggerHaptic();
-              setStep("profile");
-            }}
-          >
-            {t("editCompany")}
-          </button>
-
-          <button className="pe-btn pe-btn-ghost" onClick={resetForm} type="button">
-            {t("newClear")}
-          </button>
-
-          <button className="pe-btn" onClick={handleSaveClick} type="button">
-            {t("save")}
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            type="button"
-            onClick={() => {
-              triggerHaptic();
-              setView((v) => (v === "advanced" ? "estimate" : "advanced"));
-            }}
-          >
-            {lang === "es" ? (view === "advanced" ? "Estimador" : "Avanzado") : (view === "advanced" ? "Estimator" : "Advanced")}
-          </button>
-
-          {/* ✅ NEW: PDF export language + translate toggle */}
-          
-
-
-          <button className="pe-btn pe-btn-ghost" onClick={() => {
-              triggerHaptic();
-              setPdfPromptOpen(true);
-            }} type="button">
-            {t("pdf")}
-          </button>
-
-        </div>
-      </header>
+      
 
       <main className="pe-card">
         {view === "advanced" ? advancedScreen : (
@@ -7991,94 +7966,6 @@ const advancedScreen = (
         </section>
         )}
 
-        
-
-        <div className="pe-divider" />
-
-        {/* HISTORY */}
-        <section className="pe-section">
-          <div className="pe-row" style={{ marginTop: 0, alignItems: "flex-start" }}>
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => setHistoryOpen((v) => !v)}
-              aria-expanded={historyOpen}
-              style={{ flex: 1, textAlign: "left", paddingLeft: 0 }}
-              title={historyOpen ? (lang === "es" ? "Ocultar" : "Collapse") : (lang === "es" ? "Mostrar" : "Expand")}
-            >
-              <div className="pe-section-title" style={{ marginBottom: 0 }}>
-                {historyOpen ? "▾ " : "▸ "}
-                {t("savedEstimates")}
-              </div>
-              {!historyOpen && (
-                <div className="pe-collapsible-summary">
-                  {history.length === 0
-                    ? t("noSaved")
-                    : lang === "es"
-                    ? `${history.length} guardadas`
-                    : `${history.length} saved`}
-                </div>
-              )}
-            </button>
-
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={clearAllEstimates}
-              disabled={history.length === 0}
-              title={
-                history.length === 0
-                  ? lang === "es"
-                    ? "No hay estimaciones guardadas"
-                    : "No saved estimates"
-                  : lang === "es"
-                  ? "Eliminar todas"
-                  : "Delete all saved estimates"
-              }
-            >
-              {t("clearAll")}
-            </button>
-          </div>
-
-          {historyOpen && (
-            <>
-              {history.length === 0 && <div className="pe-muted">{t("noSaved")}</div>}
-
-              <div style={{ display: "grid", gap: 8 }}>
-                {history.map((e) => (
-                  <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button
-                      className="pe-btn pe-btn-ghost"
-                      type="button"
-                      onClick={() => loadEstimate(e)}
-                      style={{ flex: 1, textAlign: "left" }}
-                    >
-                      {e.date} — {e.client || (lang === "es" ? "Sin nombre" : "Unnamed")} — {money.format(e.total)}
-                    </button>
-
-                    <button
-                      className="pe-btn pe-btn-ghost"
-                      type="button"
-                      onClick={() => duplicateEstimate(e)}
-                      title={lang === "es" ? "Duplicar esta estimación" : "Duplicate this estimate"}
-                    >
-                      {t("duplicate")}
-                    </button>
-
-                    <button
-                      className="pe-btn pe-btn-ghost"
-                      type="button"
-                      onClick={() => deleteEstimate(e.id)}
-                      title={lang === "es" ? "Eliminar esta estimación" : "Delete this saved estimate"}
-                    >
-                      {t("delete")}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </section>
         {/* Field Calculator moved to Advanced (bottom) */}
           </>
         )}
@@ -8087,14 +7974,24 @@ const advancedScreen = (
   );
 
 }
-export default function EstimateForm() {
+export default function EstimateForm(props) {
+  const { embeddedInShell = true } = props || {};
+
   // language init: localStorage first; otherwise Spanish-first based on device language
   const [lang, setLang] = useState(() => {
     const saved = loadSavedLang();
     return saved || "";
   });
 
-  const [langConfirmed, setLangConfirmed] = useState(false);
+  const [langConfirmed, setLangConfirmed] = useState(() => {
+    // Auto-confirm if a language was previously saved (language selection lives on Home)
+    try {
+      const saved = loadSavedLang();
+      return saved === "en" || saved === "es";
+    } catch {
+      return false;
+    }
+  });
 
   const [justChoseLanguage, setJustChoseLanguage] = useState(false);
 
@@ -8126,6 +8023,6 @@ export default function EstimateForm() {
   }
 
   return (
-    <EstimateFormInner lang={lang} setLang={setLang} setLanguage={setLanguage} t={t} forceProfileOnMount={justChoseLanguage} />
+    <EstimateFormInner lang={lang} setLang={setLang} setLanguage={setLanguage} t={t} forceProfileOnMount={justChoseLanguage} embeddedInShell={embeddedInShell} />
   );
 }

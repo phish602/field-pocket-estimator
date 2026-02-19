@@ -1,0 +1,272 @@
+/* AppShell.css (v2)
+   Goal:
+   - DO NOT override your existing app color scheme
+   - Make shell surfaces (topbar/bottomnav/drawer/cards) inherit theme via CSS vars
+   - Keep translucency subtle (no heavy shaded bars)
+*/
+
+:root{
+  /* If your existing theme already defines these, it will win. */
+  --pe-shell-bg: var(--pe-app-bg, transparent);
+  --pe-shell-surface: var(--pe-surface, rgba(0,0,0,0.18));
+  --pe-shell-surface-strong: var(--pe-surface-strong, rgba(0,0,0,0.26));
+  --pe-shell-border: var(--pe-border, rgba(255,255,255,0.10));
+  --pe-shell-shadow: rgba(0,0,0,0.22);
+  --pe-shell-text: var(--pe-text, inherit);
+}
+
+/* Keep your existing body/background as-is */
+.app-shell{
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--pe-shell-bg);
+  color: var(--pe-shell-text);
+}
+
+/* Top bar */
+.app-topbar{
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+
+  background: var(--pe-shell-surface);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--pe-shell-border);
+}
+
+.icon-btn{
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 20px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease;
+}
+.icon-btn:active{
+  transform: scale(0.96);
+  background: rgba(255,255,255,0.06);
+}
+
+.app-title{
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  font-size: 15px;
+  opacity: 0.95;
+}
+
+.profile-btn{
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.profile-circle{
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size: 12px;
+  font-weight: 900;
+  border: 1px solid var(--pe-shell-border);
+  background: rgba(255,255,255,0.05);
+  box-shadow: 0 6px 14px var(--pe-shell-shadow);
+}
+
+/* Main content */
+.app-content{
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 96px; /* leave room for bottom nav */
+  background: transparent;
+}
+
+/* Bottom nav */
+.app-bottomnav{
+  height: 74px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-start;
+  gap: 4px;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
+
+  background: var(--pe-shell-surface);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--pe-shell-border);
+}
+
+.nav-btn{
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 10px 6px 12px;
+  display:flex;
+  flex-direction: column;
+  align-items:center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 16px;
+  cursor: pointer;
+
+  opacity: 0.68;
+  transition: opacity 140ms ease, transform 90ms ease, background 140ms ease;
+}
+.nav-btn:active{
+  transform: scale(0.98);
+  background: rgba(255,255,255,0.05);
+}
+.nav-btn.active{
+  opacity: 0.98;
+}
+
+.nav-icon-wrap{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.nav-label{
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.2px;
+}
+
+/* Center Create button */
+.nav-btn.center{
+  opacity: 1;
+  margin-top: -10px;
+  padding-top: 8px;
+}
+.nav-btn.center .nav-icon-wrap{
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  border: 1px solid var(--pe-shell-border);
+  background: var(--pe-shell-surface-strong);
+  box-shadow: 0 14px 30px rgba(0,0,0,0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.nav-btn.center:active .nav-icon-wrap{
+  transform: scale(0.96);
+}
+.nav-btn.center .nav-label{
+  font-weight: 800;
+  opacity: 0.85;
+}
+
+/* Create micro-bounce */
+@media (prefers-reduced-motion: no-preference){
+  .nav-btn.center.bump .nav-icon-wrap{
+    animation: peCreateBump 260ms ease-out;
+  }
+  @keyframes peCreateBump{
+    0%{ transform: scale(0.96); }
+    45%{ transform: scale(1.08); }
+    100%{ transform: scale(1.00); }
+  }
+}
+
+/* Drawer */
+.drawer-overlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 40;
+}
+
+.app-drawer{
+  position: fixed;
+  top: 0;
+  left: -280px;
+  width: 260px;
+  height: 100%;
+  z-index: 45;
+  padding: 14px 14px 18px;
+
+  background: var(--pe-shell-surface-strong);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid var(--pe-shell-border);
+  box-shadow: 18px 0 36px rgba(0,0,0,0.35);
+  transition: left 220ms ease;
+}
+.app-drawer.open{ left: 0; }
+
+.drawer-header{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  padding: 6px 2px 12px;
+}
+.drawer-title{
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+.drawer-close{
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--pe-shell-border);
+  color: inherit;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.drawer-close:active{ transform: scale(0.96); }
+
+.drawer-list{
+  display:flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.drawer-item{
+  text-align: left;
+  padding: 12px 12px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--pe-shell-border);
+  color: inherit;
+  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.15px;
+  transition: transform 90ms ease, background 140ms ease;
+}
+.drawer-item:active{
+  transform: scale(0.99);
+  background: rgba(255,255,255,0.06);
+}
+
+/* Placeholder screens (kept minimal so your theme dominates) */
+.screen-title{
+  margin: 8px 0 12px;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+.card{
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--pe-shell-border);
+  padding: 14px 14px;
+  border-radius: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 10px 22px rgba(0,0,0,0.16);
+}

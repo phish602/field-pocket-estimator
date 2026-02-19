@@ -18,7 +18,7 @@
               radial-gradient(900px 400px at 90% 0%, rgba(59,130,246,0.14), transparent 55%),
               var(--bg);
   color: var(--text);
-  padding: 28px 16px 40px;
+  padding: 28px 16px calc(40px + env(safe-area-inset-bottom, 0px));
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
   -webkit-text-size-adjust: 100%;
   overflow-x: hidden;
@@ -60,8 +60,12 @@
   background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
   color: var(--text);
   padding: 10px 12px;
+  min-height: 44px;
   border-radius: 12px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-weight: 800;
   font-size: 13px;
   max-width: 100%;
@@ -304,7 +308,7 @@
 /* ✅ THIS is the fix: force the header buttons into a 2×2 grid on iPhone sizes */
 @media (max-width: 820px) {
   .pe-title {
-    font-size: 40px;
+    font-size: 30px;
     line-height: 1.02;
     letter-spacing: 0.1px;
   }

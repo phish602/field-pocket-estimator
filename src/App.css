@@ -7,6 +7,21 @@
   pointer-events: none;
 }
 
+/* ===== Home Logo Styling ===== */
+.home-logo {
+  height: 110px;
+  width: auto;
+  display: block;
+  margin: 0 auto 12px;
+  object-fit: contain;
+  transition: transform 0.2s ease;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+}
+
+.home-logo:hover {
+  transform: scale(1.03);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .App-logo {
     animation: App-logo-spin infinite 20s linear;
