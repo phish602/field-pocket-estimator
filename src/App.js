@@ -3,7 +3,50 @@ import EstimateForm from "./EstimateForm";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
 import InvoicesScreen from "./screens/InvoicesScreen";
+import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
+import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
+import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import "./EstimateForm.css";
+
+
+
+
+// __PE_RESOLVE_SCREEN__ (prevents default/named export mismatches for new screens)
+const resolveScreen = (mod, fallbackName) => {
+  if (!mod) return null;
+
+  // Prefer default export, then named export
+  let candidate = mod.default || (fallbackName && mod[fallbackName]) || null;
+
+  const isReactTypeObject = (v) => v && typeof v === "object" && !!v.$$typeof;
+
+  const pickFromObject = (obj) => {
+    if (!obj || typeof obj !== "object") return null;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (typeof v === "function" || isReactTypeObject(v)) return v;
+    }
+    return null;
+  };
+
+  if (candidate && typeof candidate === "object" && !isReactTypeObject(candidate)) {
+    candidate = pickFromObject(candidate) || candidate;
+  }
+
+  if (!candidate) {
+    candidate = pickFromObject(mod);
+  }
+
+  if (!candidate) return null;
+
+  if (typeof candidate === "function" || isReactTypeObject(candidate)) return candidate;
+
+  return null;
+};
+
+const CompanyProfileScreen = resolveScreen(CompanyProfileScreenMod, "CompanyProfileScreen");
+const AdvancedSettingsScreen = resolveScreen(AdvancedSettingsScreenMod, "AdvancedSettingsScreen");
+const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "FinancialSnapshotScreen");
 
 /* =========================================================
    APP SHELL + CREATE FLOW OWNER
@@ -12,7 +55,7 @@ import "./EstimateForm.css";
    - Header/Footer are transparent overlays; content scrolls underneath
    ========================================================= */
 
-const LANG_KEY = "field-pocket-lang";
+const LANG_KEY = "estipaid-lang";
 
 function getSavedLang() {
   try {
@@ -28,24 +71,7 @@ function getSavedLang() {
    Icons (Motif 1: Blueprint corners)
    ========================= */
 function BlueprintCorners({ size = 24, strokeWidth = 2 }) {
-  const s = size;
-  const p = 3;
-  const c = 6;
-  return (
-    <g
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      fill="none"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      opacity="0.9"
-    >
-      <path d={`M${p} ${p + c} V${p} H${p + c}`} />
-      <path d={`M${s - p - c} ${p} H${s - p} V${p + c}`} />
-      <path d={`M${p} ${s - p - c} V${s - p} H${p + c}`} />
-      <path d={`M${s - p - c} ${s - p} H${s - p} V${s - p - c}`} />
-    </g>
-  );
+  return null;
 }
 
 function IconBase({ children, size = 24, viewBox = "0 0 24 24" }) {
@@ -177,7 +203,7 @@ const FOOTER_H = 78;
 /* =========================
    Top bar + bottom nav + drawer
    ========================= */
-function TopBar({ title, onMenu, onProfile }) {
+function TopBar({ onMenu, onProfile }) {
   return (
     <div style={styles.topbar}>
       <button
@@ -188,8 +214,6 @@ function TopBar({ title, onMenu, onProfile }) {
       >
         ☰
       </button>
-
-      <div style={styles.title}>{title}</div>
 
       <button
         className="pe-btn pe-btn-ghost"
@@ -308,15 +332,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
         </div>
 
         <div style={styles.drawerList}>
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("create")}
-          >
-            Create Flow
-          </button>
-
-          <button
+<button
             className="pe-btn pe-btn-ghost"
             style={styles.drawerItem}
             onClick={() => onSelect("company")}
@@ -339,66 +355,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             style={styles.drawerItem}
             onClick={() => onSelect("advanced")}
           >
-            Advanced
-          </button>
-
-          <div style={{ height: 10 }} />
-
-          <div style={{ fontSize: 11, opacity: 0.75, padding: "0 6px" }}>
-            Create Actions
-          </div>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("editCompany")}
-            disabled={disabled}
-          >
-            Edit Company
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("newClear")}
-            disabled={disabled}
-          >
-            New / Clear
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("save")}
-            disabled={disabled}
-          >
-            Save
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("pdf")}
-            disabled={disabled}
-          >
-            PDF
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("toggleDocType")}
-            disabled={disabled}
-          >
-            Toggle Estimate / Invoice
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost"
-            style={styles.drawerItem}
-            onClick={() => onSelect("language")}
-          >
-            Language
+            Settings
           </button>
         </div>
       </div>
@@ -409,7 +366,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated }) {
+function CreateFlow({ gated, intent }) {
   return (
     <div>
       {gated ? (
@@ -420,7 +377,7 @@ function CreateFlow({ gated }) {
           </div>
         </div>
       ) : (
-        <EstimateForm embeddedInShell />
+        <EstimateForm key={intent === "profile" ? "profile" : "estimate"} embeddedInShell forceProfileOnMount={intent === "profile"} />
       )}
     </div>
   );
@@ -436,12 +393,15 @@ function HomeScreen() {
       <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
         <div
           style={{
-            fontSize: 13,
+            fontSize: 16,
             fontWeight: 600,
             letterSpacing: "2px",
+            textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
             textTransform: "uppercase",
             opacity: 0.75,
             lineHeight: 1.1,
+            marginBottom: 8,
+            textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
             display: "inline-flex",
             alignItems: "baseline",
             justifyContent: "center",
@@ -470,6 +430,7 @@ function HomeScreen() {
             width: "auto",
             display: "block",
             margin: "0 auto 10px",
+            transform: "translateX(-14px)",
             objectFit: "contain",
             filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
           }}
@@ -776,6 +737,17 @@ export default function App() {
     getSavedLang() ? "home" : "create"
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [createIntent, setCreateIntent] = useState("estimate");
+
+  // Keep a tiny global flag so nested screens can hard-lock into profile when requested
+  useEffect(() => {
+    try {
+      window.__PE_FORCE_PROFILE__ = createIntent === "profile";
+    } catch {
+      // ignore
+    }
+  }, [createIntent]);
+
 
   // Create Flow step (App-owned)
   // Listen for language selection inside EstimateForm (it writes LANG_KEY)
@@ -803,21 +775,15 @@ export default function App() {
 
   const gated = !lang;
 
-  const title = useMemo(() => {
-    if (activeTab === "home") return "Home";
-    if (activeTab === "customers") return "Customers";
-    if (activeTab === "create") return "Create";
-    if (activeTab === "estimates") return "Estimates";
-    if (activeTab === "invoices") return "Invoices";
-    return "Home";
-  }, [activeTab]);
-
   const renderScreen = () => {
     if (activeTab === "home") return <HomeScreen />;
     if (activeTab === "customers") return <CustomersScreen />;
     if (activeTab === "estimates") return <EstimatesScreen />;
     if (activeTab === "invoices") return <InvoicesScreen />;
-    if (activeTab === "create") return <CreateFlow gated={gated} />;
+    if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen />;
+    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen />;
+    if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen />;
+    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} />;
     return <HomeScreen />;
   };
 
@@ -835,58 +801,32 @@ export default function App() {
     };
 
     if (key === "create") {
+      setCreateIntent("estimate");
       setActiveTab("create");
-      return;
-    }
-
-    // Global
-    if (key === "language") {
-      setActiveTab("home");
       return;
     }
 
     // Create navigation
     if (key === "advanced") {
-      setActiveTab("create");
-      fire("openAdvanced");
+      setActiveTab("advanced");
       return;
     }
 
-    // Company Profile / Templates
+// Company Profile / Templates
     if (key === "company") {
-      setActiveTab("create");
-      fire("openProfile");
+      setActiveTab("companyProfile");
       return;
-    }
-    if (key === "templates") {
-      setActiveTab("create");
-      fire("openTemplates");
+    }    if (key === "templates") {
       return;
     }
 
-    // Create actions
+// Create actions
     if (key === "editCompany") {
-      setActiveTab("create");
-      fire("openProfile");
-      return;
-    }
-    if (key === "newClear") {
-      setActiveTab("create");
-      fire("newClear");
-      return;
-    }
-    if (key === "save") {
-      setActiveTab("create");
-      fire("save");
-      return;
-    }
-    if (key === "pdf") {
-      setActiveTab("create");
-      fire("pdf");
+      setActiveTab("snapshot");
       return;
     }
 
-    // Fallback: close only
+// Fallback: close only
   };
 
   return (
@@ -903,9 +843,11 @@ export default function App() {
       `}</style>
 
       <TopBar
-        title={title}
         onMenu={() => setDrawerOpen(true)}
-        onProfile={() => setDrawerOpen(true)}
+        onProfile={() => {
+          setDrawerOpen(false);
+          setActiveTab("snapshot");
+        }}
       />
       <Drawer
         open={drawerOpen}
@@ -916,7 +858,14 @@ export default function App() {
 
       <div style={styles.content}>{renderScreen()}</div>
 
-      <BottomNav active={activeTab} setActive={setActiveTab} disabled={gated} />
+      <BottomNav
+        active={activeTab}
+        setActive={(key) => {
+          if (key === "create") setCreateIntent("estimate");
+          setActiveTab(key);
+        }}
+        disabled={gated}
+      />
     </div>
   );
 }

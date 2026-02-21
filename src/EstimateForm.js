@@ -28,10 +28,8 @@ const POP_CSS = `
   border-radius: 16px;
   padding: 14px 14px 12px;
   background:
-    linear-gradient(180deg, rgba(10,12,16,0.72), rgba(10,12,16,0.55)),
-    linear-gradient(rgba(110, 200, 255, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(110, 200, 255, 0.06) 1px, transparent 1px);
-  background-size: auto, 22px 22px, 22px 22px;
+    linear-gradient(180deg, rgba(10,12,16,0.74), rgba(10,12,16,0.58));
+  background-size: auto;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255,255,255,0.10);
@@ -175,6 +173,90 @@ const POP_CSS = `
 @keyframes peSnakeMove{
   to{ stroke-dashoffset: -1000; }
 }
+
+
+/* ================================
+   Top Quick Actions (Sticky Glass)
+================================ */
+.pe-top-actions{
+  position: sticky;
+  top: 10px;
+  z-index: 40;
+  margin: 10px 0 12px;
+  padding: 10px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(16,18,24,0.58), rgba(16,18,24,0.42));
+  border: 1px solid rgba(255,255,255,0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.48), 0 2px 8px rgba(0,0,0,0.24);
+}
+.pe-top-row{
+  display:flex;
+  gap:10px;
+}
+.pe-top-actions .pe-btn{
+  flex:1 1 0;
+  padding: 10px 10px;
+  font-weight: 900;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  border-radius: 14px;
+}
+
+
+/* ===== EstiPaid: floating estimator actions (glass) ===== */
+.pe-float-actions{
+  position: fixed;
+  left: 14px;
+  right: 14px;
+  bottom: 86px; /* sits above shell bottom nav */
+  z-index: 60;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(10, 14, 22, 0.72);
+  border: 1px solid rgba(255,255,255,0.10);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+}
+.pe-float-btn{
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.94);
+}
+.pe-float-btn:active{
+  transform: translateY(1px) scale(0.99);
+  filter: brightness(1.05);
+}
+.pe-float-btn.pe-float-primary{
+  background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.06));
+  border: 1px solid rgba(255,255,255,0.16);
+}
+.pe-float-btn.pe-float-danger{
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.30);
+  color: rgba(254, 202, 202, 0.98);
+}
+@media (min-width: 900px){
+  .pe-float-actions{
+    left: calc(50% - 420px);
+    right: calc(50% - 420px);
+  }
+  .pe-float-btn{
+    max-width: 260px;
+  }
+}
 `;
 function PopStyles(){ return <style>{POP_CSS}</style>; }
 
@@ -210,6 +292,143 @@ function PagePerimeterSnake(){
 }
 
 
+function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = false, t }) {
+  // Home-screen matched hero header (centered, breathable)
+  const subtitleText = subtitle || "";
+  const pillTitle = requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle");
+
+  return (
+    <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
+      {/* Wordmark (matches Home) */}
+      <div
+        style={{
+          fontSize: 16,
+          fontWeight: 600,
+          letterSpacing: "2px",
+          textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
+          textTransform: "uppercase",
+          opacity: 0.75,
+          lineHeight: 1.1,
+          marginBottom: 8,
+          display: "inline-flex",
+          alignItems: "baseline",
+          justifyContent: "center",
+        }}
+      >
+        <span>ESTIPAID</span>
+        <span
+          style={{
+            fontSize: 9,
+            marginLeft: 2,
+            position: "relative",
+            top: -4,
+            letterSpacing: "0px",
+            opacity: 0.9,
+          }}
+        >
+          ™
+        </span>
+      </div>
+
+      {/* Logo (matches Home size/placement) */}
+      <img
+        src="/logo/estipaid.svg"
+        alt="EstiPaid"
+        style={{
+          height: 110,
+          width: "auto",
+          display: "block",
+          margin: "0 auto 10px",
+                    objectFit: "contain",
+          filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
+        }}
+        onError={(e) => {
+          try {
+            e.currentTarget.style.display = "none";
+          } catch {}
+        }}
+      />
+
+      {/* Motto (matches Home) */}
+      {showMotto && (
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 14,
+          fontWeight: 800,
+          letterSpacing: "2.2px",
+          textTransform: "uppercase",
+          background: "linear-gradient(90deg, rgba(255,255,255,0.96), rgba(200,210,255,0.86))",
+          WebkitBackgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+          textShadow: "0 1px 0 rgba(255,255,255,0.14), 0 10px 18px rgba(0,0,0,0.34)",
+          opacity: 0.98,
+        }}
+      >
+        Turn Scope into Revenue
+      </div>
+
+      )}
+      {/* Screen label (same style for Profile + Estimator) */}
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "2px",
+          textTransform: "uppercase",
+          opacity: 0.65,
+        }}
+      >
+        {subtitleText}
+      </div>
+
+      {/* Company indicator: keep header height identical by reserving space */}
+      <div
+        style={{
+          marginTop: 10,
+          display: "flex",
+          justifyContent: "center",
+          minHeight: 24,
+        }}
+      >
+        {showPill ? (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 12px",
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.18)",
+              background: requiredComplete ? "rgba(34,197,94,0.14)" : "rgba(239,68,68,0.12)",
+              fontSize: 12,
+              opacity: 0.95,
+            }}
+            title={pillTitle}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: requiredComplete ? "#22c55e" : "#ef4444",
+                boxShadow: "0 0 0 4px rgba(255,255,255,0.04)",
+              }}
+            />
+            {requiredComplete ? "Company complete" : "Company incomplete"}
+          </span>
+        ) : (
+          <span style={{ opacity: 0, pointerEvents: "none" }}>.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -218,7 +437,7 @@ const money = new Intl.NumberFormat("en-US", {
 /* =========================
    LANGUAGE / I18N (MANUAL TOGGLE)
    ========================= */
-const LANG_KEY = "field-pocket-lang";
+const LANG_KEY = "estipaid-lang";
 /* =========================
    UI COLLAPSE STATE (PERSISTED)
    Default: collapsed (false)
@@ -342,7 +561,7 @@ function applyThemeToRoot(theme) {
 /* =========================
    COMPANY PROFILE (PERSISTENT)
    ========================= */
-const PROFILE_KEY = "field-pocket-profile-v1";
+const PROFILE_KEY = "estipaid-company-profile-v1";
 
 const DEFAULT_PROFILE = {
   companyName: "",
@@ -391,8 +610,8 @@ function safeSaveProfile(nextProfile) {
 const I18N = {
   en: {
     // header / general
-    subtitleProfile: "Fast numbers. No fluff.",
-    subtitleEstimator: "Create estimates + export PDF",
+    subtitleProfile: "Turn Scope into Revenue.",
+    subtitleEstimator: "Turn Scope into Revenue.",
     language: "Language",
     english: "English",
     spanish: "Español",
@@ -414,7 +633,7 @@ const I18N = {
     pdfTranslateCustom: "Translate my custom text (beta)",
     pdfTranslateCustomHelp:
       "Uses /api/translate to translate ONLY your custom text. Templates/trade inserts stay protected.",
-    pdfTranslateUnavailable: "Translation unavailable. Configure /api/translate or set localStorage field-pocket-openai-key. Exporting without translating your custom text.",
+    pdfTranslateUnavailable: "Translation unavailable. Configure /api/translate or set localStorage estipaid-openai-key. Exporting without translating your custom text.",
     pdfTranslateFailedConfirm: "Couldn’t translate your custom text. Export anyway without translating it?",
 
     // ✅ NEW: doc type toggle
@@ -601,8 +820,8 @@ const I18N = {
 
   es: {
     // header / general
-    subtitleProfile: "Números rápidos. Sin relleno.",
-    subtitleEstimator: "Crea estimados + exporta PDF",
+    subtitleProfile: "Convierte alcance en ingresos.",
+    subtitleEstimator: "Convierte alcance en ingresos.",
     language: "Idioma",
     english: "English",
     spanish: "Español",
@@ -624,7 +843,7 @@ const I18N = {
     pdfTranslateCustom: "Traducir mi texto (beta)",
     pdfTranslateCustomHelp:
       "Usa /api/translate para traducir SOLO tu texto. Plantillas/insertos se protegen.",
-    pdfTranslateUnavailable: "Traducción no disponible. Configura /api/translate o guarda en localStorage field-pocket-openai-key. Se exporta sin traducir tu texto.",
+    pdfTranslateUnavailable: "Traducción no disponible. Configura /api/translate o guarda en localStorage estipaid-openai-key. Se exporta sin traducir tu texto.",
     pdfTranslateFailedConfirm: "No se pudo traducir tu texto. ¿Exportar de todos modos sin traducirlo?",
 
     // ✅ NEW: doc type toggle
@@ -1917,12 +2136,10 @@ function nextEstimateNumber() {
   } catch {
     seq = 1;
   }
-    const width = Math.max(4, getStoredSeqWidth(ESTIMATE_SEQ_WIDTH_KEY, 4));
+  const width = Math.max(4, getStoredSeqWidth(ESTIMATE_SEQ_WIDTH_KEY, 4));
   const tail = String(seq).padStart(width, "0");
   return `EST-${ymd}-${tail}`;
 }
-
-
 
 function parseTrailingDigits(s) {
   const m = String(s || "").match(/(\d+)\s*$/);
@@ -2167,23 +2384,23 @@ function detectDataUrlType(dataUrl) {
   return "JPEG";
 }
 
-const STORAGE_KEY = "field-pocket-estimates";
-const PROFILE_KEY_LEGACY = "field-pocket-profile";
-const THEME_KEY = "field-pocket-theme"; // "auto" | "light" | "dark"
-const SHOW_COSTS_KEY = "field-pocket-show-costs"; // "1" | "0"
-const PDF_LABOR_ITEMIZED_KEY = "field-pocket-pdf-labor-itemized"; // "1" | "0"
-const INVOICE_SEQ_KEY = "field-pocket-invoice-seq";
-const LAST_INVOICE_NUM_KEY = "field-pocket-last-invoice-number";
-const ESTIMATE_SEQ_KEY = "field-pocket-estimate-seq";
-const LAST_ESTIMATE_NUM_KEY = "field-pocket-last-estimate-number";
-const INVOICE_SEQ_WIDTH_KEY = "field-pocket-invoice-seq-width";
-const ESTIMATE_SEQ_WIDTH_KEY = "field-pocket-estimate-seq-width";
-const ORIGINAL_INVOICE_NUM_KEY = "field-pocket-original-invoice-number";
+const STORAGE_KEY = "estipaid-estimates";
+const PROFILE_KEY_LEGACY = "estipaid-profile";
+const THEME_KEY = "estipaid-theme"; // "auto" | "light" | "dark"
+const SHOW_COSTS_KEY = "estipaid-show-costs"; // "1" | "0"
+const PDF_LABOR_ITEMIZED_KEY = "estipaid-pdf-labor-itemized"; // "1" | "0"
+const INVOICE_SEQ_KEY = "estipaid-invoice-seq";
+const LAST_INVOICE_NUM_KEY = "estipaid-last-invoice-number";
+const ESTIMATE_SEQ_KEY = "estipaid-estimate-seq";
+const LAST_ESTIMATE_NUM_KEY = "estipaid-last-estimate-number";
+const INVOICE_SEQ_WIDTH_KEY = "estipaid-invoice-seq-width";
+const ESTIMATE_SEQ_WIDTH_KEY = "estipaid-estimate-seq-width";
+const ORIGINAL_INVOICE_NUM_KEY = "estipaid-original-invoice-number";
 
 // =========================
 // CUSTOMERS (AUTO-SAVED ON PDF EXPORT)
 // =========================
-const CUSTOMERS_KEY = "field-pocket-customers-v1";
+const CUSTOMERS_KEY = "estipaid-customers-v1";
 
 function _nowTs() {
   return Date.now();
@@ -2320,7 +2537,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   // ✅ Optional: OpenAI key stored in localStorage for client-side translation (dev/prototype)
   const [openaiKey, setOpenaiKey] = useState(() => {
     try {
-      return String(localStorage.getItem("field-pocket-openai-key") || "");
+      return String(localStorage.getItem("estipaid-openai-key") || "");
     } catch (e) {
       return "";
     }
@@ -2329,8 +2546,8 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   useEffect(() => {
     try {
       const v = String(openaiKey || "").trim();
-      if (v) localStorage.setItem("field-pocket-openai-key", v);
-      else localStorage.removeItem("field-pocket-openai-key");
+      if (v) localStorage.setItem("estipaid-openai-key", v);
+      else localStorage.removeItem("estipaid-openai-key");
     } catch (e) {
       // ignore
     }
@@ -2417,6 +2634,11 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   }, [profile]);
   const [step, setStep] = useState(() => (forceProfileOnMount ? "profile" : "estimate")); // "profile" | "estimate"
 
+  // Keep Company Profile stable when App toggles create intent (avoid estimator flash)
+  useEffect(() => {
+    if (forceProfileOnMount) setStep("profile");
+  }, [forceProfileOnMount]);
+
   // ✅ NEW: keep “Advanced” settings on their own screen (avoid cluttering estimator)
   const [view, setView] = useState("estimate");
 
@@ -2428,9 +2650,6 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       if (action === "openAdvanced") setView("advanced");
       if (action === "openEstimate") setView("estimate");
       if (action === "openProfile") setStep("profile");
-      if (action === "newClear") resetForm();
-      if (action === "save") handleSaveClick();
-      if (action === "pdf") setPdfPromptOpen(true);
     };
     window.addEventListener("pe-shell-action", onShell);
     return () => window.removeEventListener("pe-shell-action", onShell);
@@ -2687,6 +2906,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     const next = upsertCustomer(customers, payload);
     setCustomers(next);
 
+    saveCustomers(next);
     const saved =
       payload.id
         ? next.find((c) => String(c?.id) === String(payload.id))
@@ -3648,6 +3868,16 @@ setProjectName(e.projectName || "");
   const exportPDF = async (mode = "download") => {
     triggerHaptic();
 
+    // ✅ Auto-save on export (estimateId + overwrite) so re-exporting doesn't create duplicates
+    try {
+      if (typeof currentEstimateId === "number") {
+        commitEstimateSave("overwrite");
+      } else {
+        commitEstimateSave("new");
+      }
+    } catch {
+      // ignore
+    }
 
     // ✅ Invoice number (only for invoices)
     let invNum = "";
@@ -3970,7 +4200,7 @@ else {
       // 1) Preferred: your own backend (/api/translate) — where OpenAI key should live.
       const getBackendUrl = () => {
         try {
-          const base = String(localStorage.getItem("field-pocket-translate-base") || "")
+          const base = String(localStorage.getItem("estipaid-translate-base") || "")
             .trim()
             .replace(/\/+$/, "");
           return base ? `${base}/api/translate` : "/api/translate";
@@ -5592,7 +5822,45 @@ const advancedScreen = (
           </div>
         </div>
 
-        {/* ✅ AI Draft Mode (Beta) */}
+        
+        {/* ✅ Language (App) */}
+        <section className="pe-section">
+          <div className="pe-row" style={{ alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div className="pe-label">{lang === "es" ? "Idioma (App)" : "Language (App)"}</div>
+              <div className="pe-help">
+                {lang === "es"
+                  ? "Cambia el idioma de la app. Se guarda en este dispositivo."
+                  : "Change the app language. Saved on this device."}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className={"pe-btn " + (lang === "en" ? "pe-btn-primary" : "pe-btn-secondary")}
+                onClick={() => {
+                  triggerHaptic();
+                  setLanguage("en");
+                }}
+              >
+                English
+              </button>
+              <button
+                type="button"
+                className={"pe-btn " + (lang === "es" ? "pe-btn-primary" : "pe-btn-secondary")}
+                onClick={() => {
+                  triggerHaptic();
+                  setLanguage("es");
+                }}
+              >
+                Español
+              </button>
+            </div>
+          </div>
+        </section>
+
+{/* ✅ AI Draft Mode (Beta) */}
         <section className="pe-section">
           <div className="pe-row" style={{ alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
@@ -6524,68 +6792,7 @@ const advancedScreen = (
       <div className="pe-wrap">
       <PopStyles />
       <PagePerimeterSnake />
-      <header className="pe-header pe-sweep">
-          <div style={{ marginTop: -10 }}>
-            <div className="pe-title">Field Pocket Estimator</div>
-            <div className="pe-subtitle">{t("subtitleProfile")}</div>
-
-            <div
-              style={{
-                marginTop: 6,
-                fontSize: 12,
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                opacity: 0.95,
-                flexWrap: "wrap",
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "2px 8px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(0,0,0,0.12)",
-                }}
-                title={requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle")}
-              >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 999,
-                    background: requiredComplete ? "#16a34a" : "#dc2626",
-                    display: "inline-block",
-                  }}
-                />
-                <span>{requiredComplete ? t("companyComplete") : t("companyIncomplete")}</span>
-              </span>
-            </div>
-          </div>
-
-  {!embeddedInShell && (
-                <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <LanguageToggle />
-            <button
-              className="pe-btn"
-              type="button"
-              onClick={() => {
-                triggerHaptic();
-                if (!requiredComplete) {
-                  warnCompanyIncomplete();
-                  return;
-                }
-                setStep("estimate");
-              }}
-            >
-              {t("continueArrow")}
-            </button>
-          </div>
-      )}
-        </header>
+            <EstiHeader subtitle={t("subtitleProfile")} requiredComplete={requiredComplete} showPill={false} showMotto={false} t={t} />
 
         <main className="pe-card">
           <section className="pe-section">
@@ -6758,35 +6965,41 @@ const advancedScreen = (
             </div>
             <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
               <div className="pe-muted">{t("savedAuto")}</div>
-              <button
-                className="pe-btn pe-btn-ghost"
-                type="button"
-                onClick={() => {
-                  triggerHaptic();
-                  try { localStorage.removeItem(PROFILE_KEY); } catch (e) {}
-                  setProfile({ ...DEFAULT_PROFILE });
-                }}
-                title={lang === "es" ? "Borrar perfil guardado" : "Clear saved profile"}
-              >
-                {lang === "es" ? "Restablecer perfil" : "Reset profile"}
-              </button>
-              <button
-                className="pe-btn pe-btn-ghost"
-                type="button"
-                onClick={() => {
-                  triggerHaptic();
-                  if (!requiredComplete) {
-                    warnCompanyIncomplete();
-                    return;
-                  }
-                  setStep("estimate");
-                }}
-              >
-                {t("continueArrow")}
-              </button>
-            </div>
+              </div>
           </section>
         </main>
+
+        {embeddedInShell && (
+          <div className="pe-float-dock" role="toolbar" aria-label="Profile actions">
+            <button
+              type="button"
+              className="pe-float-btn"
+              onClick={() => {
+                triggerHaptic();
+                try {
+                  localStorage.removeItem(PROFILE_KEY);
+                  localStorage.removeItem(PROFILE_KEY_LEGACY);
+                } catch (e) {}
+                setProfile({ ...DEFAULT_PROFILE });
+                safeSaveProfile({ ...DEFAULT_PROFILE });
+              }}
+            >
+              {lang === "es" ? "Restablecer" : "Reset"}
+            </button>
+            <button
+              type="button"
+              className="pe-float-btn pe-float-primary"
+              onClick={() => {
+                triggerHaptic();
+                safeSaveProfile(profile);
+              }}
+            >
+              {lang === "es" ? "Guardar" : "Save"}
+            </button>
+          </div>
+        )}
+
+        <div style={{ height: 84 }} />
       </div>
     );
   }
@@ -6988,6 +7201,10 @@ const advancedScreen = (
 
       
 
+      
+
+      <EstiHeader subtitle={t("subtitleEstimator")} requiredComplete={isCompanyComplete(profile)} showPill showMotto={true} t={t} />
+
       <main className="pe-card">
         {view === "advanced" ? advancedScreen : (
           <>
@@ -6998,37 +7215,7 @@ const advancedScreen = (
 
           {/* ✅ Recent customers (tap-to-fill) */}
           <div className="pe-grid">
-            <div style={{ gridColumn: "1 / -1", ...FIELD_STACK }}>
-              <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{t("recentEstimates")}</div>
-              <select
-                className="pe-input"
-                value={recentEstimateId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setRecentEstimateId(id);
-                  const found = history.find((h) => String(h?.id) === String(id));
-                  if (!found) return;
-                  loadEstimate(found);
-                  // act like an action menu (reset back to placeholder)
-                  setTimeout(() => setRecentEstimateId(""), 50);
-                }}
-              >
-                <option value="">{lang === "es" ? "Seleccionar…" : "Select…"}</option>
-                {history.slice(0, 10).map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {(h.client || (h.customerSnapshot && h.customerSnapshot.name) || (lang === "es" ? "Estimación" : "Estimate")) +
-                      (h.date ? ` — ${h.date}` : "")}
-                  </option>
-                ))}
-              </select>
-              <div style={{ fontSize: 12, opacity: 0.65, marginTop: 4 }}>
-                {history.length
-                  ? (lang === "es" ? "Carga una estimación reciente." : "Load a recent estimate.")
-                  : (lang === "es" ? "No hay estimaciones guardadas aún." : "No saved estimates yet.")}
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gap: 4 }}>
+<div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Fecha" : "Date"}</div>
               <input className="pe-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </div>
@@ -7970,12 +8157,51 @@ const advancedScreen = (
           </>
         )}
       </main>
+
+      {/* Floating estimator actions (only on estimator screen) */}
+      {step === "estimate" && view !== "advanced" && (
+        <div className="pe-float-actions">
+          <button
+            type="button"
+            className="pe-float-btn pe-float-danger"
+            onClick={() => {
+              triggerHaptic();
+              resetForm();
+            }}
+          >
+            {lang === "es" ? "Limpiar" : "Clear"}
+          </button>
+          <button
+            type="button"
+            className="pe-float-btn"
+            onClick={() => {
+              triggerHaptic();
+              handleSaveClick();
+            }}
+          >
+            {lang === "es" ? "Guardar" : "Save"}
+          </button>
+          <button
+            type="button"
+            className="pe-float-btn pe-float-primary"
+            onClick={() => {
+              triggerHaptic();
+              setPdfPromptOpen(true);
+            }}
+          >
+            {lang === "es" ? "PDF" : "Export PDF"}
+          </button>
+        </div>
+      )}
+
+      <div style={{ height: 84 }} />
+
     </div>
   );
 
 }
 export default function EstimateForm(props) {
-  const { embeddedInShell = true } = props || {};
+  const { embeddedInShell = true, forceProfileOnMount: forceProfileOnMountProp = false } = props || {};
 
   // language init: localStorage first; otherwise Spanish-first based on device language
   const [lang, setLang] = useState(() => {
@@ -8023,6 +8249,6 @@ export default function EstimateForm(props) {
   }
 
   return (
-    <EstimateFormInner lang={lang} setLang={setLang} setLanguage={setLanguage} t={t} forceProfileOnMount={justChoseLanguage} embeddedInShell={embeddedInShell} />
+    <EstimateFormInner lang={lang} setLang={setLang} setLanguage={setLanguage} t={t} forceProfileOnMount={justChoseLanguage || !!forceProfileOnMountProp} embeddedInShell={embeddedInShell} />
   );
 }
