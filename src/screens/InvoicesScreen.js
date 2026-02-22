@@ -16,7 +16,7 @@ function loadSavedInvoices() {
   }
 }
 
-export default function InvoicesScreen({ lang, t, onDone }) {
+export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
   const [q, setQ] = useState("");
   const [list, setList] = useState(() => loadSavedInvoices());
 
@@ -74,9 +74,19 @@ export default function InvoicesScreen({ lang, t, onDone }) {
     <section className="pe-section">
       <div
         className="pe-section-title"
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, position: "relative" }}
       >
         <div>{lang === "es" ? "Facturas" : "Invoices"}</div>
+        <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}>
+          <img
+            key={spinTick}
+            className="esti-spin"
+            src="/logo/estipaid.svg"
+            alt="EstiPaid"
+            style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))" }}
+            draggable={false}
+          />
+        </div>
         <button className="pe-btn" onClick={onDone}>
           {lang === "es" ? "Volver" : "Back"}
         </button>

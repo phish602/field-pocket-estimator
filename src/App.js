@@ -64,7 +64,7 @@ function getSavedLang() {
   } catch {
     // ignore
   }
-  return "";
+  return "en";
 }
 
 /* =========================
@@ -203,7 +203,9 @@ const FOOTER_H = 78;
 /* =========================
    Top bar + bottom nav + drawer
    ========================= */
-function TopBar({ onMenu, onProfile }) {
+function TopBar({ onMenu, onProfile, topRightLogoSrc }) {
+  const src = topRightLogoSrc || "/logo/estipaid.svg";
+
   return (
     <div style={styles.topbar}>
       <button
@@ -219,9 +221,16 @@ function TopBar({ onMenu, onProfile }) {
         className="pe-btn pe-btn-ghost"
         style={styles.profileBtn}
         onClick={onProfile}
-        aria-label="Profile"
+        aria-label="Open snapshot"
       >
-        <div style={styles.profileCircle}>AV</div>
+        <div style={styles.profileCircle}>
+          <img
+            src={src}
+            alt="Company logo"
+            style={styles.profileLogo}
+            draggable={false}
+          />
+        </div>
       </button>
     </div>
   );
@@ -366,28 +375,18 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent }) {
+function CreateFlow({ gated, intent, spinTick }) {
   return (
     <div>
-      {gated ? (
-        <div className="pe-card" style={{ margin: "12px 14px 0" }}>
-          Select language on <b>Home</b> to unlock Create.
-          <div className="pe-muted" style={{ marginTop: 6 }}>
-            Home → Language → choose English/Español.
-          </div>
-        </div>
-      ) : (
-        <EstimateForm key={intent === "profile" ? "profile" : "estimate"} embeddedInShell forceProfileOnMount={intent === "profile"} />
-      )}
+      <EstimateForm key={"estimate"} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
     </div>
   );
 }
-
 /* =========================
    Placeholder screens (theme-safe)
    ========================= */
 
-function HomeScreen() {
+function HomeScreen({ spinTick }) {
   return (
     <div className="pe-main" style={{ paddingTop: 0 }}>
       <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
@@ -422,21 +421,23 @@ function HomeScreen() {
           </span>
         </div>
 
+        <div style={{ display: "flex", justifyContent: "center", transform: "translateX(-14px)", margin: "0 auto 10px" }}>
         <img
+          key={spinTick}
+          className="esti-spin"
           src="/logo/estipaid.svg"
           alt="EstiPaid"
           style={{
             height: 110,
             width: "auto",
             display: "block",
-            margin: "0 auto 10px",
-            transform: "translateX(-14px)",
             objectFit: "contain",
             filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
           }}
+          draggable={false}
         />
-
-        <div
+        </div>
+<div
           style={{
             marginTop: 10,
             fontSize: 14,
@@ -582,6 +583,15 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.18)",
     background: "rgba(255,255,255,0.06)",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
+  },
+
+  profileLogo: {
+    width: 26,
+    height: 26,
+    display: "block",
+    margin: "0 auto",
+    objectFit: "contain",
+    filter: "drop-shadow(0 8px 18px rgba(0,0,0,0.35))",
   },
 
   // full-height scroll under overlays
@@ -733,10 +743,13 @@ export default function App() {
   }, []);
 
   const [lang, setLang] = useState(() => getSavedLang());
-  const [activeTab, setActiveTab] = useState(() =>
-    getSavedLang() ? "home" : "create"
-  );
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState(() => "home");
+const [spinTick, setSpinTick] = useState(0);
+
+  useEffect(() => {
+    setSpinTick((v) => v + 1);
+  }, [activeTab]);
+const [drawerOpen, setDrawerOpen] = useState(false);
   const [createIntent, setCreateIntent] = useState("estimate");
 
   // Keep a tiny global flag so nested screens can hard-lock into profile when requested
@@ -747,44 +760,38 @@ export default function App() {
       // ignore
     }
   }, [createIntent]);
-
-
-  // Create Flow step (App-owned)
-  // Listen for language selection inside EstimateForm (it writes LANG_KEY)
-  useEffect(() => {
-    const onEvt = (e) => {
-      const k = e?.detail?.key;
-      const v = e?.detail?.value;
-      if (k === LANG_KEY && (v === "en" || v === "es")) {
-        setLang(v);
-        setActiveTab("home");
-      }
-    };
-    window.addEventListener("pe-localstorage", onEvt);
-    return () => window.removeEventListener("pe-localstorage", onEvt);
-  }, []);
-
-  // Safety: if language is unset, force them back into Create (LanguageGate)
-  useEffect(() => {
-    const v = getSavedLang();
-    if (!v) {
-      setLang("");
-      setActiveTab("create");
+const gated = false;
+  const topRightLogoSrc = useMemo(() => {
+    const DEFAULT = "/logo/estipaid.svg";
+    try {
+      const raw = localStorage.getItem("estipaid-company-profile-v1");
+      if (!raw) return DEFAULT;
+      const obj = JSON.parse(raw);
+      const candidates = [
+        obj?.logoDataUrl,
+        obj?.logo,
+        obj?.logoUrl,
+        obj?.logoData,
+        obj?.companyLogo,
+      ];
+      const picked = candidates.find((s) => typeof s === "string" && s.trim().length > 0);
+      return picked || DEFAULT;
+    } catch {
+      return DEFAULT;
     }
-  }, []);
+  }, [activeTab]);
 
-  const gated = !lang;
 
   const renderScreen = () => {
-    if (activeTab === "home") return <HomeScreen />;
-    if (activeTab === "customers") return <CustomersScreen />;
-    if (activeTab === "estimates") return <EstimatesScreen />;
-    if (activeTab === "invoices") return <InvoicesScreen />;
+    if (activeTab === "home") return <HomeScreen spinTick={spinTick} />;
+    if (activeTab === "customers") return <CustomersScreen spinTick={spinTick} />;
+    if (activeTab === "estimates") return <EstimatesScreen spinTick={spinTick} />;
+    if (activeTab === "invoices") return <InvoicesScreen spinTick={spinTick} />;
     if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen />;
-    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen />;
+    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen spinTick={spinTick} /> : <HomeScreen spinTick={spinTick} />;
     if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen />;
-    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} />;
-    return <HomeScreen />;
+    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
+    return <HomeScreen spinTick={spinTick} />;
   };
 
   const onDrawerSelect = (key) => {
@@ -840,9 +847,22 @@ export default function App() {
             100%{ transform: scale(1.00); }
           }
         }
+
+@keyframes estiSpinPremium{
+  0%{transform:rotate(0deg);}
+  82%{transform:rotate(372deg);}
+  100%{transform:rotate(360deg);}
+}
+.esti-spin{
+  animation:estiSpinPremium 0.6s cubic-bezier(.22,.9,.28,1);
+  transform-origin:50% 50%;
+  will-change:transform;
+  animation-fill-mode: both;
+}
       `}</style>
 
       <TopBar
+        topRightLogoSrc={topRightLogoSrc}
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);

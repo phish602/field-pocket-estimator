@@ -1,8 +1,9 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-const CUSTOMERS_KEY = "field-pocket-customers-v1";
+const CUSTOMERS_KEY = "estipaid-customers-v1";
+const CUSTOMERS_KEY_LEGACY = "field-pocket-customers-v1";
 
 function persistCustomers(list) {
   try {
@@ -88,6 +89,11 @@ export default function CustomersScreen({
   setSelectedCustomerId,
   onDone,
 }) {
+  const [spinTick, setSpinTick] = useState(0);
+  useEffect(() => {
+    setSpinTick((t) => t + 1);
+  }, []);
+
   const [q, setQ] = useState("");
   const [mode, setMode] = useState("list"); // "list" | "edit"
   const [draft, setDraft] = useState({
@@ -344,7 +350,32 @@ export default function CustomersScreen({
 
     return (
       <section className="pe-section">
-        <div className="pe-section-title" style={headerWrapStyle}>
+        <div className="pe-section-title" style={{ ...headerWrapStyle, position: "relative" }}>
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            pointerEvents: "none",
+          }}
+        >
+          <img
+            key={spinTick}
+            className="esti-spin"
+            src="/logo/estipaid.svg"
+            alt="EstiPaid"
+            style={{
+              height: 32,
+              width: "auto",
+              display: "block",
+              objectFit: "contain",
+              filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))",
+            }}
+            draggable={false}
+          />
+        </div>
+
           <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
             <div>{label(isEditing ? "Edit Customer" : "New Customer", isEditing ? "Editar Cliente" : "Nuevo Cliente")}</div>
             <div style={{ fontSize: 12, opacity: 0.7 }}>{label("Required fields marked *", "Campos requeridos marcados *")}</div>
@@ -483,7 +514,32 @@ export default function CustomersScreen({
 
   return (
     <section className="pe-section">
-      <div className="pe-section-title" style={headerWrapStyle}>
+      <div className="pe-section-title" style={{ ...headerWrapStyle, position: "relative" }}>
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            pointerEvents: "none",
+          }}
+        >
+          <img
+            key={spinTick}
+            className="esti-spin"
+            src="/logo/estipaid.svg"
+            alt="EstiPaid"
+            style={{
+              height: 32,
+              width: "auto",
+              display: "block",
+              objectFit: "contain",
+              filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))",
+            }}
+            draggable={false}
+          />
+        </div>
+
         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
           <div>{typeof t === "function" ? t("customers") : label("Customers", "Clientes")}</div>
           <div style={{ fontSize: 12, opacity: 0.7 }}>{label(`${filtered.length} shown`, `${filtered.length} mostrados`)}</div>

@@ -293,12 +293,18 @@ function PagePerimeterSnake(){
 
 
 function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = false, t }) {
+  const [spinTick, setSpinTick] = useState(0);
+  useEffect(() => {
+    setSpinTick((t) => t + 1);
+  }, []);
+
   // Home-screen matched hero header (centered, breathable)
   const subtitleText = subtitle || "";
   const pillTitle = requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle");
 
   return (
     <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
+      <div>
       {/* Wordmark (matches Home) */}
       <div
         style={{
@@ -331,7 +337,10 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
       </div>
 
       {/* Logo (matches Home size/placement) */}
+      <span data-esti-spin="tab" className="esti-spin-wrap">
       <img
+        key={spinTick}
+        className="esti-spin"
         src="/logo/estipaid.svg"
         alt="EstiPaid"
         style={{
@@ -339,6 +348,7 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
           width: "auto",
           display: "block",
           margin: "0 auto 10px",
+          transform: "translateX(-16px)",
                     objectFit: "contain",
           filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
         }}
@@ -348,8 +358,8 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
           } catch {}
         }}
       />
-
-      {/* Motto (matches Home) */}
+      </span>
+{/* Motto (matches Home) */}
       {showMotto && (
       <div
         style={{
@@ -368,20 +378,23 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
         Turn Scope into Revenue
       </div>
 
-      )}
-      {/* Screen label (same style for Profile + Estimator) */}
-      <div
-        style={{
-          marginTop: 10,
-          fontSize: 12,
-          fontWeight: 700,
-          letterSpacing: "2px",
-          textTransform: "uppercase",
-          opacity: 0.65,
-        }}
-      >
-        {subtitleText}
-      </div>
+      )}      {/* Screen label (hide if subtitle is the motto to avoid duplication) */}
+      {subtitleText &&
+      subtitleText !== "Turn Scope into Revenue." &&
+      subtitleText !== "Convierte alcance en ingresos." ? (
+        <div
+          style={{
+            marginTop: 10,
+            fontSize: 12,
+            fontWeight: 700,
+            letterSpacing: "2px",
+            textTransform: "uppercase",
+            opacity: 0.65,
+          }}
+        >
+          {subtitleText}
+        </div>
+      ) : null}
 
       {/* Company indicator: keep header height identical by reserving space */}
       <div
@@ -417,11 +430,12 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
                 boxShadow: "0 0 0 4px rgba(255,255,255,0.04)",
               }}
             />
-            {requiredComplete ? "Company complete" : "Company incomplete"}
+            {requiredComplete ? "Company info complete" : "Company info incomplete"}
           </span>
         ) : (
           <span style={{ opacity: 0, pointerEvents: "none" }}>.</span>
         )}
+      </div>
       </div>
     </div>
   );
@@ -498,7 +512,7 @@ function loadSavedLang() {
   } catch (e) {
     // ignore
   }
-  return "";
+  return "en";
 }
 
 
@@ -578,11 +592,23 @@ const DEFAULT_PROFILE = {
 
 function loadSavedProfile() {
   try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-        const rawLegacy = raw ? "" : localStorage.getItem(PROFILE_KEY_LEGACY);
-    const rawUse = raw || rawLegacy;
-if (!rawUse) return null;
-    const parsed = JSON.parse(rawUse);
+    let raw = localStorage.getItem(PROFILE_KEY);
+
+    if (!raw) {
+      // legacy fallbacks (older installs)
+      raw = localStorage.getItem(PROFILE_KEY_LEGACY) || localStorage.getItem(PROFILE_KEY_LEGACY2) || "";
+      if (raw) {
+        // migrate forward
+        try {
+          localStorage.setItem(PROFILE_KEY, raw);
+          localStorage.removeItem(PROFILE_KEY_LEGACY);
+          localStorage.removeItem(PROFILE_KEY_LEGACY2);
+        } catch {}
+      }
+    }
+
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     // Merge with defaults to survive schema changes
     return { ...DEFAULT_PROFILE, ...parsed };
@@ -633,7 +659,7 @@ const I18N = {
     pdfTranslateCustom: "Translate my custom text (beta)",
     pdfTranslateCustomHelp:
       "Uses /api/translate to translate ONLY your custom text. Templates/trade inserts stay protected.",
-    pdfTranslateUnavailable: "Translation unavailable. Configure /api/translate or set localStorage estipaid-openai-key. Exporting without translating your custom text.",
+    pdfTranslateUnavailable: "Translation unavailable. Configure /api/translate or set localStorage field-pocket-openai-key. Exporting without translating your custom text.",
     pdfTranslateFailedConfirm: "Couldn’t translate your custom text. Export anyway without translating it?",
 
     // ✅ NEW: doc type toggle
@@ -654,8 +680,8 @@ const I18N = {
     invoiceTotal: "Invoice Total",
 
     // status pill
-    companyComplete: "Company complete",
-    companyIncomplete: "Company incomplete",
+    companyComplete: "Company info complete",
+    companyIncomplete: "Company info incomplete",
     requiredCompleteTitle: "Required company fields complete",
     requiredIncompleteTitle: "Fill all required company fields to enable PDF export",
 
@@ -843,7 +869,7 @@ const I18N = {
     pdfTranslateCustom: "Traducir mi texto (beta)",
     pdfTranslateCustomHelp:
       "Usa /api/translate para traducir SOLO tu texto. Plantillas/insertos se protegen.",
-    pdfTranslateUnavailable: "Traducción no disponible. Configura /api/translate o guarda en localStorage estipaid-openai-key. Se exporta sin traducir tu texto.",
+    pdfTranslateUnavailable: "Traducción no disponible. Configura /api/translate o guarda en localStorage field-pocket-openai-key. Se exporta sin traducir tu texto.",
     pdfTranslateFailedConfirm: "No se pudo traducir tu texto. ¿Exportar de todos modos sin traducirlo?",
 
     // ✅ NEW: doc type toggle
@@ -2384,23 +2410,24 @@ function detectDataUrlType(dataUrl) {
   return "JPEG";
 }
 
-const STORAGE_KEY = "estipaid-estimates";
-const PROFILE_KEY_LEGACY = "estipaid-profile";
-const THEME_KEY = "estipaid-theme"; // "auto" | "light" | "dark"
-const SHOW_COSTS_KEY = "estipaid-show-costs"; // "1" | "0"
-const PDF_LABOR_ITEMIZED_KEY = "estipaid-pdf-labor-itemized"; // "1" | "0"
-const INVOICE_SEQ_KEY = "estipaid-invoice-seq";
-const LAST_INVOICE_NUM_KEY = "estipaid-last-invoice-number";
-const ESTIMATE_SEQ_KEY = "estipaid-estimate-seq";
-const LAST_ESTIMATE_NUM_KEY = "estipaid-last-estimate-number";
-const INVOICE_SEQ_WIDTH_KEY = "estipaid-invoice-seq-width";
-const ESTIMATE_SEQ_WIDTH_KEY = "estipaid-estimate-seq-width";
-const ORIGINAL_INVOICE_NUM_KEY = "estipaid-original-invoice-number";
+const STORAGE_KEY = "field-pocket-estimates";
+const PROFILE_KEY_LEGACY = "field-pocket-profile-v1";
+const PROFILE_KEY_LEGACY2 = "field-pocket-profile";
+const THEME_KEY = "field-pocket-theme"; // "auto" | "light" | "dark"
+const SHOW_COSTS_KEY = "field-pocket-show-costs"; // "1" | "0"
+const PDF_LABOR_ITEMIZED_KEY = "field-pocket-pdf-labor-itemized"; // "1" | "0"
+const INVOICE_SEQ_KEY = "field-pocket-invoice-seq";
+const LAST_INVOICE_NUM_KEY = "field-pocket-last-invoice-number";
+const ESTIMATE_SEQ_KEY = "field-pocket-estimate-seq";
+const LAST_ESTIMATE_NUM_KEY = "field-pocket-last-estimate-number";
+const INVOICE_SEQ_WIDTH_KEY = "field-pocket-invoice-seq-width";
+const ESTIMATE_SEQ_WIDTH_KEY = "field-pocket-estimate-seq-width";
+const ORIGINAL_INVOICE_NUM_KEY = "field-pocket-original-invoice-number";
 
 // =========================
 // CUSTOMERS (AUTO-SAVED ON PDF EXPORT)
 // =========================
-const CUSTOMERS_KEY = "estipaid-customers-v1";
+const CUSTOMERS_KEY = "field-pocket-customers-v1";
 
 function _nowTs() {
   return Date.now();
@@ -2537,7 +2564,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   // ✅ Optional: OpenAI key stored in localStorage for client-side translation (dev/prototype)
   const [openaiKey, setOpenaiKey] = useState(() => {
     try {
-      return String(localStorage.getItem("estipaid-openai-key") || "");
+      return String(localStorage.getItem("field-pocket-openai-key") || "");
     } catch (e) {
       return "";
     }
@@ -2546,8 +2573,8 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   useEffect(() => {
     try {
       const v = String(openaiKey || "").trim();
-      if (v) localStorage.setItem("estipaid-openai-key", v);
-      else localStorage.removeItem("estipaid-openai-key");
+      if (v) localStorage.setItem("field-pocket-openai-key", v);
+      else localStorage.removeItem("field-pocket-openai-key");
     } catch (e) {
       // ignore
     }
@@ -2632,13 +2659,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   useEffect(() => {
     safeSaveProfile(profile);
   }, [profile]);
-  const [step, setStep] = useState(() => (forceProfileOnMount ? "profile" : "estimate")); // "profile" | "estimate"
-
-  // Keep Company Profile stable when App toggles create intent (avoid estimator flash)
-  useEffect(() => {
-    if (forceProfileOnMount) setStep("profile");
-  }, [forceProfileOnMount]);
-
+  const [step, setStep] = useState("estimate"); // locked: estimator always renders; company profile is edited in CompanyProfileScreen
   // ✅ NEW: keep “Advanced” settings on their own screen (avoid cluttering estimator)
   const [view, setView] = useState("estimate");
 
@@ -2649,8 +2670,7 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
       const action = d.action;
       if (action === "openAdvanced") setView("advanced");
       if (action === "openEstimate") setView("estimate");
-      if (action === "openProfile") setStep("profile");
-    };
+};
     window.addEventListener("pe-shell-action", onShell);
     return () => window.removeEventListener("pe-shell-action", onShell);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2906,7 +2926,6 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
     const next = upsertCustomer(customers, payload);
     setCustomers(next);
 
-    saveCustomers(next);
     const saved =
       payload.id
         ? next.find((c) => String(c?.id) === String(payload.id))
@@ -3140,9 +3159,9 @@ const [laborMultiplier, setLaborMultiplier] = useState(1);
         terms: savedProfile.terms || "",
       };
       setProfile(nextProfile);
-      setStep(isCompanyComplete(nextProfile) ? "estimate" : "profile");
+      setStep("estimate");
     } else {
-      setStep("profile");
+      setStep("estimate");
     }
 
     const savedHistory = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -3155,7 +3174,7 @@ const [laborMultiplier, setLaborMultiplier] = useState(1);
 
   useEffect(() => {
     if (step === "estimate" && !isCompanyComplete(profile)) {
-      setStep("profile");
+      setStep("estimate");
     }
   }, [step, profile]);
 
@@ -3898,7 +3917,7 @@ setProjectName(e.projectName || "");
 
     if (!companyGreen) {
       const go = window.confirm(t("pdfCompanyIncompleteConfirm"));
-      if (go) setStep("profile");
+      if (go) setStep("estimate");
       return;
     }
 
@@ -4200,7 +4219,7 @@ else {
       // 1) Preferred: your own backend (/api/translate) — where OpenAI key should live.
       const getBackendUrl = () => {
         try {
-          const base = String(localStorage.getItem("estipaid-translate-base") || "")
+          const base = String(localStorage.getItem("field-pocket-translate-base") || "")
             .trim()
             .replace(/\/+$/, "");
           return base ? `${base}/api/translate` : "/api/translate";
@@ -6785,7 +6804,7 @@ const advancedScreen = (
   }
 
 // STEP 1: COMPANY PROFILE
-  if (step === "profile") {
+  if (false) {
     const requiredComplete = isCompanyComplete(profile);
 
     return (
@@ -8241,12 +8260,6 @@ export default function EstimateForm(props) {
 
   const langChosen = lang === "en" || lang === "es";
   const langReady = langChosen && langConfirmed;
-
-
-  
-  if (!langReady) {
-    return <LanguageGate t={t} setLanguage={setLanguage} />;
-  }
 
   return (
     <EstimateFormInner lang={lang} setLang={setLang} setLanguage={setLanguage} t={t} forceProfileOnMount={justChoseLanguage || !!forceProfileOnMountProp} embeddedInShell={embeddedInShell} />
