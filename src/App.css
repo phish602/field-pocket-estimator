@@ -1,3 +1,22 @@
+/* ESTIPAID_GLOBAL_BG */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: radial-gradient(circle at 20% 0%, rgba(34, 181, 134, 0.28) 0%, rgba(7, 27, 42, 1) 55%, rgba(3, 10, 18, 1) 100%);
+  color: #eaf6ff;
+  background-color: rgba(3, 10, 18, 1);
+}
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background-color: rgba(3, 10, 18, 1);
+}
+.App {
+  min-height: 100%;
+  background: transparent;
+  color: inherit;
+}
+
+
 .App {
   text-align: center;
 }

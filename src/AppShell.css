@@ -270,3 +270,68 @@
   margin-bottom: 12px;
   box-shadow: 0 10px 22px rgba(0,0,0,0.16);
 }
+
+
+/* ESTIPAID_LOGO_SPIN */
+.esti-spin {
+  animation: estiSpin 850ms ease-out 1;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+@keyframes estiSpin {
+  0% { transform: rotate(0deg); }
+  60% { transform: rotate(420deg); }
+  100% { transform: rotate(360deg); }
+}
+
+
+/* ======================================================
+   HERO LOGO SHORTCUTS — GLASS BLUR ANIMATION
+   (Open/Close) — isolated to shortcuts overlay only
+   ====================================================== */
+
+.pe-quick-overlay{
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  opacity: 0;
+  transition: opacity 180ms ease, backdrop-filter 180ms ease;
+  will-change: opacity, backdrop-filter;
+}
+
+.pe-quick-overlay.pe-opening{
+  opacity: 1;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.pe-quick-overlay.pe-closing{
+  opacity: 0;
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+}
+
+.pe-quick-menu-wrap{
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+  transition: opacity 180ms ease, transform 180ms ease;
+  will-change: opacity, transform;
+}
+
+.pe-quick-menu-wrap.pe-opening{
+  opacity: 1;
+  transform: translateY(0px) scale(1);
+}
+
+.pe-quick-menu-wrap.pe-closing{
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+
+@media (prefers-reduced-motion: reduce){
+  .pe-quick-overlay,
+  .pe-quick-menu-wrap{
+    transition: none;
+  }
+  .pe-quick-overlay{ opacity: 1; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .pe-quick-menu-wrap{ opacity: 1; transform: none; }
+}

@@ -292,18 +292,20 @@ function PagePerimeterSnake(){
 }
 
 
-function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = false, t }) {
+function EstiHeader({ title = "", subtitle = "", requiredComplete, showPill = true, showMotto = false, t }) {
+  // Home-screen matched hero header (centered, breathable)
+  // Spin once (quick spin + stop) by remounting the logo right after mount.
+  // This relies on the global `.esti-spin` animation (same as Home).
   const [spinTick, setSpinTick] = useState(0);
   useEffect(() => {
-    setSpinTick((t) => t + 1);
+    setSpinTick((v) => v + 1);
   }, []);
 
-  // Home-screen matched hero header (centered, breathable)
   const subtitleText = subtitle || "";
   const pillTitle = requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle");
 
   return (
-    <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
+    <div className="pe-card" style={{ marginTop: -16, textAlign: "center" }}>
       <div>
       {/* Wordmark (matches Home) */}
       <div
@@ -337,20 +339,40 @@ function EstiHeader({ subtitle, requiredComplete, showPill = true, showMotto = f
       </div>
 
       {/* Logo (matches Home size/placement) */}
-      <span data-esti-spin="tab" className="esti-spin-wrap">
+      <span data-esti-spin="tab" className="esti-spin-wrap" onContextMenu={(e) => e.preventDefault()}>
       <img
         key={spinTick}
         className="esti-spin"
         src="/logo/estipaid.svg"
         alt="EstiPaid"
         style={{
+          cursor: "pointer",
           height: 110,
           width: "auto",
           display: "block",
           margin: "0 auto 10px",
-          transform: "translateX(-16px)",
+          transform: "translateX(0px)",
                     objectFit: "contain",
           filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
+        }}
+        onClick={() => { try { window.dispatchEvent(new Event("estipaid:hero-logo-tap")); } catch {} try { setSpinTick((v) => v + 1); } catch {} }}
+        onPointerDown={(e) => {
+          try { e.currentTarget.__lpFired = false; } catch {}
+          const t = setTimeout(() => {
+            try { e.currentTarget.__lpFired = true; } catch {}
+            try { window.dispatchEvent(new Event("estipaid:hero-logo-longpress")); } catch {}
+          }, 520);
+          e.currentTarget.__lpTimer = t;
+        }}
+        onPointerUp={(e) => {
+          const t = e.currentTarget.__lpTimer;
+          if (t) clearTimeout(t);
+          e.currentTarget.__lpTimer = null;
+        }}
+        onPointerCancel={(e) => {
+          const t = e.currentTarget.__lpTimer;
+          if (t) clearTimeout(t);
+          e.currentTarget.__lpTimer = null;
         }}
         onError={(e) => {
           try {
@@ -905,6 +927,9 @@ const I18N = {
     delete: "Eliminar",
     clearAll: "Borrar todo",
     clearNotes: "Borrar notas",
+
+    // section titles
+    companyProfileTitlarNotes: "Borrar notas",
 
     // section titles
     companyProfileTitle: "Perfil de empresa (para PDF)",
@@ -2427,7 +2452,9 @@ const ORIGINAL_INVOICE_NUM_KEY = "field-pocket-original-invoice-number";
 // =========================
 // CUSTOMERS (AUTO-SAVED ON PDF EXPORT)
 // =========================
-const CUSTOMERS_KEY = "field-pocket-customers-v1";
+const CUSTOMERS_KEY = "estipaid-customers-v1";
+  const CUSTOMERS_KEY_OLD = "field-pocket-customers-v1";
+const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
 
 function _nowTs() {
   return Date.now();
@@ -2439,15 +2466,84 @@ function _normKey(s) {
 
 function loadSavedCustomers() {
   try {
-    const raw = localStorage.getItem(CUSTOMERS_KEY);
+    let raw = localStorage.getItem(CUSTOMERS_KEY);
+    if (!raw) {
+      raw = localStorage.getItem(CUSTOMERS_KEY_OLD);
+      if (raw) {
+        try { localStorage.setItem(CUSTOMERS_KEY, raw); } catch {}
+      }
+    }
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(Boolean);
-  } catch (e) {
+  } catch {
     return [];
   }
 }
+
+function _joinAddrObj(a) {
+  const street = String(a?.street || "").trim();
+  const city = String(a?.city || "").trim();
+  const state = String(a?.state || "").trim();
+  const zip = String(a?.zip || "").trim();
+  const line2 = [city, state].filter(Boolean).join(", ");
+  const line2Full = [line2, zip].filter(Boolean).join(" ");
+  return [street, line2Full].filter(Boolean).join(", ").trim();
+}
+
+
+function sanitizePONumber(v) {
+  return String(v || "")
+    .replace(/[^a-zA-Z0-9\-_/ ]+/g, "")
+    .slice(0, 40);
+}
+
+function confirmClearCustomer(lang) {
+  const en = "Clear customer? This will remove the loaded customer from this document.";
+  const es = "¿Quitar cliente? Esto eliminará el cliente cargado de este documento.";
+  return window.confirm(lang === "es" ? es : en);
+}
+
+function _customerDisplayName(c) {
+  const snap = normalizeCustomerForDoc(c);
+  return String(snap?.displayName || "").trim();
+}
+
+function normalizeCustomerForDoc(c) {
+  if (!c) return null;
+  const type = String(c?.type || "residential");
+
+  if (type === "commercial") {
+    const billAddr = c?.billSameAsJob ? (c?.jobsite || null) : (c?.billing || null);
+    return {
+      type,
+      displayName: String(c?.companyName || "").trim(),
+      attn: [c?.contactName, c?.contactTitle].filter(Boolean).join(c?.contactTitle ? ", " : ""),
+      phone: String(c?.comPhone || "").trim(),
+      email: String(c?.comEmail || "").trim(),
+      apEmail: String(c?.apEmail || "").trim(),
+      poRequired: Boolean(c?.poRequired),
+      jobsiteAddress: _joinAddrObj(c?.jobsite || null),
+      billingAddress: _joinAddrObj(billAddr || null),
+    };
+  }
+
+  // residential
+  const billAddr = c?.resBillingSame ? (c?.resService || null) : (c?.resBilling || null);
+  return {
+    type,
+    displayName: String(c?.fullName || "").trim(),
+    attn: "",
+    phone: String(c?.resPhone || "").trim(),
+    email: String(c?.resEmail || "").trim(),
+    apEmail: "",
+    poRequired: false,
+    jobsiteAddress: _joinAddrObj(c?.resService || null),
+    billingAddress: _joinAddrObj(billAddr || null),
+  };
+}
+
 
 function saveCustomers(list) {
   try {
@@ -2972,6 +3068,89 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   const [customerSelectQuery, setCustomerSelectQuery] = useState("");
   const [recentEstimateId, setRecentEstimateId] = useState("");
   const [customerPanelOpen, setCustomerPanelOpen] = useState(() => uiLoadBool("customerPanelOpen", false));
+
+  // ✅ Apply customer selected from Customers screen (Use button)
+  const lastCustomerUseAppliedRef = useRef({ tick: -1, id: "", ts: 0 });
+
+  function _readPendingCustomerUse() {
+    try {
+      const raw = localStorage.getItem(PENDING_CUSTOMER_USE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const id = String(parsed.id || "").trim();
+      if (!id) return null;
+      return { id, customer: parsed.customer || null, ts: Number(parsed.ts || 0) || 0 };
+    } catch {
+      return null;
+    }
+  }
+
+  function _clearPendingCustomerUse() {
+    try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
+  }
+
+  function _applyCustomerUsePayload(payload) {
+    try {
+      const p = payload || {};
+      const id = String(p.id || "").trim();
+      if (!id) return false;
+
+      // refresh customers from storage so newly created customer appears immediately
+      const fresh = loadSavedCustomers();
+      setCustomers(Array.isArray(fresh) ? fresh : []);
+
+      const foundFresh = Array.isArray(fresh) ? fresh.find((c) => String(c?.id || "") === id) : null;
+      const snap = p.customer || null;
+      const useCustomer = foundFresh || snap;
+
+      setSelectedCustomerId(id);
+
+      if (useCustomer) {
+        setCustomerDraft(useCustomer);
+        applyCustomerToForm(useCustomer);
+        const td = Number.isFinite(Number(useCustomer.termsDays)) ? Number(useCustomer.termsDays) : 0;
+        setCustomerTermsDays(td);
+      }
+
+      try { setCustomerPanelOpen(false); } catch {}
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Apply from storage when Create screen mounts, and whenever CustomersScreen fires the use event
+  useEffect(() => {
+    const applyPending = () => {
+      try {
+        const pending = _readPendingCustomerUse();
+        if (!pending) return;
+
+        const last = lastCustomerUseAppliedRef.current || {};
+        const same = String(last.id || "") === String(pending.id || "") && Number(last.ts || 0) === Number(pending.ts || 0);
+        if (same) return;
+
+        const ok = _applyCustomerUsePayload(pending);
+        if (ok) lastCustomerUseAppliedRef.current = { id: pending.id, ts: pending.ts };
+      } catch {
+        // ignore
+      }
+    };
+
+    // run once on mount
+    applyPending();
+
+    // listen for live use events
+    const onUse = () => applyPending();
+    try { window.addEventListener("estipaid:customer-use", onUse); } catch {}
+
+    return () => {
+      try { window.removeEventListener("estipaid:customer-use", onUse); } catch {}
+    };
+  }, []);
+// Apply live via event (in case screen is already mounted)
+  
   const [customerCreating, setCustomerCreating] = useState(false);
   const [customerEditing, setCustomerEditing] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
@@ -7242,7 +7421,7 @@ const advancedScreen = (
 
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>PO#</div>
-              <input className="pe-input" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder={lang === "es" ? "PO# (opcional)" : "PO# (optional)"} />
+              <input className="pe-input" value={poNumber} onChange={(e) => setPoNumber(sanitizePONumber(e.target.value))} placeholder={lang === "es" ? "PO# (opcional)" : "PO# (optional)"}  type="text" inputMode="text" autoComplete="off" placeholder="PO-12345" />
             </div>
 
             <div style={{ display: "grid", gap: 4 }}>

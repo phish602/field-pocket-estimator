@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import EstimateForm from "./EstimateForm";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
@@ -7,6 +7,9 @@ import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import "./EstimateForm.css";
+import "./AppShell.css";
+import "./App.css";
+const DEFAULT_LOGO = "/logo/estipaid.svg";
 
 
 
@@ -203,11 +206,11 @@ const FOOTER_H = 78;
 /* =========================
    Top bar + bottom nav + drawer
    ========================= */
-function TopBar({ onMenu, onProfile, topRightLogoSrc }) {
+function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSpinTap, onHeaderSpinLongPress, isScrolled, glassOnScroll }) {
   const src = topRightLogoSrc || "/logo/estipaid.svg";
 
   return (
-    <div style={styles.topbar}>
+    <div style={{ ...styles.topbar, ...(glassOnScroll && isScrolled ? styles.topbarScrolled : null) }}>
       <button
         className="pe-btn pe-btn-ghost"
         style={styles.iconBtn}
@@ -217,7 +220,52 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc }) {
         ☰
       </button>
 
-      <button
+      
+
+      {showHeaderSpin ? (
+        <button
+          type="button"
+          style={styles.headerSpinBtn}
+          aria-label="Go Home (hold for shortcuts)"
+          title="Tap: Home • Hold: Shortcuts"
+          onClick={(e) => {
+            if (e?.currentTarget?.__lpFired) return;
+            onHeaderSpinTap && onHeaderSpinTap();
+          }}
+          onPointerDown={(e) => {
+            if (!onHeaderSpinLongPress) return;
+            try { e.currentTarget.__lpFired = false; } catch {}
+            const t = setTimeout(() => {
+              try { e.currentTarget.__lpFired = true; } catch {}
+              onHeaderSpinLongPress();
+            }, 520);
+            e.currentTarget.__lpTimer = t;
+          }}
+          onPointerUp={(e) => {
+            const t = e.currentTarget.__lpTimer;
+            if (t) clearTimeout(t);
+            e.currentTarget.__lpTimer = null;
+          }}
+          onPointerCancel={(e) => {
+            const t = e.currentTarget.__lpTimer;
+            if (t) clearTimeout(t);
+            e.currentTarget.__lpTimer = null;
+          }}
+        >
+          <img
+            src={topRightLogoSrc || DEFAULT_LOGO}
+            alt="EstiPaid"
+            className="esti-spin"
+            style={styles.headerSpinImg}
+            draggable={false}
+            onError={(e) => {
+              try { e.currentTarget.src = DEFAULT_LOGO; } catch {}
+            }}
+          />
+        </button>
+      ) : null}
+
+<button
         className="pe-btn pe-btn-ghost"
         style={styles.profileBtn}
         onClick={onProfile}
@@ -236,7 +284,7 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc }) {
   );
 }
 
-function BottomNav({ active, setActive, disabled }) {
+function BottomNav({ active, setActive, disabled, onQuickOpen }) {
   const tabs = useMemo(
     () => [
       { key: "home", label: "Home", Icon: IconHome },
@@ -270,6 +318,24 @@ function BottomNav({ active, setActive, disabled }) {
       // ignore
     }
   };
+  useEffect(() => {
+    const onTap = () => setActive("home");
+    const onLong = () => {
+      try {
+        onQuickOpen && onQuickOpen();
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("estipaid:hero-logo-tap", onTap);
+    window.addEventListener("estipaid:hero-logo-longpress", onLong);
+    return () => {
+      window.removeEventListener("estipaid:hero-logo-tap", onTap);
+      window.removeEventListener("estipaid:hero-logo-longpress", onLong);
+    };
+  }, [setActive, onQuickOpen]);
+
+
 
   useEffect(() => {
     if (active !== "create" && createBump) setCreateBump(false);
@@ -313,6 +379,55 @@ function BottomNav({ active, setActive, disabled }) {
     </div>
   );
 }
+
+
+function QuickMenu({ open, onClose, onSelect }) {
+  if (!open) return null;
+
+  const items = [
+    { key: "home", label: "Home" },
+    { key: "create", label: "Create" },
+    { key: "estimates", label: "Estimates" },
+    { key: "invoices", label: "Invoices" },
+    { key: "snapshot", label: "Snapshot" },
+    { key: "companyProfile", label: "Company Profile" },
+  ];
+
+  return (
+    <>
+      <div style={styles.quickOverlay} onClick={onClose} />
+      <div style={styles.quickMenu} role="dialog" aria-modal="true" aria-label="Shortcuts">
+        <div style={styles.quickTitleRow}>
+          <div style={styles.quickTitle}>Shortcuts</div>
+          <button
+            className="pe-btn pe-btn-ghost"
+            style={styles.quickClose}
+            onClick={onClose}
+            aria-label="Close shortcuts"
+            type="button"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={styles.quickGrid}>
+          {items.map((it) => (
+            <button
+              key={it.key}
+              className="pe-btn"
+              type="button"
+              style={styles.quickItem}
+              onClick={() => onSelect(it.key)}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 
 function Drawer({ open, onClose, onSelect, disabled }) {
   return (
@@ -375,10 +490,10 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick }) {
+function CreateFlow({ gated, intent, spinTick, customerUseTick }) {
   return (
     <div>
-      <EstimateForm key={"estimate"} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
+      <EstimateForm key={`estimate_${customerUseTick || 0}`} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} customerUseTick={customerUseTick || 0} />
     </div>
   );
 }
@@ -386,9 +501,33 @@ function CreateFlow({ gated, intent, spinTick }) {
    Placeholder screens (theme-safe)
    ========================= */
 
-function HomeScreen({ spinTick }) {
+function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
+  const pressTimerRef = useRef(null);
+  const didLongPressRef = useRef(false);
+  const LONG_PRESS_MS = 650;
+
+  const startPress = () => {
+    try { if (pressTimerRef.current) clearTimeout(pressTimerRef.current); } catch {}
+    didLongPressRef.current = false;
+    pressTimerRef.current = setTimeout(() => {
+      didLongPressRef.current = true;
+      try { onLogoLongPress && onLogoLongPress(); } catch {}
+    }, LONG_PRESS_MS);
+  };
+
+  const endPress = () => {
+    try { if (pressTimerRef.current) clearTimeout(pressTimerRef.current); } catch {}
+    pressTimerRef.current = null;
+  };
+
+  const onTap = () => {
+    if (didLongPressRef.current) return;
+    try { onLogoTap && onLogoTap(); } catch {}
+  };
+
   return (
     <div className="pe-main" style={{ paddingTop: 0 }}>
+      <div style={{ width: "min(860px, calc(100% - 28px))", margin: "0 auto" }}>
       <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
         <div
           style={{
@@ -421,7 +560,24 @@ function HomeScreen({ spinTick }) {
           </span>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "center", transform: "translateX(-14px)", margin: "0 auto 10px" }}>
+        <div
+          role="button"
+          tabIndex={0}
+          onMouseDown={startPress}
+          onMouseUp={endPress}
+          onMouseLeave={endPress}
+          onTouchStart={startPress}
+          onTouchEnd={endPress}
+          onTouchCancel={endPress}
+          onClick={onTap}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onTap();
+            }
+          }}
+          style={{ display: "flex", justifyContent: "center", transform: "translateX(-14px)", margin: "0 auto 10px", cursor: "pointer" }}
+        >
         <img
           key={spinTick}
           className="esti-spin"
@@ -529,6 +685,7 @@ function HomeScreen({ spinTick }) {
         <div className="pe-muted">• Beta calculator update (coming soon)</div>
         <div className="pe-muted">• Chat estimate build (beta) (coming soon)</div>
       </div>
+      </div>
     </div>
   );
 }
@@ -556,7 +713,96 @@ const styles = {
     backdropFilter: "blur(8px)",
     WebkitBackdropFilter: "blur(8px)",
   },
-  iconBtn: { padding: "8px 10px" },
+  
+
+  topbarScrolled: {
+    background: "rgba(10, 18, 28, 0.35)",
+    borderBottom: "1px solid rgba(255,255,255,0.12)",
+  },
+
+  headerSpinBtn: {
+    position: "absolute",
+    left: "50%",
+    top: 8,
+    transform: "translateX(-50%)",
+    background: "transparent",
+    backgroundColor: "transparent",
+    border: "none",
+    outline: "none",
+    boxShadow: "none",
+    padding: 0,
+    margin: 0,
+    width: 44,
+    height: 44,
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    pointerEvents: "auto",
+    userSelect: "none",
+    borderRadius: 999,
+    appearance: "none",
+    WebkitAppearance: "none",
+    lineHeight: 0,
+    fontSize: 0,
+    zIndex: 5,
+  },
+  headerSpinImg: {
+    width: 26,
+    height: 26,
+    display: "block",
+    objectFit: "contain",
+    background: "transparent",
+    pointerEvents: "none",
+    filter: "drop-shadow(0 8px 18px rgba(0,0,0,0.35))",
+  },
+
+  quickOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.42)",
+    zIndex: 80,
+  },
+  quickMenu: {
+    position: "fixed",
+    top: 74,
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: "min(520px, calc(100% - 24px))",
+    zIndex: 85,
+    padding: 14,
+    borderRadius: 18,
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.14)",
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+  },
+  quickTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 12,
+  },
+  quickTitle: {
+    fontWeight: 900,
+    letterSpacing: "0.2px",
+    textShadow: "0 1px 8px rgba(0,0,0,0.35)",
+  },
+  quickClose: { width: 44, height: 44, display: "grid", placeItems: "center" },
+  quickGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 10,
+  },
+  quickItem: {
+    height: 48,
+    borderRadius: 14,
+    fontWeight: 900,
+    letterSpacing: "0.2px",
+  },
+
+iconBtn: { padding: "8px 10px" },
   title: {
     fontWeight: 900,
     letterSpacing: "0.2px",
@@ -744,10 +990,18 @@ export default function App() {
 
   const [lang, setLang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => "home");
+  const [customerUseTick, setCustomerUseTick] = useState(0);
 const [spinTick, setSpinTick] = useState(0);
 
-  useEffect(() => {
+  
+  const contentRef = useRef(null);
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+useEffect(() => {
     setSpinTick((v) => v + 1);
+    try { if (contentRef.current) contentRef.current.scrollTop = 0; } catch {}
+    setIsScrolled(false);
+    setQuickOpen(false);
   }, [activeTab]);
 const [drawerOpen, setDrawerOpen] = useState(false);
   const [createIntent, setCreateIntent] = useState("estimate");
@@ -782,16 +1036,48 @@ const gated = false;
   }, [activeTab]);
 
 
+  const handleHomeLogoTap = () => {
+    try { setActiveTab("home"); } catch {}
+  };
+  const handleHomeLogoLongPress = () => {
+    try { setQuickOpen(true); } catch {}
+  };
+
   const renderScreen = () => {
-    if (activeTab === "home") return <HomeScreen spinTick={spinTick} />;
-    if (activeTab === "customers") return <CustomersScreen spinTick={spinTick} />;
-    if (activeTab === "estimates") return <EstimatesScreen spinTick={spinTick} />;
-    if (activeTab === "invoices") return <InvoicesScreen spinTick={spinTick} />;
-    if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen />;
-    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen spinTick={spinTick} /> : <HomeScreen spinTick={spinTick} />;
-    if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen />;
-    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
-    return <HomeScreen spinTick={spinTick} />;
+    if (activeTab === "home") return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === "customers")
+      return (
+        <CustomersScreen
+          lang={lang}
+          onDone={(payload) => {
+            try {
+              const p = payload || {};
+              const id = p && p.id ? String(p.id) : "";
+              if (id) {
+                try {
+                  localStorage.setItem("estipaid-pending-customer-use-v1", JSON.stringify({ id, customer: p.customer || null, ts: Date.now() }));
+                } catch {}
+                try {
+                  window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p.customer || null, ts: Date.now() } }));
+                } catch {}
+                try {
+                  setCustomerUseTick((v) => v + 1);
+                } catch {}
+              }
+            } catch {}
+            try {
+              setActiveTab("create");
+            } catch {}
+          }}
+        />
+      );
+    if (activeTab === "estimates") return <EstimatesScreen />;
+    if (activeTab === "invoices") return <InvoicesScreen />;
+    if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} customerUseTick={customerUseTick} />;
+    return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 
   const onDrawerSelect = (key) => {
@@ -835,10 +1121,16 @@ const gated = false;
 
 // Fallback: close only
   };
+  const showHeaderSpin = activeTab !== "home" && activeTab !== "create" && activeTab !== "companyProfile";
+  const glassOnScroll = activeTab !== "home" && activeTab !== "create";
 
   return (
     <div className="pe-wrap" style={styles.shell}>
-      <style>{`
+      
+      {showHeaderSpin ? (
+        <style>{`.pe-content img.esti-spin{ display:none !important; }`}</style>
+      ) : null}
+<style>{`
         @media (prefers-reduced-motion: no-preference){
           .pe-create-bump{ animation: peCreateBump 260ms ease-out; }
           @keyframes peCreateBump{
@@ -863,6 +1155,16 @@ const gated = false;
 
       <TopBar
         topRightLogoSrc={topRightLogoSrc}
+        showHeaderSpin={showHeaderSpin}
+        glassOnScroll={glassOnScroll}
+        isScrolled={isScrolled}
+        onHeaderSpinTap={() => {
+          setQuickOpen(false);
+          setActiveTab("home");
+        }}
+        onHeaderSpinLongPress={() => {
+          setQuickOpen(true);
+        }}
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);
@@ -876,7 +1178,52 @@ const gated = false;
         disabled={gated}
       />
 
-      <div style={styles.content}>{renderScreen()}</div>
+      
+
+      <QuickMenu
+        open={quickOpen}
+        onClose={() => setQuickOpen(false)}
+        onSelect={(key) => {
+          setQuickOpen(false);
+          if (key === "home") {
+            setActiveTab("home");
+            return;
+          }
+          if (key === "create") {
+            setCreateIntent("estimate");
+            setActiveTab("create");
+            return;
+          }
+          if (key === "estimates") {
+            setActiveTab("estimates");
+            return;
+          }
+          if (key === "invoices") {
+            setActiveTab("invoices");
+            return;
+          }
+          if (key === "snapshot") {
+            setActiveTab("snapshot");
+            return;
+          }
+          if (key === "companyProfile") {
+            setActiveTab("companyProfile");
+            return;
+          }
+        }}
+      />
+<div
+        ref={contentRef}
+        className="pe-content"
+        style={styles.content}
+        onScroll={(e) => {
+          const st = e.currentTarget ? e.currentTarget.scrollTop : 0;
+          const next = st > 6;
+          if (next !== isScrolled) setIsScrolled(next);
+        }}
+      >
+        {renderScreen()}
+      </div>
 
       <BottomNav
         active={activeTab}
@@ -884,6 +1231,7 @@ const gated = false;
           if (key === "create") setCreateIntent("estimate");
           setActiveTab(key);
         }}
+        onQuickOpen={() => setQuickOpen(true)}
         disabled={gated}
       />
     </div>
