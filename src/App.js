@@ -490,10 +490,10 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick, customerUseTick }) {
+function CreateFlow({ gated, intent, spinTick }) {
   return (
     <div>
-      <EstimateForm key={`estimate_${customerUseTick || 0}`} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} customerUseTick={customerUseTick || 0} />
+      <EstimateForm key={"estimate"} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
     </div>
   );
 }
@@ -990,7 +990,6 @@ export default function App() {
 
   const [lang, setLang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => "home");
-  const [customerUseTick, setCustomerUseTick] = useState(0);
 const [spinTick, setSpinTick] = useState(0);
 
   
@@ -1049,20 +1048,13 @@ const gated = false;
       return (
         <CustomersScreen
           lang={lang}
-          onDone={(payload) => {
+          onDone={(p) => {
             try {
-              const p = payload || {};
-              const id = p && p.id ? String(p.id) : "";
+              const id = String(p?.id || "");
               if (id) {
-                try {
-                  localStorage.setItem("estipaid-pending-customer-use-v1", JSON.stringify({ id, customer: p.customer || null, ts: Date.now() }));
-                } catch {}
-                try {
-                  window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p.customer || null, ts: Date.now() } }));
-                } catch {}
-                try {
-                  setCustomerUseTick((v) => v + 1);
-                } catch {}
+                try { localStorage.setItem("estipaid-selectedCustomerId-v1", id); } catch {}
+                try { localStorage.setItem("estipaid-selectedCustomerSnap-v1", JSON.stringify(p?.customer || null)); } catch {}
+                try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p?.customer || null } })); } catch {}
               }
             } catch {}
             try {
@@ -1076,7 +1068,7 @@ const gated = false;
     if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} customerUseTick={customerUseTick} />;
+    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
     return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 

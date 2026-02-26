@@ -2454,7 +2454,6 @@ const ORIGINAL_INVOICE_NUM_KEY = "field-pocket-original-invoice-number";
 // =========================
 const CUSTOMERS_KEY = "estipaid-customers-v1";
   const CUSTOMERS_KEY_OLD = "field-pocket-customers-v1";
-const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
 
 function _nowTs() {
   return Date.now();
@@ -2469,18 +2468,8 @@ function loadSavedCustomers() {
     let raw = localStorage.getItem(CUSTOMERS_KEY);
     if (!raw) {
       raw = localStorage.getItem(CUSTOMERS_KEY_OLD);
-      if (raw) {
-        try { localStorage.setItem(CUSTOMERS_KEY, raw); } catch {}
-      }
+      if (raw) localStorage.setItem(CUSTOMERS_KEY, raw);
     }
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(Boolean);
-  } catch {
-    return [];
-  }
-}
 
 function _joinAddrObj(a) {
   const street = String(a?.street || "").trim();
@@ -2544,6 +2533,57 @@ function normalizeCustomerForDoc(c) {
   };
 }
 
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const list = parsed.filter(Boolean);
+    // Normalize CustomersScreen schema (res/com) into estimator-friendly flat fields
+    const normalized = list.map((c) => {
+      try {
+        const type = String(c?.type || "");
+        // If already has flat fields, keep as-is
+        const hasFlat = c && (c.name || c.phone || c.email || c.address || c.billingAddress);
+        if (hasFlat && !type) return c;
+
+        if (type === "commercial") {
+          const job = c?.jobsite || {};
+          const bill = c?.billSameAsJob ? (c?.jobsite || {}) : (c?.billing || {});
+          return {
+            ...c,
+            name: String(c?.companyName || c?.name || "").trim(),
+            phone: String(c?.comPhone || c?.phone || "").trim(),
+            email: String(c?.comEmail || c?.email || "").trim(),
+            attn: String(c?.contactName || c?.attn || "").trim(),
+            address: String(c?.address || "") || _joinAddrObj(job),
+            billingAddress: String(c?.billingAddress || "") || _joinAddrObj(bill),
+          };
+        }
+
+        // residential default
+        const svc = c?.resService || {};
+        const bill = c?.resBillingSame ? (c?.resService || {}) : (c?.resBilling || {});
+        return {
+          ...c,
+          name: String(c?.fullName || c?.name || "").trim(),
+          phone: String(c?.resPhone || c?.phone || "").trim(),
+          email: String(c?.resEmail || c?.email || "").trim(),
+          attn: String(c?.attn || "").trim(),
+          address: String(c?.address || "") || _joinAddrObj(svc),
+          billingAddress: String(c?.billingAddress || "") || _joinAddrObj(bill),
+        };
+      } catch {
+        return c;
+      }
+    });
+
+    // Best-effort migrate forward so dropdown/search sees flat fields immediately
+    try { localStorage.setItem(CUSTOMERS_KEY, JSON.stringify(normalized)); } catch {}
+
+    return normalized;
+  } catch (e) {
+    return [];
+  }
+}
 
 function saveCustomers(list) {
   try {
@@ -3065,92 +3105,55 @@ function EstimateFormInner({ lang, setLang, setLanguage, t, forceProfileOnMount 
   // ✅ Saved customers (managed in Advanced, auto-saved on PDF export)
   const [customers, setCustomers] = useState(() => loadSavedCustomers());
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+
+  // Sync from Customers screen (same-tab) using custom events + a storage handoff key
+  useEffect(() => {
+    const hydrateFromId = (id, snap) => {
+      const sid = String(id || "").trim();
+      if (!sid) return;
+
+      // Refresh customers from storage (Customers screen writes there)
+      const fresh = loadSavedCustomers();
+      if (Array.isArray(fresh)) setCustomers(fresh);
+
+      // Pick best source: fresh list first, else snapshot
+      const found = Array.isArray(fresh) ? fresh.find((c) => String(c?.id || "") === sid) : null;
+      const useC = found || snap || null;
+
+      try { setSelectedCustomerId(sid); } catch {}
+      try { if (useC) applyCustomerToForm(useC); } catch {}
+    };
+
+    const onCustomerUse = (e) => {
+      try {
+        const d = e?.detail || {};
+        hydrateFromId(d?.id, d?.customer || null);
+      } catch {}
+    };
+
+    // Initial hydration if a selection was set before navigating to Create
+    try {
+      const sid = localStorage.getItem("estipaid-selectedCustomerId-v1") || "";
+      if (sid) {
+        let snap = null;
+        try {
+          const raw = localStorage.getItem("estipaid-selectedCustomerSnap-v1") || "";
+          if (raw) snap = JSON.parse(raw);
+        } catch {}
+        hydrateFromId(sid, snap);
+        // clear handoff so it doesn't re-apply on every render
+        try { localStorage.removeItem("estipaid-selectedCustomerId-v1"); } catch {}
+        try { localStorage.removeItem("estipaid-selectedCustomerSnap-v1"); } catch {}
+      }
+    } catch {}
+
+    window.addEventListener("estipaid:customer-use", onCustomerUse);
+    return () => window.removeEventListener("estipaid:customer-use", onCustomerUse);
+  }, []);
+
   const [customerSelectQuery, setCustomerSelectQuery] = useState("");
   const [recentEstimateId, setRecentEstimateId] = useState("");
   const [customerPanelOpen, setCustomerPanelOpen] = useState(() => uiLoadBool("customerPanelOpen", false));
-
-  // ✅ Apply customer selected from Customers screen (Use button)
-  const lastCustomerUseAppliedRef = useRef({ tick: -1, id: "", ts: 0 });
-
-  function _readPendingCustomerUse() {
-    try {
-      const raw = localStorage.getItem(PENDING_CUSTOMER_USE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return null;
-      const id = String(parsed.id || "").trim();
-      if (!id) return null;
-      return { id, customer: parsed.customer || null, ts: Number(parsed.ts || 0) || 0 };
-    } catch {
-      return null;
-    }
-  }
-
-  function _clearPendingCustomerUse() {
-    try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
-  }
-
-  function _applyCustomerUsePayload(payload) {
-    try {
-      const p = payload || {};
-      const id = String(p.id || "").trim();
-      if (!id) return false;
-
-      // refresh customers from storage so newly created customer appears immediately
-      const fresh = loadSavedCustomers();
-      setCustomers(Array.isArray(fresh) ? fresh : []);
-
-      const foundFresh = Array.isArray(fresh) ? fresh.find((c) => String(c?.id || "") === id) : null;
-      const snap = p.customer || null;
-      const useCustomer = foundFresh || snap;
-
-      setSelectedCustomerId(id);
-
-      if (useCustomer) {
-        setCustomerDraft(useCustomer);
-        applyCustomerToForm(useCustomer);
-        const td = Number.isFinite(Number(useCustomer.termsDays)) ? Number(useCustomer.termsDays) : 0;
-        setCustomerTermsDays(td);
-      }
-
-      try { setCustomerPanelOpen(false); } catch {}
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // Apply from storage when Create screen mounts, and whenever CustomersScreen fires the use event
-  useEffect(() => {
-    const applyPending = () => {
-      try {
-        const pending = _readPendingCustomerUse();
-        if (!pending) return;
-
-        const last = lastCustomerUseAppliedRef.current || {};
-        const same = String(last.id || "") === String(pending.id || "") && Number(last.ts || 0) === Number(pending.ts || 0);
-        if (same) return;
-
-        const ok = _applyCustomerUsePayload(pending);
-        if (ok) lastCustomerUseAppliedRef.current = { id: pending.id, ts: pending.ts };
-      } catch {
-        // ignore
-      }
-    };
-
-    // run once on mount
-    applyPending();
-
-    // listen for live use events
-    const onUse = () => applyPending();
-    try { window.addEventListener("estipaid:customer-use", onUse); } catch {}
-
-    return () => {
-      try { window.removeEventListener("estipaid:customer-use", onUse); } catch {}
-    };
-  }, []);
-// Apply live via event (in case screen is already mounted)
-  
   const [customerCreating, setCustomerCreating] = useState(false);
   const [customerEditing, setCustomerEditing] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(null);
