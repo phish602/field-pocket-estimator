@@ -252,6 +252,60 @@ Optional Add-Ons (if needed):
   },
 ];
 
+// Additional notes quick-insert snippets
+const ADDITIONAL_NOTES_SNIPPETS = [
+  {
+    key: "schedule",
+    label: "+ Schedule",
+    text: `Schedule:
+- Work to be performed during normal business hours unless otherwise agreed.
+- Start date subject to material lead times, permit approvals, and site availability.
+- Schedule subject to change due to weather, site access, or owner-directed changes.`,
+  },
+  {
+    key: "exclusions",
+    label: "+ Exclusions",
+    text: `Exclusions:
+- All work not explicitly listed in this estimate is excluded.
+- Permit fees, engineering, and inspection fees excluded unless noted.
+- Unforeseen or concealed conditions not included in this scope.
+- Hazardous material abatement excluded unless specified.`,
+  },
+  {
+    key: "payment",
+    label: "+ Payment",
+    text: `Payment Terms:
+- 50% deposit required prior to commencement of work.
+- Balance due upon substantial completion.
+- Invoices past due 30 days subject to 1.5% monthly finance charge.
+- Work may be suspended for non-payment without penalty to contractor.`,
+  },
+  {
+    key: "changeOrders",
+    label: "+ Change Orders",
+    text: `Change Orders:
+- Any work outside the original scope requires a written change order prior to proceeding.
+- Changes may affect project schedule and total contract value.
+- Verbal authorizations will be documented and confirmed in writing.`,
+  },
+  {
+    key: "safety",
+    label: "+ Safety",
+    text: `Safety:
+- All work to be performed in compliance with applicable OSHA standards.
+- Contractor will maintain a safe and orderly work area at all times.
+- Owner/GC to ensure site access is free of hazards not identified in scope.`,
+  },
+  {
+    key: "access",
+    label: "+ Access",
+    text: `Site Access:
+- Owner/GC to provide unobstructed access to work areas during scheduled hours.
+- Parking and staging area to be provided at no charge to contractor.
+- Delays caused by restricted or denied access will be addressed via change order.`,
+  },
+];
+
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
 
@@ -782,6 +836,41 @@ export default function EstimateForm(props) {
             </div>
           </>
         )}
+      </div>
+
+      {/* Additional Notes */}
+      <div className="pe-card">
+        <div className="pe-section-title">Additional Notes</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
+            <button
+              key={s.key}
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => {
+                const existing = state.additionalNotes || "";
+                const sep = existing.trim().length > 0 ? "\n\n" : "";
+                patch("additionalNotes", existing + sep + s.text);
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            onClick={() => patch("additionalNotes", "")}
+          >
+            Clear Notes
+          </button>
+        </div>
+        <textarea
+          className="pe-input pe-textarea"
+          value={state.additionalNotes || ""}
+          onChange={(e) => patch("additionalNotes", e.target.value)}
+          placeholder="Additional notes, terms, exclusions…"
+          style={{ minHeight: 120 }}
+        />
       </div>
 
       {/* Bottom totals (green box like the big file) */}
