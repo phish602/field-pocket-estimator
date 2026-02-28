@@ -8190,7 +8190,7 @@ const advancedScreen = (
 
       {/* Estimator actions */}
       {step === "estimate" && view !== "advanced" && (
-        <div className="pe-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap", padding: "10px 0" }}>
+        <div className="pe-actions">
           <button
             type="button"
             className="pe-btn pe-btn-ghost"
