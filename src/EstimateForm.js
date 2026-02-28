@@ -14,6 +14,28 @@ const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
 const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
 
+// Labor role presets (value = key, display = label)
+const LABOR_PRESETS = [
+  { key: "foreman", label: "Foreman" },
+  { key: "journeyman", label: "Journeyman" },
+  { key: "apprentice", label: "Apprentice" },
+  { key: "laborer", label: "General Laborer" },
+  { key: "supervisor", label: "Supervisor" },
+  { key: "helper", label: "Helper" },
+  { key: "technician", label: "Technician" },
+  { key: "operator", label: "Equipment Operator" },
+];
+
+// Scope / Notes master templates (append-on-select)
+const SCOPE_MASTER_TEMPLATES = [
+  { key: "furnish_install", label: "Furnish & Install", text: "Furnish all materials, labor, and equipment required to complete the scope of work per specifications." },
+  { key: "demo_dispose",    label: "Demo & Dispose",    text: "Demolish and dispose of existing materials. Remove all debris from site in a safe and timely manner." },
+  { key: "inspect_repair",  label: "Inspect & Repair",  text: "Inspect existing conditions and perform repairs as needed per site assessment. Document all findings." },
+  { key: "supply_install",  label: "Supply & Install",  text: "Supply and install per approved submittal. Coordinate with general contractor for scheduling and inspections." },
+  { key: "rough_finish",    label: "Rough & Finish",    text: "Complete rough-in phase followed by finish work per drawings and specifications." },
+];
+// NOTE: TASKS list not found — no task constants exist in this file or anywhere in the repo; tasks dropdown not added.
+
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
 
@@ -301,6 +323,26 @@ export default function EstimateForm(props) {
 
       <div className="pe-card">
         <div className="pe-section-title">Scope / Notes</div>
+        <select
+          className="pe-input"
+          defaultValue=""
+          style={{ marginBottom: 8 }}
+          onChange={(e) => {
+            const key = e.target.value;
+            if (!key) return;
+            const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
+            if (!tmpl) return;
+            const existing = state.scopeNotes || "";
+            const sep = existing.trim().length > 0 ? "\n\n" : "";
+            patch("scopeNotes", existing + sep + tmpl.text);
+            e.target.value = "";
+          }}
+        >
+          <option value="">Insert template…</option>
+          {SCOPE_MASTER_TEMPLATES.map((t) => (
+            <option key={t.key} value={t.key}>{t.label}</option>
+          ))}
+        </select>
         <textarea className="pe-input pe-textarea" value={state.scopeNotes} onChange={(e) => patch("scopeNotes", e.target.value)} placeholder="Scope / notes…" style={{ minHeight: 170 }} />
       </div>
 
@@ -329,7 +371,12 @@ export default function EstimateForm(props) {
               <div style={styles.rowCols}>
                 <div style={styles.field}>
                   <div style={styles.label}>Role</div>
-                  <input className="pe-input" value={ln.role || ""} onChange={(e) => updateLaborLine(ln.id, { role: e.target.value })} placeholder="Role" />
+                  <select className="pe-input" value={ln.role || ""} onChange={(e) => updateLaborLine(ln.id, { role: e.target.value })}>
+                    <option value="" disabled>Select role…</option>
+                    {LABOR_PRESETS.map((p) => (
+                      <option key={p.key} value={p.key}>{p.label}</option>
+                    ))}
+                  </select>
                 </div>
                 <div style={styles.field}>
                   <div style={styles.label}>Hours</div>
