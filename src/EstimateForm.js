@@ -2438,14 +2438,14 @@ function LanguageGate({ t, setLanguage }) {
       <PagePerimeterSnake />
       
 
-      <header className="pe-header pe-sweep">
+      <header className="pe-header">
         <div style={{ marginTop: -10 }}>
           <div className="pe-title">Field Pocket Estimator</div>
           <div className="pe-subtitle">{t("subtitle")}</div>
         </div>
       </header>
 
-      <main className="pe-main">
+      <div>
         <div className="pe-card">
           <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 10 }}>
             {t("chooseLanguageTitle") || "Choose Language"}
@@ -2453,7 +2453,7 @@ function LanguageGate({ t, setLanguage }) {
           <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
             <button
               type="button"
-              className="pe-btn pe-btn-primary"
+              className="pe-btn"
               style={{ minWidth: 180, flex: "1 1 180px", maxWidth: 220, padding: "12px 14px" }}
               onClick={() => setLanguage("en")}
             >
@@ -2475,7 +2475,7 @@ function LanguageGate({ t, setLanguage }) {
               "Language selection is required before using the estimator."}
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
@@ -5859,8 +5859,8 @@ const advancedScreen = (
         <section className="pe-section">
           <div className="pe-row" style={{ alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
-              <div className="pe-label">{lang === "es" ? "Idioma (App)" : "Language (App)"}</div>
-              <div className="pe-help">
+              <div className="pe-muted">{lang === "es" ? "Idioma (App)" : "Language (App)"}</div>
+              <div className="pe-muted">
                 {lang === "es"
                   ? "Cambia el idioma de la app. Se guarda en este dispositivo."
                   : "Change the app language. Saved on this device."}
@@ -5870,7 +5870,7 @@ const advancedScreen = (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <button
                 type="button"
-                className={"pe-btn " + (lang === "en" ? "pe-btn-primary" : "pe-btn-secondary")}
+                className={lang === "en" ? "pe-btn" : "pe-btn pe-btn-ghost"}
                 onClick={() => {
                   triggerHaptic();
                   setLanguage("en");
@@ -5880,7 +5880,7 @@ const advancedScreen = (
               </button>
               <button
                 type="button"
-                className={"pe-btn " + (lang === "es" ? "pe-btn-primary" : "pe-btn-secondary")}
+                className={lang === "es" ? "pe-btn" : "pe-btn pe-btn-ghost"}
                 onClick={() => {
                   triggerHaptic();
                   setLanguage("es");
@@ -6490,7 +6490,7 @@ const advancedScreen = (
                 {canUseSpeech && (
                   <button
                     type="button"
-                    className={"pe-btn " + (calcListening ? "pe-btn-danger" : "pe-btn-secondary")}
+                    className={calcListening ? "pe-btn" : "pe-btn pe-btn-ghost"}
                     onClick={calcListening ? stopCalcVoice : startCalcVoice}
                     title={calcListening ? (lang === "es" ? "Detener" : "Stop") : (lang === "es" ? "Hablar" : "Speak")}
                     style={{ whiteSpace: "nowrap" }}
@@ -6518,7 +6518,7 @@ const advancedScreen = (
                 </div>
               )}
 
-              <div className="pe-help" style={{ marginTop: 10 }}>
+              <div className="pe-muted" style={{ marginTop: 10 }}>
                 {lang === "es"
                   ? 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm a pulgadas'
                   : 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm to inches'}
@@ -6694,7 +6694,7 @@ const advancedScreen = (
                         <div style={{ display: "grid", gap: 4 }}>
                           <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Incluir" : "Include"}</div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
                               <input
                                 type="checkbox"
                                 checked={Boolean(aiDraftState?.includeCeilings)}
@@ -6706,7 +6706,7 @@ const advancedScreen = (
                               <span>{lang === "es" ? "Techos" : "Ceilings"}</span>
                             </label>
 
-                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
                               <input
                                 type="checkbox"
                                 checked={Boolean(aiDraftState?.includeTrimDoors)}
@@ -6999,10 +6999,10 @@ const advancedScreen = (
         </main>
 
         {embeddedInShell && (
-          <div className="pe-float-dock" role="toolbar" aria-label="Profile actions">
+          <div className="pe-actions" role="toolbar" aria-label="Profile actions">
             <button
               type="button"
-              className="pe-float-btn"
+              className="pe-btn pe-btn-ghost"
               onClick={() => {
                 triggerHaptic();
                 try {
@@ -7017,7 +7017,7 @@ const advancedScreen = (
             </button>
             <button
               type="button"
-              className="pe-float-btn pe-float-primary"
+              className="pe-btn"
               onClick={() => {
                 triggerHaptic();
                 safeSaveProfile(profile);
@@ -7082,7 +7082,7 @@ const advancedScreen = (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button
                 type="button"
-                className="pe-btn pe-btn-primary"
+                className="pe-btn"
                 style={{ minWidth: 160, flex: "1 1 160px", padding: "12px 14px" }}
                 onClick={() => {
                   triggerHaptic();
@@ -7419,7 +7419,7 @@ const advancedScreen = (
                   </div>
                   <button
                     type="button"
-                    className="pe-btn pe-btn-lite"
+                    className="pe-btn pe-btn-ghost"
                     onClick={() => {
                       setCustomerCreating(false);
                       setCustomerEditing(false);
@@ -7494,7 +7494,7 @@ const advancedScreen = (
 
                     <button
                       type="button"
-                      className="pe-btn pe-btn-lite"
+                      className="pe-btn"
                       onClick={saveCustomerFromEstimator}
                       disabled={!String(client || "").trim()}
                       title={!String(client || "").trim() ? (lang === "es" ? "Requiere nombre" : "Name required") : ""}
