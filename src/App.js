@@ -534,7 +534,6 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
             fontSize: 16,
             fontWeight: 600,
             letterSpacing: "2px",
-            textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
             textTransform: "uppercase",
             opacity: 0.75,
             lineHeight: 1.1,
@@ -988,7 +987,7 @@ export default function App() {
     }
   }, []);
 
-  const [lang, setLang] = useState(() => getSavedLang());
+  const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => "home");
   const [customerUseTick, setCustomerUseTick] = useState(0);
 const [spinTick, setSpinTick] = useState(0);
@@ -1033,6 +1032,10 @@ const gated = false;
     } catch {
       return DEFAULT;
     }
+  // activeTab intentionally triggers a re-read of localStorage when the user
+  // navigates between tabs (e.g. after saving a new company logo); activeTab is
+  // not referenced inside the callback body so exhaustive-deps flags it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
 
@@ -1082,16 +1085,6 @@ const gated = false;
 
   const onDrawerSelect = (key) => {
     setDrawerOpen(false);
-
-    const fire = (action) => {
-      try {
-        window.dispatchEvent(
-          new CustomEvent("pe-shell-action", { detail: { action } })
-        );
-      } catch {
-        // ignore
-      }
-    };
 
     if (key === "create") {
       setCreateIntent("estimate");

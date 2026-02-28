@@ -292,176 +292,10 @@ function PagePerimeterSnake(){
 }
 
 
-function EstiHeader({ title = "", subtitle = "", requiredComplete, showPill = true, showMotto = false, t }) {
-  // Home-screen matched hero header (centered, breathable)
-  // Spin once (quick spin + stop) by remounting the logo right after mount.
-  // This relies on the global `.esti-spin` animation (same as Home).
-  const [spinTick, setSpinTick] = useState(0);
-  useEffect(() => {
-    setSpinTick((v) => v + 1);
-  }, []);
 
-  const subtitleText = subtitle || "";
-  const pillTitle = requiredComplete ? t("requiredCompleteTitle") : t("requiredIncompleteTitle");
 
-  return (
-    <div className="pe-card" style={{ marginTop: -16, textAlign: "center" }}>
-      <div>
-      {/* Wordmark (matches Home) */}
-      <div
-        style={{
-          fontSize: 16,
-          fontWeight: 600,
-          letterSpacing: "2px",
-          textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
-          textTransform: "uppercase",
-          opacity: 0.75,
-          lineHeight: 1.1,
-          marginBottom: 8,
-          display: "inline-flex",
-          alignItems: "baseline",
-          justifyContent: "center",
-        }}
-      >
-        <span>ESTIPAID</span>
-        <span
-          style={{
-            fontSize: 9,
-            marginLeft: 2,
-            position: "relative",
-            top: -4,
-            letterSpacing: "0px",
-            opacity: 0.9,
-          }}
-        >
-          ™
-        </span>
-      </div>
 
-      {/* Logo (matches Home size/placement) */}
-      <span data-esti-spin="tab" className="esti-spin-wrap" onContextMenu={(e) => e.preventDefault()}>
-      <img
-        key={spinTick}
-        className="esti-spin"
-        src="/logo/estipaid.svg"
-        alt="EstiPaid"
-        style={{
-          cursor: "pointer",
-          height: 110,
-          width: "auto",
-          display: "block",
-          margin: "0 auto 10px",
-          transform: "translateX(0px)",
-                    objectFit: "contain",
-          filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
-        }}
-        onClick={() => { try { window.dispatchEvent(new Event("estipaid:hero-logo-tap")); } catch {} try { setSpinTick((v) => v + 1); } catch {} }}
-        onPointerDown={(e) => {
-          try { e.currentTarget.__lpFired = false; } catch {}
-          const t = setTimeout(() => {
-            try { e.currentTarget.__lpFired = true; } catch {}
-            try { window.dispatchEvent(new Event("estipaid:hero-logo-longpress")); } catch {}
-          }, 520);
-          e.currentTarget.__lpTimer = t;
-        }}
-        onPointerUp={(e) => {
-          const t = e.currentTarget.__lpTimer;
-          if (t) clearTimeout(t);
-          e.currentTarget.__lpTimer = null;
-        }}
-        onPointerCancel={(e) => {
-          const t = e.currentTarget.__lpTimer;
-          if (t) clearTimeout(t);
-          e.currentTarget.__lpTimer = null;
-        }}
-        onError={(e) => {
-          try {
-            e.currentTarget.style.display = "none";
-          } catch {}
-        }}
-      />
-      </span>
-{/* Motto (matches Home) */}
-      {showMotto && (
-      <div
-        style={{
-          marginTop: 10,
-          fontSize: 14,
-          fontWeight: 800,
-          letterSpacing: "2.2px",
-          textTransform: "uppercase",
-          background: "linear-gradient(90deg, rgba(255,255,255,0.96), rgba(200,210,255,0.86))",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
-          textShadow: "0 1px 0 rgba(255,255,255,0.14), 0 10px 18px rgba(0,0,0,0.34)",
-          opacity: 0.98,
-        }}
-      >
-        Turn Scope into Revenue
-      </div>
 
-      )}      {/* Screen label (hide if subtitle is the motto to avoid duplication) */}
-      {subtitleText &&
-      subtitleText !== "Turn Scope into Revenue." &&
-      subtitleText !== "Convierte alcance en ingresos." ? (
-        <div
-          style={{
-            marginTop: 10,
-            fontSize: 12,
-            fontWeight: 700,
-            letterSpacing: "2px",
-            textTransform: "uppercase",
-            opacity: 0.65,
-          }}
-        >
-          {subtitleText}
-        </div>
-      ) : null}
-
-      {/* Company indicator: keep header height identical by reserving space */}
-      <div
-        style={{
-          marginTop: 10,
-          display: "flex",
-          justifyContent: "center",
-          minHeight: 24,
-        }}
-      >
-        {showPill ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 12px",
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.18)",
-              background: requiredComplete ? "rgba(34,197,94,0.14)" : "rgba(239,68,68,0.12)",
-              fontSize: 12,
-              opacity: 0.95,
-            }}
-            title={pillTitle}
-          >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 999,
-                background: requiredComplete ? "#22c55e" : "#ef4444",
-                boxShadow: "0 0 0 4px rgba(255,255,255,0.04)",
-              }}
-            />
-            {requiredComplete ? "Company info complete" : "Company info incomplete"}
-          </span>
-        ) : (
-          <span style={{ opacity: 0, pointerEvents: "none" }}>.</span>
-        )}
-      </div>
-      </div>
-    </div>
-  );
-}
 
 
 
@@ -2604,14 +2438,14 @@ function LanguageGate({ t, setLanguage }) {
       <PagePerimeterSnake />
       
 
-      <header className="pe-header pe-sweep">
+      <header className="pe-header">
         <div style={{ marginTop: -10 }}>
           <div className="pe-title">Field Pocket Estimator</div>
           <div className="pe-subtitle">{t("subtitle")}</div>
         </div>
       </header>
 
-      <main className="pe-main">
+      <div>
         <div className="pe-card">
           <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 10 }}>
             {t("chooseLanguageTitle") || "Choose Language"}
@@ -2619,7 +2453,7 @@ function LanguageGate({ t, setLanguage }) {
           <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
             <button
               type="button"
-              className="pe-btn pe-btn-primary"
+              className="pe-btn"
               style={{ minWidth: 180, flex: "1 1 180px", maxWidth: 220, padding: "12px 14px" }}
               onClick={() => setLanguage("en")}
             >
@@ -2641,7 +2475,7 @@ function LanguageGate({ t, setLanguage }) {
               "Language selection is required before using the estimator."}
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
@@ -6025,8 +5859,8 @@ const advancedScreen = (
         <section className="pe-section">
           <div className="pe-row" style={{ alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
-              <div className="pe-label">{lang === "es" ? "Idioma (App)" : "Language (App)"}</div>
-              <div className="pe-help">
+              <div className="pe-muted">{lang === "es" ? "Idioma (App)" : "Language (App)"}</div>
+              <div className="pe-muted">
                 {lang === "es"
                   ? "Cambia el idioma de la app. Se guarda en este dispositivo."
                   : "Change the app language. Saved on this device."}
@@ -6036,7 +5870,7 @@ const advancedScreen = (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <button
                 type="button"
-                className={"pe-btn " + (lang === "en" ? "pe-btn-primary" : "pe-btn-secondary")}
+                className={lang === "en" ? "pe-btn" : "pe-btn pe-btn-ghost"}
                 onClick={() => {
                   triggerHaptic();
                   setLanguage("en");
@@ -6046,7 +5880,7 @@ const advancedScreen = (
               </button>
               <button
                 type="button"
-                className={"pe-btn " + (lang === "es" ? "pe-btn-primary" : "pe-btn-secondary")}
+                className={lang === "es" ? "pe-btn" : "pe-btn pe-btn-ghost"}
                 onClick={() => {
                   triggerHaptic();
                   setLanguage("es");
@@ -6656,7 +6490,7 @@ const advancedScreen = (
                 {canUseSpeech && (
                   <button
                     type="button"
-                    className={"pe-btn " + (calcListening ? "pe-btn-danger" : "pe-btn-secondary")}
+                    className={calcListening ? "pe-btn" : "pe-btn pe-btn-ghost"}
                     onClick={calcListening ? stopCalcVoice : startCalcVoice}
                     title={calcListening ? (lang === "es" ? "Detener" : "Stop") : (lang === "es" ? "Hablar" : "Speak")}
                     style={{ whiteSpace: "nowrap" }}
@@ -6684,7 +6518,7 @@ const advancedScreen = (
                 </div>
               )}
 
-              <div className="pe-help" style={{ marginTop: 10 }}>
+              <div className="pe-muted" style={{ marginTop: 10 }}>
                 {lang === "es"
                   ? 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm a pulgadas'
                   : 'Tips: 5\' 6"  •  12 3/8 + 5/16  •  30 cm to inches'}
@@ -6699,10 +6533,8 @@ const advancedScreen = (
 
 
   
-  // ✅ AI Draft Mode (Beta) — show as a full-screen workflow from ANY step (profile or estimator)
-  if (showAIDraft) {
-    useEffect(() => {
-    if (!embeddedInShell) return;
+  useEffect(() => {
+    if (!embeddedInShell || !showAIDraft) return;
     try {
       window.__FPE_EMBED_API = {
         __owner: "EstimateForm",
@@ -6714,19 +6546,18 @@ const advancedScreen = (
         toggleDocType: () => setDocType((d) => (d === "invoice" ? "estimate" : "invoice")),
         setDocType: (next) => setDocType(next === "invoice" ? "invoice" : "estimate"),
       };
-    } catch {
-      // ignore
-    }
+    } catch {}
     return () => {
       try {
         if (window.__FPE_EMBED_API && window.__FPE_EMBED_API.__owner === "EstimateForm") {
           delete window.__FPE_EMBED_API;
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
-  }, [embeddedInShell]);
+  }, [embeddedInShell, showAIDraft]);
+
+  // ✅ AI Draft Mode (Beta) — show as a full-screen workflow from ANY step (profile or estimator)
+  if (showAIDraft) {
 
   return (
       <div className="pe-wrap">
@@ -6863,7 +6694,7 @@ const advancedScreen = (
                         <div style={{ display: "grid", gap: 4 }}>
                           <div style={{ fontSize: 12, opacity: 0.75, paddingLeft: 2 }}>{lang === "es" ? "Incluir" : "Include"}</div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
                               <input
                                 type="checkbox"
                                 checked={Boolean(aiDraftState?.includeCeilings)}
@@ -6875,7 +6706,7 @@ const advancedScreen = (
                               <span>{lang === "es" ? "Techos" : "Ceilings"}</span>
                             </label>
 
-                            <label className="pe-check" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
                               <input
                                 type="checkbox"
                                 checked={Boolean(aiDraftState?.includeTrimDoors)}
@@ -6990,7 +6821,7 @@ const advancedScreen = (
       <div className="pe-wrap">
       <PopStyles />
       <PagePerimeterSnake />
-            <EstiHeader subtitle={t("subtitleProfile")} requiredComplete={requiredComplete} showPill={false} showMotto={false} t={t} />
+            {/* Header removed - handled by shell */}
 
         <main className="pe-card">
           <section className="pe-section">
@@ -7168,10 +6999,10 @@ const advancedScreen = (
         </main>
 
         {embeddedInShell && (
-          <div className="pe-float-dock" role="toolbar" aria-label="Profile actions">
+          <div className="pe-actions" role="toolbar" aria-label="Profile actions">
             <button
               type="button"
-              className="pe-float-btn"
+              className="pe-btn pe-btn-ghost"
               onClick={() => {
                 triggerHaptic();
                 try {
@@ -7186,7 +7017,7 @@ const advancedScreen = (
             </button>
             <button
               type="button"
-              className="pe-float-btn pe-float-primary"
+              className="pe-btn"
               onClick={() => {
                 triggerHaptic();
                 safeSaveProfile(profile);
@@ -7251,7 +7082,7 @@ const advancedScreen = (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button
                 type="button"
-                className="pe-btn pe-btn-primary"
+                className="pe-btn"
                 style={{ minWidth: 160, flex: "1 1 160px", padding: "12px 14px" }}
                 onClick={() => {
                   triggerHaptic();
@@ -7401,7 +7232,7 @@ const advancedScreen = (
 
       
 
-      <EstiHeader subtitle={t("subtitleEstimator")} requiredComplete={isCompanyComplete(profile)} showPill showMotto={true} t={t} />
+      {/* Header removed - handled by shell */}
 
       <main className="pe-card">
         {view === "advanced" ? advancedScreen : (
@@ -7588,7 +7419,7 @@ const advancedScreen = (
                   </div>
                   <button
                     type="button"
-                    className="pe-btn pe-btn-lite"
+                    className="pe-btn pe-btn-ghost"
                     onClick={() => {
                       setCustomerCreating(false);
                       setCustomerEditing(false);
@@ -7663,7 +7494,7 @@ const advancedScreen = (
 
                     <button
                       type="button"
-                      className="pe-btn pe-btn-lite"
+                      className="pe-btn"
                       onClick={saveCustomerFromEstimator}
                       disabled={!String(client || "").trim()}
                       title={!String(client || "").trim() ? (lang === "es" ? "Requiere nombre" : "Name required") : ""}
@@ -8356,36 +8187,27 @@ const advancedScreen = (
         )}
       </main>
 
-      {/* Floating estimator actions (only on estimator screen) */}
+      {/* Estimator actions */}
       {step === "estimate" && view !== "advanced" && (
-        <div className="pe-float-actions">
+        <div className="pe-actions">
           <button
             type="button"
-            className="pe-float-btn pe-float-danger"
-            onClick={() => {
-              triggerHaptic();
-              resetForm();
-            }}
+            className="pe-btn pe-btn-ghost"
+            onClick={() => { triggerHaptic(); resetForm(); }}
           >
             {lang === "es" ? "Limpiar" : "Clear"}
           </button>
           <button
             type="button"
-            className="pe-float-btn"
-            onClick={() => {
-              triggerHaptic();
-              handleSaveClick();
-            }}
+            className="pe-btn"
+            onClick={() => { triggerHaptic(); handleSaveClick(); }}
           >
             {lang === "es" ? "Guardar" : "Save"}
           </button>
           <button
             type="button"
-            className="pe-float-btn pe-float-primary"
-            onClick={() => {
-              triggerHaptic();
-              setPdfPromptOpen(true);
-            }}
+            className="pe-btn"
+            onClick={() => { triggerHaptic(); setPdfPromptOpen(true); }}
           >
             {lang === "es" ? "PDF" : "Export PDF"}
           </button>
