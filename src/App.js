@@ -253,10 +253,10 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
           }}
         >
           <img
-            src={topRightLogoSrc || DEFAULT_LOGO}
+            src={DEFAULT_LOGO}
             alt="EstiPaid"
             className="esti-spin"
-            style={styles.headerSpinImg}
+            style={styles.profileLogo}
             draggable={false}
             onError={(e) => {
               try { e.currentTarget.src = DEFAULT_LOGO; } catch {}
@@ -271,14 +271,12 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
         onClick={onProfile}
         aria-label="Open snapshot"
       >
-        <div style={styles.profileCircle}>
-          <img
-            src={src}
-            alt="Company logo"
-            style={styles.profileLogo}
-            draggable={false}
-          />
-        </div>
+        <img
+          src={src}
+          alt="Company logo"
+          style={styles.profileLogo}
+          draggable={false}
+        />
       </button>
     </div>
   );
@@ -490,10 +488,10 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick, customerUseTick }) {
+function CreateFlow({ gated, intent, spinTick }) {
   return (
     <div>
-      <EstimateForm key={`estimate_${customerUseTick || 0}`} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} customerUseTick={customerUseTick || 0} />
+      <EstimateForm key={"estimate"} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
     </div>
   );
 }
@@ -722,8 +720,8 @@ const styles = {
   headerSpinBtn: {
     position: "absolute",
     left: "50%",
-    top: 8,
-    transform: "translateX(-50%)",
+    top: "50%",
+    transform: "translate(-50%, -50%)",
     background: "transparent",
     backgroundColor: "transparent",
     border: "none",
@@ -744,15 +742,6 @@ const styles = {
     lineHeight: 0,
     fontSize: 0,
     zIndex: 5,
-  },
-  headerSpinImg: {
-    width: 26,
-    height: 26,
-    display: "block",
-    objectFit: "contain",
-    background: "transparent",
-    pointerEvents: "none",
-    filter: "drop-shadow(0 8px 18px rgba(0,0,0,0.35))",
   },
 
   quickOverlay: {
@@ -831,8 +820,8 @@ iconBtn: { padding: "8px 10px" },
   },
 
   profileLogo: {
-    width: 26,
-    height: 26,
+    width: 40,
+    height: 40,
     display: "block",
     margin: "0 auto",
     objectFit: "contain",
@@ -989,8 +978,73 @@ export default function App() {
 
   const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => "home");
-  const [customerUseTick, setCustomerUseTick] = useState(0);
 const [spinTick, setSpinTick] = useState(0);
+
+
+  // ===== In-progress estimate draft (survives tab switches) =====
+  const ESTIMATE_DRAFT_KEY = "estipaid-estimate-draft-v1";
+  const hasEstimateDraft = () => {
+    try {
+      const raw = localStorage.getItem(ESTIMATE_DRAFT_KEY);
+      if (!raw) return false;
+      // If it's just an empty object, treat as no draft
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return raw.length > 10;
+      const keys = Object.keys(parsed).filter((k) => !String(k).startsWith("__") && k !== "savedAt");
+      if (!keys.length) return false;
+      // any meaningful value
+      for (const k of keys) {
+        const v = parsed[k];
+        if (v === null || v === undefined) continue;
+        if (typeof v === "string" && v.trim()) return true;
+        if (typeof v === "number" && Number.isFinite(v) && v !== 0) return true;
+        if (typeof v === "boolean" && v === true) return true;
+        if (Array.isArray(v) && v.length) return true;
+        if (typeof v === "object" && Object.keys(v).length) return true;
+      }
+      return false;
+    } catch {
+      try {
+        return !!localStorage.getItem(ESTIMATE_DRAFT_KEY);
+      } catch {
+        return false;
+      }
+    }
+  };
+
+  const navigateTo = (tab) => {
+    try {
+      if (activeTab === "create" && tab !== "create") {
+        try { localStorage.setItem("estipaid-restore-draft-on-create-v1", "1"); } catch {}
+        window.dispatchEvent(new Event("estipaid:draft-save-now"));
+      }
+    } catch {}
+    try {
+      setActiveTab(tab);
+    } catch {}
+  };
+
+  // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
+  useEffect(() => {
+    const onNavCustomers = () => {
+      try { navigateTo("customers"); } catch {}
+    };
+    window.addEventListener("estipaid:navigate-customers", onNavCustomers);
+    return () => window.removeEventListener("estipaid:navigate-customers", onNavCustomers);
+  }, []);
+
+  // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!hasEstimateDraft()) return;
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
 
   
   const contentRef = useRef(null);
@@ -1040,7 +1094,7 @@ const gated = false;
 
 
   const handleHomeLogoTap = () => {
-    try { setActiveTab("home"); } catch {}
+    try { navigateTo("home"); } catch {}
   };
   const handleHomeLogoLongPress = () => {
     try { setQuickOpen(true); } catch {}
@@ -1052,24 +1106,17 @@ const gated = false;
       return (
         <CustomersScreen
           lang={lang}
-          onDone={(payload) => {
+          onDone={(p) => {
             try {
-              const p = payload || {};
-              const id = p && p.id ? String(p.id) : "";
+              const id = String(p?.id || "");
               if (id) {
-                try {
-                  localStorage.setItem("estipaid-pending-customer-use-v1", JSON.stringify({ id, customer: p.customer || null, ts: Date.now() }));
-                } catch {}
-                try {
-                  window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p.customer || null, ts: Date.now() } }));
-                } catch {}
-                try {
-                  setCustomerUseTick((v) => v + 1);
-                } catch {}
+                try { localStorage.setItem("estipaid-selectedCustomerId-v1", id); } catch {}
+                try { localStorage.setItem("estipaid-selectedCustomerSnap-v1", JSON.stringify(p?.customer || null)); } catch {}
+                try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p?.customer || null } })); } catch {}
               }
             } catch {}
             try {
-              setActiveTab("create");
+              navigateTo("create");
             } catch {}
           }}
         />
@@ -1079,7 +1126,7 @@ const gated = false;
     if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} customerUseTick={customerUseTick} />;
+    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
     return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 
@@ -1088,13 +1135,13 @@ const gated = false;
 
     if (key === "create") {
       setCreateIntent("estimate");
-      setActiveTab("create");
+      navigateTo("create");
       return;
     }
 
     // Create navigation
     if (key === "advanced") {
-      setActiveTab("advanced");
+      navigateTo("advanced");
       return;
     }
 
@@ -1108,13 +1155,13 @@ const gated = false;
 
 // Create actions
     if (key === "editCompany") {
-      setActiveTab("snapshot");
+      navigateTo("snapshot");
       return;
     }
 
 // Fallback: close only
   };
-  const showHeaderSpin = activeTab !== "home" && activeTab !== "create" && activeTab !== "companyProfile";
+  const showHeaderSpin = activeTab !== "home" && activeTab !== "companyProfile";
   const glassOnScroll = activeTab !== "home" && activeTab !== "create";
 
   return (
@@ -1153,7 +1200,7 @@ const gated = false;
         isScrolled={isScrolled}
         onHeaderSpinTap={() => {
           setQuickOpen(false);
-          setActiveTab("home");
+          navigateTo("home");
         }}
         onHeaderSpinLongPress={() => {
           setQuickOpen(true);
@@ -1161,7 +1208,7 @@ const gated = false;
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);
-          setActiveTab("snapshot");
+          navigateTo("snapshot");
         }}
       />
       <Drawer
@@ -1179,24 +1226,24 @@ const gated = false;
         onSelect={(key) => {
           setQuickOpen(false);
           if (key === "home") {
-            setActiveTab("home");
+            navigateTo("home");
             return;
           }
           if (key === "create") {
             setCreateIntent("estimate");
-            setActiveTab("create");
+            navigateTo("create");
             return;
           }
           if (key === "estimates") {
-            setActiveTab("estimates");
+            navigateTo("estimates");
             return;
           }
           if (key === "invoices") {
-            setActiveTab("invoices");
+            navigateTo("invoices");
             return;
           }
           if (key === "snapshot") {
-            setActiveTab("snapshot");
+            navigateTo("snapshot");
             return;
           }
           if (key === "companyProfile") {
@@ -1222,7 +1269,7 @@ const gated = false;
         active={activeTab}
         setActive={(key) => {
           if (key === "create") setCreateIntent("estimate");
-          setActiveTab(key);
+          navigateTo(key);
         }}
         onQuickOpen={() => setQuickOpen(true)}
         disabled={gated}

@@ -1,24 +1,62 @@
 // @ts-nocheck
-export const BUILD_TAG = "2.0-split";
-export const STORAGE_KEY = "field-pocket-estimates";
+/* eslint-disable */
+
+export const BUILD_TAG = "ESTIPAID_ESTIMATOR_V1_SPLIT";
+export const STORAGE_KEY = "estipaid-estimator-v1";
+
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export const DEFAULT_STATE = {
-  date: "",
-  client: "",
-  location: "",
-  poNumber: "",
-  projectName: "",
-  projectNumber: "",
-  projectAddress: "",
-  projectAddressSameAsCustomer: true,
-  description: "",
-  additionalNotesText: "",
-  laborLines: [],
-  laborMultiplier: 1,
-  multiplierMode: "preset",
-  customMultiplier: "1",
-  materialsMode: "itemized",
-  materialItems: [],
-  materialsCost: "",
-  materialsMarkupPct: "20",
-  hazardPct: "",
+  ui: {
+    docType: "estimate",
+    materialsMode: "blanket",
+  },
+
+  customer: {
+    name: "",
+    attn: "",
+    phone: "",
+    email: "",
+    address: "",
+    billingDiff: false,
+    billingAddress: "",
+    projectName: "",
+    projectNumber: "",
+    projectAddress: "",
+    projectSameAsCustomer: false,
+  },
+
+  job: {
+    date: todayISO(),
+    location: "",
+    poNumber: "",
+    due: "",
+    docNumber: "",
+  },
+
+  scopeNotes: "",
+
+  labor: {
+    hazardPct: 0,
+    multiplier: 1,
+    lines: [{ id: "l1", role: "", hours: "", rate: "" }],
+  },
+
+  materials: {
+    blanketCost: "",
+    markupPct: 0,
+    items: [{ id: "m1", desc: "", qty: "", costInternal: "", priceEach: "" }],
+  },
+
+  additionalNotes: "",
+
+  meta: {
+    lastSavedAt: 0,
+  },
 };
