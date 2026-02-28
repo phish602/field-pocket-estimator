@@ -7,6 +7,7 @@ const CUSTOMERS_KEY_LEGACY = "field-pocket-customers-v1";
 const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
 const PENDING_CUSTOMER_EDIT_KEY = "estipaid-pending-customer-edit-v1";
 const PENDING_CUSTOMER_CREATE_KEY = "estipaid-pending-customer-create-v1";
+const CUSTOMER_EDIT_TARGET_KEY = "estipaid-customer-edit-target-v1";
 
 // ===== Customer KPI (live-compute) =====
 const ESTIMATES_KEY = "estipaid-estimates-v1";
@@ -344,6 +345,7 @@ export default function CustomersScreen({
   const [q, setQ] = useState("");
   const [mode, setMode] = useState("list"); // list | edit
   const [draft, setDraft] = useState(() => emptyDraft("residential"));
+  const [returnToEstimator, setReturnToEstimator] = useState(false);
 
   useEffect(() => {
     if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
@@ -364,6 +366,21 @@ export default function CustomersScreen({
 
   // Handle estimator-intent (edit/create) when routed here from EstimateForm
   useEffect(() => {
+    // Edit-target intent (from EstimateForm "Edit" button)
+    try {
+      const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
+      if (rawEditTarget) {
+        localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
+        setReturnToEstimator(true);
+        const payload = JSON.parse(rawEditTarget);
+        const id = String(payload?.id || "");
+        if (id) {
+          const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
+          if (c) { startEdit(c); }
+        }
+      }
+    } catch {}
+
     // Edit intent
     try {
       const raw = localStorage.getItem(PENDING_CUSTOMER_EDIT_KEY);
@@ -576,6 +593,20 @@ export default function CustomersScreen({
 
   return (
     <section className="pe-section">
+      {returnToEstimator && (
+        <button
+          className="pe-btn pe-btn-ghost"
+          type="button"
+          style={{ marginBottom: 10 }}
+          onClick={() => {
+            try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
+            setReturnToEstimator(false);
+            try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
+          }}
+        >
+          ← Back to Estimator
+        </button>
+      )}
       <div className="pe-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div>{editorTitle}</div>
         {mode === "list" ? (

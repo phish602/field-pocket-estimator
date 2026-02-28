@@ -42,6 +42,8 @@ export const DEFAULT_STATE = {
 
   scopeNotes: "",
 
+  tradeInsert: { key: "", text: "" },
+
   labor: {
     hazardPct: 0,
     multiplier: 1,

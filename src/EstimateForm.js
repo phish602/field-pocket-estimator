@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./EstimateForm.css";
 
 import { BUILD_TAG } from "./estimator/defaultState";
@@ -10,6 +10,301 @@ import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "
 import { buildPdf } from "./estimator/pdf";
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+// Customer-use handoff key (written by CustomersScreen when a customer is selected)
+const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
+const CUSTOMERS_KEY = "estipaid-customers-v1";
+const CUSTOMER_RECENTS_KEY = "estipaid-customer-recent-v1";
+function readSavedCustomers() {
+  try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
+}
+function customerDisplayName(c) {
+  if (!c) return "";
+  return String(c.type === "commercial" ? (c.companyName || c.name || "") : (c.fullName || c.name || "")).trim();
+}
+function readCustomerRecents() {
+  try { return JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]") || []; } catch { return []; }
+}
+function addToCustomerRecents(id) {
+  try {
+    const prev = readCustomerRecents();
+    const next = [id, ...prev.filter((r) => r !== id)].slice(0, 8);
+    localStorage.setItem(CUSTOMER_RECENTS_KEY, JSON.stringify(next));
+  } catch {}
+}
+function flattenCustomerForEstimator(c) {
+  if (!c) return {};
+  const joinAddr = (a) => {
+    const street = String(a?.street || "").trim();
+    const line2 = [String(a?.city || "").trim(), String(a?.state || "").trim()].filter(Boolean).join(", ");
+    const line2Full = [line2, String(a?.zip || "").trim()].filter(Boolean).join(" ");
+    return [street, line2Full].filter(Boolean).join("\n");
+  };
+  if (String(c.type || "") === "commercial") {
+    const job = c.jobsite || {};
+    const bill = c.billSameAsJob ? (c.jobsite || {}) : (c.billing || {});
+    return { name: String(c.companyName || "").trim(), phone: String(c.comPhone || "").trim(), email: String(c.comEmail || "").trim(), attn: String(c.contactName || "").trim(), address: joinAddr(job), billingAddress: joinAddr(bill) };
+  }
+  const svc = c.resService || {};
+  const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
+  return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
+}
+
+// Labor role presets (value = key, display = label)
+const LABOR_PRESETS = [
+  { key: "foreman", label: "Foreman" },
+  { key: "journeyman", label: "Journeyman" },
+  { key: "apprentice", label: "Apprentice" },
+  { key: "laborer", label: "General Laborer" },
+  { key: "supervisor", label: "Supervisor" },
+  { key: "helper", label: "Helper" },
+  { key: "technician", label: "Technician" },
+  { key: "operator", label: "Equipment Operator" },
+];
+
+// Scope / Notes master templates (append-on-select)
+const SCOPE_MASTER_TEMPLATES = [
+  { key: "furnish_install", label: "Furnish & Install", text: "Furnish all materials, labor, and equipment required to complete the scope of work per specifications." },
+  { key: "demo_dispose",    label: "Demo & Dispose",    text: "Demolish and dispose of existing materials. Remove all debris from site in a safe and timely manner." },
+  { key: "inspect_repair",  label: "Inspect & Repair",  text: "Inspect existing conditions and perform repairs as needed per site assessment. Document all findings." },
+  { key: "supply_install",  label: "Supply & Install",  text: "Supply and install per approved submittal. Coordinate with general contractor for scheduling and inspections." },
+  { key: "rough_finish",    label: "Rough & Finish",    text: "Complete rough-in phase followed by finish work per drawings and specifications." },
+];
+// TEMPLATE ADD-ONS (TRADE INSERTS)
+const SCOPE_TRADE_INSERTS = [
+  {
+    key: "genericLabor",
+    label: "Generic Labor (Insert)",
+    text: `Trade Insert: Generic Labor
+- Provide general labor to support the described scope (handling, staging, cleanup, assistance).
+- Perform basic tasks as directed under supervision (non-licensed/non-specialty unless specified).
+- Productivity dependent on site access, congestion, and coordination.`,
+  },
+  {
+    key: "painting",
+    label: "Painting (Insert)",
+    text: `Trade Insert: Painting
+- Surface prep as required (masking, patch/spot prep, sanding as needed).
+- Apply primer/finish coats per specified system.
+- Cut-in/roll/spray methods as appropriate for area and conditions.
+- Touch-up and cleanup upon completion.`,
+  },
+  {
+    key: "demoCrew",
+    label: "Demolition Crew (Insert)",
+    text: `Trade Insert: Demolition Crew
+- Provide labor for selective demolition/removal of specified items/areas.
+- Protect adjacent finishes and active areas as reasonable.
+- Debris staged in designated area; haul-off/dump fees by others unless included.
+- Unknown/hidden conditions (behind walls/ceilings/slabs) excluded unless authorized.`,
+  },
+  {
+    key: "drywall",
+    label: "Drywall (Insert)",
+    text: `Trade Insert: Drywall
+- Install drywall per scope (hang, fasten, and finish as specified).
+- Tape/finish level per project requirements.
+- Cutouts for penetrations as required.
+- Final texture/paint by others unless included.`,
+  },
+  {
+    key: "framing",
+    label: "Framing (Insert)",
+    text: `Trade Insert: Framing
+- Layout and install framing per scope (metal/wood as specified).
+- Anchor/fasten to existing structure as required.
+- Field verification of dimensions and conditions prior to build.
+- Engineering/structural design by others unless included.`,
+  },
+  {
+    key: "insulation",
+    label: "Insulation (Insert)",
+    text: `Trade Insert: Insulation
+- Furnish/install insulation per scope (batt/blown/spray as specified).
+- Seal/fit around penetrations as required for typical installation.
+- Vapor barrier/air sealing by others unless included.
+- Specialty testing excluded unless included.`,
+  },
+  {
+    key: "finishCarpentry",
+    label: "Finish Carpentry (Insert)",
+    text: `Trade Insert: Finish Carpentry
+- Install finish carpentry items per scope (trim, base, casing, doors/hardware if specified).
+- Scribe and fit to existing conditions as needed.
+- Caulk/fill as required for finish readiness.
+- Final paint/stain by others unless included.`,
+  },
+  {
+    key: "flooring",
+    label: "Flooring (Insert)",
+    text: `Trade Insert: Flooring
+- Install flooring per scope (LVP/tile/carpet/epoxy as specified).
+- Subfloor assumed suitable; leveling/moisture mitigation excluded unless included.
+- Transitions and edge details installed as specified.`,
+  },
+  {
+    key: "hvac",
+    label: "HVAC (Insert)",
+    text: `Trade Insert: HVAC
+- Install/modify HVAC components per scope (duct, units, diffusers, thermostats as specified).
+- Start-up/commissioning/TAB by others unless included.
+- Permits/engineering excluded unless included.`,
+  },
+  {
+    key: "plumbing",
+    label: "Plumbing (Insert)",
+    text: `Trade Insert: Plumbing
+- Install/modify plumbing per scope (water, waste/vent, fixtures as specified).
+- Tie-ins coordinated with site contact; shutdown windows coordinated with site contact.
+- Permits/engineering excluded unless included.`,
+  },
+  {
+    key: "controls",
+    label: "Controls / BAS / Instrumentation (Insert)",
+    text: `Trade Insert: Controls / BAS / Instrumentation
+- Install/terminate controls wiring and devices per scope (sensors, actuators, controllers as specified).
+- Point-to-point checkout and basic functional verification as specified.
+- Programming/graphics/commissioning by others unless included.`,
+  },
+  {
+    key: "welding",
+    label: "Welding (General Insert)",
+    text: `Trade Insert: Welding
+- Fit-up and weld per project requirements (process as required).
+- Grind/clean as needed for fit and finish.
+- Welds performed by qualified personnel; consumables as typical.
+- Field conditions may affect production rate.
+
+Optional Add-Ons (if needed):
+- Welding procedure/QC documentation
+- Specialty consumables or exotic alloys`,
+  },
+  {
+    key: "pipefitting",
+    label: "Pipefitting (General Insert)",
+    text: `Trade Insert: Pipefitting
+- Field measure, fit, and install piping/spools as required.
+- Support/hanger coordination as required.
+- Tie-ins/shutdown windows coordinated with site contact.
+- Final alignment and leak checks per project requirements (testing if specified).`,
+  },
+  {
+    key: "orbital",
+    label: "Orbital Welding (Insert)",
+    text: `Trade Insert: Orbital Welding
+- Provide setup and operation for orbital welding as required.
+- Prep, purge, and fit-up to achieve acceptable weld conditions.
+- Weld parameters and acceptance per project requirements.
+- Production rate dependent on access, prep quality, and purge conditions.`,
+  },
+  {
+    key: "ironwork",
+    label: "Ironwork / Structural (Insert)",
+    text: `Trade Insert: Ironwork / Structural
+- Layout, fit, and install steel/structural members as required.
+- Bolt-up and/or weld connections per project requirements.
+- Field modifications as needed within reason.
+- Final plumb/level verification as required.`,
+  },
+  {
+    key: "electrical",
+    label: "Electrician (Insert)",
+    text: `Trade Insert: Electrical
+- Install/terminate electrical components as required (circuits, devices, panels, controls as specified).
+- Verify power, labeling, and basic functionality per project requirements.
+- Work coordinated around lockout/tagout and site safety requirements.
+- Materials/fixtures by owner/GC unless included.`,
+  },
+  {
+    key: "rigging",
+    label: "Rigging / Crane (Insert)",
+    text: `Trade Insert: Rigging / Crane
+- Provide rigging labor to support lifts/moves as required.
+- Lift planning and execution coordinated with site contact.
+- Standard rigging gear as typical (specialty gear if specified).
+- Work dependent on access, pick points, and site constraints.`,
+  },
+  {
+    key: "heavyEquipment",
+    label: "Heavy Machinery / Equipment Ops (Insert)",
+    text: `Trade Insert: Heavy Machinery / Equipment Ops
+- Provide operator(s) for equipment as required (lift/grade/haul/support).
+- Production dependent on site access, weather, and staging/logistics.
+- Fuel/transport/permits excluded unless included.`,
+  },
+  {
+    key: "concrete",
+    label: "Concrete (Insert)",
+    text: `Trade Insert: Concrete
+- Form, place, finish, and cure concrete work as specified.
+- Subgrade and reinforcement by others unless included.
+- Finish level and cure method per project requirements.
+- Production dependent on access, weather, and site readiness.`,
+  },
+  {
+    key: "demo",
+    label: "Demolition (Insert)",
+    text: `Trade Insert: Demolition
+- Selective demo/removal of specified items/areas.
+- Protect adjacent areas as reasonable.
+- Debris staging and haul-off as specified (or excluded).
+- Unknown/hidden conditions behind walls/ceilings excluded.`,
+  },
+];
+
+// Additional notes quick-insert snippets
+const ADDITIONAL_NOTES_SNIPPETS = [
+  {
+    key: "schedule",
+    label: "+ Schedule",
+    text: `Schedule:
+- Work to be performed during normal business hours unless otherwise agreed.
+- Start date subject to material lead times, permit approvals, and site availability.
+- Schedule subject to change due to weather, site access, or owner-directed changes.`,
+  },
+  {
+    key: "exclusions",
+    label: "+ Exclusions",
+    text: `Exclusions:
+- All work not explicitly listed in this estimate is excluded.
+- Permit fees, engineering, and inspection fees excluded unless noted.
+- Unforeseen or concealed conditions not included in this scope.
+- Hazardous material abatement excluded unless specified.`,
+  },
+  {
+    key: "payment",
+    label: "+ Payment",
+    text: `Payment Terms:
+- 50% deposit required prior to commencement of work.
+- Balance due upon substantial completion.
+- Invoices past due 30 days subject to 1.5% monthly finance charge.
+- Work may be suspended for non-payment without penalty to contractor.`,
+  },
+  {
+    key: "changeOrders",
+    label: "+ Change Orders",
+    text: `Change Orders:
+- Any work outside the original scope requires a written change order prior to proceeding.
+- Changes may affect project schedule and total contract value.
+- Verbal authorizations will be documented and confirmed in writing.`,
+  },
+  {
+    key: "safety",
+    label: "+ Safety",
+    text: `Safety:
+- All work to be performed in compliance with applicable OSHA standards.
+- Contractor will maintain a safe and orderly work area at all times.
+- Owner/GC to ensure site access is free of hazards not identified in scope.`,
+  },
+  {
+    key: "access",
+    label: "+ Access",
+    text: `Site Access:
+- Owner/GC to provide unobstructed access to work areas during scheduled hours.
+- Parking and staging area to be provided at no charge to contractor.
+- Delays caused by restricted or denied access will be addressed via change order.`,
+  },
+];
 
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
@@ -33,6 +328,10 @@ export default function EstimateForm(props) {
     clearAll,
     saveNow,
   } = hook();
+
+  const [searchCustomerText, setSearchCustomerText] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
 
   // Customer-first: always top + first focus
   useEffect(() => {
@@ -63,6 +362,71 @@ export default function EstimateForm(props) {
       console.log("Loaded EstimateForm BUILD:", BUILD_TAG);
     } catch {}
   }, []);
+
+  // Customer-use hydration: populate fields when a customer is selected from CustomersScreen
+  useEffect(() => {
+    const apply = () => {
+      try {
+        const raw = localStorage.getItem(PENDING_CUSTOMER_USE_KEY);
+        if (!raw) return;
+        const payload = JSON.parse(raw);
+        localStorage.removeItem(PENDING_CUSTOMER_USE_KEY);
+        const c = payload?.customer;
+        if (!c || typeof c !== "object") return;
+        if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
+        if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
+        if (String(c.phone || "").trim()) patch("customer.phone", String(c.phone || "").trim());
+        if (String(c.email || "").trim()) patch("customer.email", String(c.email || "").trim());
+        if (String(c.address || "").trim()) patch("customer.address", String(c.address || "").trim());
+        const billingAddr = String(c.billingAddress || "").trim();
+        if (billingAddr) {
+          patch("customer.billingAddress", billingAddr);
+          if (billingAddr !== String(c.address || "").trim()) {
+            patch("customer.billingDiff", true);
+          }
+        }
+      } catch {}
+    };
+    apply();
+    window.addEventListener("estipaid:customer-use", apply);
+    return () => window.removeEventListener("estipaid:customer-use", apply);
+  // patch is stable (setState-based), safe to omit from deps per React docs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync customer list when storage changes (other tabs)
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === CUSTOMERS_KEY) setAllCustomers(readSavedCustomers());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
+  const recentCustomers = useMemo(
+    () => recentCustomerIds.map((id) => allCustomers.find((c) => String(c.id) === id)).filter(Boolean),
+    [allCustomers, recentCustomerIds]
+  );
+  const filteredCustomers = useMemo(() => {
+    const q = searchCustomerText.trim().toLowerCase();
+    if (!q) return [];
+    return allCustomers.filter((c) => customerDisplayName(c).toLowerCase().includes(q));
+  }, [allCustomers, searchCustomerText]);
+
+  function handleSelectCustomer(id) {
+    if (!id) { setSelectedCustomerId(""); try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {} return; }
+    const c = allCustomers.find((x) => String(x.id) === id);
+    if (!c) return;
+    setSelectedCustomerId(id);
+    try {
+      const flat = flattenCustomerForEstimator(c);
+      const payload = { id, customer: { ...c, ...flat }, ts: Date.now() };
+      localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
+      window.dispatchEvent(new Event("estipaid:customer-use"));
+      addToCustomerRecents(id);
+    } catch {}
+  }
 
   const computed = useMemo(() => computeTotals(state), [state]);
 
@@ -153,6 +517,66 @@ export default function EstimateForm(props) {
       {/* Customer first card */}
       <div className="pe-card" ref={customerTopRef}>
         <div className="pe-section-title">Customer</div>
+
+        {/* Select from saved customers shortcut */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            style={{ flex: 1 }}
+            onClick={() => { try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {} }}
+          >
+            ← Select from Customers
+          </button>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            disabled={!selectedCustomerId}
+            onClick={() => {
+              try {
+                localStorage.setItem("estipaid-customer-edit-target-v1", JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                window.dispatchEvent(new Event("estipaid:navigate-customers"));
+              } catch {}
+            }}
+          >
+            Edit
+          </button>
+        </div>
+
+        {/* Customer search + quick-select */}
+        <div style={{ marginBottom: 10 }}>
+          <input
+            className="pe-input"
+            placeholder="Search customers…"
+            value={searchCustomerText}
+            onChange={(e) => setSearchCustomerText(e.target.value)}
+            style={{ marginBottom: 6 }}
+          />
+          <select
+            className="pe-input"
+            value={selectedCustomerId}
+            onChange={(e) => handleSelectCustomer(e.target.value)}
+          >
+            <option value="">— Select —</option>
+            {recentCustomers.length > 0 && (
+              <optgroup label="Recent">
+                {recentCustomers.map((c) => (
+                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
+                ))}
+              </optgroup>
+            )}
+            {filteredCustomers.length > 0 && (
+              <optgroup label="Search Results">
+                {filteredCustomers.map((c) => (
+                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {!selectedCustomerId && (
+            <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>No customer selected.</div>
+          )}
+        </div>
 
         <div style={styles.grid2}>
           <div>
@@ -257,6 +681,48 @@ export default function EstimateForm(props) {
 
       <div className="pe-card">
         <div className="pe-section-title">Scope / Notes</div>
+        <select
+          className="pe-input"
+          defaultValue=""
+          style={{ marginBottom: 8 }}
+          onChange={(e) => {
+            const key = e.target.value;
+            if (!key) return;
+            const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
+            if (!tmpl) return;
+            const existing = state.scopeNotes || "";
+            const sep = existing.trim().length > 0 ? "\n\n" : "";
+            patch("scopeNotes", existing + sep + tmpl.text);
+            e.target.value = "";
+          }}
+        >
+          <option value="">Insert template…</option>
+          {SCOPE_MASTER_TEMPLATES.map((t) => (
+            <option key={t.key} value={t.key}>{t.label}</option>
+          ))}
+        </select>
+        <select
+          className="pe-input"
+          defaultValue=""
+          style={{ marginBottom: 8 }}
+          onChange={(e) => {
+            const key = e.target.value;
+            if (!key) return;
+            const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
+            if (!insert) return;
+            const existing = state.scopeNotes || "";
+            const sep = existing.trim().length > 0 ? "\n\n" : "";
+            patch("scopeNotes", existing + sep + insert.text);
+            patch("tradeInsert.key", insert.key);
+            patch("tradeInsert.text", insert.text);
+            e.target.value = "";
+          }}
+        >
+          <option value="">Insert trade…</option>
+          {SCOPE_TRADE_INSERTS.map((t) => (
+            <option key={t.key} value={t.key}>{t.label}</option>
+          ))}
+        </select>
         <textarea className="pe-input pe-textarea" value={state.scopeNotes} onChange={(e) => patch("scopeNotes", e.target.value)} placeholder="Scope / notes…" style={{ minHeight: 170 }} />
       </div>
 
@@ -285,7 +751,12 @@ export default function EstimateForm(props) {
               <div style={styles.rowCols}>
                 <div style={styles.field}>
                   <div style={styles.label}>Role</div>
-                  <input className="pe-input" value={ln.role || ""} onChange={(e) => updateLaborLine(ln.id, { role: e.target.value })} placeholder="Role" />
+                  <select className="pe-input" value={ln.role || ""} onChange={(e) => updateLaborLine(ln.id, { role: e.target.value })}>
+                    <option value="" disabled>Select role…</option>
+                    {LABOR_PRESETS.map((p) => (
+                      <option key={p.key} value={p.key}>{p.label}</option>
+                    ))}
+                  </select>
                 </div>
                 <div style={styles.field}>
                   <div style={styles.label}>Hours</div>
@@ -380,6 +851,41 @@ export default function EstimateForm(props) {
             </div>
           </>
         )}
+      </div>
+
+      {/* Additional Notes */}
+      <div className="pe-card">
+        <div className="pe-section-title">Additional Notes</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
+            <button
+              key={s.key}
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => {
+                const existing = state.additionalNotes || "";
+                const sep = existing.trim().length > 0 ? "\n\n" : "";
+                patch("additionalNotes", existing + sep + s.text);
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            onClick={() => patch("additionalNotes", "")}
+          >
+            Clear Notes
+          </button>
+        </div>
+        <textarea
+          className="pe-input pe-textarea"
+          value={state.additionalNotes || ""}
+          onChange={(e) => patch("additionalNotes", e.target.value)}
+          placeholder="Additional notes, terms, exclusions…"
+          style={{ minHeight: 120 }}
+        />
       </div>
 
       {/* Bottom totals (green box like the big file) */}
