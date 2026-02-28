@@ -11,6 +11,9 @@ import { buildPdf } from "./estimator/pdf";
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
+// Customer-use handoff key (written by CustomersScreen when a customer is selected)
+const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
+
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
 
@@ -62,6 +65,37 @@ export default function EstimateForm(props) {
     try {
       console.log("Loaded EstimateForm BUILD:", BUILD_TAG);
     } catch {}
+  }, []);
+
+  // Customer-use hydration: populate fields when a customer is selected from CustomersScreen
+  useEffect(() => {
+    const apply = () => {
+      try {
+        const raw = localStorage.getItem(PENDING_CUSTOMER_USE_KEY);
+        if (!raw) return;
+        const payload = JSON.parse(raw);
+        localStorage.removeItem(PENDING_CUSTOMER_USE_KEY);
+        const c = payload?.customer;
+        if (!c || typeof c !== "object") return;
+        if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
+        if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
+        if (String(c.phone || "").trim()) patch("customer.phone", String(c.phone || "").trim());
+        if (String(c.email || "").trim()) patch("customer.email", String(c.email || "").trim());
+        if (String(c.address || "").trim()) patch("customer.address", String(c.address || "").trim());
+        const billingAddr = String(c.billingAddress || "").trim();
+        if (billingAddr) {
+          patch("customer.billingAddress", billingAddr);
+          if (billingAddr !== String(c.address || "").trim()) {
+            patch("customer.billingDiff", true);
+          }
+        }
+      } catch {}
+    };
+    apply();
+    window.addEventListener("estipaid:customer-use", apply);
+    return () => window.removeEventListener("estipaid:customer-use", apply);
+  // patch is stable (setState-based), safe to omit from deps per React docs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const computed = useMemo(() => computeTotals(state), [state]);
@@ -153,6 +187,16 @@ export default function EstimateForm(props) {
       {/* Customer first card */}
       <div className="pe-card" ref={customerTopRef}>
         <div className="pe-section-title">Customer</div>
+
+        {/* Select from saved customers shortcut */}
+        <button
+          className="pe-btn pe-btn-ghost"
+          type="button"
+          style={{ width: "100%", marginBottom: 10 }}
+          onClick={() => { try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {} }}
+        >
+          ← Select from Customers
+        </button>
 
         <div style={styles.grid2}>
           <div>
