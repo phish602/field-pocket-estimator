@@ -519,14 +519,29 @@ export default function EstimateForm(props) {
         <div className="pe-section-title">Customer</div>
 
         {/* Select from saved customers shortcut */}
-        <button
-          className="pe-btn pe-btn-ghost"
-          type="button"
-          style={{ width: "100%", marginBottom: 10 }}
-          onClick={() => { try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {} }}
-        >
-          ← Select from Customers
-        </button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            style={{ flex: 1 }}
+            onClick={() => { try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {} }}
+          >
+            ← Select from Customers
+          </button>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            disabled={!selectedCustomerId}
+            onClick={() => {
+              try {
+                localStorage.setItem("estipaid-customer-edit-target-v1", JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                window.dispatchEvent(new Event("estipaid:navigate-customers"));
+              } catch {}
+            }}
+          >
+            Edit
+          </button>
+        </div>
 
         {/* Customer search + quick-select */}
         <div style={{ marginBottom: 10 }}>

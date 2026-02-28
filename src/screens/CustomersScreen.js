@@ -345,9 +345,7 @@ export default function CustomersScreen({
   const [q, setQ] = useState("");
   const [mode, setMode] = useState("list"); // list | edit
   const [draft, setDraft] = useState(() => emptyDraft("residential"));
-  const [returnToEstimator, setReturnToEstimator] = useState(() => {
-    try { return !!localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY); } catch { return false; }
-  });
+  const [returnToEstimator, setReturnToEstimator] = useState(false);
 
   useEffect(() => {
     if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
@@ -373,11 +371,12 @@ export default function CustomersScreen({
       const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
       if (rawEditTarget) {
         localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
+        setReturnToEstimator(true);
         const payload = JSON.parse(rawEditTarget);
         const id = String(payload?.id || "");
         if (id) {
-          const c = (list || []).find((x) => String(x?.id) === id);
-          if (c) { startEdit(c); setReturnToEstimator(true); }
+          const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
+          if (c) { startEdit(c); }
         }
       }
     } catch {}
