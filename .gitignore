@@ -27,3 +27,4 @@ yarn-error.log*
 # env
 .env*
 fpe-src.zip
+nohup.out

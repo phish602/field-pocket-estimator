@@ -306,6 +306,9 @@ const ADDITIONAL_NOTES_SNIPPETS = [
   },
 ];
 
+const MAX_SEARCH_RESULTS = 10;
+const DROPDOWN_BLUR_DELAY = 150;
+
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
 
@@ -331,6 +334,7 @@ export default function EstimateForm(props) {
 
   const [searchCustomerText, setSearchCustomerText] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
 
   // Customer-first: always top + first focus
@@ -411,14 +415,22 @@ export default function EstimateForm(props) {
   const filteredCustomers = useMemo(() => {
     const q = searchCustomerText.trim().toLowerCase();
     if (!q) return [];
-    return allCustomers.filter((c) => customerDisplayName(c).toLowerCase().includes(q));
+    return allCustomers.filter((c) => {
+      const name = customerDisplayName(c).toLowerCase();
+      const company = String(c.companyName || "").toLowerCase();
+      const email = String(c.comEmail || c.resEmail || c.email || "").toLowerCase();
+      const phone = String(c.comPhone || c.resPhone || c.phone || "").toLowerCase();
+      return name.includes(q) || company.includes(q) || email.includes(q) || phone.includes(q);
+    }).slice(0, MAX_SEARCH_RESULTS);
   }, [allCustomers, searchCustomerText]);
 
   function handleSelectCustomer(id) {
-    if (!id) { setSelectedCustomerId(""); try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {} return; }
+    if (!id) { setSelectedCustomerId(""); setSearchCustomerText(""); setDropdownOpen(false); try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {} return; }
     const c = allCustomers.find((x) => String(x.id) === id);
     if (!c) return;
     setSelectedCustomerId(id);
+    setSearchCustomerText(customerDisplayName(c));
+    setDropdownOpen(false);
     try {
       const flat = flattenCustomerForEstimator(c);
       const payload = { id, customer: { ...c, ...flat }, ts: Date.now() };
@@ -518,16 +530,36 @@ export default function EstimateForm(props) {
       <div className="pe-card" ref={customerTopRef}>
         <div className="pe-section-title">Customer</div>
 
-        {/* Select from saved customers shortcut */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <button
-            className="pe-btn pe-btn-ghost"
-            type="button"
-            style={{ flex: 1 }}
-            onClick={() => { try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {} }}
-          >
-            ← Select from Customers
-          </button>
+        {/* Combo search/dropdown + Edit button */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ flex: 1, position: "relative" }}>
+            <input
+              className="pe-input"
+              ref={customerNameRef}
+              placeholder="Search or select a customer…"
+              value={searchCustomerText}
+              autoComplete="off"
+              onFocus={() => setDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setDropdownOpen(false), DROPDOWN_BLUR_DELAY)}
+              onChange={(e) => { setSearchCustomerText(e.target.value); setDropdownOpen(true); }}
+            />
+            {dropdownOpen && (
+              <div style={styles.dropdown}>
+                {(searchCustomerText.trim() ? filteredCustomers : recentCustomers).map((c) => (
+                  <div
+                    key={String(c.id)}
+                    style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--pe-border, #333)" }}
+                    onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(String(c.id)); }}
+                  >
+                    {customerDisplayName(c)}
+                  </div>
+                ))}
+                {(searchCustomerText.trim() ? filteredCustomers : recentCustomers).length === 0 && (
+                  <div style={{ padding: "10px 14px", opacity: 0.6, fontSize: 13 }}>No customers found.</div>
+                )}
+              </div>
+            )}
+          </div>
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
@@ -541,115 +573,6 @@ export default function EstimateForm(props) {
           >
             Edit
           </button>
-        </div>
-
-        {/* Customer search + quick-select */}
-        <div style={{ marginBottom: 10 }}>
-          <input
-            className="pe-input"
-            placeholder="Search customers…"
-            value={searchCustomerText}
-            onChange={(e) => setSearchCustomerText(e.target.value)}
-            style={{ marginBottom: 6 }}
-          />
-          <select
-            className="pe-input"
-            value={selectedCustomerId}
-            onChange={(e) => handleSelectCustomer(e.target.value)}
-          >
-            <option value="">— Select —</option>
-            {recentCustomers.length > 0 && (
-              <optgroup label="Recent">
-                {recentCustomers.map((c) => (
-                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
-                ))}
-              </optgroup>
-            )}
-            {filteredCustomers.length > 0 && (
-              <optgroup label="Search Results">
-                {filteredCustomers.map((c) => (
-                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          {!selectedCustomerId && (
-            <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>No customer selected.</div>
-          )}
-        </div>
-
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>Customer name</label>
-            <input
-              className="pe-input"
-              ref={customerNameRef}
-              autoFocus
-              value={state.customer.name}
-              onChange={(e) => patch("customer.name", e.target.value)}
-              placeholder="Customer"
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Attn</label>
-            <input className="pe-input" value={state.customer.attn} onChange={(e) => patch("customer.attn", e.target.value)} placeholder="Attn (optional)" />
-          </div>
-        </div>
-
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>Customer phone</label>
-            <input className="pe-input" inputMode="tel" value={state.customer.phone} onChange={(e) => patch("customer.phone", e.target.value)} placeholder="555-555-5555" />
-          </div>
-          <div>
-            <label style={styles.label}>Customer email</label>
-            <input className="pe-input" inputMode="email" value={state.customer.email} onChange={(e) => patch("customer.email", e.target.value)} placeholder="Email (optional)" />
-          </div>
-        </div>
-
-        <div style={{ marginTop: 10 }}>
-          <label style={styles.label}>Customer address</label>
-          <textarea className="pe-input pe-textarea" value={state.customer.address} onChange={(e) => patch("customer.address", e.target.value)} placeholder="Address" style={{ minHeight: 70 }} />
-        </div>
-
-        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <label style={{ ...styles.small, display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={!!state.customer.billingDiff} onChange={(e) => patch("customer.billingDiff", !!e.target.checked)} />
-            Billing address differs
-          </label>
-
-          <label style={{ ...styles.small, display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={!!state.customer.projectSameAsCustomer} onChange={(e) => patch("customer.projectSameAsCustomer", !!e.target.checked)} />
-            Project address same as customer
-          </label>
-        </div>
-
-        {state.customer.billingDiff ? (
-          <div style={{ marginTop: 10 }}>
-            <label style={styles.label}>Billing address</label>
-            <textarea className="pe-input pe-textarea" value={state.customer.billingAddress} onChange={(e) => patch("customer.billingAddress", e.target.value)} placeholder="Billing address" style={{ minHeight: 70 }} />
-          </div>
-        ) : null}
-
-        <div style={{ marginTop: 12 }}>
-          <div className="pe-divider" />
-          <div className="pe-section-title">Project</div>
-
-          <div style={styles.grid2}>
-            <div>
-              <label style={styles.label}>Project name</label>
-              <input className="pe-input" value={state.customer.projectName} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name" />
-            </div>
-            <div>
-              <label style={styles.label}>Project #</label>
-              <input className="pe-input" value={state.customer.projectNumber} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project #" />
-            </div>
-          </div>
-
-          <div style={{ marginTop: 10 }}>
-            <label style={styles.label}>Project address</label>
-            <textarea className="pe-input pe-textarea" value={state.customer.projectAddress} onChange={(e) => patch("customer.projectAddress", e.target.value)} placeholder="Project address" style={{ minHeight: 70 }} />
-          </div>
         </div>
       </div>
 
@@ -927,4 +850,5 @@ const styles = {
   rowColsMat: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 },
   rowActions: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" },
   field: { display: "grid", gap: 4 },
+  dropdown: { position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "rgba(15, 23, 42, 0.75)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.4)", maxHeight: 260, overflowY: "auto", marginTop: 6 },
 };
