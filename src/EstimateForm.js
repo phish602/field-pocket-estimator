@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./EstimateForm.css";
 
 import { BUILD_TAG } from "./estimator/defaultState";
@@ -13,6 +13,42 @@ const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD
 
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
 const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
+const CUSTOMERS_KEY = "estipaid-customers-v1";
+const CUSTOMER_RECENTS_KEY = "estipaid-customer-recent-v1";
+function readSavedCustomers() {
+  try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
+}
+function customerDisplayName(c) {
+  if (!c) return "";
+  return String(c.type === "commercial" ? (c.companyName || c.name || "") : (c.fullName || c.name || "")).trim();
+}
+function readCustomerRecents() {
+  try { return JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]") || []; } catch { return []; }
+}
+function addToCustomerRecents(id) {
+  try {
+    const prev = readCustomerRecents();
+    const next = [id, ...prev.filter((r) => r !== id)].slice(0, 8);
+    localStorage.setItem(CUSTOMER_RECENTS_KEY, JSON.stringify(next));
+  } catch {}
+}
+function flattenCustomerForEstimator(c) {
+  if (!c) return {};
+  const joinAddr = (a) => {
+    const street = String(a?.street || "").trim();
+    const line2 = [String(a?.city || "").trim(), String(a?.state || "").trim()].filter(Boolean).join(", ");
+    const line2Full = [line2, String(a?.zip || "").trim()].filter(Boolean).join(" ");
+    return [street, line2Full].filter(Boolean).join("\n");
+  };
+  if (String(c.type || "") === "commercial") {
+    const job = c.jobsite || {};
+    const bill = c.billSameAsJob ? (c.jobsite || {}) : (c.billing || {});
+    return { name: String(c.companyName || "").trim(), phone: String(c.comPhone || "").trim(), email: String(c.comEmail || "").trim(), attn: String(c.contactName || "").trim(), address: joinAddr(job), billingAddress: joinAddr(bill) };
+  }
+  const svc = c.resService || {};
+  const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
+  return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
+}
 
 // Labor role presets (value = key, display = label)
 const LABOR_PRESETS = [
@@ -239,6 +275,10 @@ export default function EstimateForm(props) {
     saveNow,
   } = hook();
 
+  const [searchCustomerText, setSearchCustomerText] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
+
   // Customer-first: always top + first focus
   useEffect(() => {
     try {
@@ -299,6 +339,40 @@ export default function EstimateForm(props) {
   // patch is stable (setState-based), safe to omit from deps per React docs
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Sync customer list when storage changes (other tabs)
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === CUSTOMERS_KEY) setAllCustomers(readSavedCustomers());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
+  const recentCustomers = useMemo(
+    () => recentCustomerIds.map((id) => allCustomers.find((c) => String(c.id) === id)).filter(Boolean),
+    [allCustomers, recentCustomerIds]
+  );
+  const filteredCustomers = useMemo(() => {
+    const q = searchCustomerText.trim().toLowerCase();
+    if (!q) return [];
+    return allCustomers.filter((c) => customerDisplayName(c).toLowerCase().includes(q));
+  }, [allCustomers, searchCustomerText]);
+
+  function handleSelectCustomer(id) {
+    if (!id) { setSelectedCustomerId(""); try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {} return; }
+    const c = allCustomers.find((x) => String(x.id) === id);
+    if (!c) return;
+    setSelectedCustomerId(id);
+    try {
+      const flat = flattenCustomerForEstimator(c);
+      const payload = { id, customer: { ...c, ...flat }, ts: Date.now() };
+      localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
+      window.dispatchEvent(new Event("estipaid:customer-use"));
+      addToCustomerRecents(id);
+    } catch {}
+  }
 
   const computed = useMemo(() => computeTotals(state), [state]);
 
@@ -399,6 +473,41 @@ export default function EstimateForm(props) {
         >
           ← Select from Customers
         </button>
+
+        {/* Customer search + quick-select */}
+        <div style={{ marginBottom: 10 }}>
+          <input
+            className="pe-input"
+            placeholder="Search customers…"
+            value={searchCustomerText}
+            onChange={(e) => setSearchCustomerText(e.target.value)}
+            style={{ marginBottom: 6 }}
+          />
+          <select
+            className="pe-input"
+            value={selectedCustomerId}
+            onChange={(e) => handleSelectCustomer(e.target.value)}
+          >
+            <option value="">— Select —</option>
+            {recentCustomers.length > 0 && (
+              <optgroup label="Recent">
+                {recentCustomers.map((c) => (
+                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
+                ))}
+              </optgroup>
+            )}
+            {filteredCustomers.length > 0 && (
+              <optgroup label="Search Results">
+                {filteredCustomers.map((c) => (
+                  <option key={String(c.id)} value={String(c.id)}>{customerDisplayName(c)}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {!selectedCustomerId && (
+            <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>No customer selected.</div>
+          )}
+        </div>
 
         <div style={styles.grid2}>
           <div>
