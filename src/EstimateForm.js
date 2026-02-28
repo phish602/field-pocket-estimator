@@ -6534,8 +6534,7 @@ const advancedScreen = (
 
   
   useEffect(() => {
-    if (!embeddedInShell) return;
-    if (!showAIDraft) return;
+    if (!embeddedInShell || !showAIDraft) return;
     try {
       window.__FPE_EMBED_API = {
         __owner: "EstimateForm",
