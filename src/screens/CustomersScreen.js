@@ -4,6 +4,118 @@ import React, { useEffect, useMemo, useState } from "react";
 
 const CUSTOMERS_KEY = "estipaid-customers-v1";
 const CUSTOMERS_KEY_LEGACY = "field-pocket-customers-v1";
+const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
+const PENDING_CUSTOMER_EDIT_KEY = "estipaid-pending-customer-edit-v1";
+const PENDING_CUSTOMER_CREATE_KEY = "estipaid-pending-customer-create-v1";
+
+// ===== Customer KPI (live-compute) =====
+const ESTIMATES_KEY = "estipaid-estimates-v1";
+const ESTIMATES_KEY_LEGACY = "field-pocket-estimates";
+
+function toNum(v) {
+  const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+function safeDiv(a, b) {
+  const A = toNum(a);
+  const B = toNum(b);
+  if (!B) return 0;
+  return A / B;
+}
+function moneyUSD(v) {
+  const n = toNum(v);
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(n);
+  } catch {
+    return `$${n.toFixed(2)}`;
+  }
+}
+
+function readSavedDocs() {
+  try {
+    const rawNew = localStorage.getItem(ESTIMATES_KEY);
+    const rawLegacy = localStorage.getItem(ESTIMATES_KEY_LEGACY);
+    const arrNew = rawNew ? safeParse(rawNew, []) : [];
+    const arrLegacy = rawLegacy ? safeParse(rawLegacy, []) : [];
+    const arr = Array.isArray(arrNew) && arrNew.length ? arrNew : Array.isArray(arrLegacy) ? arrLegacy : [];
+    return (Array.isArray(arr) ? arr : []).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function getMaterialInternalEach(item) {
+  const v =
+    item?.internalCost ??
+    item?.costInternal ??
+    item?.internal ??
+    item?.internalEach ??
+    item?.internalPrice ??
+    item?.cost ??
+    "";
+  const n = toNum(v);
+  return n > 0 ? n : null;
+}
+
+function calcBreakdown(e) {
+  const laborLines = Array.isArray(e?.laborLines) ? e.laborLines : [];
+  const materialItems = Array.isArray(e?.materialItems) ? e.materialItems : [];
+
+  const multiplierMode = e?.multiplierMode || "preset";
+  const laborMultiplierPreset = toNum(e?.laborMultiplier || 1);
+  const customMultiplier = toNum(e?.customMultiplier || 1);
+  const effectiveMultiplier = multiplierMode === "custom" ? (customMultiplier || 1) : (laborMultiplierPreset || 1);
+
+  const hazardPct = toNum(e?.hazardPct || 0);
+  const materialsMode = e?.materialsMode || "itemized";
+  const materialsMarkupPct = toNum(e?.materialsMarkupPct || 0);
+  const materialsCost = toNum(e?.materialsCost || 0);
+
+  const laborRows = laborLines.map((ln, idx) => {
+    const qty = Math.max(1, toNum(ln?.qty || 1));
+    const hours = Math.max(0, toNum(ln?.hours || 0));
+    const rate = Math.max(0, toNum(ln?.rate || 0));
+    const internalRateRaw = toNum(ln?.internalRate || 0);
+    const base = qty * hours * rate;
+    const billed = base * effectiveMultiplier;
+    const internal = internalRateRaw > 0 ? qty * hours * internalRateRaw : billed;
+    return { billed, internal };
+  });
+
+  const laborBilled = laborRows.reduce((a, r) => a + r.billed, 0);
+  const laborInternal = laborRows.reduce((a, r) => a + r.internal, 0);
+
+  let materialsBilled = 0;
+  let materialsInternal = 0;
+
+  if (materialsMode === "blanket") {
+    const billed = materialsCost * (1 + materialsMarkupPct / 100);
+    const internal = materialsCost > 0 ? materialsCost : billed;
+    materialsBilled = billed;
+    materialsInternal = internal;
+  } else {
+    const rows = materialItems.map((it) => {
+      const qty = Math.max(1, toNum(it?.qty || 1));
+      const chargeEach = Math.max(0, toNum(it?.charge ?? it?.price ?? it?.unitPrice ?? 0));
+      const billed = qty * chargeEach;
+      const internalEach = getMaterialInternalEach(it);
+      const internal = internalEach != null ? qty * internalEach : billed;
+      return { billed, internal };
+    });
+    materialsBilled = rows.reduce((a, r) => a + r.billed, 0);
+    materialsInternal = rows.reduce((a, r) => a + r.internal, 0);
+  }
+
+  const hazardAmt = laborBilled * (hazardPct / 100);
+
+  const revenue = laborBilled + materialsBilled + hazardAmt;
+  const internal = laborInternal + materialsInternal;
+  const profit = revenue - internal;
+  const margin = safeDiv(profit, revenue);
+
+  return { revenue, internal, profit, margin };
+}
+
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 
@@ -51,6 +163,39 @@ function joinAddr(a) {
   const line2 = [city, state].filter(Boolean).join(", ");
   const line2Full = [line2, zip].filter(Boolean).join(" ");
   return [street, line2Full].filter(Boolean).join("\n");
+}
+
+
+function toEstimatorFlat(c) {
+  const type = String(c?.type || "residential");
+  if (type === "commercial") {
+    const job = c?.jobsite || {};
+    const bill = c?.billSameAsJob ? (c?.jobsite || {}) : (c?.billing || {});
+    return {
+      name: String(c?.companyName || "").trim(),
+      phone: String(c?.comPhone || "").trim(),
+      email: String(c?.comEmail || "").trim(),
+      attn: String(c?.contactName || "").trim(),
+      address: joinAddr(job),
+      billingAddress: joinAddr(bill),
+      city: String(job?.city || "").trim(),
+      state: String(job?.state || "").trim(),
+      zip: String(job?.zip || "").trim(),
+    };
+  }
+  const svc = c?.resService || {};
+  const bill = c?.resBillingSame ? (c?.resService || {}) : (c?.resBilling || {});
+  return {
+    name: String(c?.fullName || "").trim(),
+    phone: String(c?.resPhone || "").trim(),
+    email: String(c?.resEmail || "").trim(),
+    attn: "",
+    address: joinAddr(svc),
+    billingAddress: joinAddr(bill),
+    city: String(svc?.city || "").trim(),
+    state: String(svc?.state || "").trim(),
+    zip: String(svc?.zip || "").trim(),
+  };
 }
 
 
@@ -217,6 +362,72 @@ export default function CustomersScreen({
 
   const list = useMemo(() => (Array.isArray(customers) ? customers : localCustomers), [customers, localCustomers]);
 
+  // Handle estimator-intent (edit/create) when routed here from EstimateForm
+  useEffect(() => {
+    // Edit intent
+    try {
+      const raw = localStorage.getItem(PENDING_CUSTOMER_EDIT_KEY);
+      if (raw) {
+        const payload = JSON.parse(raw);
+        const id = String(payload?.id || "");
+        if (id) {
+          const c = (list || []).find((x) => String(x?.id) === id);
+          if (c) startEdit(c);
+        }
+        localStorage.removeItem(PENDING_CUSTOMER_EDIT_KEY);
+      }
+    } catch {}
+
+    // Create intent
+    try {
+      const raw2 = localStorage.getItem(PENDING_CUSTOMER_CREATE_KEY);
+      if (raw2) {
+        setDraft(emptyDraft("residential"));
+        setMode("edit");
+        localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
+      }
+    } catch {}
+  }, [list]);
+
+  const customerKpis = useMemo(() => {
+    const docs = readSavedDocs();
+    const byId = {};
+    for (const d of docs) {
+      const cid = String(d?.customerId || "");
+      if (!cid) continue;
+      const b = calcBreakdown(d || {});
+      const isInvoice = String(d?.docType || "").toLowerCase() === "invoice";
+      if (!byId[cid]) {
+        byId[cid] = {
+          revenue: 0,
+          internal: 0,
+          profit: 0,
+          estimateCount: 0,
+          invoiceCount: 0,
+          lastDate: "",
+        };
+      }
+      byId[cid].revenue += toNum(b.revenue);
+      byId[cid].internal += toNum(b.internal);
+      byId[cid].profit += toNum(b.profit);
+      if (isInvoice) byId[cid].invoiceCount += 1;
+      else byId[cid].estimateCount += 1;
+
+      const dt = String(d?.date || "").trim();
+      if (dt) {
+        // prefer latest lexicographically for ISO-like dates; fallback to keep non-empty
+        if (!byId[cid].lastDate || dt > byId[cid].lastDate) byId[cid].lastDate = dt;
+      }
+    }
+    for (const cid of Object.keys(byId)) {
+      const rev = toNum(byId[cid].revenue);
+      const prof = toNum(byId[cid].profit);
+      byId[cid].margin = safeDiv(prof, rev);
+    }
+    return byId;
+  }, [customers, localCustomers, q, mode]);
+
+
   const filtered = useMemo(() => {
   const qq = norm(q);
   const arr = list || [];
@@ -300,6 +511,20 @@ export default function CustomersScreen({
       if (nextItem.resBillingSame) nextItem.resBilling = { ...nextItem.resService };
     }
 
+    // Estimator compatibility fields (flat)
+    try {
+      const flat = toEstimatorFlat(nextItem);
+      nextItem.name = flat.name;
+      nextItem.phone = flat.phone;
+      nextItem.email = flat.email;
+      nextItem.attn = flat.attn;
+      nextItem.address = flat.address;
+      nextItem.billingAddress = flat.billingAddress;
+      nextItem.city = flat.city;
+      nextItem.state = flat.state;
+      nextItem.zip = flat.zip;
+    } catch {}
+
     const next = Array.isArray(list) ? [...list] : [];
     const idx = next.findIndex((x) => String(x?.id) === String(id));
     if (idx >= 0) next[idx] = { ...next[idx], ...nextItem };
@@ -336,6 +561,13 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
 
     if (typeof setSelectedCustomerId === "function") setSelectedCustomerId(id);
+
+    // Handoff to EstimateForm (same-tab; storage event won't fire)
+    try {
+      const payload = { id, customer: { ...c, ...toEstimatorFlat(c) }, ts: Date.now() };
+      localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
+      window.dispatchEvent(new Event("estipaid:customer-use"));
+    } catch {}
 
     if (typeof onDone === "function") onDone({ id, customer: c });
   }
@@ -401,6 +633,53 @@ export default function CustomersScreen({
                       {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
                       {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
                       {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
+
+                      {/* KPIs (live computed from saved estimates/invoices) */}
+                      {customerKpis && id ? (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            paddingTop: 10,
+                            borderTop: "1px solid rgba(255,255,255,0.10)",
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 10,
+                          }}
+                        >
+                          <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                              {label("Revenue", "Ingresos")}
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              {moneyUSD(customerKpis[id]?.revenue || 0)}
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                              {label("Avg Margin", "Margen prom.")}
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                              {label("Jobs", "Trabajos")}
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              {toNum(customerKpis[id]?.estimateCount || 0) + toNum(customerKpis[id]?.invoiceCount || 0)}
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                              {label("Last", "Último")}
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.85 }}>
+                              {String(customerKpis[id]?.lastDate || "—") || "—"}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
 
                     <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
