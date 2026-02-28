@@ -850,5 +850,5 @@ const styles = {
   rowColsMat: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 },
   rowActions: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" },
   field: { display: "grid", gap: 4 },
-  dropdown: { position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999, background: "var(--pe-card-bg, #1a1a2e)", border: "1px solid var(--pe-border, #333)", borderRadius: 8, maxHeight: 260, overflowY: "auto", marginTop: 2 },
+  dropdown: { position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "rgba(15, 23, 42, 0.75)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.4)", maxHeight: 260, overflowY: "auto", marginTop: 6 },
 };
