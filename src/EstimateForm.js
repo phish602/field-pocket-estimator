@@ -34,7 +34,187 @@ const SCOPE_MASTER_TEMPLATES = [
   { key: "supply_install",  label: "Supply & Install",  text: "Supply and install per approved submittal. Coordinate with general contractor for scheduling and inspections." },
   { key: "rough_finish",    label: "Rough & Finish",    text: "Complete rough-in phase followed by finish work per drawings and specifications." },
 ];
-// NOTE: TASKS list not found — no task constants exist in this file or anywhere in the repo; tasks dropdown not added.
+// TEMPLATE ADD-ONS (TRADE INSERTS)
+const SCOPE_TRADE_INSERTS = [
+  {
+    key: "genericLabor",
+    label: "Generic Labor (Insert)",
+    text: `Trade Insert: Generic Labor
+- Provide general labor to support the described scope (handling, staging, cleanup, assistance).
+- Perform basic tasks as directed under supervision (non-licensed/non-specialty unless specified).
+- Productivity dependent on site access, congestion, and coordination.`,
+  },
+  {
+    key: "painting",
+    label: "Painting (Insert)",
+    text: `Trade Insert: Painting
+- Surface prep as required (masking, patch/spot prep, sanding as needed).
+- Apply primer/finish coats per specified system.
+- Cut-in/roll/spray methods as appropriate for area and conditions.
+- Touch-up and cleanup upon completion.`,
+  },
+  {
+    key: "demoCrew",
+    label: "Demolition Crew (Insert)",
+    text: `Trade Insert: Demolition Crew
+- Provide labor for selective demolition/removal of specified items/areas.
+- Protect adjacent finishes and active areas as reasonable.
+- Debris staged in designated area; haul-off/dump fees by others unless included.
+- Unknown/hidden conditions (behind walls/ceilings/slabs) excluded unless authorized.`,
+  },
+  {
+    key: "drywall",
+    label: "Drywall (Insert)",
+    text: `Trade Insert: Drywall
+- Install drywall per scope (hang, fasten, and finish as specified).
+- Tape/finish level per project requirements.
+- Cutouts for penetrations as required.
+- Final texture/paint by others unless included.`,
+  },
+  {
+    key: "framing",
+    label: "Framing (Insert)",
+    text: `Trade Insert: Framing
+- Layout and install framing per scope (metal/wood as specified).
+- Anchor/fasten to existing structure as required.
+- Field verification of dimensions and conditions prior to build.
+- Engineering/structural design by others unless included.`,
+  },
+  {
+    key: "insulation",
+    label: "Insulation (Insert)",
+    text: `Trade Insert: Insulation
+- Furnish/install insulation per scope (batt/blown/spray as specified).
+- Seal/fit around penetrations as required for typical installation.
+- Vapor barrier/air sealing by others unless included.
+- Specialty testing excluded unless included.`,
+  },
+  {
+    key: "finishCarpentry",
+    label: "Finish Carpentry (Insert)",
+    text: `Trade Insert: Finish Carpentry
+- Install finish carpentry items per scope (trim, base, casing, doors/hardware if specified).
+- Scribe and fit to existing conditions as needed.
+- Caulk/fill as required for finish readiness.
+- Final paint/stain by others unless included.`,
+  },
+  {
+    key: "flooring",
+    label: "Flooring (Insert)",
+    text: `Trade Insert: Flooring
+- Install flooring per scope (LVP/tile/carpet/epoxy as specified).
+- Subfloor assumed suitable; leveling/moisture mitigation excluded unless included.
+- Transitions and edge details installed as specified.`,
+  },
+  {
+    key: "hvac",
+    label: "HVAC (Insert)",
+    text: `Trade Insert: HVAC
+- Install/modify HVAC components per scope (duct, units, diffusers, thermostats as specified).
+- Start-up/commissioning/TAB by others unless included.
+- Permits/engineering excluded unless included.`,
+  },
+  {
+    key: "plumbing",
+    label: "Plumbing (Insert)",
+    text: `Trade Insert: Plumbing
+- Install/modify plumbing per scope (water, waste/vent, fixtures as specified).
+- Tie-ins coordinated with site contact; shutdown windows coordinated with site contact.
+- Permits/engineering excluded unless included.`,
+  },
+  {
+    key: "controls",
+    label: "Controls / BAS / Instrumentation (Insert)",
+    text: `Trade Insert: Controls / BAS / Instrumentation
+- Install/terminate controls wiring and devices per scope (sensors, actuators, controllers as specified).
+- Point-to-point checkout and basic functional verification as specified.
+- Programming/graphics/commissioning by others unless included.`,
+  },
+  {
+    key: "welding",
+    label: "Welding (General Insert)",
+    text: `Trade Insert: Welding
+- Fit-up and weld per project requirements (process as required).
+- Grind/clean as needed for fit and finish.
+- Welds performed by qualified personnel; consumables as typical.
+- Field conditions may affect production rate.
+
+Optional Add-Ons (if needed):
+- Welding procedure/QC documentation
+- Specialty consumables or exotic alloys`,
+  },
+  {
+    key: "pipefitting",
+    label: "Pipefitting (General Insert)",
+    text: `Trade Insert: Pipefitting
+- Field measure, fit, and install piping/spools as required.
+- Support/hanger coordination as required.
+- Tie-ins/shutdown windows coordinated with site contact.
+- Final alignment and leak checks per project requirements (testing if specified).`,
+  },
+  {
+    key: "orbital",
+    label: "Orbital Welding (Insert)",
+    text: `Trade Insert: Orbital Welding
+- Provide setup and operation for orbital welding as required.
+- Prep, purge, and fit-up to achieve acceptable weld conditions.
+- Weld parameters and acceptance per project requirements.
+- Production rate dependent on access, prep quality, and purge conditions.`,
+  },
+  {
+    key: "ironwork",
+    label: "Ironwork / Structural (Insert)",
+    text: `Trade Insert: Ironwork / Structural
+- Layout, fit, and install steel/structural members as required.
+- Bolt-up and/or weld connections per project requirements.
+- Field modifications as needed within reason.
+- Final plumb/level verification as required.`,
+  },
+  {
+    key: "electrical",
+    label: "Electrician (Insert)",
+    text: `Trade Insert: Electrical
+- Install/terminate electrical components as required (circuits, devices, panels, controls as specified).
+- Verify power, labeling, and basic functionality per project requirements.
+- Work coordinated around lockout/tagout and site safety requirements.
+- Materials/fixtures by owner/GC unless included.`,
+  },
+  {
+    key: "rigging",
+    label: "Rigging / Crane (Insert)",
+    text: `Trade Insert: Rigging / Crane
+- Provide rigging labor to support lifts/moves as required.
+- Lift planning and execution coordinated with site contact.
+- Standard rigging gear as typical (specialty gear if specified).
+- Work dependent on access, pick points, and site constraints.`,
+  },
+  {
+    key: "heavyEquipment",
+    label: "Heavy Machinery / Equipment Ops (Insert)",
+    text: `Trade Insert: Heavy Machinery / Equipment Ops
+- Provide operator(s) for equipment as required (lift/grade/haul/support).
+- Production dependent on site access, weather, and staging/logistics.
+- Fuel/transport/permits excluded unless included.`,
+  },
+  {
+    key: "concrete",
+    label: "Concrete (Insert)",
+    text: `Trade Insert: Concrete
+- Form, place, finish, and cure concrete work as specified.
+- Subgrade and reinforcement by others unless included.
+- Finish level and cure method per project requirements.
+- Production dependent on access, weather, and site readiness.`,
+  },
+  {
+    key: "demo",
+    label: "Demolition (Insert)",
+    text: `Trade Insert: Demolition
+- Selective demo/removal of specified items/areas.
+- Protect adjacent areas as reasonable.
+- Debris staging and haul-off as specified (or excluded).
+- Unknown/hidden conditions behind walls/ceilings excluded.`,
+  },
+];
 
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
@@ -340,6 +520,26 @@ export default function EstimateForm(props) {
         >
           <option value="">Insert template…</option>
           {SCOPE_MASTER_TEMPLATES.map((t) => (
+            <option key={t.key} value={t.key}>{t.label}</option>
+          ))}
+        </select>
+        <select
+          className="pe-input"
+          defaultValue=""
+          style={{ marginBottom: 8 }}
+          onChange={(e) => {
+            const key = e.target.value;
+            if (!key) return;
+            const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
+            if (!insert) return;
+            const existing = state.scopeNotes || "";
+            const sep = existing.trim().length > 0 ? "\n\n" : "";
+            patch("scopeNotes", existing + sep + insert.text);
+            e.target.value = "";
+          }}
+        >
+          <option value="">Insert trade…</option>
+          {SCOPE_TRADE_INSERTS.map((t) => (
             <option key={t.key} value={t.key}>{t.label}</option>
           ))}
         </select>
