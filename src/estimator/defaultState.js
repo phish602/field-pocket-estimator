@@ -29,7 +29,7 @@ export const DEFAULT_STATE = {
     projectName: "",
     projectNumber: "",
     projectAddress: "",
-    projectSameAsCustomer: false,
+    projectSameAsCustomer: true,
   },
 
   job: {

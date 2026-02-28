@@ -579,18 +579,7 @@ export default function EstimateForm(props) {
       <div className="pe-card">
         <div className="pe-section-title">Job Info</div>
 
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>Document #</label>
-            <input className="pe-input" value={state.job.docNumber} onChange={(e) => patch("job.docNumber", e.target.value)} placeholder={uiDocType === "invoice" ? "Invoice #" : "Estimate #"} />
-          </div>
-          <div>
-            <label style={styles.label}>PO Number</label>
-            <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
-          </div>
-        </div>
-
-        <div style={styles.grid2}>
+        <div style={styles.stack}>
           <div>
             <label style={styles.label}>Date</label>
             <input className="pe-input" type="date" value={state.job.date} onChange={(e) => patch("job.date", e.target.value)} />
@@ -599,6 +588,40 @@ export default function EstimateForm(props) {
             <label style={styles.label}>Due</label>
             <input className="pe-input" type="date" value={state.job.due} onChange={(e) => patch("job.due", e.target.value)} />
           </div>
+          <div>
+            <label style={styles.label}>Document #</label>
+            <input className="pe-input" value={state.job.docNumber} onChange={(e) => patch("job.docNumber", e.target.value)} placeholder={uiDocType === "invoice" ? "Invoice #" : "Estimate #"} />
+          </div>
+          <div>
+            <label style={styles.label}>PO Number</label>
+            <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
+          </div>
+          <div>
+            <label style={styles.label}>Project Name</label>
+            <input className="pe-input" value={state.customer.projectName} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name" />
+          </div>
+          <div>
+            <label style={styles.label}>Project #</label>
+            <input className="pe-input" value={state.customer.projectNumber} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project number" />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+            <input
+              id="projectSameAsCustomer"
+              type="checkbox"
+              checked={!!state.customer.projectSameAsCustomer}
+              onChange={(e) => patch("customer.projectSameAsCustomer", e.target.checked)}
+              style={{ width: 16, height: 16, cursor: "pointer" }}
+            />
+            <label htmlFor="projectSameAsCustomer" style={{ ...styles.label, marginBottom: 0, cursor: "pointer" }}>
+              Project location same as customer
+            </label>
+          </div>
+          {!state.customer.projectSameAsCustomer && (
+            <div>
+              <label style={styles.label}>Project Address</label>
+              <input className="pe-input" value={state.customer.projectAddress} onChange={(e) => patch("customer.projectAddress", e.target.value)} placeholder="Street address" />
+            </div>
+          )}
         </div>
       </div>
 
@@ -843,6 +866,7 @@ export default function EstimateForm(props) {
 const styles = {
   grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 10 },
   grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 10 },
+  stack: { display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 10 },
   label: { display: "block", fontSize: 12, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase", opacity: 0.72, marginBottom: 6 },
   small: { fontSize: 12, fontWeight: 800, letterSpacing: "0.6px", opacity: 0.78, textTransform: "uppercase" },
   row: { display: "grid", gap: 10, padding: 10 },
