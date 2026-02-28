@@ -47,6 +47,17 @@ export function buildPdf(state, computed) {
     y += Math.max(8, lines.length * 5) + 2;
   }
 
+  // Trade Insert
+  const tradeInsertText = safe(state?.tradeInsert?.text).trim();
+  if (tradeInsertText) {
+    doc.setFontSize(11);
+    doc.text("Trade Insert", leftX, y); y += 6;
+    doc.setFontSize(10);
+    const tiLines = doc.splitTextToSize(tradeInsertText, 180);
+    doc.text(tiLines, leftX, y);
+    y += Math.max(8, tiLines.length * 5) + 2;
+  }
+
   // Labor table
   const laborRows = (computed?.labor?.normalized || []).map((ln) => [
     safe(ln?.role),

@@ -535,6 +535,8 @@ export default function EstimateForm(props) {
             const existing = state.scopeNotes || "";
             const sep = existing.trim().length > 0 ? "\n\n" : "";
             patch("scopeNotes", existing + sep + insert.text);
+            patch("tradeInsert.key", insert.key);
+            patch("tradeInsert.text", insert.text);
             e.target.value = "";
           }}
         >
