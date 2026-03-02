@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import EstimateForm from "./EstimateForm";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
@@ -6,7 +6,9 @@ import InvoicesScreen from "./screens/InvoicesScreen";
 import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
+import { STORAGE_KEYS } from "./constants/storageKeys";
 import "./EstimateForm.css";
+import "./FieldSystem.css";
 import "./AppShell.css";
 import "./App.css";
 const DEFAULT_LOGO = "/logo/estipaid.svg";
@@ -59,6 +61,21 @@ const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "Finan
    ========================================================= */
 
 const LANG_KEY = "estipaid-lang";
+const ESTIMATES_KEY = "estipaid-estimates-v1";
+const ESTIMATES_KEY_LEGACY = "field-pocket-estimates";
+
+function loadSavedEstimates() {
+  try {
+    const rawNew = localStorage.getItem(ESTIMATES_KEY);
+    const rawLegacy = localStorage.getItem(ESTIMATES_KEY_LEGACY);
+    const arrNew = rawNew ? JSON.parse(rawNew) : [];
+    const arrLegacy = rawLegacy ? JSON.parse(rawLegacy) : [];
+    const arr = Array.isArray(arrNew) && arrNew.length ? arrNew : Array.isArray(arrLegacy) ? arrLegacy : [];
+    return Array.isArray(arr) ? arr.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
 
 function getSavedLang() {
   try {
@@ -213,9 +230,9 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
     <div style={{ ...styles.topbar, ...(glassOnScroll && isScrolled ? styles.topbarScrolled : null) }}>
       <button
         className="pe-btn pe-btn-ghost"
-        style={styles.iconBtn}
+        style={{ ...styles.headerIconBtn, ...styles.headerMenuIcon }}
         onClick={onMenu}
-        aria-label="Open menu"
+        aria-label="Open Menu"
       >
         ☰
       </button>
@@ -226,7 +243,7 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
         <button
           type="button"
           style={styles.headerSpinBtn}
-          aria-label="Go Home (hold for shortcuts)"
+          aria-label="Go Home (Hold for Shortcuts)"
           title="Tap: Home • Hold: Shortcuts"
           onClick={(e) => {
             if (e?.currentTarget?.__lpFired) return;
@@ -267,9 +284,9 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
 
 <button
         className="pe-btn pe-btn-ghost"
-        style={styles.profileBtn}
+        style={styles.headerIconBtn}
         onClick={onProfile}
-        aria-label="Open snapshot"
+        aria-label="Open Snapshot"
       >
         <img
           src={src}
@@ -401,7 +418,7 @@ function QuickMenu({ open, onClose, onSelect }) {
             className="pe-btn pe-btn-ghost"
             style={styles.quickClose}
             onClick={onClose}
-            aria-label="Close shortcuts"
+            aria-label="Close Shortcuts"
             type="button"
           >
             ✕
@@ -447,7 +464,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             className="pe-btn pe-btn-ghost"
             style={styles.drawerClose}
             onClick={onClose}
-            aria-label="Close menu"
+            aria-label="Close Menu"
           >
             ✕
           </button>
@@ -790,20 +807,25 @@ const styles = {
     letterSpacing: "0.2px",
   },
 
-iconBtn: { padding: "8px 10px" },
+  headerIconBtn: {
+    padding: 0,
+    width: 44,
+    height: 44,
+    display: "grid",
+    placeItems: "center",
+    borderRadius: 12,
+  },
+  headerMenuIcon: {
+    fontSize: 24,
+    lineHeight: 1,
+    fontWeight: 800,
+  },
   title: {
     fontWeight: 900,
     letterSpacing: "0.2px",
     fontSize: 15,
     opacity: 0.98,
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
-  },
-  profileBtn: {
-    padding: 0,
-    width: 44,
-    height: 44,
-    display: "grid",
-    placeItems: "center",
   },
   profileCircle: {
     width: 32,
@@ -979,6 +1001,20 @@ export default function App() {
   const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => "home");
 const [spinTick, setSpinTick] = useState(0);
+  const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
+
+  const shellT = useCallback((key) => {
+    const en = {
+      estimateNumLabel: "Estimate #",
+      invoiceNumLabel: "Invoice #",
+    };
+    const es = {
+      estimateNumLabel: "Estimación #",
+      invoiceNumLabel: "Factura #",
+    };
+    const dict = lang === "es" ? es : en;
+    return dict[key] || key;
+  }, [lang]);
 
 
   // ===== In-progress estimate draft (survives tab switches) =====
@@ -1012,7 +1048,7 @@ const [spinTick, setSpinTick] = useState(0);
     }
   };
 
-  const navigateTo = (tab) => {
+  const navigateTo = useCallback((tab) => {
     try {
       if (activeTab === "create" && tab !== "create") {
         try { localStorage.setItem("estipaid-restore-draft-on-create-v1", "1"); } catch {}
@@ -1022,7 +1058,7 @@ const [spinTick, setSpinTick] = useState(0);
     try {
       setActiveTab(tab);
     } catch {}
-  };
+  }, [activeTab]);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
@@ -1031,7 +1067,86 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("estipaid:navigate-customers", onNavCustomers);
     return () => window.removeEventListener("estipaid:navigate-customers", onNavCustomers);
+  }, [navigateTo]);
+
+  useEffect(() => {
+    const onNavEstimates = () => {
+      try { navigateTo("estimates"); } catch {}
+    };
+    const onNavInvoices = () => {
+      try { navigateTo("invoices"); } catch {}
+    };
+    window.addEventListener("estipaid:navigate-estimates", onNavEstimates);
+    window.addEventListener("estipaid:navigate-invoices", onNavInvoices);
+    return () => {
+      window.removeEventListener("estipaid:navigate-estimates", onNavEstimates);
+      window.removeEventListener("estipaid:navigate-invoices", onNavInvoices);
+    };
+  }, [navigateTo]);
+
+  useEffect(() => {
+    const onNavEstimator = () => {
+      try {
+        setCreateIntent("estimate");
+        navigateTo("create");
+      } catch {}
+    };
+    window.addEventListener("estipaid:navigate-estimator", onNavEstimator);
+    return () => window.removeEventListener("estipaid:navigate-estimator", onNavEstimator);
+  }, [navigateTo]);
+
+  useEffect(() => {
+    const onNavCompanyProfile = () => {
+      try { navigateTo("companyProfile"); } catch {}
+    };
+    window.addEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
+    return () => window.removeEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
+  }, [navigateTo]);
+
+  useEffect(() => {
+    const refresh = () => setEstimateHistory(loadSavedEstimates());
+    refresh();
+    const onStorage = (e) => {
+      if (!e?.key || e.key === ESTIMATES_KEY || e.key === ESTIMATES_KEY_LEGACY) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("estipaid:navigate-estimates", refresh);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("estipaid:navigate-estimates", refresh);
+    };
   }, []);
+
+  useEffect(() => {
+    const onShellAction = (evt) => {
+      const action = String(evt?.detail?.action || "");
+      if (!action) return;
+
+      if (action === "continueLast" || action === "openCreate") {
+        setCreateIntent("estimate");
+        navigateTo("create");
+        return;
+      }
+
+      if (action === "newClear") {
+        try { localStorage.removeItem("estipaid-estimator-v1"); } catch {}
+        try { localStorage.removeItem("estipaid-estimate-draft-v1"); } catch {}
+        return;
+      }
+
+      if (action === "goEstimatesTab") {
+        navigateTo("estimates");
+        return;
+      }
+
+      if (action === "openCompanyProfile") {
+        navigateTo("companyProfile");
+      }
+    };
+
+    window.addEventListener("pe-shell-action", onShellAction);
+    return () => window.removeEventListener("pe-shell-action", onShellAction);
+  }, [navigateTo]);
 
   // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
   useEffect(() => {
@@ -1071,7 +1186,7 @@ const gated = false;
   const topRightLogoSrc = useMemo(() => {
     const DEFAULT = "/logo/estipaid.svg";
     try {
-      const raw = localStorage.getItem("estipaid-company-profile-v1");
+      const raw = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
       if (!raw) return DEFAULT;
       const obj = JSON.parse(raw);
       const candidates = [
@@ -1121,8 +1236,31 @@ const gated = false;
           }}
         />
       );
-    if (activeTab === "estimates") return <EstimatesScreen />;
-    if (activeTab === "invoices") return <InvoicesScreen />;
+    if (activeTab === "estimates") {
+      return (
+        <EstimatesScreen
+          lang={lang}
+          t={shellT}
+          spinTick={spinTick}
+          history={estimateHistory}
+          onDone={() => navigateTo("home")}
+          onOpenEstimate={() => {
+            setCreateIntent("estimate");
+            navigateTo("create");
+          }}
+        />
+      );
+    }
+    if (activeTab === "invoices") {
+      return (
+        <InvoicesScreen
+          lang={lang}
+          t={shellT}
+          spinTick={spinTick}
+          onDone={() => navigateTo("home")}
+        />
+      );
+    }
     if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
@@ -1147,9 +1285,12 @@ const gated = false;
 
 // Company Profile / Templates
     if (key === "company") {
-      setActiveTab("companyProfile");
+      navigateTo("companyProfile");
       return;
-    }    if (key === "templates") {
+    }
+    if (key === "templates") {
+      setCreateIntent("estimate");
+      navigateTo("create");
       return;
     }
 
@@ -1165,7 +1306,7 @@ const gated = false;
   const glassOnScroll = activeTab !== "home" && activeTab !== "create";
 
   return (
-    <div className="pe-wrap" style={styles.shell}>
+    <div className="pe-wrap pe-app" style={styles.shell}>
       
       {showHeaderSpin ? (
         <style>{`.pe-content img.esti-spin{ display:none !important; }`}</style>
@@ -1247,14 +1388,14 @@ const gated = false;
             return;
           }
           if (key === "companyProfile") {
-            setActiveTab("companyProfile");
+            navigateTo("companyProfile");
             return;
           }
         }}
       />
 <div
         ref={contentRef}
-        className="pe-content"
+        className={`pe-content${activeTab === "create" ? " pe-content-estimator" : ""}`}
         style={styles.content}
         onScroll={(e) => {
           const st = e.currentTarget ? e.currentTarget.scrollTop : 0;

@@ -23,13 +23,15 @@ export const DEFAULT_STATE = {
     attn: "",
     phone: "",
     email: "",
+    netTermsType: "",
+    netTermsDays: "",
     address: "",
     billingDiff: false,
     billingAddress: "",
     projectName: "",
     projectNumber: "",
     projectAddress: "",
-    projectSameAsCustomer: false,
+    projectSameAsCustomer: true,
   },
 
   job: {
@@ -46,14 +48,16 @@ export const DEFAULT_STATE = {
 
   labor: {
     hazardPct: 0,
+    riskPct: 0,
     multiplier: 1,
-    lines: [{ id: "l1", role: "", hours: "", rate: "" }],
+    lines: [{ id: "l1", role: "", hours: "", rate: "", trueRateInternal: "" }],
   },
 
   materials: {
     blanketCost: "",
+    blanketInternalCost: "",
     markupPct: 0,
-    items: [{ id: "m1", desc: "", qty: "", costInternal: "", priceEach: "" }],
+    items: [{ id: "m1", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" }],
   },
 
   additionalNotes: "",

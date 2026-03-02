@@ -1,10 +1,12 @@
 // @ts-nocheck
 /* eslint-disable */
 import { useEffect, useMemo, useRef, useState } from "react";
+import Field from "../components/Field";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
-const PROFILE_KEY = "estipaid-company-profile-v1";
-const PROFILE_KEY_LEGACY = "field-pocket-profile-v1";
-const PROFILE_KEY_LEGACY2 = "field-pocket-profile";
+const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
+const PROFILE_KEY_LEGACY = STORAGE_KEYS.COMPANY_PROFILE_LEGACY_1;
+const PROFILE_KEY_LEGACY2 = STORAGE_KEYS.COMPANY_PROFILE_LEGACY_2;
 
 const DEFAULT_PROFILE = {
   companyName: "",
@@ -251,18 +253,6 @@ export default function CompanyProfileScreen() {
     marginTop: 6,
   };
 
-  const input = {
-    width: "100%",
-    padding: "12px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.06)",
-    color: "rgba(255,255,255,0.92)",
-    outline: "none",
-  };
-
-  const label = { fontSize: 12, opacity: 0.85, fontWeight: 900, letterSpacing: "0.5px" };
-
   return (
     <section className="pe-section">
       {showClearConfirm ? (
@@ -305,30 +295,35 @@ export default function CompanyProfileScreen() {
       </div>
 
       <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Company name *</div>
-          <input style={input} value={profile.companyName} onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))} />
-        </div>
+        <Field
+          label="Company name *"
+          value={profile.companyName}
+          onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
+        />
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Phone *</div>
-          <input style={input} value={profile.phone} onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))} />
-        </div>
+        <Field
+          label="Phone *"
+          value={profile.phone}
+          onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))}
+        />
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Email *</div>
-          <input style={input} value={profile.email} onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))} />
-        </div>
+        <Field
+          label="Email *"
+          value={profile.email}
+          onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
+        />
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Address *</div>
-          <input style={input} value={profile.address} onChange={(e) => setProfile((p) => ({ ...p, address: e.target.value }))} />
-        </div>
+        <Field
+          label="Address *"
+          value={profile.address}
+          onChange={(e) => setProfile((p) => ({ ...p, address: e.target.value }))}
+        />
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Logo</div>
+        <div className="pe-field">
+          <div className="pe-field-label">Logo</div>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <input
+              className="pe-input"
               type="file"
               accept="image/*"
               onChange={async (e) => {
@@ -345,43 +340,46 @@ export default function CompanyProfileScreen() {
                 style={{ width: 64, height: 64, borderRadius: 14, objectFit: "contain", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)", padding: 6 }}
               />
             ) : (
-              <div style={{ fontSize: 12, opacity: 0.72 }}>No logo uploaded</div>
+              <div className="pe-field-helper">No logo uploaded</div>
             )}
           </div>
         </div>
 
         <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={label}>ROC</div>
-            <input style={input} value={profile.roc} onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))} />
-          </div>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={label}>ATTN</div>
-            <input style={input} value={profile.attn} onChange={(e) => setProfile((p) => ({ ...p, attn: e.target.value }))} />
-          </div>
-        </div>
-
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={label}>Website</div>
-            <input style={input} value={profile.website} onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))} />
-          </div>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={label}>EIN</div>
-            <input style={input} value={profile.ein} onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))} />
-          </div>
-        </div>
-
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={label}>Payment terms / notes</div>
-          <textarea
-            style={{ ...input, minHeight: 110, resize: "vertical" }}
-            value={profile.terms}
-            onChange={(e) => setProfile((p) => ({ ...p, terms: e.target.value }))}
+          <Field
+            label="ROC"
+            value={profile.roc}
+            onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))}
+          />
+          <Field
+            label="ATTN"
+            value={profile.attn}
+            onChange={(e) => setProfile((p) => ({ ...p, attn: e.target.value }))}
           />
         </div>
 
-        <div style={{ fontSize: 12, opacity: 0.78 }}>
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+          <Field
+            label="Website"
+            value={profile.website}
+            onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
+          />
+          <Field
+            label="EIN"
+            value={profile.ein}
+            onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
+          />
+        </div>
+
+        <Field
+          as="textarea"
+          label="Payment terms / notes"
+          value={profile.terms}
+          onChange={(e) => setProfile((p) => ({ ...p, terms: e.target.value }))}
+          style={{ minHeight: 110, resize: "vertical" }}
+        />
+
+        <div className="pe-field-helper">
           Storage key: <span style={{ opacity: 0.95, fontWeight: 800 }}>{PROFILE_KEY}</span>
           {savedAt ? (
             <span style={{ display: "block", marginTop: 6, opacity: 0.82 }}>

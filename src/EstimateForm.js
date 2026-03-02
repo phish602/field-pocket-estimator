@@ -1,20 +1,93 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./EstimateForm.css";
 
-import { BUILD_TAG } from "./estimator/defaultState";
+import { BUILD_TAG, STORAGE_KEY } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
-import { buildPdf } from "./estimator/pdf";
+import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
+import PdfPromptModal from "./components/estimator/PdfPromptModal";
+import SectionMaterials from "./components/estimator/SectionMaterials";
+import { exportPdf } from "./pdf";
+import {
+  createMoneyFormatter,
+  formatDateMMDDYYYY,
+  normalizeHoursInput,
+  normalizeMoneyInput,
+  normalizeMultiplierInput,
+  normalizePercentInput,
+} from "./utils/format";
+import { sanitizePdfToken } from "./utils/sanitize";
+import { isCompanyProfileComplete } from "./utils/guards";
+import { loadCompanyProfile } from "./utils/storage";
+import { STORAGE_KEYS } from "./constants/storageKeys";
 
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const money = createMoneyFormatter("en-US", "USD");
+const LANG_KEY = STORAGE_KEYS.LANG;
+const I18N = {
+  en: {
+    standard: "Standard (1.00×)",
+    difficultAccess: "Difficult access (1.10×)",
+    highRisk: "High-risk / PPE (1.20×)",
+    offHours: "Off-hours / Night (1.25×)",
+    customEllipsis: "Custom…",
+    estimateTotal: "Estimate Total",
+    laborLines: "labor line(s)",
+    laborers: "laborer(s)",
+    complexity: "× complexity",
+    risk: "% risk",
+    materialsMeta: "% materials",
+    materials: "Materials",
+    materialsMode: "Materials mode",
+    materialsModeBlanket: "Blanket",
+    materialsModeItemized: "Itemized",
+    materialsCost: "Materials cost",
+    markupPct: "Markup %",
+    addMaterialItem: "+ Add Item",
+    materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
+    materialDesc: "Description",
+    materialQty: "Qty",
+    materialCostInternal: "Cost (internal)",
+    materialCharge: "Price (each)",
+    materialsItemizedTotal: "Itemized materials total",
+  },
+  es: {
+    standard: "Estándar (1.00×)",
+    difficultAccess: "Acceso difícil (1.10×)",
+    highRisk: "Alto riesgo / PPE (1.20×)",
+    offHours: "Fuera de horario / Noche (1.25×)",
+    customEllipsis: "Personalizado…",
+    estimateTotal: "Total estimado",
+    laborLines: "línea(s) de mano de obra",
+    laborers: "trabajador(es)",
+    complexity: "× complejidad",
+    risk: "% riesgo",
+    materialsMeta: "% materiales",
+    materials: "Materiales",
+    materialsMode: "Modo de materiales",
+    materialsModeBlanket: "Global",
+    materialsModeItemized: "Detallado",
+    materialsCost: "Costo de materiales",
+    markupPct: "Margen %",
+    addMaterialItem: "+ Agregar Partida",
+    materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
+    materialDesc: "Descripción",
+    materialQty: "Cant.",
+    materialCostInternal: "Costo (interno)",
+    materialCharge: "Precio (c/u)",
+    materialsItemizedTotal: "Total de materiales por partida",
+  },
+};
 
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
-const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
-const CUSTOMERS_KEY = "estipaid-customers-v1";
-const CUSTOMER_RECENTS_KEY = "estipaid-customer-recent-v1";
+const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
+const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
+const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
+const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
+const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 function readSavedCustomers() {
   try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
 }
@@ -48,6 +121,28 @@ function flattenCustomerForEstimator(c) {
   const svc = c.resService || {};
   const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
   return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
+}
+
+function formatAddressObject(a) {
+  const street = String(a?.street || "").trim();
+  const city = String(a?.city || "").trim();
+  const state = String(a?.state || "").trim();
+  const zip = String(a?.zip || "").trim();
+  const line2 = [city, state].filter(Boolean).join(", ");
+  const line2Full = [line2, zip].filter(Boolean).join(" ");
+  return [street, line2Full].filter(Boolean).join(", ");
+}
+
+function normalizeAddressText(s) {
+  return String(s || "").replace(/\s*\n+\s*/g, ", ").replace(/\s{2,}/g, " ").trim();
+}
+
+function triggerHaptic() {
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      navigator.vibrate(10);
+    }
+  } catch {}
 }
 
 // Labor role presets (value = key, display = label)
@@ -252,6 +347,43 @@ Optional Add-Ons (if needed):
   },
 ];
 
+function extractTradeInsertBlocksForPdf(scopeText, explicitTradeText) {
+  const fromScope = String(scopeText || "");
+  const unique = new Set();
+  const out = [];
+  const push = (text) => {
+    const val = String(text || "").trim();
+    if (!val || unique.has(val)) return;
+    unique.add(val);
+    out.push(val);
+  };
+
+  // Known curated trade inserts
+  for (const item of SCOPE_TRADE_INSERTS) {
+    const txt = String(item?.text || "").trim();
+    if (txt && fromScope.includes(txt)) push(txt);
+  }
+
+  // Manual "Trade Insert:" blocks
+  const tradeBlockPattern = /(Trade Insert:[\s\S]*?)(?=\n{2,}Trade Insert:|\s*$)/gi;
+  const manualBlocks = fromScope.match(tradeBlockPattern) || [];
+  manualBlocks.forEach((block) => push(block));
+
+  // Explicit tracked insert
+  push(explicitTradeText);
+  return out;
+}
+
+function stripTradeInsertBlocksFromScope(scopeText, tradeBlocks) {
+  let next = String(scopeText || "");
+  for (const block of tradeBlocks || []) {
+    const txt = String(block || "").trim();
+    if (!txt) continue;
+    next = next.replace(txt, "\n\n");
+  }
+  return next.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // Additional notes quick-insert snippets
 const ADDITIONAL_NOTES_SNIPPETS = [
   {
@@ -306,58 +438,104 @@ const ADDITIONAL_NOTES_SNIPPETS = [
   },
 ];
 
+const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
+
 const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
+const SHELL_DOCK_HEIGHT = 78;
+const ACTION_BAR_MIN_HEIGHT = 72;
+const ACTION_BAR_GAP = 16;
+const SCOPE_NOTES_MIN_HEIGHT = 170;
+const LABOR_MINUS_HOLD_MS = 550;
+const COLLAPSE_MS = 200;
+const ROW_ENTER_MS = 220;
+const TOTAL_PULSE_MS = 140;
+
+function createBlankMaterialItem(idOverride) {
+  return {
+    id: idOverride || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    desc: "",
+    qty: 1,
+    cost: "",
+    unitCostInternal: "",
+    costInternal: "",
+    charge: "",
+    priceEach: "",
+  };
+}
 
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
+  const lang = useMemo(() => {
+    try {
+      const saved = localStorage.getItem(LANG_KEY);
+      return saved === "es" ? "es" : "en";
+    } catch {
+      return "en";
+    }
+  }, []);
+  const t = useMemo(
+    () => (key) => I18N[lang]?.[key] || I18N.en?.[key] || key,
+    [lang]
+  );
 
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
+  const scopeNotesRef = useRef(null);
+  const actionBarRef = useRef(null);
+  const didNormalizeLaborRef = useRef(false);
+  const laborHoldTimerRef = useRef(null);
+  const laborHoldFiredRef = useRef(null);
+  const rowEnterTimerRef = useRef([]);
+  const totalPulseTimerRef = useRef({ labor: null, materials: null, estimate: null });
+  const previousTotalsRef = useRef(null);
 
   const hook = typeof useEstimatorStateNamed === "function" ? useEstimatorStateNamed : useEstimatorState;
 
   const {
     state,
     patch,
-    addLaborLine,
     dupLaborLine,
     removeLaborLine,
     updateLaborLine,
-    addMaterialItem,
-    dupMaterialItem,
-    removeMaterialItem,
-    updateMaterialItem,
     clearAll,
     saveNow,
   } = hook();
+  const scopeNotes = String(state?.scopeNotes || "");
 
   const [searchCustomerText, setSearchCustomerText] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(null);
+  const [dropdownHoverKey, setDropdownHoverKey] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
+  const [actionBarHeight, setActionBarHeight] = useState(ACTION_BAR_MIN_HEIGHT);
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
+  const [newLaborLineIds, setNewLaborLineIds] = useState({});
+  const [newMaterialItemIds, setNewMaterialItemIds] = useState({});
+  const [animateLaborBaseTotal, setAnimateLaborBaseTotal] = useState(false);
+  const [animateMaterialsTotal, setAnimateMaterialsTotal] = useState(false);
+  const [animateEstimateTotal, setAnimateEstimateTotal] = useState(false);
+  const [laborOpen, setLaborOpen] = useState(true);
+  const [materialsOpen, setMaterialsOpen] = useState(true);
+  const [notesOpen, setNotesOpen] = useState(true);
+  const [pdfPromptOpen, setPdfPromptOpen] = useState(false);
+  const [multiplierMode, setMultiplierMode] = useState(() => {
+    const m = Number(state?.labor?.multiplier);
+    if (m === 1 || m === 1.1 || m === 1.2 || m === 1.25) return "preset";
+    return "custom";
+  });
 
-  // Customer-first: always top + first focus
+  // Always load Estimator at absolute top
   useEffect(() => {
     try {
-      if (customerTopRef.current?.scrollIntoView) {
-        customerTopRef.current.scrollIntoView({ behavior: "auto", block: "start" });
-      } else if (typeof window !== "undefined") {
-        window.scrollTo(0, 0);
+      const scrollHost = customerTopRef.current?.closest?.(".pe-content");
+      if (scrollHost?.scrollTo) {
+        scrollHost.scrollTo({ top: 0, behavior: "auto" });
+      } else if (scrollHost) {
+        scrollHost.scrollTop = 0;
       }
-    } catch {}
-
-    try {
-      const t = setTimeout(() => {
-        try {
-          customerNameRef.current?.focus?.({ preventScroll: true });
-        } catch {
-          try {
-            customerNameRef.current?.focus?.();
-          } catch {}
-        }
-      }, 0);
-      return () => clearTimeout(t);
+      if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "auto" });
     } catch {}
   }, []);
 
@@ -365,6 +543,23 @@ export default function EstimateForm(props) {
     try {
       console.log("Loaded EstimateForm BUILD:", BUILD_TAG);
     } catch {}
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (laborHoldTimerRef.current) {
+        clearTimeout(laborHoldTimerRef.current);
+        laborHoldTimerRef.current = null;
+      }
+      const rowTimers = Array.isArray(rowEnterTimerRef.current) ? rowEnterTimerRef.current : [];
+      rowTimers.forEach((t) => t && clearTimeout(t));
+      rowEnterTimerRef.current = [];
+      const pulseTimers = totalPulseTimerRef.current || {};
+      Object.keys(pulseTimers).forEach((k) => {
+        if (pulseTimers[k]) clearTimeout(pulseTimers[k]);
+      });
+      totalPulseTimerRef.current = { labor: null, materials: null, estimate: null };
+    };
   }, []);
 
   // Customer-use hydration: populate fields when a customer is selected from CustomersScreen
@@ -377,10 +572,17 @@ export default function EstimateForm(props) {
         localStorage.removeItem(PENDING_CUSTOMER_USE_KEY);
         const c = payload?.customer;
         if (!c || typeof c !== "object") return;
+        const sid = String(payload?.id || c?.id || "");
+        if (sid) setSelectedCustomerId(sid);
+        setSelectedCustomerProfile(c);
+        const display = customerDisplayName(c) || String(c.name || "").trim();
+        if (display) setSearchCustomerText(display);
         if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
         if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
         if (String(c.phone || "").trim()) patch("customer.phone", String(c.phone || "").trim());
         if (String(c.email || "").trim()) patch("customer.email", String(c.email || "").trim());
+        patch("customer.netTermsType", String(c.netTermsType || "").trim());
+        patch("customer.netTermsDays", c.netTermsDays === null || c.netTermsDays === undefined ? "" : String(c.netTermsDays));
         if (String(c.address || "").trim()) patch("customer.address", String(c.address || "").trim());
         const billingAddr = String(c.billingAddress || "").trim();
         if (billingAddr) {
@@ -407,6 +609,79 @@ export default function EstimateForm(props) {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  // Allow shell-level navigation to force a draft save before tab switches.
+  useEffect(() => {
+    const onDraftSaveNow = () => {
+      try { saveNow?.(); } catch {}
+    };
+    window.addEventListener("estipaid:draft-save-now", onDraftSaveNow);
+    return () => window.removeEventListener("estipaid:draft-save-now", onDraftSaveNow);
+  }, [saveNow]);
+
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const updateDropdownPosition = () => {
+      const rect = customerNameRef.current?.getBoundingClientRect?.();
+      if (!rect) return;
+      setDropdownRect({ top: rect.bottom, left: rect.left, width: rect.width });
+    };
+    updateDropdownPosition();
+    window.addEventListener("resize", updateDropdownPosition);
+    window.addEventListener("scroll", updateDropdownPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateDropdownPosition);
+      window.removeEventListener("scroll", updateDropdownPosition, true);
+    };
+  }, [dropdownOpen]);
+
+  useEffect(() => {
+    if (dropdownOpen) return;
+    setDropdownHoverKey("");
+  }, [dropdownOpen]);
+
+  useEffect(() => {
+    const updateActionBarHeight = () => {
+      const h = actionBarRef.current?.getBoundingClientRect?.().height;
+      if (!h) return;
+      const next = Math.max(ACTION_BAR_MIN_HEIGHT, Math.ceil(h));
+      setActionBarHeight((prev) => (prev === next ? prev : next));
+    };
+    updateActionBarHeight();
+    window.addEventListener("resize", updateActionBarHeight);
+    return () => window.removeEventListener("resize", updateActionBarHeight);
+  }, []);
+
+  function autoResizeScopeNotes(el) {
+    if (!el) return;
+    el.style.boxSizing = "border-box";
+    el.style.resize = "none";
+    el.style.height = "0px";
+    const raw = Number(el.scrollHeight) || SCOPE_NOTES_MIN_HEIGHT;
+    const next = Math.max(SCOPE_NOTES_MIN_HEIGHT, raw);
+    el.style.height = `${next}px`;
+    el.style.overflowY = "hidden";
+  }
+
+  useLayoutEffect(() => {
+    if (!notesOpen) return;
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeScopeNotes(scopeNotesRef.current))
+      : null;
+    if (raf === null) autoResizeScopeNotes(scopeNotesRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [notesOpen, scopeNotes]);
+
+  function handleClearScopeNotes() {
+    if (!scopeNotes.trim()) return;
+    const ok = window.confirm("Unsaved notes will be lost. Clear notes?");
+    if (!ok) return;
+    patch("scopeNotes", "");
+  }
+
   const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
   const recentCustomers = useMemo(
     () => recentCustomerIds.map((id) => allCustomers.find((c) => String(c.id) === id)).filter(Boolean),
@@ -423,21 +698,364 @@ export default function EstimateForm(props) {
       return name.includes(q) || company.includes(q) || email.includes(q) || phone.includes(q);
     }).slice(0, MAX_SEARCH_RESULTS);
   }, [allCustomers, searchCustomerText]);
+  const dropdownCustomers = searchCustomerText.trim() ? filteredCustomers : recentCustomers;
+  const selectedProfile = useMemo(() => {
+    if (!selectedCustomerId || !selectedCustomerProfile) return null;
+    const c = selectedCustomerProfile;
+    const type = String(c?.type || (c?.companyName ? "commercial" : "residential")).toLowerCase() === "commercial" ? "commercial" : "residential";
+    const displayName = customerDisplayName(c) || String(c?.name || "").trim();
+    const fullName = String(c?.fullName || c?.contactName || c?.name || "").trim();
+    const companyName = String(c?.companyName || "").trim();
+    const phone = String(c?.comPhone || c?.resPhone || c?.phone || "").trim();
+    const email = String(c?.comEmail || c?.resEmail || c?.email || "").trim();
+    const billingFromObj = type === "commercial"
+      ? formatAddressObject(c?.billSameAsJob ? (c?.jobsite || {}) : (c?.billing || {}))
+      : formatAddressObject(c?.resBillingSame ? (c?.resService || {}) : (c?.resBilling || {}));
+    const projectFromObj = type === "commercial" ? formatAddressObject(c?.jobsite || {}) : formatAddressObject(c?.resService || {});
+    const billingAddress = billingFromObj || normalizeAddressText(c?.billingAddress || "");
+    const projectAddress = projectFromObj || normalizeAddressText(c?.address || "");
+    const notes = String(c?.notes || c?.note || c?.customerNotes || "").trim();
+    const showProjectAddress = !!projectAddress && projectAddress !== billingAddress;
+    const netTermsLabel = getNetTermsLabel(c);
+    const netTermsDays = getNetTermsDays(c);
+    return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays };
+  }, [selectedCustomerId, selectedCustomerProfile]);
+  const hasSelectedNetTerms = useMemo(() => getNetTermsDays(selectedCustomerProfile) !== null, [selectedCustomerProfile]);
+  const projectLocationSame = state?.customer?.projectSameAsCustomer !== false;
+  const manualProjectStreet = String(state?.customer?.projectAddress || "").trim();
+  const manualProjectLine2 = String(state?.job?.location || "").trim();
+  const manualProjectCity = String(state?.customer?.city || "").trim();
+  const manualProjectState = String(state?.customer?.state || "").trim();
+  const manualProjectZip = String(state?.customer?.zip || "").trim();
+  const manualProjectAddress = useMemo(() => {
+    const cityState = [manualProjectCity, manualProjectState].filter(Boolean).join(", ");
+    const cityStateZip = [cityState, manualProjectZip].filter(Boolean).join(" ");
+    return [manualProjectStreet, manualProjectLine2, cityStateZip].filter(Boolean).join("\n");
+  }, [manualProjectCity, manualProjectLine2, manualProjectState, manualProjectStreet, manualProjectZip]);
+  const resolvedProjectAddress = projectLocationSame
+    ? String(state?.customer?.address || "").trim()
+    : manualProjectAddress;
+
+  useEffect(() => {
+    if (!hasSelectedNetTerms) return;
+    const nextDue = computeDueDateFromCustomer(state?.job?.date, selectedCustomerProfile, "");
+    if (!nextDue) return;
+    if (String(state?.job?.due || "") === nextDue) return;
+    patch("job.due", nextDue);
+  }, [hasSelectedNetTerms, patch, selectedCustomerProfile, state?.job?.date, state?.job?.due]);
+
+  useEffect(() => {
+    if (typeof state?.customer?.projectSameAsCustomer === "boolean") return;
+    patch("customer.projectSameAsCustomer", true);
+  }, [patch, state?.customer?.projectSameAsCustomer]);
+
+  // One-time labor normalization:
+  // - ensure a single default line when empty
+  // - collapse legacy duplicate blank defaults (2 -> 1)
+  useEffect(() => {
+    if (didNormalizeLaborRef.current) return;
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const isBlank = (ln) => {
+      if (!ln || typeof ln !== "object") return false;
+      return !String(ln.role || ln.label || "").trim()
+        && !String(ln.hours || "").trim()
+        && !String(ln.rate || "").trim()
+        && !String(ln.trueRateInternal || ln.internalRate || "").trim();
+    };
+    if (lines.length === 0) {
+      patch("labor.lines", [{
+        id: `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        role: "",
+        label: "",
+        hours: "",
+        rate: "",
+        trueRateInternal: "",
+        internalRate: "",
+        qty: 1,
+      }]);
+      didNormalizeLaborRef.current = true;
+      return;
+    }
+    if (lines.length === 2 && isBlank(lines[0]) && isBlank(lines[1])) {
+      patch("labor.lines", [lines[0]]);
+    }
+    didNormalizeLaborRef.current = true;
+  }, [patch, state?.labor?.lines]);
 
   function handleSelectCustomer(id) {
-    if (!id) { setSelectedCustomerId(""); setSearchCustomerText(""); setDropdownOpen(false); try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {} return; }
+    if (id === CREATE_NEW_CUSTOMER_VALUE) {
+      setSelectedCustomerId("");
+      setSearchCustomerText("");
+      setSelectedCustomerProfile(null);
+      setDropdownOpen(false);
+      patch("customer.name", "");
+      patch("customer.attn", "");
+      patch("customer.phone", "");
+      patch("customer.email", "");
+      patch("customer.netTermsType", "");
+      patch("customer.netTermsDays", "");
+      patch("customer.address", "");
+      patch("customer.billingAddress", "");
+      patch("customer.billingDiff", false);
+      try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
+      try {
+        localStorage.setItem(PENDING_CUSTOMER_CREATE_KEY, JSON.stringify({ ts: Date.now(), source: "estimator" }));
+      } catch {}
+      try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {}
+      return;
+    }
+    if (!id) {
+      setSelectedCustomerId("");
+      setSearchCustomerText("");
+      setSelectedCustomerProfile(null);
+      setDropdownOpen(false);
+      patch("customer.netTermsType", "");
+      patch("customer.netTermsDays", "");
+      try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
+      return;
+    }
     const c = allCustomers.find((x) => String(x.id) === id);
     if (!c) return;
     setSelectedCustomerId(id);
     setSearchCustomerText(customerDisplayName(c));
+    const flat = flattenCustomerForEstimator(c);
+    const payloadCustomer = { ...c, ...flat };
+    setSelectedCustomerProfile(payloadCustomer);
     setDropdownOpen(false);
     try {
-      const flat = flattenCustomerForEstimator(c);
-      const payload = { id, customer: { ...c, ...flat }, ts: Date.now() };
+      const payload = { id, customer: payloadCustomer, ts: Date.now() };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
       window.dispatchEvent(new Event("estipaid:customer-use"));
       addToCustomerRecents(id);
     } catch {}
+  }
+
+  function handleMultiplierSelect(value) {
+    if (value === "custom") {
+      setMultiplierMode("custom");
+      return;
+    }
+    setMultiplierMode("preset");
+    patch("labor.multiplier", value);
+  }
+
+  function decrementLaborQty(id) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines.find((x) => String(x?.id) === String(id));
+    const current = Number(ln?.qty);
+    const next = Math.max(1, Number.isFinite(current) && current > 0 ? current - 1 : 1);
+    updateLaborLine(id, { qty: String(next) });
+  }
+
+  function handleAddLaborLine(e) {
+    e?.preventDefault?.();
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines.slice() : [];
+    const newId = `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    lines.push({
+      id: newId,
+      role: "",
+      label: "",
+      hours: "",
+      rate: "",
+      trueRateInternal: "",
+      internalRate: "",
+      qty: 1,
+    });
+    patch("labor.lines", lines);
+    markRowEnter("labor", newId);
+    setLaborOpen(true);
+  }
+
+  function handleLaborPrimary(e) {
+    e?.preventDefault?.();
+    if (!laborOpen) {
+      setLaborOpen(true);
+      return;
+    }
+    handleAddLaborLine();
+  }
+
+  function applyLaborPresetByLabel(i, label) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines[i];
+    if (!ln) return;
+    const preset = LABOR_PRESETS.find((p) => p.label === label);
+    patchLineByIndex(i, {
+      label: label || "",
+      role: preset?.key || "",
+    });
+  }
+
+  function patchLineByIndex(i, patchObj) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines[i];
+    if (!ln) return;
+    updateLaborLine(ln.id, patchObj);
+  }
+
+  function updateLaborLineAt(i, key, value) {
+    if (key === "hours") {
+      patchLineByIndex(i, { hours: value });
+      return;
+    }
+    if (key === "rate") {
+      patchLineByIndex(i, { rate: value });
+      return;
+    }
+    if (key === "internalRate") {
+      patchLineByIndex(i, { trueRateInternal: value, internalRate: value });
+      return;
+    }
+    if (key === "qty") {
+      patchLineByIndex(i, { qty: String(Math.max(1, Number(value) || 1)) });
+      return;
+    }
+    patchLineByIndex(i, { [key]: value });
+  }
+
+  function decrementLaborQtyAt(i) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines[i];
+    if (!ln) return;
+    decrementLaborQty(ln.id);
+  }
+
+  function duplicateLaborLine(i) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines[i];
+    if (!ln) return;
+    const current = Number(ln?.qty);
+    const next = Number.isFinite(current) && current > 0 ? current + 1 : 2;
+    updateLaborLine(ln.id, { qty: String(next) });
+  }
+
+  function removeLaborLineAt(i) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const ln = lines[i];
+    if (!ln) return;
+    removeLaborLine(ln.id);
+  }
+
+  function clearLaborMinusHoldTimer() {
+    if (!laborHoldTimerRef.current) return;
+    clearTimeout(laborHoldTimerRef.current);
+    laborHoldTimerRef.current = null;
+  }
+
+  function startLaborMinusHold(i) {
+    clearLaborMinusHoldTimer();
+    laborHoldFiredRef.current = null;
+    const holdKey = String(laborLines?.[i]?.id ?? i);
+    laborHoldTimerRef.current = setTimeout(() => {
+      laborHoldFiredRef.current = holdKey;
+      removeLaborLineAt(i);
+      laborHoldTimerRef.current = null;
+    }, LABOR_MINUS_HOLD_MS);
+  }
+
+  function handleLaborMinus(i) {
+    const holdKey = String(laborLines?.[i]?.id ?? i);
+    const firedKey = laborHoldFiredRef.current;
+    if (firedKey) {
+      laborHoldFiredRef.current = null;
+      if (firedKey === holdKey) return;
+    }
+    if (!laborLines?.[i]) {
+      return;
+    }
+    const q = Math.max(1, Number(laborLines?.[i]?.qty) || 1);
+    if (q > 1) {
+      updateLaborLineAt(i, "qty", String(q - 1));
+      return;
+    }
+    removeLaborLineAt(i);
+  }
+
+  function markRowEnter(type, id) {
+    const sid = String(id || "");
+    if (!sid) return;
+    if (type === "labor") {
+      setNewLaborLineIds((prev) => ({ ...prev, [sid]: true }));
+    } else {
+      setNewMaterialItemIds((prev) => ({ ...prev, [sid]: true }));
+    }
+    const timer = setTimeout(() => {
+      if (type === "labor") {
+        setNewLaborLineIds((prev) => {
+          if (!prev?.[sid]) return prev;
+          const next = { ...prev };
+          delete next[sid];
+          return next;
+        });
+      } else {
+        setNewMaterialItemIds((prev) => {
+          if (!prev?.[sid]) return prev;
+          const next = { ...prev };
+          delete next[sid];
+          return next;
+        });
+      }
+    }, ROW_ENTER_MS + 40);
+    rowEnterTimerRef.current.push(timer);
+  }
+
+  function triggerTotalPulse(kind) {
+    const timers = totalPulseTimerRef.current || {};
+    if (timers[kind]) clearTimeout(timers[kind]);
+    const setFlag = kind === "labor"
+      ? setAnimateLaborBaseTotal
+      : kind === "materials"
+        ? setAnimateMaterialsTotal
+        : setAnimateEstimateTotal;
+    setFlag(false);
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => setFlag(true));
+    } else {
+      setFlag(true);
+    }
+    timers[kind] = setTimeout(() => {
+      setFlag(false);
+      totalPulseTimerRef.current = { ...totalPulseTimerRef.current, [kind]: null };
+    }, TOTAL_PULSE_MS + 20);
+    totalPulseTimerRef.current = { ...timers };
+  }
+
+  function addMaterialItem() {
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
+    const newItem = createBlankMaterialItem();
+    items.push(newItem);
+    patch("materials.items", items);
+    markRowEnter("materials", newItem.id);
+  }
+
+  function updateMaterialItem(i, key, value) {
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    const curr = { ...(items[i] || {}) };
+    if (key === "qty") {
+      curr.qty = Math.max(1, Number(value) || 1);
+    } else if (key === "cost") {
+      curr.cost = value;
+      curr.unitCostInternal = value;
+      curr.costInternal = value;
+    } else if (key === "charge") {
+      curr.charge = value;
+      curr.priceEach = value;
+    } else {
+      curr[key] = value;
+    }
+    items[i] = curr;
+    patch("materials.items", items);
+  }
+
+  function removeMaterialItem(i) {
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    if (items.length <= 1) {
+      patch("materials.items", [createBlankMaterialItem(items[0]?.id)]);
+      return;
+    }
+    patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
   const computed = useMemo(() => computeTotals(state), [state]);
@@ -451,14 +1069,10 @@ export default function EstimateForm(props) {
     return map;
   }, [computed]);
 
-  const materialChargeById = useMemo(() => {
-    const map = new Map();
-    try {
-      const arr = computed?.materials?.normalized || [];
-      for (const it of arr) map.set(String(it?.id), Number(it?.charge || 0));
-    } catch {}
-    return map;
-  }, [computed]);
+  const itemizedInternalCost = useMemo(() => {
+    const arr = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    return arr.reduce((sum, it) => sum + ((Number(it?.qty) || 0) * (Number(it?.unitCostInternal ?? it?.costInternal) || 0)), 0);
+  }, [state?.materials?.items]);
 
   const lastSavedLabel = useMemo(() => {
     const ts = Number(state?.meta?.lastSavedAt || 0);
@@ -473,62 +1087,317 @@ export default function EstimateForm(props) {
   const onClearAll = () => {
     if (!window.confirm("Clear everything and start fresh?")) return;
     clearAll();
+    setMultiplierMode("preset");
   };
 
   const onSaveNow = () => {
+    const prevSavedAt = Number(state?.meta?.lastSavedAt || 0);
     try {
       saveNow?.();
+    } catch {
+      return;
+    }
+    let persistedSavedAt = prevSavedAt;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      persistedSavedAt = Number(parsed?.meta?.lastSavedAt || 0);
+    } catch {}
+    if (persistedSavedAt <= prevSavedAt) return;
+    try {
+      window.dispatchEvent(new Event(uiDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
     } catch {}
   };
 
-  const onPdf = () => {
-    try {
-      const doc = buildPdf(state, computed);
-      const stamp = (() => {
+  const exportPDF = async (mode = "download") => {
+    triggerHaptic();
+
+    const companyProfile = loadCompanyProfile();
+    if (!isCompanyProfileComplete(companyProfile)) {
+      const goProfile = window.confirm("Company profile is incomplete. Open Company Profile?");
+      if (goProfile) {
         try {
-          const d = new Date();
-          const yyyy = d.getFullYear();
-          const mm = String(d.getMonth() + 1).padStart(2, "0");
-          const dd = String(d.getDate()).padStart(2, "0");
-          return `${yyyy}${mm}${dd}`;
-        } catch {
-          return "export";
+          window.dispatchEvent(new Event("estipaid:navigate-company-profile"));
+        } catch {}
+        try {
+          window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "openCompanyProfile" } }));
+        } catch {}
+      }
+      return;
+    }
+
+    try {
+      const docNoRaw = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const documentNumber = sanitizePdfToken(docNoRaw, "Draft");
+      const filename = `${uiDocType === "invoice" ? "Invoice" : "Estimate"}-${documentNumber}.pdf`;
+
+      const customerName = String(state?.customer?.name || "").trim() || "-";
+      const customerAttn = String(state?.customer?.attn || "").trim();
+      const customerAddress = String(state?.customer?.address || "").trim();
+      const billingAddress = state?.customer?.billingDiff
+        ? String(state?.customer?.billingAddress || "").trim()
+        : customerAddress;
+      const resolvedProject = String(resolvedProjectAddress || "").trim();
+      const projectName = String(state?.customer?.projectName || "").trim();
+      const projectNumber = String(state?.customer?.projectNumber || "").trim();
+      const poNumber = String(state?.job?.poNumber || "").trim();
+      const docDate = String(state?.job?.date || "").trim();
+      const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
+      const tradeRawForPdf = tradeBlocks.join("\n\n");
+      const scopeWithoutTrade = stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks);
+
+      const laborRows = (computed?.labor?.normalized || []).map((ln) => {
+        const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
+        const label = String(ln?.label || roleLabel || "").trim() || "-";
+        const qty = Math.max(1, Number(ln?.qty) || 1);
+        const hours = Number(ln?.hours) || 0;
+        const rate = Number(ln?.rate) || 0;
+        const lineTotal = Number(ln?.total || qty * hours * rate);
+        return [label, String(qty), String(hours || 0), money.format(rate), money.format(lineTotal)];
+      });
+
+      const materialsRows = (() => {
+        if (materialsMode === "itemized") {
+          const rows = (materialItems || []).map((it) => {
+            const desc = String(it?.desc || "").trim() || "-";
+            const qty = Math.max(1, Number(it?.qty) || 1);
+            const each = Number(it?.charge ?? it?.priceEach) || 0;
+            const lineTotal = qty * each;
+            return [desc, String(qty), money.format(each), money.format(lineTotal)];
+          });
+          return rows.length ? rows : [["Materials", "1", money.format(0), money.format(0)]];
         }
+        return [[
+          "Blanket Materials",
+          "1",
+          money.format(Number(materialsBilled) || 0),
+          money.format(Number(materialsBilled) || 0),
+        ]];
       })();
 
-      const docNo = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
-      const safeDocNo = docNo ? `_${docNo.replace(/[^\w\-]+/g, "_").slice(0, 32)}` : "";
-      doc.save(`EstiPaid_${state?.ui?.docType || "estimate"}_${stamp}${safeDocNo}.pdf`);
-    } catch {
+      const summarySubtotal = Number(totalRevenue) - Number(hazardFee || 0) - Number(riskFee || 0);
+      const summaryRows = [
+        ["Labor", money.format(Number(adjustedLabor) || 0)],
+        ["Materials", money.format(Number(materialsBilled) || 0)],
+        ["Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
+        [`Hazard (${Number(hazardPctNormalized) || 0}%)`, money.format(Number(hazardFee) || 0)],
+        [`Risk (${Number(riskPctNormalized) || 0}%)`, money.format(Number(riskFee) || 0)],
+        ["Grand Total", money.format(Number(totalRevenue) || 0)],
+      ];
+      await exportPdf({
+        docType: uiDocType,
+        filename,
+        documentNumber,
+        company: companyProfile,
+        customer: {
+          name: customerName,
+          attn: customerAttn,
+          address: customerAddress,
+          billingAddress,
+        },
+        job: {
+          date: docDate,
+          dateDisplay: formatDateMMDDYYYY(docDate) || "-",
+          projectName,
+          projectNumber,
+          projectAddress: resolvedProject || customerAddress || "-",
+          poNumber,
+        },
+        jobInfoRows: [
+          ["Document #", documentNumber],
+          ["Date", formatDateMMDDYYYY(docDate) || "-"],
+          ["Project", projectName || "-"],
+          ["Project #", projectNumber || "-"],
+          ["Project Address", resolvedProject || customerAddress || "-"],
+          ["PO #", poNumber || "-"],
+        ],
+        tradeInsertText: tradeRawForPdf,
+        laborRows,
+        materialRows: materialsRows,
+        summaryRows,
+        scopeNotes: scopeWithoutTrade,
+        additionalNotes: String(state?.additionalNotes || "").trim(),
+      }, mode);
+    } catch (err) {
+      try { console.error(err); } catch {}
       window.alert("PDF export failed.");
     }
   };
 
+  const onPdf = () => {
+    triggerHaptic();
+    setPdfPromptOpen(true);
+  };
+
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
+  const setMaterialsMode = (mode) => {
+    const nextMode = mode === "itemized" ? "itemized" : "blanket";
+    patch("ui.materialsMode", nextMode);
+    if (nextMode === "itemized") {
+      const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+      if (items.length === 0) {
+        patch("materials.items", [createBlankMaterialItem()]);
+      }
+    }
+  };
+  const materialsCost = String(state?.materials?.blanketCost ?? "");
+  const setMaterialsCost = (v) => patch("materials.blanketCost", v);
+  const materialsMarkupPct = String(state?.materials?.markupPct ?? "");
+  const setMaterialsMarkupPct = (v) => patch("materials.markupPct", v);
+  const materialItems = useMemo(() => {
+    const arr = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    return arr.map((it) => ({
+      ...it,
+      qty: Math.max(1, Number(it?.qty) || 1),
+      cost: it?.cost ?? it?.unitCostInternal ?? it?.costInternal ?? "",
+      charge: it?.charge ?? it?.priceEach ?? "",
+    }));
+  }, [state?.materials?.items]);
+  useEffect(() => {
+    if (materialsMode !== "itemized") return;
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    if (items.length > 0) return;
+    patch("materials.items", [createBlankMaterialItem()]);
+  }, [materialsMode, patch, state?.materials?.items]);
+  const laborLines = useMemo(() => {
+    const arr = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    return arr.map((ln) => {
+      const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
+      return {
+        ...ln,
+        label: String(ln?.label || roleLabel || ""),
+      };
+    });
+  }, [state?.labor?.lines]);
+  const laborLineCount = laborLines.length;
+  const totalLaborers = Array.isArray(state?.labor?.lines)
+    ? state.labor.lines.reduce((sum, ln) => {
+        const n = Number(ln?.laborers);
+        return sum + (Number.isFinite(n) && n > 0 ? n : 1);
+      }, 0)
+    : 0;
+  const itemizedMaterialsTotal = useMemo(() => {
+    return (materialItems || []).reduce((sum, it) => {
+      const qtyVal = Math.max(1, Number(it?.qty) || 1);
+      const eachVal = Number(it?.charge) || 0;
+      return sum + (qtyVal * eachVal);
+    }, 0);
+  }, [materialItems]);
+  const itemizedMaterialsCount = useMemo(() => (materialItems || []).length, [materialItems]);
+  const normalizedMarkupPct = Number(normalizePercentInput(materialsMarkupPct));
+  const materialsBilled = materialsMode === "itemized"
+    ? itemizedMaterialsTotal
+    : Number(computed?.materials?.totalCharge || 0);
+  const displayedMaterialsTotal = materialsMode === "itemized" ? itemizedMaterialsTotal : materialsBilled;
+  const fallbackMaterialRevenue = materialsMode === "itemized"
+    ? itemizedMaterialsTotal
+    : materialsBilled;
+  const fallbackMaterialCost = materialsMode === "itemized"
+    ? itemizedInternalCost
+    : (Number(state?.materials?.blanketInternalCost) || 0);
+  const fallbackLaborRevenue = Number(computed?.laborAfterAdjustments ?? computed?.labor?.subtotal ?? 0);
+  const fallbackLaborCost = Number(computed?.labor?.internalCost || computed?.labor?.cost || 0);
+  const totalRevenue = Number((computed?.totalRevenue ?? (fallbackLaborRevenue + fallbackMaterialRevenue)) || 0);
+  const totalCost = Number((computed?.totalCost ?? (fallbackLaborCost + fallbackMaterialCost)) || 0);
+  const totalGrossProfit = Number(computed?.grossProfit || 0);
+  const grossMarginPct = Number(computed?.grossMarginPct || 0);
+  const grossMarginLabel = totalRevenue > 0 ? `${(grossMarginPct * 100).toFixed(1)}%` : "—";
+  const laborBase = Number(computed?.labor?.subtotal || 0);
+  const currentMultiplier = Number(computed?.multiplier ?? state?.labor?.multiplier);
+  const laborMultiplier = Number.isFinite(currentMultiplier) && currentMultiplier > 0 ? currentMultiplier : 1;
+  const hazardPctNormalized = Number(normalizePercentInput(computed?.hazardPct ?? state?.labor?.hazardPct));
+  const riskPctNormalized = Number(normalizePercentInput(computed?.riskPct ?? state?.labor?.riskPct));
+  const hazardEnabled = Number.isFinite(hazardPctNormalized) && hazardPctNormalized > 0;
+  const riskEnabled = Number.isFinite(riskPctNormalized) && riskPctNormalized > 0;
+  const laborAdjusted = Number(computed?.laborAfterMultiplier ?? (laborBase * laborMultiplier));
+  const adjustedLabor = laborAdjusted;
+  const hazardFee = Number(computed?.hazardAmount ?? (hazardEnabled ? (adjustedLabor * (hazardPctNormalized / 100)) : 0));
+  const riskFee = Number(computed?.riskAmount ?? (riskEnabled ? (adjustedLabor * (riskPctNormalized / 100)) : 0));
+  const laborLineLabel = laborLineCount === 1 ? "line" : "lines";
+  const laborCollapsedMeta = `${laborLineCount} ${laborLineLabel} • ${money.format(laborBase)}`;
+  const itemizedCollapsedSummary = `${
+    itemizedMaterialsCount === 1 ? "1 item" : `${itemizedMaterialsCount} items`
+  } • Total ${money.format(itemizedMaterialsTotal)}`;
+  const multiplierSelectValue = multiplierMode === "custom"
+    ? "custom"
+    : (laborMultiplier === 1.1
+      ? "1.1"
+      : laborMultiplier === 1.2
+        ? "1.2"
+        : laborMultiplier === 1.25
+          ? "1.25"
+          : "1");
+  const totalTallyLine = `${laborLineCount} ${t("laborLines")}`
+    + (totalLaborers !== laborLineCount ? ` • ${totalLaborers} ${t("laborers")}` : "")
+    + (laborMultiplier !== 1 ? ` • ${laborMultiplier}${t("complexity")}` : "")
+    + (hazardEnabled ? ` • ${lang === "es" ? "Peligro" : "Hazard"} ${hazardPctNormalized}%` : "")
+    + (riskEnabled ? ` • ${lang === "es" ? "Riesgo" : "Risk"} ${riskPctNormalized}%` : "")
+    + (materialsMode === "blanket" && Number.isFinite(normalizedMarkupPct) ? ` • ${normalizedMarkupPct}${t("materialsMeta")}` : "")
+    + (materialsMode === "itemized"
+      ? ` • ${itemizedMaterialsCount}x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
+      : " • Blanket materials");
+
+  useEffect(() => {
+    const prev = previousTotalsRef.current;
+    if (!prev) {
+      previousTotalsRef.current = {
+        laborBase,
+        materials: displayedMaterialsTotal,
+        estimate: totalRevenue,
+      };
+      return;
+    }
+    if (prev.laborBase !== laborBase) triggerTotalPulse("labor");
+    if (prev.materials !== displayedMaterialsTotal) triggerTotalPulse("materials");
+    if (prev.estimate !== totalRevenue) triggerTotalPulse("estimate");
+    previousTotalsRef.current = {
+      laborBase,
+      materials: displayedMaterialsTotal,
+      estimate: totalRevenue,
+    };
+  }, [displayedMaterialsTotal, laborBase, totalRevenue]);
+
+  const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
+  const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
+  const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
 
   return (
-    <div className="pe-wrap" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: embeddedInShell ? 110 : undefined }}>
-      {/* Header (no weird middle card) */}
-      <div className="pe-header">
-        <div>
-          <div className="pe-title">Estimator</div>
-          <div className="pe-subtitle">{uiDocType === "invoice" ? "Invoice Builder" : "Estimate Builder"}</div>
-        </div>
-
-        <div className="pe-actions">
-          <button className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"} type="button" onClick={() => patch("ui.docType", "estimate")}>
-            Estimate
-          </button>
-          <button className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"} type="button" onClick={() => patch("ui.docType", "invoice")}>
-            Invoice
-          </button>
+    <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
+      {/* Builder bar */}
+      <div style={styles.builderHeroWrap}>
+        <div className="pe-builder-bar">
+          <div className="pe-title pe-builder-title">
+            {uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder"}
+          </div>
+          <div className="pe-builder-mode" style={styles.builderModeSegmented}>
+            <button
+              type="button"
+              className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+              onClick={() => patch("ui.docType", "estimate")}
+              style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+            >
+              Estimate
+            </button>
+            <button
+              type="button"
+              className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+              onClick={() => patch("ui.docType", "invoice")}
+              style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+            >
+              Invoice
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Customer first card */}
-      <div className="pe-card" ref={customerTopRef}>
-        <div className="pe-section-title">Customer</div>
+      <div ref={customerTopRef} className="pe-estimator-shell">
+        {/* Customer */}
+        <section className="pe-card" style={styles.sectionBlock}>
+        <div style={styles.sectionTitleStack}>
+          <div className="pe-section-title" style={styles.sectionTitleText}>Customer</div>
+          <div style={styles.sectionAccentLine} />
+        </div>
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -543,21 +1412,41 @@ export default function EstimateForm(props) {
               onBlur={() => setTimeout(() => setDropdownOpen(false), DROPDOWN_BLUR_DELAY)}
               onChange={(e) => { setSearchCustomerText(e.target.value); setDropdownOpen(true); }}
             />
-            {dropdownOpen && (
-              <div style={styles.dropdown}>
-                {(searchCustomerText.trim() ? filteredCustomers : recentCustomers).map((c) => (
+            {dropdownOpen && dropdownRect.width > 0 && typeof document !== "undefined" && createPortal(
+              <div style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
+                <div
+                  key={CREATE_NEW_CUSTOMER_VALUE}
+                  style={{
+                    ...styles.dropdownOption,
+                    ...styles.dropdownCreateOption,
+                    ...(dropdownHoverKey === CREATE_NEW_CUSTOMER_VALUE ? styles.dropdownOptionHover : null),
+                  }}
+                  onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(CREATE_NEW_CUSTOMER_VALUE); }}
+                  onMouseEnter={() => setDropdownHoverKey(CREATE_NEW_CUSTOMER_VALUE)}
+                  onMouseLeave={() => setDropdownHoverKey("")}
+                >
+                  + Create New Customer
+                </div>
+                {dropdownCustomers.map((c) => (
                   <div
                     key={String(c.id)}
-                    style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--pe-border, #333)" }}
+                    style={{
+                      ...styles.dropdownOption,
+                      ...(String(selectedCustomerId || "") === String(c.id) ? styles.dropdownOptionSelected : null),
+                      ...(dropdownHoverKey === String(c.id) ? styles.dropdownOptionHover : null),
+                    }}
                     onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(String(c.id)); }}
+                    onMouseEnter={() => setDropdownHoverKey(String(c.id))}
+                    onMouseLeave={() => setDropdownHoverKey("")}
                   >
                     {customerDisplayName(c)}
                   </div>
                 ))}
-                {(searchCustomerText.trim() ? filteredCustomers : recentCustomers).length === 0 && (
-                  <div style={{ padding: "10px 14px", opacity: 0.6, fontSize: 13 }}>No customers found.</div>
+                {dropdownCustomers.length === 0 && (
+                  <div style={styles.dropdownEmpty}>No customers found.</div>
                 )}
-              </div>
+              </div>,
+              document.body
             )}
           </div>
           <button
@@ -574,211 +1463,642 @@ export default function EstimateForm(props) {
             Edit
           </button>
         </div>
-      </div>
-
-      <div className="pe-card">
-        <div className="pe-section-title">Job Info</div>
-
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>Document #</label>
-            <input className="pe-input" value={state.job.docNumber} onChange={(e) => patch("job.docNumber", e.target.value)} placeholder={uiDocType === "invoice" ? "Invoice #" : "Estimate #"} />
+        <div style={styles.selectedCustomerText}>
+          Selected: {selectedProfile?.displayName ? (
+            <>
+              <span style={{ fontWeight: 800 }}>{selectedProfile.displayName}</span>
+              {selectedProfile.companyName && selectedProfile.companyName !== selectedProfile.displayName ? ` • ${selectedProfile.companyName}` : ""}
+            </>
+          ) : "None"}
+        </div>
+        {selectedCustomerId && selectedProfile && (
+          <div style={styles.customerProfilePanel}>
+            <div style={styles.customerProfileTitle}>Customer Profile</div>
+            <div style={styles.customerProfileGrid}>
+              {selectedProfile.fullName ? (
+                <div style={styles.customerProfileItem}>
+                  <div style={styles.customerProfileLabel}>Full name</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.fullName}</div>
+                </div>
+              ) : null}
+              {selectedProfile.companyName ? (
+                <div style={styles.customerProfileItem}>
+                  <div style={styles.customerProfileLabel}>Company</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.companyName}</div>
+                </div>
+              ) : null}
+              {selectedProfile.phone ? (
+                <div style={styles.customerProfileItem}>
+                  <div style={styles.customerProfileLabel}>Phone</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.phone}</div>
+                </div>
+              ) : null}
+              {selectedProfile.email ? (
+                <div style={styles.customerProfileItem}>
+                  <div style={styles.customerProfileLabel}>Email</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.email}</div>
+                </div>
+              ) : null}
+              {selectedProfile.netTermsLabel ? (
+                <div style={styles.customerProfileItem}>
+                  <div style={styles.customerProfileLabel}>Net terms</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.netTermsLabel}</div>
+                </div>
+              ) : null}
+              {selectedProfile.billingAddress ? (
+                <div style={{ ...styles.customerProfileItem, ...styles.customerProfileItemFull }}>
+                  <div style={styles.customerProfileLabel}>Billing address</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.billingAddress}</div>
+                </div>
+              ) : null}
+              {selectedProfile.showProjectAddress ? (
+                <div style={{ ...styles.customerProfileItem, ...styles.customerProfileItemFull }}>
+                  <div style={styles.customerProfileLabel}>Project address</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.projectAddress}</div>
+                </div>
+              ) : null}
+              {selectedProfile.notes ? (
+                <div style={{ ...styles.customerProfileItem, ...styles.customerProfileItemFull }}>
+                  <div style={styles.customerProfileLabel}>Notes</div>
+                  <div style={styles.customerProfileValue}>{selectedProfile.notes}</div>
+                </div>
+              ) : null}
+            </div>
           </div>
-          <div>
-            <label style={styles.label}>PO Number</label>
-            <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
+        )}
+        </section>
+
+        <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.sectionTitleStack}>
+          <div className="pe-section-title" style={styles.sectionTitleText}>Job Info</div>
+          <div style={styles.sectionAccentLine} />
+        </div>
+
+        <div style={{ ...styles.cardShell, marginTop: 6 }}>
+          <div style={styles.jobInfoContentWrap}>
+            <div className="pe-jobinfo-top-grid">
+              <div>
+                <label style={styles.label}>Project #</label>
+                <input className="pe-input" value={state.customer.projectNumber || ""} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project # (optional)" />
+              </div>
+              <div>
+                <label style={styles.label}>PO number</label>
+                <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
+              </div>
+              <div>
+                <label style={styles.label}>Date</label>
+                <input className="pe-input" type="date" value={state.job.date} onChange={(e) => patch("job.date", e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <label style={styles.label}>Project name</label>
+              <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
+            </div>
+
+            <div style={{ ...styles.projectLocationToggleRow, marginTop: 10 }}>
+              <label style={styles.projectLocationToggleLabel}>
+                <input
+                  type="checkbox"
+                  checked={projectLocationSame}
+                  onChange={(e) => patch("customer.projectSameAsCustomer", !!e.target.checked)}
+                />
+                <span>Project location (use customer address)</span>
+              </label>
+            </div>
+
+            {!projectLocationSame ? (
+              <div style={styles.jobInfoAddressWrap}>
+                <div className="pe-jobinfo-address-row-a">
+                  <div>
+                    <label style={styles.label}>Address</label>
+                    <input
+                      className="pe-input"
+                      autoComplete="street-address"
+                      value={state.customer.projectAddress || ""}
+                      onChange={(e) => patch("customer.projectAddress", e.target.value)}
+                      placeholder="Street address"
+                    />
+                  </div>
+                  <div>
+                    <label style={styles.label}>Address line 2</label>
+                    <input
+                      className="pe-input"
+                      autoComplete="address-line2"
+                      value={state.job.location || ""}
+                      onChange={(e) => patch("job.location", e.target.value)}
+                      placeholder="Suite, unit, etc. (optional)"
+                    />
+                  </div>
+                </div>
+
+                <div className="pe-jobinfo-address-row-b">
+                  <div>
+                    <label style={styles.label}>City</label>
+                    <input
+                      className="pe-input"
+                      autoComplete="address-level2"
+                      value={state.customer.city || ""}
+                      onChange={(e) => patch("customer.city", e.target.value)}
+                      placeholder="City"
+                    />
+                  </div>
+                  <div>
+                    <label style={styles.label}>State</label>
+                    <select
+                      className="pe-input"
+                      value={state.customer.state || ""}
+                      onChange={(e) => patch("customer.state", e.target.value)}
+                      autoComplete="address-level1"
+                    >
+                      <option value="">State</option>
+                      {US_STATES.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={styles.label}>ZIP</label>
+                    <input
+                      className="pe-input"
+                      autoComplete="postal-code"
+                      value={state.customer.zip || ""}
+                      onChange={(e) => patch("customer.zip", e.target.value)}
+                      placeholder="ZIP"
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        </section>
+
+        <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.scopeHeaderRow}>
+          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
+            <div className="pe-section-title" style={styles.sectionTitleText}>Scope / Notes</div>
+            <div style={styles.sectionAccentLine} />
+          </div>
+        </div>
+        <div
+          className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
+          style={{ ...styles.notesCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div className="pe-scope-insert-grid">
+            <select
+              className="pe-input"
+              defaultValue=""
+              style={{ width: "100%" }}
+              onChange={(e) => {
+                const key = e.target.value;
+                if (!key) return;
+                const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
+                if (!tmpl) return;
+                const existing = scopeNotes;
+                const sep = existing.trim().length > 0 ? "\n\n" : "";
+                patch("scopeNotes", existing + sep + tmpl.text);
+                e.target.value = "";
+              }}
+            >
+              <option value="">Insert template…</option>
+              {SCOPE_MASTER_TEMPLATES.map((t) => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </select>
+            <select
+              className="pe-input"
+              defaultValue=""
+              style={{ width: "100%" }}
+              onChange={(e) => {
+                const key = e.target.value;
+                if (!key) return;
+                const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
+                if (!insert) return;
+                const existing = scopeNotes;
+                const sep = existing.trim().length > 0 ? "\n\n" : "";
+                patch("scopeNotes", existing + sep + insert.text);
+                patch("tradeInsert.key", insert.key);
+                patch("tradeInsert.text", insert.text);
+                e.target.value = "";
+              }}
+            >
+              <option value="">Insert trade…</option>
+              {SCOPE_TRADE_INSERTS.map((t) => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+          <textarea
+            ref={scopeNotesRef}
+            className="pe-input pe-textarea"
+            value={scopeNotes}
+            onChange={(e) => {
+              patch("scopeNotes", e.target.value);
+              autoResizeScopeNotes(e.target);
+            }}
+            placeholder="Scope / notes…"
+            style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
+          />
+        </div>
+        <div
+          className={`pe-collapse ${notesOpen ? "" : "pe-open"}`}
+          style={{ ...styles.notesCollapsedPreviewWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div className="pe-muted" style={styles.scopeCollapsedPreview}>
+            {scopeNotes.trim()
+              ? `${scopeNotes.replace(/\s+/g, " ").trim().slice(0, 120)}${scopeNotes.replace(/\s+/g, " ").trim().length > 120 ? "…" : ""}`
+              : "No notes"}
+          </div>
+        </div>
+        <div style={styles.scopeCollapseRow}>
+          {notesOpen ? (
+            <>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                style={styles.scopeCollapseBtn}
+                onClick={() => setNotesOpen(false)}
+                title="Collapse notes"
+              >
+                Collapse ▴
+              </button>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                style={styles.scopeClearBtn}
+                onClick={handleClearScopeNotes}
+              >
+                Clear Notes
+              </button>
+            </>
+          ) : (
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              style={styles.scopeCollapseBtn}
+              onClick={() => setNotesOpen(true)}
+              title="Expand notes"
+            >
+              Expand ▾
+            </button>
+          )}
+        </div>
+        </section>
+
+      {/* LABOR */}
+      <section className="pe-section">
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.sectionHeaderRow}>
+          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
+            <div className="pe-section-title" style={styles.sectionTitleText}>{t("labor")}</div>
+            <div style={styles.sectionAccentLine} />
+          </div>
+
+          {!laborOpen && (
+            <div className="pe-muted" style={styles.laborCollapsedMeta}>
+              {(laborLines?.length || 0) === 1
+                ? (lang === "es" ? "1 línea" : "1 line")
+                : `${laborLines?.length || 0} ${lang === "es" ? "líneas" : "lines"}`}
+              {" • "}
+              {money.format(Number(laborAdjusted) || 0)}
+            </div>
+          )}
+          {!laborOpen && (
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setLaborOpen(true)}
+              title={lang === "es" ? "Expandir" : "Expand"}
+              style={{ ...styles.scopeCollapseBtn, marginLeft: "auto" }}
+            >
+              {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+            </button>
+          )}
+        </div>
+
+        <div
+          className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
+          style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          {laborLines.map((l, i) => {
+            const presetLabels = LABOR_PRESETS.map((p) => p.label);
+            const hasLegacyLabel = l.label && !presetLabels.includes(l.label);
+
+              return (
+                <div
+                  key={l.id || i}
+                  className={newLaborLineIds?.[String(l.id)] ? "pe-anim-enter" : ""}
+                  style={{ ...styles.cardShell, marginTop: 6 }}
+                >
+                  <div className="pe-grid pe-labor-grid" style={styles.laborLineGrid}>
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>{lang === "es" ? "Rol" : "Role"}</div>
+                    <select
+                      className="pe-input"
+                      value={l.label || ""}
+                      onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
+                      title={lang === "es" ? "Rol" : "Role"}
+                      style={{ width: "100%" }}
+                    >
+                      <option value="">{t("selectRole")}</option>
+                      {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
+                      {LABOR_PRESETS.map((p) => (
+                        <option key={p.key} value={p.label}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>{t("hours")}</div>
+                    <input
+                      className="pe-input"
+                      placeholder={t("hours")}
+                      value={l.hours || ""}
+                      onChange={(e) => updateLaborLineAt(i, "hours", e.target.value)}
+                      onBlur={(e) => updateLaborLineAt(i, "hours", normalizeHoursInput(e.target.value))}
+                      inputMode="decimal"
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>{t("rate")}</div>
+
+                    <input
+                      className="pe-input"
+                      placeholder={t("rate")}
+                      value={l.rate || ""}
+                      onChange={(e) => updateLaborLineAt(i, "rate", e.target.value)}
+                      onBlur={(e) => updateLaborLineAt(i, "rate", normalizeMoneyInput(e.target.value))}
+                      inputMode="decimal"
+                      style={{ width: "100%" }}
+                    />
+
+                  </div>
+
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>
+                      {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
+                      <span
+                        className="pe-muted"
+                        style={styles.laborLineOptional}
+                        title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
+                      >
+                        {lang === "es" ? "(opcional)" : "(optional)"}
+                      </span>
+                    </div>
+                    <input
+                      className="pe-input"
+                      placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
+                      value={l.internalRate || l.trueRateInternal || ""}
+                      onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
+                      onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
+                      inputMode="decimal"
+                      title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                </div>
+
+                  <div style={styles.laborLineActions}>
+                  <div
+                    className="pe-muted"
+                    title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
+                    style={styles.laborQtyLabel}
+                  >
+                    x{Number(l.qty) || 1}
+                  </div>
+
+                  <button
+                    className="pe-btn pe-btn-ghost"
+                    type="button"
+                    onClick={() => duplicateLaborLine(i)}
+                    title={
+                      lang === "es"
+                        ? "Duplicar trabajador en esta línea (no agrega fila)"
+                        : "Duplicate laborer on this SAME line (does not add a new row)"
+                    }
+                  >
+                    {t("duplicate")}
+                  </button>
+
+                  <div style={styles.laborLineTotalWrap}>
+                    <span style={styles.laborLineTotalLabel}>Line total</span>
+                    <span style={styles.laborLineTotalValue}>{money.format(laborTotalsById.get(String(l.id)) || 0)}</span>
+                  </div>
+
+                  <button
+                    className="pe-btn pe-btn-ghost"
+                    type="button"
+                    onClick={() => handleLaborMinus(i)}
+                    onMouseDown={() => startLaborMinusHold(i)}
+                    onMouseUp={clearLaborMinusHoldTimer}
+                    onMouseLeave={clearLaborMinusHoldTimer}
+                    onTouchStart={() => startLaborMinusHold(i)}
+                    onTouchEnd={clearLaborMinusHoldTimer}
+                    onTouchCancel={clearLaborMinusHoldTimer}
+                    title={lang === "es" ? "Disminuir / Quitar (mantener para quitar línea)" : "Decrease / Remove (hold to remove line)"}
+                    style={styles.lineDeleteBtn}
+                  >
+                    −
+                  </button>
+                  </div>
+                </div>
+              );
+          })}
+
+          <div className="pe-row pe-row-slim" style={styles.laborBaseRow}>
+            <div className="pe-muted">{lang === "es" ? "Mano de obra base" : "Base labor"}</div>
+            <div className={`pe-value ${animateLaborBaseTotal ? "value-pulse" : ""}`}>{money.format(laborBase)}</div>
           </div>
         </div>
 
-        <div style={styles.grid2}>
-          <div>
-            <label style={styles.label}>Date</label>
-            <input className="pe-input" type="date" value={state.job.date} onChange={(e) => patch("job.date", e.target.value)} />
-          </div>
-          <div>
-            <label style={styles.label}>Due</label>
-            <input className="pe-input" type="date" value={state.job.due} onChange={(e) => patch("job.due", e.target.value)} />
-          </div>
-        </div>
-      </div>
-
-      <div className="pe-card">
-        <div className="pe-section-title">Scope / Notes</div>
-        <select
-          className="pe-input"
-          defaultValue=""
-          style={{ marginBottom: 8 }}
-          onChange={(e) => {
-            const key = e.target.value;
-            if (!key) return;
-            const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
-            if (!tmpl) return;
-            const existing = state.scopeNotes || "";
-            const sep = existing.trim().length > 0 ? "\n\n" : "";
-            patch("scopeNotes", existing + sep + tmpl.text);
-            e.target.value = "";
-          }}
-        >
-          <option value="">Insert template…</option>
-          {SCOPE_MASTER_TEMPLATES.map((t) => (
-            <option key={t.key} value={t.key}>{t.label}</option>
-          ))}
-        </select>
-        <select
-          className="pe-input"
-          defaultValue=""
-          style={{ marginBottom: 8 }}
-          onChange={(e) => {
-            const key = e.target.value;
-            if (!key) return;
-            const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
-            if (!insert) return;
-            const existing = state.scopeNotes || "";
-            const sep = existing.trim().length > 0 ? "\n\n" : "";
-            patch("scopeNotes", existing + sep + insert.text);
-            patch("tradeInsert.key", insert.key);
-            patch("tradeInsert.text", insert.text);
-            e.target.value = "";
-          }}
-        >
-          <option value="">Insert trade…</option>
-          {SCOPE_TRADE_INSERTS.map((t) => (
-            <option key={t.key} value={t.key}>{t.label}</option>
-          ))}
-        </select>
-        <textarea className="pe-input pe-textarea" value={state.scopeNotes} onChange={(e) => patch("scopeNotes", e.target.value)} placeholder="Scope / notes…" style={{ minHeight: 170 }} />
-      </div>
-
-      <div className="pe-card">
-        <div className="pe-section-title">Labor</div>
-
-        <div style={styles.grid3}>
-          <div>
-            <label style={styles.label}>Hazard / risk %</label>
-            <input className="pe-input" inputMode="decimal" value={String(state.labor.hazardPct)} onChange={(e) => patch("labor.hazardPct", e.target.value)} placeholder="0" />
-          </div>
-          <div>
-            <label style={styles.label}>Multiplier</label>
-            <input className="pe-input" inputMode="decimal" value={String(state.labor.multiplier)} onChange={(e) => patch("labor.multiplier", e.target.value)} placeholder="1" />
-          </div>
-          <div style={{ display: "flex", alignItems: "flex-end" }}>
-            <button className="pe-btn" type="button" onClick={addLaborLine} style={{ width: "100%" }}>
-              + Add labor line
+        {laborOpen && (
+          <div style={styles.laborBottomActions}>
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setLaborOpen(false)}
+              title={lang === "es" ? "Colapsar" : "Collapse"}
+              style={{ padding: "6px 10px" }}
+            >
+              {lang === "es" ? "Colapsar" : "Collapse"} ▴
+            </button>
+            <button className="pe-btn pe-btn-micro" onClick={handleLaborPrimary} type="button">
+              {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
           </div>
-        </div>
+        )}
+      </section>
 
-        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          {(state.labor.lines || []).map((ln, idx) => (
-            <div key={ln.id || idx} className="pe-row" style={styles.row}>
-              <div style={styles.rowCols}>
-                <div style={styles.field}>
-                  <div style={styles.label}>Role</div>
-                  <select className="pe-input" value={ln.role || ""} onChange={(e) => updateLaborLine(ln.id, { role: e.target.value })}>
-                    <option value="" disabled>Select role…</option>
-                    {LABOR_PRESETS.map((p) => (
-                      <option key={p.key} value={p.key}>{p.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={styles.field}>
-                  <div style={styles.label}>Hours</div>
-                  <input className="pe-input" inputMode="decimal" value={String(ln.hours ?? "")} onChange={(e) => updateLaborLine(ln.id, { hours: e.target.value })} placeholder="0" />
-                </div>
-                <div style={styles.field}>
-                  <div style={styles.label}>Rate</div>
-                  <input className="pe-input" inputMode="decimal" value={String(ln.rate ?? "")} onChange={(e) => updateLaborLine(ln.id, { rate: e.target.value })} placeholder="0" />
-                </div>
-                <div style={styles.field}>
-                  <div style={styles.label}>Line total</div>
-                  <input className="pe-input" value={money.format(laborTotalsById.get(String(ln.id)) || 0)} readOnly />
+      <div
+        className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
+        style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+      >
+        <section className="pe-card" style={styles.sectionBlock}>
+              <div className="pe-divider" style={styles.sectionHeaderDivider} />
+              <div style={styles.sectionHeaderRow}>
+                <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
+                  <div className="pe-section-title" style={styles.sectionTitleText}>Special Conditions</div>
+                  <div style={styles.sectionAccentLine} />
                 </div>
               </div>
 
-              <div style={styles.rowActions}>
-                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => dupLaborLine(ln.id)}>
-                  Duplicate
-                </button>
-                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeLaborLine(ln.id)}>
-                  Remove
-                </button>
+              <div style={styles.specialConditionsCardShell}>
+                <div className="pe-special-conditions-grid">
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>Hazard / Site Conditions</div>
+                    <div className="pe-muted" style={styles.specialConditionsHelper}>
+                      Physical/site constraints & safety burden.
+                    </div>
+                    <div style={styles.specialConditionsPercentWrap}>
+                      <input
+                        className="pe-input"
+                        value={String(state?.labor?.hazardPct ?? 0)}
+                        onChange={(e) => patch("labor.hazardPct", e.target.value)}
+                        onBlur={(e) => patch("labor.hazardPct", normalizePercentInput(e.target.value))}
+                        inputMode="decimal"
+                        pattern="[0-9]*"
+                        title="Percent of adjusted labor only"
+                        style={styles.specialConditionsCompactInput}
+                      />
+                      <span style={styles.specialConditionsPercentSuffix}>%</span>
+                    </div>
+                  </div>
+
+                  <div style={styles.fieldStack}>
+                    <div style={styles.label}>Risk / Uncertainty Buffer</div>
+                    <div className="pe-muted" style={styles.specialConditionsHelper}>
+                      Unknowns & contingency for scope/schedule.
+                    </div>
+                    <div style={styles.specialConditionsPercentWrap}>
+                      <input
+                        className="pe-input"
+                        value={String(state?.labor?.riskPct ?? 0)}
+                        onChange={(e) => patch("labor.riskPct", e.target.value)}
+                        onBlur={(e) => patch("labor.riskPct", normalizePercentInput(e.target.value))}
+                        inputMode="decimal"
+                        pattern="[0-9]*"
+                        style={styles.specialConditionsCompactInput}
+                      />
+                      <span style={styles.specialConditionsPercentSuffix}>%</span>
+                    </div>
+                  </div>
+
+                  <div style={styles.fieldStack} className="pe-special-conditions-main-field">
+                    <div style={styles.label}>Condition</div>
+                    <select
+                      className="pe-input"
+                      value={multiplierSelectValue}
+                      onChange={(e) => handleMultiplierSelect(e.target.value)}
+                      style={{ width: "100%" }}
+                    >
+                      <option value="1">{t("standard")}</option>
+                      <option value="1.1">{t("difficultAccess")}</option>
+                      <option value="1.2">{t("highRisk")}</option>
+                      <option value="1.25">{t("offHours")}</option>
+                      <option value="custom">{t("customEllipsis")}</option>
+                    </select>
+                  </div>
+                </div>
+
+                {multiplierMode === "custom" && (
+                  <div className="pe-special-conditions-grid" style={{ marginTop: 8 }}>
+                    <div style={styles.fieldStack} className="pe-special-conditions-main-field">
+                      <div style={styles.label}>Custom multiplier</div>
+                      <input
+                        className="pe-input"
+                        value={String(state?.labor?.multiplier ?? "")}
+                        onChange={(e) => patch("labor.multiplier", e.target.value)}
+                        onBlur={(e) => patch("labor.multiplier", normalizeMultiplierInput(e.target.value))}
+                        placeholder="Custom labor multiplier (ex: 1.18)"
+                        inputMode="decimal"
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="pe-row pe-row-slim">
+                  <div className="pe-muted">Adjusted labor</div>
+                  <div className="pe-value">{money.format(adjustedLabor)}</div>
+                </div>
+
+                {hazardEnabled && (
+                  <div className="pe-row pe-row-slim">
+                    <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
+                    <div className="pe-value">{money.format(hazardFee)}</div>
+                  </div>
+                )}
+
+                {riskEnabled && (
+                  <div className="pe-row pe-row-slim">
+                    <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
+                    <div className="pe-value">{money.format(riskFee)}</div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
-        </div>
+        </section>
       </div>
 
-      <div className="pe-card">
-        <div className="pe-section-title">Materials</div>
+      {/* MATERIALS */}
+      <SectionMaterials
+        t={t}
+        lang={lang}
+        styles={styles}
+        money={money}
+        collapseMs={COLLAPSE_MS}
+        triggerHaptic={triggerHaptic}
+        materialsMode={materialsMode}
+        setMaterialsMode={setMaterialsMode}
+        materialsOpen={materialsOpen}
+        setMaterialsOpen={setMaterialsOpen}
+        itemizedCollapsedSummary={itemizedCollapsedSummary}
+        materialsCost={materialsCost}
+        setMaterialsCost={setMaterialsCost}
+        normalizeMoneyInput={normalizeMoneyInput}
+        materialsMarkupPct={materialsMarkupPct}
+        setMaterialsMarkupPct={setMaterialsMarkupPct}
+        normalizePercentInput={normalizePercentInput}
+        normalizedMarkupPct={normalizedMarkupPct}
+        animateMaterialsTotal={animateMaterialsTotal}
+        materialsBilled={materialsBilled}
+        materialItems={materialItems}
+        updateMaterialItem={updateMaterialItem}
+        removeMaterialItem={removeMaterialItem}
+        newMaterialItemIds={newMaterialItemIds}
+        itemizedMaterialsTotal={itemizedMaterialsTotal}
+        addMaterialItem={addMaterialItem}
+      />
 
-        <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button className={materialsMode === "blanket" ? "pe-btn" : "pe-btn pe-btn-ghost"} type="button" onClick={() => patch("ui.materialsMode", "blanket")}>
-            Blanket
-          </button>
-          <button className={materialsMode === "itemized" ? "pe-btn" : "pe-btn pe-btn-ghost"} type="button" onClick={() => patch("ui.materialsMode", "itemized")}>
-            Itemized
-          </button>
-        </div>
-
-        {materialsMode === "blanket" ? (
-          <div style={styles.grid2}>
-            <div style={{ marginTop: 10 }}>
-              <label style={styles.label}>Blanket cost</label>
-              <input className="pe-input" inputMode="decimal" value={String(state.materials.blanketCost ?? "")} onChange={(e) => patch("materials.blanketCost", e.target.value)} placeholder="0.00" />
-            </div>
-            <div style={{ marginTop: 10 }}>
-              <label style={styles.label}>Markup %</label>
-              <input className="pe-input" inputMode="decimal" value={String(state.materials.markupPct ?? 0)} onChange={(e) => patch("materials.markupPct", e.target.value)} placeholder="0" />
+      {/* TOTAL */}
+      <section className="pe-section">
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div className="pe-total">
+          <div>
+            <div className="pe-total-label">{t("estimateTotal")}</div>
+            <div className="pe-total-meta">
+              {lastSavedLabel ? `${totalTallyLine} • ${lastSavedLabel}` : totalTallyLine}
             </div>
           </div>
-        ) : (
-          <>
-            <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
-              <button className="pe-btn" type="button" onClick={addMaterialItem}>
-                + Add item
-              </button>
-            </div>
-
-            <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-              {(state.materials.items || []).map((it, idx) => (
-                <div key={it.id || idx} className="pe-row" style={styles.row}>
-                  <div style={styles.rowColsMat}>
-                    <div style={{ ...styles.field, gridColumn: "span 2" }}>
-                      <div style={styles.label}>Description</div>
-                      <input className="pe-input" value={it.desc || ""} onChange={(e) => updateMaterialItem(it.id, { desc: e.target.value })} placeholder="Material / item" />
-                    </div>
-                    <div style={styles.field}>
-                      <div style={styles.label}>Qty</div>
-                      <input className="pe-input" inputMode="decimal" value={String(it.qty ?? "")} onChange={(e) => updateMaterialItem(it.id, { qty: e.target.value })} placeholder="0" />
-                    </div>
-                    <div style={styles.field}>
-                      <div style={styles.label}>Price each</div>
-                      <input className="pe-input" inputMode="decimal" value={String(it.priceEach ?? "")} onChange={(e) => updateMaterialItem(it.id, { priceEach: e.target.value })} placeholder="0.00" />
-                    </div>
-                    <div style={styles.field}>
-                      <div style={styles.label}>Line charge</div>
-                      <input className="pe-input" value={money.format(materialChargeById.get(String(it.id)) || 0)} readOnly />
-                    </div>
-                  </div>
-
-                  <div style={styles.rowActions}>
-                    <button className="pe-btn pe-btn-ghost" type="button" onClick={() => dupMaterialItem(it.id)}>
-                      Duplicate
-                    </button>
-                    <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeMaterialItem(it.id)}>
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
+          <div className={`pe-total-right ${animateEstimateTotal ? "value-pulse" : ""}`}>
+            {money.format(totalRevenue)}
+          </div>
+        </div>
+      </section>
 
       {/* Additional Notes */}
-      <div className="pe-card">
-        <div className="pe-section-title">Additional Notes</div>
+      <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.sectionTitleStack}>
+          <div className="pe-section-title" style={styles.sectionTitleText}>Additional Notes</div>
+          <div style={styles.sectionAccentLine} />
+        </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
@@ -809,31 +2129,49 @@ export default function EstimateForm(props) {
           placeholder="Additional notes, terms, exclusions…"
           style={{ minHeight: 120 }}
         />
+      </section>
+
       </div>
 
-      {/* Bottom totals (green box like the big file) */}
-      <div style={{ maxWidth: 720, margin: "14px auto 0" }}>
-        <div className="pe-total">
-          <div>
-            <div className="pe-total-label">Total</div>
-            <div className="pe-total-meta">{lastSavedLabel}</div>
+      <div style={{ ...styles.estimatorActionBar, bottom: actionBarBottom }}>
+        <div ref={actionBarRef} style={styles.estimatorActionBarInner}>
+          <div style={styles.estimatorActionButtons}>
+            <button className="pe-btn" type="button" onClick={onSaveNow} style={styles.estimatorActionButton}>
+              Save
+            </button>
+            <button className="pe-btn pe-btn-ghost" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+              Clear
+            </button>
+            <button className="pe-btn" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+              Export PDF
+            </button>
           </div>
-          <div className="pe-total-right">{money.format(computed.grandTotal || 0)}</div>
-        </div>
-
-        {/* Bottom action buttons (3) */}
-        <div className="pe-actions" style={{ justifyContent: "center", marginTop: 12 }}>
-          <button className="pe-btn" type="button" onClick={onSaveNow} style={{ minWidth: 160 }}>
-            Save
-          </button>
-          <button className="pe-btn pe-btn-ghost" type="button" onClick={onClearAll} style={{ minWidth: 160 }}>
-            Clear
-          </button>
-          <button className="pe-btn" type="button" onClick={onPdf} style={{ minWidth: 160 }}>
-            Export PDF
-          </button>
         </div>
       </div>
+
+      <PdfPromptModal
+        open={pdfPromptOpen}
+        docType={uiDocType}
+        onClose={() => {
+          triggerHaptic();
+          setPdfPromptOpen(false);
+        }}
+        onView={() => {
+          triggerHaptic();
+          setPdfPromptOpen(false);
+          exportPDF("view");
+        }}
+        onDownload={() => {
+          triggerHaptic();
+          setPdfPromptOpen(false);
+          exportPDF("download");
+        }}
+        onShare={() => {
+          triggerHaptic();
+          setPdfPromptOpen(false);
+          exportPDF("share");
+        }}
+      />
 
       <div className="pe-footer">Build: {BUILD_TAG}</div>
     </div>
@@ -841,14 +2179,338 @@ export default function EstimateForm(props) {
 }
 
 const styles = {
+  builderHeroWrap: {
+    maxWidth: 720,
+    margin: "0 auto 12px",
+  },
+  builderModeSegmented: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: 3,
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.04)",
+    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.06)",
+  },
+  builderModeSegment: {
+    minWidth: 118,
+    borderRadius: 999,
+    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+  },
+  builderModeSegmentActive: {
+    minWidth: 118,
+    borderRadius: 999,
+    background: "linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.05))",
+    borderColor: "rgba(34,197,94,0.34)",
+    boxShadow: "0 0 0 1px rgba(34,197,94,0.16), 0 6px 16px rgba(0,0,0,0.25)",
+    transform: "translateZ(0)",
+    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+  },
+  sectionBlock: {},
+  totalsBlockWrap: { maxWidth: 720, margin: "14px auto 0" },
+  jobInfoStack: { display: "grid", gap: 10, marginTop: 10 },
+  jobInfoContentWrap: { maxWidth: 980, width: "100%", margin: "0 auto" },
+  jobInfoAddressWrap: { display: "grid", gap: 10, marginTop: 10 },
+  sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 },
+  sectionHeaderControls: { display: "inline-flex", alignItems: "center", gap: 8, marginLeft: "auto" },
+  sectionDividerWrap: { maxWidth: 720, margin: "0 auto" },
+  fieldStack: { display: "grid", gap: 4 },
+  cardShell: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.12)",
+  },
+  specialConditionsCardShell: {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.10)",
+    background: "rgba(0,0,0,0.12)",
+    marginTop: 6,
+  },
+  specialConditionsField: { display: "grid", gap: 4 },
+  specialConditionsCompactInput: {
+    width: "100%",
+    textAlign: "center",
+    paddingRight: 26,
+  },
+  specialConditionsPercentWrap: {
+    position: "relative",
+    width: "100%",
+  },
+  specialConditionsPercentSuffix: {
+    position: "absolute",
+    right: 10,
+    top: "50%",
+    transform: "translateY(-50%)",
+    fontSize: 12,
+    fontWeight: 900,
+    color: "rgba(229,238,245,0.86)",
+    lineHeight: 1,
+    pointerEvents: "none",
+  },
+  specialConditionsHelper: {
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.2,
+    marginBottom: 2,
+  },
+  laborCollapsedRow: { maxWidth: 720, margin: "0 auto", padding: "2px 4px 0" },
+  laborCollapsedHeader: { display: "grid", gridTemplateColumns: "auto auto 1fr auto", alignItems: "center", gap: 12, marginBottom: 10 },
+  laborCollapsedTitleStack: { display: "inline-grid", gap: 6, marginBottom: 0 },
+  laborPlayToggle: {
+    width: 26,
+    height: 26,
+    minWidth: 26,
+    minHeight: 26,
+    border: "1px solid rgba(255,255,255,0.14)",
+    borderRadius: 8,
+    background: "transparent",
+    color: "rgba(229,238,245,0.9)",
+    padding: 0,
+    lineHeight: 1,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  laborCollapsedMeta: {
+    fontSize: 14,
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  laborCollapsedBaseRow: { marginTop: 10 },
+  laborCollapsedBaseValue: { fontSize: 20, fontWeight: 900, color: "rgba(241,245,249,0.96)" },
+  laborCollapseWrap: {
+    "--collapse-max": "5200px",
+    willChange: "max-height, opacity, transform",
+  },
+  specialConditionsCollapseWrap: {
+    "--collapse-max": "1800px",
+    willChange: "max-height, opacity, transform",
+  },
+  materialsItemizedCollapseWrap: {
+    "--collapse-max": "5200px",
+    willChange: "max-height, opacity, transform",
+  },
+  notesCollapseWrap: {
+    "--collapse-max": "2200px",
+    willChange: "max-height, opacity, transform",
+  },
+  notesCollapsedPreviewWrap: {
+    "--collapse-max": "180px",
+    willChange: "max-height, opacity, transform",
+  },
+  laborLineFieldStack: { display: "grid", gap: 4 },
+  laborLineGrid: { gap: 10 },
+  laborLineOptional: { marginLeft: 6, fontSize: "inherit", fontWeight: "inherit", lineHeight: "inherit", letterSpacing: "normal", textTransform: "none", opacity: 0.74 },
+  laborLineActions: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 },
+  laborQtyLabel: { minWidth: 54 },
+  laborLineTotalWrap: { marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" },
+  laborLineTotalLabel: { color: "var(--muted)", fontSize: 13, fontWeight: 800 },
+  laborLineTotalValue: { color: "var(--text)", fontSize: 14, fontWeight: 900 },
+  lineDeleteBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 22,
+    lineHeight: 1,
+    alignSelf: "end",
+  },
+  laborBaseRow: { marginTop: 10 },
+  laborBottomActions: {
+    position: "sticky",
+    bottom: 0,
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    background: "linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,0.46) 45%, rgba(11,15,20,0.72) 100%)",
+    backdropFilter: "blur(4px)",
+    WebkitBackdropFilter: "blur(4px)",
+  },
+  laborHeaderToggleBtn: { width: 36, minWidth: 36, height: 36, padding: 0, display: "grid", placeItems: "center", lineHeight: 1, fontSize: 14 },
+  laborCornerWrap: { display: "flex", justifyContent: "flex-end", marginTop: 8 },
+  laborCornerToggle: {
+    width: 26,
+    height: 26,
+    minWidth: 26,
+    minHeight: 26,
+    border: "1px solid rgba(255,255,255,0.14)",
+    borderRadius: 8,
+    background: "transparent",
+    color: "rgba(229,238,245,0.9)",
+    padding: 0,
+    lineHeight: 1,
+    fontSize: 14,
+    cursor: "pointer",
+  },
+  sectionTitleStack: {
+    display: "inline-flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 6,
+    width: "fit-content",
+    marginBottom: 8,
+  },
+  sectionHeaderDivider: {
+    margin: "0 0 8px",
+  },
+  sectionTitleText: {
+    marginBottom: 0,
+    fontSize: 17,
+    fontWeight: 950,
+    letterSpacing: "0.15em",
+    lineHeight: 1.04,
+    textTransform: "uppercase",
+    color: "rgba(236,242,250,0.96)",
+    textShadow: "0 1px 4px rgba(0,0,0,0.32), 0 6px 14px rgba(0,0,0,0.2)",
+  },
+  sectionAccentLine: {
+    width: "100%",
+    height: 3,
+    background: "linear-gradient(90deg, rgba(34,197,94,0.78) 0%, rgba(59,130,246,0.74) 100%)",
+    clipPath: "polygon(2% 0, 100% 0, 98% 100%, 0 100%)",
+    filter: "drop-shadow(0 0 2px rgba(34,197,94,0.16))",
+  },
+  totalAccentLine: {
+    width: 74,
+    height: 2,
+    borderRadius: 999,
+    marginTop: 4,
+    marginBottom: 4,
+    background: "linear-gradient(90deg, rgba(34,197,94,0.75) 0%, rgba(59,130,246,0.72) 100%)",
+  },
   grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 10 },
   grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 10 },
-  label: { display: "block", fontSize: 12, fontWeight: 800, letterSpacing: "1.2px", textTransform: "uppercase", opacity: 0.72, marginBottom: 6 },
+  label: { display: "block", fontSize: 12.5, fontWeight: 800, letterSpacing: "0.2px", textTransform: "none", opacity: 0.82, marginBottom: 6 },
   small: { fontSize: 12, fontWeight: 800, letterSpacing: "0.6px", opacity: 0.78, textTransform: "uppercase" },
+  scopeHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 },
+  scopeClearBtn: { padding: "8px 12px", minHeight: 36 },
+  scopeCollapseRow: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 },
+  scopeCollapseBtn: { padding: "6px 10px", minHeight: 32 },
+  scopeCollapsedPreview: { marginTop: 2, marginBottom: 4, fontSize: 13, lineHeight: 1.35, opacity: 0.9 },
+  projectLocationToggleRow: { marginTop: 2 },
+  projectLocationToggleLabel: { display: "inline-flex", gap: 10, alignItems: "center", fontSize: 13.5, color: "rgba(229,238,245,0.90)", cursor: "pointer" },
+  totalCardHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
+  totalCardTally: { fontSize: 13.5, fontWeight: 800, color: "rgba(203,213,225,0.92)" },
+  totalBreakdown: { display: "grid", gap: 8 },
+  totalBreakdownRow: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" },
+  totalBreakdownLabel: { fontSize: 13, fontWeight: 800, color: "rgba(203,213,225,0.92)" },
+  totalBreakdownValue: { fontSize: 13, fontWeight: 900, color: "rgba(241,245,249,0.96)" },
+  totalFinalRow: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.10)" },
+  totalFinalLabel: { fontSize: 14, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(229,231,235,0.95)" },
+  totalFinalValue: { fontSize: 28, fontWeight: 950, lineHeight: 1.05, color: "rgba(220,252,231,0.96)" },
   row: { display: "grid", gap: 10, padding: 10 },
-  rowCols: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 },
-  rowColsMat: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 },
-  rowActions: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" },
-  field: { display: "grid", gap: 4 },
-  dropdown: { position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "rgba(15, 23, 42, 0.75)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.4)", maxHeight: 260, overflowY: "auto", marginTop: 6 },
+  rowCols: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 },
+  rowColsMat: {
+    display: "grid",
+    gap: 10,
+    alignItems: "end",
+    gridTemplateColumns: "2.2fr 0.7fr 0.9fr 1fr 1fr",
+  },
+  rowActions: {
+    display: "flex",
+    gap: 10,
+    justifyContent: "flex-end",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginTop: 10,
+  },
+  field: {
+    display: "grid",
+    gap: 6,
+    minWidth: 0,
+  },
+  dropdownPortal: {
+    position: "fixed",
+    zIndex: 1000,
+    maxHeight: 280,
+    overflowY: "auto",
+    margin: 0,
+    maxWidth: "none",
+    padding: 0,
+    borderRadius: 14,
+    background: "rgba(15, 23, 42, 0.55)",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+    border: "1px solid rgba(255,255,255,0.10)",
+    boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+    fontFamily: "inherit",
+    fontSize: 16,
+    lineHeight: 1.2,
+  },
+  dropdownOption: {
+    padding: "12px 12px",
+    cursor: "pointer",
+    borderBottom: "1px solid rgba(255,255,255,0.10)",
+    color: "var(--text)",
+    background: "transparent",
+    fontFamily: "inherit",
+    fontSize: 16,
+    fontWeight: 600,
+    letterSpacing: "normal",
+    lineHeight: 1.2,
+  },
+  dropdownCreateOption: {},
+  dropdownOptionHover: { background: "rgba(255,255,255,0.10)" },
+  dropdownOptionSelected: { background: "rgba(255,255,255,0.14)", borderBottom: "1px solid rgba(255,255,255,0.12)" },
+  dropdownEmpty: {
+    padding: "12px 12px",
+    color: "rgba(156,163,175,0.90)",
+    fontFamily: "inherit",
+    fontSize: 16,
+    fontWeight: 600,
+    lineHeight: 1.2,
+  },
+  estimatorActionBar: {
+    position: "fixed",
+    left: 0,
+    right: 0,
+    zIndex: 999,
+    pointerEvents: "none",
+    background: "transparent",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+    boxShadow: "none",
+    border: "none",
+    padding: "0 14px",
+  },
+  estimatorActionBarInner: {
+    width: "100%",
+    maxWidth: "none",
+    margin: "0 auto",
+    pointerEvents: "auto",
+    background: "var(--pe-shell-surface, rgba(0,0,0,0.18))",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+    border: "1px solid var(--pe-shell-border, rgba(255,255,255,0.10))",
+    boxShadow: "0 10px 22px var(--pe-shell-shadow, rgba(0,0,0,0.22))",
+    borderRadius: 18,
+    padding: 10,
+  },
+  estimatorActionButtons: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
+  estimatorActionButton: { width: "100%" },
+  dueHint: { marginTop: 6, fontSize: 12, color: "rgba(156,163,175,0.9)" },
+  selectedCustomerText: { marginTop: 8, fontSize: 13, color: "rgba(233,241,248,0.86)" },
+  customerProfilePanel: {
+    marginTop: 10,
+    borderRadius: 18,
+    border: "1px solid var(--line)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))",
+    padding: 14,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+    fontFamily: "inherit",
+  },
+  customerProfileTitle: { fontSize: 12, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.84, marginBottom: 10 },
+  customerProfileGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 },
+  customerProfileItem: { display: "grid", gap: 3 },
+  customerProfileItemFull: { gridColumn: "1 / -1" },
+  customerProfileLabel: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", opacity: 0.66 },
+  customerProfileValue: { fontSize: 13.5, lineHeight: 1.35, color: "rgba(245,250,255,0.94)", whiteSpace: "pre-line" },
 };

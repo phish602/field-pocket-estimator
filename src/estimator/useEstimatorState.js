@@ -139,7 +139,7 @@ export function useEstimatorState() {
     setState((prev) => {
       const next = deepClone(prev);
       const lines = Array.isArray(next?.labor?.lines) ? next.labor.lines : [];
-      lines.push({ id: uid("l_"), role: "", hours: "", rate: "" });
+      lines.push({ id: uid("l_"), role: "", hours: "", rate: "", trueRateInternal: "" });
       next.labor = { ...(next.labor || {}), lines };
       return next;
     });
@@ -164,7 +164,7 @@ export function useEstimatorState() {
       const next = deepClone(prev);
       const lines = Array.isArray(next?.labor?.lines) ? next.labor.lines : [];
       const filtered = lines.filter((x) => String(x?.id) !== String(id));
-      next.labor = { ...(next.labor || {}), lines: filtered.length ? filtered : [{ id: "l1", role: "", hours: "", rate: "" }] };
+      next.labor = { ...(next.labor || {}), lines: filtered.length ? filtered : [{ id: "l1", role: "", hours: "", rate: "", trueRateInternal: "" }] };
       return next;
     });
   };
@@ -186,7 +186,7 @@ export function useEstimatorState() {
     setState((prev) => {
       const next = deepClone(prev);
       const items = Array.isArray(next?.materials?.items) ? next.materials.items : [];
-      items.push({ id: uid("m_"), desc: "", qty: "", costInternal: "", priceEach: "" });
+      items.push({ id: uid("m_"), desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" });
       next.materials = { ...(next.materials || {}), items };
       return next;
     });
@@ -211,7 +211,7 @@ export function useEstimatorState() {
       const next = deepClone(prev);
       const items = Array.isArray(next?.materials?.items) ? next.materials.items : [];
       const filtered = items.filter((x) => String(x?.id) !== String(id));
-      next.materials = { ...(next.materials || {}), items: filtered.length ? filtered : [{ id: "m1", desc: "", qty: "", costInternal: "", priceEach: "" }] };
+      next.materials = { ...(next.materials || {}), items: filtered.length ? filtered : [{ id: "m1", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" }] };
       return next;
     });
   };

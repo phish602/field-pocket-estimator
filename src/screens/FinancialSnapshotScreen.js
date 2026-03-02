@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import Field from "../components/Field";
 
 const ESTIMATES_KEY = "field-pocket-estimates";
 const INVOICES_KEY = "field-pocket-invoices-v1";
@@ -114,40 +115,79 @@ function getDueDate(inv) {
 }
 
 function sumInternalLabor(doc) {
-  const lines = Array.isArray(doc?.laborLines) ? doc.laborLines : [];
+  const lines = Array.isArray(doc?.laborLines) ? doc.laborLines : Array.isArray(doc?.labor?.lines) ? doc.labor.lines : [];
   let total = 0;
   for (const ln of lines) {
     const hrs = asNumber(ln?.hours);
     const qty = asNumber(ln?.qty || 1) || 1;
-    const rate = asNumber(ln?.internalRate);
+    const rate = asNumber(ln?.trueRateInternal ?? ln?.internalRate ?? ln?.rateInternal);
     total += hrs * qty * rate;
   }
   return total;
 }
 
 function sumInternalMaterials(doc) {
-  const items = Array.isArray(doc?.materialItems) ? doc.materialItems : [];
+  const items = Array.isArray(doc?.materialItems) ? doc.materialItems : Array.isArray(doc?.materials?.items) ? doc.materials.items : [];
   if (items.length) {
     let total = 0;
     for (const it of items) {
       const qty = asNumber(it?.qty || 1) || 1;
-      const cost = asNumber(it?.cost);
+      const cost = asNumber(it?.unitCostInternal ?? it?.costInternal ?? it?.cost);
       total += qty * cost;
     }
     return total;
   }
-  return asNumber(doc?.materialsCost);
+  return asNumber(doc?.blanketInternalCost ?? doc?.materials?.blanketInternalCost ?? doc?.materialsCost);
+}
+
+function sumLaborRevenue(doc) {
+  const lines = Array.isArray(doc?.laborLines) ? doc.laborLines : Array.isArray(doc?.labor?.lines) ? doc.labor.lines : [];
+  let total = 0;
+  for (const ln of lines) {
+    const hrs = asNumber(ln?.hours);
+    const qty = asNumber(ln?.qty || 1) || 1;
+    const rate = asNumber(ln?.rate ?? ln?.billRate);
+    total += hrs * qty * rate;
+  }
+  return total;
+}
+
+function sumMaterialRevenue(doc) {
+  const items = Array.isArray(doc?.materialItems) ? doc.materialItems : Array.isArray(doc?.materials?.items) ? doc.materials.items : [];
+  if (items.length) {
+    let total = 0;
+    for (const it of items) {
+      const qty = asNumber(it?.qty || 1) || 1;
+      const price = asNumber(it?.priceEach ?? it?.chargeEach ?? it?.price);
+      total += qty * price;
+    }
+    return total;
+  }
+  const blanket = asNumber(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost);
+  const markupPct = asNumber(doc?.materials?.markupPct ?? doc?.materialsMarkupPct);
+  return blanket * (1 + markupPct / 100);
+}
+
+function calcRevenue(doc) {
+  const direct = doc?.financials?.totalRevenue ?? doc?.totals?.totalRevenue ?? doc?.totalRevenue ?? doc?.grandTotal ?? doc?.total;
+  if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
+  return sumLaborRevenue(doc) + sumMaterialRevenue(doc);
+}
+
+function calcCost(doc) {
+  const direct = doc?.financials?.totalCost ?? doc?.totals?.totalCost ?? doc?.totalCost;
+  if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
+  return sumInternalLabor(doc) + sumInternalMaterials(doc);
 }
 
 function calcGrossProfit(doc) {
-  const revenue = asNumber(doc?.total);
-  const labor = sumInternalLabor(doc);
-  const mats = sumInternalMaterials(doc);
-  return revenue - labor - mats;
+  const direct = doc?.financials?.grossProfit ?? doc?.totals?.grossProfit ?? doc?.grossProfit;
+  if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
+  return calcRevenue(doc) - calcCost(doc);
 }
 
 function calcMarginPct(doc) {
-  const revenue = asNumber(doc?.total);
+  const revenue = calcRevenue(doc);
   if (revenue <= 0) return 0;
   return (calcGrossProfit(doc) / revenue) * 100;
 }
@@ -198,7 +238,7 @@ function buildWeeklySeries(invoices) {
     const k = weekKey(d);
     const i = idx.get(k);
     if (i === undefined) continue;
-    weeks[i].revenue += asNumber(inv?.total);
+    weeks[i].revenue += calcRevenue(inv);
     weeks[i].profit += calcGrossProfit(inv);
   }
 
@@ -317,12 +357,12 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     const invMerged = Array.from(byKey.values());
     const invUse = invMerged.filter((x) => inRange(getDocDate(x), start, end));
 
-    const revenue = invUse.reduce((s, x) => s + asNumber(x?.total), 0);
+    const revenue = invUse.reduce((s, x) => s + calcRevenue(x), 0);
     const grossProfit = invUse.reduce((s, x) => s + calcGrossProfit(x), 0);
     const marginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
 
     const unpaid = invUse.filter((x) => !isPaidInvoice(x));
-    const arTotal = unpaid.reduce((s, x) => s + asNumber(x?.total), 0);
+    const arTotal = unpaid.reduce((s, x) => s + calcRevenue(x), 0);
 
     const aging = { current: 0, late1_15: 0, late16_30: 0, late30p: 0, delinquentTotal: 0, canCompute: true };
 
@@ -333,7 +373,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         continue;
       }
       const daysLate = Math.floor((startOfDay(now).getTime() - startOfDay(due).getTime()) / 86400000);
-      const amt = asNumber(inv?.total);
+      const amt = calcRevenue(inv);
       if (daysLate <= 0) aging.current += amt;
       else if (daysLate <= 15) aging.late1_15 += amt;
       else if (daysLate <= 30) aging.late16_30 += amt;
@@ -343,13 +383,13 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     }
 
     const estInRange = estOnly.filter((x) => inRange(getDocDate(x), start, end));
-    const pipelineValue = estInRange.reduce((s, x) => s + asNumber(x?.total), 0);
+    const pipelineValue = estInRange.reduce((s, x) => s + calcRevenue(x), 0);
     const pipelineCount = estInRange.length;
     const avgEstimate = pipelineCount ? pipelineValue / pipelineCount : 0;
 
     const weekly = buildWeeklySeries(invUse);
 
-    const withRevenue = invUse.filter((x) => asNumber(x?.total) > 0);
+    const withRevenue = invUse.filter((x) => calcRevenue(x) > 0);
     const sortedByMargin = withRevenue.map((x) => ({ x, m: calcMarginPct(x) })).sort((a, b) => b.m - a.m);
     const best = sortedByMargin.slice(0, 3);
     const worst = sortedByMargin.slice(-3).reverse();
@@ -402,25 +442,25 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           />
         </div>
 
-        <div style={{ width: 80, display: "flex", justifyContent: "flex-end" }}>
-          <select className="pe-input" value={range} onChange={(e) => setRange(e.target.value)} aria-label={lang === "es" ? "Rango de tiempo" : "Time range"} style={{ padding: "10px 12px", height: 44 }}>
+        <div style={{ width: 110, display: "flex", justifyContent: "flex-end" }}>
+          <Field as="select" value={range} onChange={(e) => setRange(e.target.value)} aria-label={lang === "es" ? "Rango de tiempo" : "Time range"}>
             <option value="30">{lang === "es" ? "30 días" : "30 Days"}</option>
             <option value="90">{lang === "es" ? "90 días" : "90 Days"}</option>
             <option value="ytd">{lang === "es" ? "Año" : "YTD"}</option>
-          </select>
+          </Field>
         </div>
       </div>
 
       <div className="pe-card" style={{ marginTop: 10 }}>
         <div style={{ display: "grid", gap: 10 }}>
-          <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (Invoices)"} value={fmtMoney(computed.revenue)} tone="ok" />
+          <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} tone="ok" />
           <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} tone="ok" />
           <KPI
-            label={lang === "es" ? "Margen promedio" : "Avg Margin"}
+            label={lang === "es" ? "Margen promedio" : "Avg margin"}
             value={fmtPct(computed.marginPct)}
             tone={computed.marginPct >= 25 ? "ok" : computed.marginPct >= 15 ? "warn" : "bad"}
           />
-          <KPI label={lang === "es" ? "Cuentas por cobrar" : "Outstanding Receivables"} value={fmtMoney(computed.arTotal)} tone={computed.arTotal > 0 ? "warn" : "ok"} />
+          <KPI label={lang === "es" ? "Cuentas por cobrar" : "Outstanding receivables"} value={fmtMoney(computed.arTotal)} tone={computed.arTotal > 0 ? "warn" : "ok"} />
           <KPI
             label={lang === "es" ? "Delinquent" : "Delinquent"}
             value={fmtMoney(computed.delinquentTotal)}
@@ -476,7 +516,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
             <div className="pe-muted" style={{ fontWeight: 900 }}>{lang === "es" ? "Mejores márgenes" : "Best margins"}</div>
             {computed.best.length ? (
               computed.best.map((it, idx) => (
-                <MiniRow key={`b-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(it.x?.total)} right={fmtPct(it.m)} tone="ok" />
+                <MiniRow key={`b-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(calcRevenue(it.x))} right={fmtPct(it.m)} tone="ok" />
               ))
             ) : (
               <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
@@ -487,7 +527,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
             <div className="pe-muted" style={{ fontWeight: 900 }}>{lang === "es" ? "Peores márgenes" : "Worst margins"}</div>
             {computed.worst.length ? (
               computed.worst.map((it, idx) => (
-                <MiniRow key={`w-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(it.x?.total)} right={fmtPct(it.m)} tone="bad" />
+                <MiniRow key={`w-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(calcRevenue(it.x))} right={fmtPct(it.m)} tone="bad" />
               ))
             ) : (
               <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>

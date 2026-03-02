@@ -1,6 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
+import Field from "../components/Field";
 
 const CUSTOMERS_KEY = "estipaid-customers-v1";
 const CUSTOMERS_KEY_LEGACY = "field-pocket-customers-v1";
@@ -67,7 +68,8 @@ function calcBreakdown(e) {
   const customMultiplier = toNum(e?.customMultiplier || 1);
   const effectiveMultiplier = multiplierMode === "custom" ? (customMultiplier || 1) : (laborMultiplierPreset || 1);
 
-  const hazardPct = toNum(e?.hazardPct || 0);
+  const hazardPct = toNum(e?.hazardPct ?? e?.labor?.hazardPct ?? 0);
+  const riskPct = toNum(e?.riskPct ?? e?.labor?.riskPct ?? 0);
   const materialsMode = e?.materialsMode || "itemized";
   const materialsMarkupPct = toNum(e?.materialsMarkupPct || 0);
   const materialsCost = toNum(e?.materialsCost || 0);
@@ -108,8 +110,9 @@ function calcBreakdown(e) {
   }
 
   const hazardAmt = laborBilled * (hazardPct / 100);
+  const riskAmt = laborBilled * (riskPct / 100);
 
-  const revenue = laborBilled + materialsBilled + hazardAmt;
+  const revenue = laborBilled + materialsBilled + hazardAmt + riskAmt;
   const internal = laborInternal + materialsInternal;
   const profit = revenue - internal;
   const margin = safeDiv(profit, revenue);
@@ -229,12 +232,12 @@ function formatStateUS(input) {
 
 
 function FieldLabel({ children }) {
-  return <div style={{ fontSize: 12.5, opacity: 0.82, letterSpacing: 0.2, fontWeight: 900 }}>{children}</div>;
+  return <div className="pe-field-label">{children}</div>;
 }
 
 function StateSelect({ value, onChange, placeholder = "State" }) {
   return (
-    <select className="pe-input" value={value || ""} onChange={onChange} autoComplete="address-level1">
+    <select className="pe-input pe-field-control" value={value || ""} onChange={onChange} autoComplete="address-level1">
       <option value="">{placeholder}</option>
       {US_STATES.map((s) => (
         <option key={s} value={s}>
@@ -275,6 +278,13 @@ const twoCol = {
 
 const fullRow = { gridColumn: "1 / -1" };
 
+const NET_TERMS_OPTIONS = [
+  { value: "DUE_UPON_RECEIPT", labelEn: "Due upon receipt", labelEs: "Pago al recibir" },
+  { value: "NET_15", labelEn: "Net 15", labelEs: "Neto 15" },
+  { value: "NET_30", labelEn: "Net 30", labelEs: "Neto 30" },
+  { value: "NET_CUSTOM", labelEn: "Net custom", labelEs: "Neto personalizado" },
+];
+
 function emptyDraft(type = "residential") {
   return {
     id: "",
@@ -295,6 +305,8 @@ function emptyDraft(type = "residential") {
     comPhone: "",
     comEmail: "",
     apEmail: "",
+    netTermsType: "DUE_UPON_RECEIPT",
+    netTermsDays: null,
     poRequired: false,
     jobsite: { street: "", city: "", state: "", zip: "" },
     billSameAsJob: true,
@@ -346,6 +358,7 @@ export default function CustomersScreen({
   const [mode, setMode] = useState("list"); // list | edit
   const [draft, setDraft] = useState(() => emptyDraft("residential"));
   const [returnToEstimator, setReturnToEstimator] = useState(false);
+  const [autoUseOnSave, setAutoUseOnSave] = useState(false);
 
   useEffect(() => {
     if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
@@ -399,6 +412,14 @@ export default function CustomersScreen({
     try {
       const raw2 = localStorage.getItem(PENDING_CUSTOMER_CREATE_KEY);
       if (raw2) {
+        try {
+          const payload2 = JSON.parse(raw2);
+          const fromEstimator = String(payload2?.source || "") === "estimator";
+          if (fromEstimator) {
+            setReturnToEstimator(true);
+            setAutoUseOnSave(true);
+          }
+        } catch {}
         setDraft(emptyDraft("residential"));
         setMode("edit");
         localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
@@ -485,11 +506,13 @@ export default function CustomersScreen({
 }, [list, q]);
 
   function startNew(type = "commercial") {
+    setAutoUseOnSave(false);
     setDraft(emptyDraft(type));
     setMode("edit");
   }
 
   function startEdit(c) {
+    setAutoUseOnSave(false);
     const type = String(c?.type || "residential");
     const base = emptyDraft(type);
     setDraft({ ...base, ...(c || {}) });
@@ -501,25 +524,37 @@ export default function CustomersScreen({
     const type = String(d.type || "residential");
 
     if (type === "commercial") {
-      if (!String(d.companyName || "").trim()) return alert(label("Company Name is required.", "Nombre de la compañía es requerido."));
-      if (!String(d.contactName || "").trim()) return alert(label("Primary Contact is required.", "Contacto principal es requerido."));
-      if (!String(d.jobsite?.street || "").trim()) return alert(label("Jobsite Street is required.", "Calle del sitio es requerida."));
-      if (!String(d.jobsite?.city || "").trim()) return alert(label("Jobsite City is required.", "Ciudad del sitio es requerida."));
-      if (!String(d.jobsite?.state || "").trim()) return alert(label("Jobsite State is required.", "Estado del sitio es requerido."));
+      if (!String(d.companyName || "").trim()) return alert(label("Company name is required.", "Nombre de la compañía es requerido."));
+      if (!String(d.contactName || "").trim()) return alert(label("Primary contact is required.", "Contacto principal es requerido."));
+      if (!String(d.jobsite?.street || "").trim()) return alert(label("Jobsite street is required.", "Calle del sitio es requerida."));
+      if (!String(d.jobsite?.city || "").trim()) return alert(label("Jobsite city is required.", "Ciudad del sitio es requerida."));
+      if (!String(d.jobsite?.state || "").trim()) return alert(label("Jobsite state is required.", "Estado del sitio es requerido."));
       if (!String(d.jobsite?.zip || "").trim()) return alert(label("Jobsite ZIP is required.", "ZIP del sitio es requerido."));
     } else {
-      if (!String(d.fullName || "").trim()) return alert(label("Full Name is required.", "Nombre completo es requerido."));
+      if (!String(d.fullName || "").trim()) return alert(label("Full name is required.", "Nombre completo es requerido."));
       if (!String(d.resService?.street || "").trim()) return alert(label("Street is required.", "Calle es requerida."));
       if (!String(d.resService?.city || "").trim()) return alert(label("City is required.", "Ciudad es requerida."));
       if (!String(d.resService?.state || "").trim()) return alert(label("State is required.", "Estado es requerido."));
       if (!String(d.resService?.zip || "").trim()) return alert(label("ZIP is required.", "ZIP es requerido."));
     }
 
+    const termsType = String(d?.netTermsType || "").trim() || "DUE_UPON_RECEIPT";
+    const validTerms = new Set(["DUE_UPON_RECEIPT", "NET_15", "NET_30", "NET_CUSTOM"]);
+    const safeTermsType = validTerms.has(termsType) ? termsType : "DUE_UPON_RECEIPT";
+    let safeTermsDays = null;
+    if (safeTermsType === "NET_CUSTOM") {
+      const parsed = parseInt(String(d?.netTermsDays ?? "").trim(), 10);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 365) {
+        return alert(label("Custom net terms days must be between 0 and 365.", "Los días personalizados deben estar entre 0 y 365."));
+      }
+      safeTermsDays = parsed;
+    }
+
     const id = String(d.id || "").trim() || buildId();
     const now = Date.now();
 
     // normalize booleans
-    const nextItem = { ...d, id, updatedAt: now };
+    const nextItem = { ...d, id, updatedAt: now, netTermsType: safeTermsType, netTermsDays: safeTermsDays };
 
     // Enforce billing address behavior
     if (type === "commercial") {
@@ -555,6 +590,16 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
 
     setMode("list");
+
+    if (autoUseOnSave && typeof onDone === "function") {
+      try {
+        const payloadCustomer = { ...nextItem, ...toEstimatorFlat(nextItem) };
+        localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify({ id, customer: payloadCustomer, ts: Date.now() }));
+        window.dispatchEvent(new Event("estipaid:customer-use"));
+      } catch {}
+      try { onDone({ id, customer: nextItem }); } catch {}
+      setAutoUseOnSave(false);
+    }
   }
 
   function del(id) {
@@ -614,7 +659,7 @@ export default function CustomersScreen({
             {label("Create", "Crear")}
           </button>
         ) : (
-          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setMode("list")}>
+          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => { setAutoUseOnSave(false); setMode("list"); }}>
             {label("Back", "Atrás")}
           </button>
         )}
@@ -687,7 +732,7 @@ export default function CustomersScreen({
                           </div>
                           <div style={{ display: "grid", gap: 2 }}>
                             <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                              {label("Avg Margin", "Margen prom.")}
+                              {label("Avg margin", "Margen prom.")}
                             </div>
                             <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
                               {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
@@ -737,7 +782,7 @@ export default function CustomersScreen({
           <div style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <FieldLabel>{label("Customer Type", "Tipo de cliente")}</FieldLabel>
+                <FieldLabel>{label("Customer type", "Tipo de cliente")}</FieldLabel>
                 <div style={{ display: "flex", gap: 10 }}>
                   <button
   type="button"
@@ -781,6 +826,40 @@ export default function CustomersScreen({
               </div>
             </div>
 
+            <div style={{ ...cardBaseStyle, padding: 12 }}>
+              <div style={twoCol}>
+                <Field
+                  as="select"
+                  label={label("Net terms", "Términos de pago")}
+                  value={String(draft.netTermsType || "DUE_UPON_RECEIPT")}
+                  onChange={(e) => {
+                    const nextType = String(e.target.value || "DUE_UPON_RECEIPT");
+                    setDraft((d) => ({ ...d, netTermsType: nextType, netTermsDays: nextType === "NET_CUSTOM" ? d.netTermsDays : null }));
+                  }}
+                >
+                  {NET_TERMS_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {label(o.labelEn, o.labelEs)}
+                    </option>
+                  ))}
+                </Field>
+                {String(draft.netTermsType || "") === "NET_CUSTOM" ? (
+                  <Field
+                    label={label("Custom days", "Días personalizados")}
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={365}
+                    step={1}
+                    value={draft.netTermsDays ?? ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, netTermsDays: e.target.value }))}
+                  />
+                ) : (
+                  <div />
+                )}
+              </div>
+            </div>
+
             {(draft.type || "residential") === "commercial" ? (
               <div style={{ display: "grid", gap: 12 }}>
                 <div style={{ ...cardBaseStyle, padding: 12 }}>
@@ -789,40 +868,58 @@ export default function CustomersScreen({
                   </div>
 
                   
-                    <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                      <div style={twoCol}>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("Company Name *", "Nombre de la compañía *")}</FieldLabel>
-                          <input className="pe-input" value={draft.companyName} onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("Primary Contact *", "Contacto principal *")}</FieldLabel>
-                          <input className="pe-input" value={draft.contactName} onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))} />
-                        </div>
+                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                  <div style={twoCol}>
+                        <Field
+                          label={label("Company name *", "Nombre de la compañía *")}
+                          value={draft.companyName}
+                          onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))}
+                        />
+                        <Field
+                          label={label("Primary contact *", "Contacto principal *")}
+                          value={draft.contactName}
+                          onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))}
+                        />
 
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("Contact Title", "Puesto")}</FieldLabel>
-                          <input className="pe-input" value={draft.contactTitle} onChange={(e) => setDraft((d) => ({ ...d, contactTitle: e.target.value }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("Phone", "Teléfono")}</FieldLabel>
-                          <input className="pe-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="(555) 555-5555" value={draft.comPhone} onChange={(e) => setDraft((d) => ({ ...d, comPhone: formatPhoneUS(e.target.value) }))} />
-                        </div>
+                        <Field
+                          label={label("Contact title", "Puesto")}
+                          value={draft.contactTitle}
+                          onChange={(e) => setDraft((d) => ({ ...d, contactTitle: e.target.value }))}
+                        />
+                        <Field
+                          label={label("Phone", "Teléfono")}
+                          type="tel"
+                          inputMode="tel"
+                          autoComplete="tel"
+                          placeholder="(555) 555-5555"
+                          value={draft.comPhone}
+                          onChange={(e) => setDraft((d) => ({ ...d, comPhone: formatPhoneUS(e.target.value) }))}
+                        />
 
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("Primary Email", "Correo")}</FieldLabel>
-                          <input className="pe-input" type="email" inputMode="email" autoComplete="email" placeholder="name@company.com" value={draft.comEmail} onChange={(e) => setDraft((d) => ({ ...d, comEmail: e.target.value }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("AP Email", "Correo de Cuentas por Pagar")}</FieldLabel>
-                          <input className="pe-input" type="email" inputMode="email" autoComplete="email" placeholder="ap@company.com" value={draft.apEmail} onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))} />
-                        </div>
+                        <Field
+                          label={label("Primary email", "Correo")}
+                          type="email"
+                          inputMode="email"
+                          autoComplete="email"
+                          placeholder="name@company.com"
+                          value={draft.comEmail}
+                          onChange={(e) => setDraft((d) => ({ ...d, comEmail: e.target.value }))}
+                        />
+                        <Field
+                          label={label("AP email", "Correo de Cuentas por Pagar")}
+                          type="email"
+                          inputMode="email"
+                          autoComplete="email"
+                          placeholder="ap@company.com"
+                          value={draft.apEmail}
+                          onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))}
+                        />
                       </div>
 
                       <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
                         <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
                           <input type="checkbox" checked={Boolean(draft.poRequired)} onChange={(e) => setDraft((d) => ({ ...d, poRequired: e.target.checked }))} />
-                          <span style={{ fontSize: 13, fontWeight: 900, opacity: 0.9 }}>{label("PO Required", "PO Requerido")}</span>
+                          <span className="pe-field-helper">{label("PO required", "PO Requerido")}</span>
                         </label>
                       </div>
                     </div>
@@ -835,51 +932,77 @@ export default function CustomersScreen({
 
                   
                     <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Jobsite Address", "Dirección del sitio")}</div>
+                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Jobsite address", "Dirección del sitio")}</div>
                       <div style={twoCol}>
-                        <div style={{ display: "grid", gap: 6, ...fullRow }}>
-                          <FieldLabel>{label("Street *", "Calle *")}</FieldLabel>
-                          <input className="pe-input" type="text" autoComplete="street-address" value={draft.jobsite.street} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("City *", "Ciudad *")}</FieldLabel>
-                          <input className="pe-input" type="text" autoComplete="address-level2" value={draft.jobsite.city} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
+                        <Field
+                          fieldClassName=""
+                          className=""
+                          label={label("Street *", "Calle *")}
+                          type="text"
+                          autoComplete="street-address"
+                          value={draft.jobsite.street}
+                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))}
+                          wrapperStyle={fullRow}
+                        />
+                        <Field
+                          label={label("City *", "Ciudad *")}
+                          type="text"
+                          autoComplete="address-level2"
+                          value={draft.jobsite.city}
+                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))}
+                        />
+                        <div className="pe-field">
                           <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
                           <StateSelect value={draft.jobsite.state} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, state: e.target.value } }))} />
                         </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("ZIP *", "ZIP *")}</FieldLabel>
-                          <input className="pe-input" type="text" inputMode="numeric" autoComplete="postal-code" placeholder="85001" value={draft.jobsite.zip} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, zip: formatZipUS(e.target.value) } }))} />
-                        </div>
+                        <Field
+                          label={label("ZIP *", "ZIP *")}
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="postal-code"
+                          placeholder="85001"
+                          value={draft.jobsite.zip}
+                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, zip: formatZipUS(e.target.value) } }))}
+                        />
                       </div>
 
                       <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
                         <input type="checkbox" checked={Boolean(draft.billSameAsJob)} onChange={(e) => setDraft((d) => ({ ...d, billSameAsJob: e.target.checked }))} />
-                        <span style={{ fontSize: 13, fontWeight: 900, opacity: 0.9 }}>{label("Billing same as Jobsite", "Facturación igual al sitio")}</span>
+                        <span className="pe-field-helper">{label("Billing same as jobsite", "Facturación igual al sitio")}</span>
                       </label>
 
                       {!draft.billSameAsJob ? (
                         <div style={{ display: "grid", gap: 10 }}>
-                          <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing Address", "Dirección de facturación")}</div>
+                          <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing address", "Dirección de facturación")}</div>
                           <div style={twoCol}>
-                            <div style={{ display: "grid", gap: 6, ...fullRow }}>
-                              <FieldLabel>{label("Street", "Calle")}</FieldLabel>
-                              <input className="pe-input" type="text" autoComplete="street-address" value={draft.billing.street} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))} />
-                            </div>
-                            <div style={{ display: "grid", gap: 6 }}>
-                              <FieldLabel>{label("City", "Ciudad")}</FieldLabel>
-                              <input className="pe-input" type="text" autoComplete="address-level2" value={draft.billing.city} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))} />
-                            </div>
-                            <div style={{ display: "grid", gap: 6 }}>
+                            <Field
+                              label={label("Street", "Calle")}
+                              type="text"
+                              autoComplete="street-address"
+                              value={draft.billing.street}
+                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))}
+                              wrapperStyle={fullRow}
+                            />
+                            <Field
+                              label={label("City", "Ciudad")}
+                              type="text"
+                              autoComplete="address-level2"
+                              value={draft.billing.city}
+                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))}
+                            />
+                            <div className="pe-field">
                               <FieldLabel>{label("State", "Estado")}</FieldLabel>
                               <StateSelect value={draft.billing.state} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, state: e.target.value } }))} placeholder={label("State", "Estado")} />
                             </div>
-                            <div style={{ display: "grid", gap: 6 }}>
-                              <FieldLabel>{label("ZIP", "ZIP")}</FieldLabel>
-                              <input className="pe-input" type="text" inputMode="numeric" autoComplete="postal-code" placeholder="85001" value={draft.billing.zip} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, zip: formatZipUS(e.target.value) } }))} />
-                            </div>
+                            <Field
+                              label={label("ZIP", "ZIP")}
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="postal-code"
+                              placeholder="85001"
+                              value={draft.billing.zip}
+                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, zip: formatZipUS(e.target.value) } }))}
+                            />
                           </div>
                         </div>
                       ) : null}
@@ -891,67 +1014,103 @@ export default function CustomersScreen({
                 <div style={{ ...cardBaseStyle, padding: 12 }}>
                   <div style={{ fontWeight: 950, marginBottom: 10 }}>{label("Residential Contact", "Contacto residencial")}</div>
                   <div style={twoCol}>
-                    <div style={{ display: "grid", gap: 6, ...fullRow }}>
-                      <FieldLabel>{label("Full Name *", "Nombre completo *")}</FieldLabel>
-                      <input className="pe-input" value={draft.fullName} onChange={(e) => setDraft((d) => ({ ...d, fullName: e.target.value }))} />
-                    </div>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <FieldLabel>{label("Phone", "Teléfono")}</FieldLabel>
-                      <input className="pe-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="(555) 555-5555" value={draft.resPhone} onChange={(e) => setDraft((d) => ({ ...d, resPhone: formatPhoneUS(e.target.value) }))} />
-                    </div>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <FieldLabel>{label("Email", "Correo")}</FieldLabel>
-                      <input className="pe-input" type="email" inputMode="email" autoComplete="email" placeholder="name@email.com" value={draft.resEmail} onChange={(e) => setDraft((d) => ({ ...d, resEmail: e.target.value }))} />
-                    </div>
+                    <Field
+                      label={label("Full name *", "Nombre completo *")}
+                      value={draft.fullName}
+                      onChange={(e) => setDraft((d) => ({ ...d, fullName: e.target.value }))}
+                      wrapperStyle={fullRow}
+                    />
+                    <Field
+                      label={label("Phone", "Teléfono")}
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      placeholder="(555) 555-5555"
+                      value={draft.resPhone}
+                      onChange={(e) => setDraft((d) => ({ ...d, resPhone: formatPhoneUS(e.target.value) }))}
+                    />
+                    <Field
+                      label={label("Email", "Correo")}
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      placeholder="name@email.com"
+                      value={draft.resEmail}
+                      onChange={(e) => setDraft((d) => ({ ...d, resEmail: e.target.value }))}
+                    />
                   </div>
                 </div>
 
                 <div style={{ ...cardBaseStyle, padding: 12 }}>
                   <div style={{ fontWeight: 950, marginBottom: 10 }}>{label("Service Address", "Dirección del servicio")}</div>
                   <div style={twoCol}>
-                    <div style={{ display: "grid", gap: 6, ...fullRow }}>
-                      <FieldLabel>{label("Street *", "Calle *")}</FieldLabel>
-                      <input className="pe-input" type="text" autoComplete="street-address" value={draft.resService.street} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, street: e.target.value } }))} />
-                    </div>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <FieldLabel>{label("City *", "Ciudad *")}</FieldLabel>
-                      <input className="pe-input" type="text" autoComplete="address-level2" value={draft.resService.city} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, city: e.target.value } }))} />
-                    </div>
-                    <div style={{ display: "grid", gap: 6 }}>
+                    <Field
+                      label={label("Street *", "Calle *")}
+                      type="text"
+                      autoComplete="street-address"
+                      value={draft.resService.street}
+                      onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, street: e.target.value } }))}
+                      wrapperStyle={fullRow}
+                    />
+                    <Field
+                      label={label("City *", "Ciudad *")}
+                      type="text"
+                      autoComplete="address-level2"
+                      value={draft.resService.city}
+                      onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, city: e.target.value } }))}
+                    />
+                    <div className="pe-field">
                       <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
                       <StateSelect value={draft.resService.state} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, state: e.target.value } }))} />
                     </div>
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <FieldLabel>{label("ZIP *", "ZIP *")}</FieldLabel>
-                      <input className="pe-input" type="text" inputMode="numeric" autoComplete="postal-code" placeholder="85001" value={draft.resService.zip} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, zip: formatZipUS(e.target.value) } }))} />
-                    </div>
+                    <Field
+                      label={label("ZIP *", "ZIP *")}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="postal-code"
+                      placeholder="85001"
+                      value={draft.resService.zip}
+                      onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, zip: formatZipUS(e.target.value) } }))}
+                    />
                   </div>
 
                   <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", marginTop: 10 }}>
                     <input type="checkbox" checked={Boolean(draft.resBillingSame)} onChange={(e) => setDraft((d) => ({ ...d, resBillingSame: e.target.checked }))} />
-                    <span style={{ fontSize: 13, fontWeight: 900, opacity: 0.9 }}>{label("Billing same as Service", "Facturación igual al servicio")}</span>
+                    <span className="pe-field-helper">{label("Billing same as service", "Facturación igual al servicio")}</span>
                   </label>
 
                   {!draft.resBillingSame ? (
                     <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing Address", "Dirección de facturación")}</div>
+                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing address", "Dirección de facturación")}</div>
                       <div style={twoCol}>
-                        <div style={{ display: "grid", gap: 6, ...fullRow }}>
-                          <FieldLabel>{label("Street", "Calle")}</FieldLabel>
-                          <input className="pe-input" type="text" autoComplete="street-address" value={draft.resBilling.street} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, street: e.target.value } }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("City", "Ciudad")}</FieldLabel>
-                          <input className="pe-input" type="text" autoComplete="address-level2" value={draft.resBilling.city} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, city: e.target.value } }))} />
-                        </div>
-                        <div style={{ display: "grid", gap: 6 }}>
+                        <Field
+                          label={label("Street", "Calle")}
+                          type="text"
+                          autoComplete="street-address"
+                          value={draft.resBilling.street}
+                          onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, street: e.target.value } }))}
+                          wrapperStyle={fullRow}
+                        />
+                        <Field
+                          label={label("City", "Ciudad")}
+                          type="text"
+                          autoComplete="address-level2"
+                          value={draft.resBilling.city}
+                          onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, city: e.target.value } }))}
+                        />
+                        <div className="pe-field">
                           <FieldLabel>{label("State", "Estado")}</FieldLabel>
                           <StateSelect value={draft.resBilling.state} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, state: e.target.value } }))} placeholder={label("State", "Estado")} />
                         </div>
-                        <div style={{ display: "grid", gap: 6 }}>
-                          <FieldLabel>{label("ZIP", "ZIP")}</FieldLabel>
-                          <input className="pe-input" type="text" inputMode="numeric" autoComplete="postal-code" placeholder="85001" value={draft.resBilling.zip} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, zip: formatZipUS(e.target.value) } }))} />
-                        </div>
+                        <Field
+                          label={label("ZIP", "ZIP")}
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="postal-code"
+                          placeholder="85001"
+                          value={draft.resBilling.zip}
+                          onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, zip: formatZipUS(e.target.value) } }))}
+                        />
                       </div>
                     </div>
                   ) : null}

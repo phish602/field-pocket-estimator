@@ -1,0 +1,92 @@
+/* Estimator-driven field system, applied app-wide under `.pe-app`. */
+
+.pe-app .pe-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pe-app .pe-field-label {
+  display: block;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  text-transform: none;
+  color: rgba(229, 238, 245, 0.72);
+}
+
+.pe-app .pe-field-control {
+  width: 100%;
+}
+
+.pe-app .pe-field-helper {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(156, 163, 175, 0.92);
+}
+
+.pe-app .pe-field-error {
+  font-size: 12px;
+  font-weight: 800;
+  color: rgba(248, 113, 113, 0.96);
+}
+
+/* Regression guard: keep form typography consistent across screens. */
+.pe-app input,
+.pe-app select,
+.pe-app textarea {
+  font-family: inherit;
+}
+
+/* Canonical cyber-glass control treatment from Estimator. */
+.pe-app input.pe-input,
+.pe-app select.pe-input,
+.pe-app textarea.pe-input {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    rgba(9, 14, 20, 0.64);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 0 rgba(0, 0, 0, 0.32);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    transform 140ms ease;
+}
+
+.pe-app input.pe-input::placeholder,
+.pe-app select.pe-input::placeholder,
+.pe-app textarea.pe-input::placeholder {
+  color: rgba(184, 194, 210, 0.68);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pe-app input.pe-input:hover,
+  .pe-app select.pe-input:hover,
+  .pe-app textarea.pe-input:hover {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02)),
+      rgba(10, 16, 23, 0.72);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 3px 10px rgba(0, 0, 0, 0.22);
+    transform: translateY(-1px);
+  }
+}
+
+.pe-app input.pe-input:focus,
+.pe-app select.pe-input:focus,
+.pe-app textarea.pe-input:focus {
+  outline: none;
+  border-color: rgba(52, 211, 153, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 3px rgba(34, 197, 94, 0.16),
+    0 0 0 1px rgba(52, 211, 153, 0.28),
+    0 8px 20px rgba(5, 16, 12, 0.24);
+  transform: translateY(0);
+}

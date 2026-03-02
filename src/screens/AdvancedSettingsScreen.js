@@ -70,16 +70,6 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
     []
   );
 
-  const labelStyle = useMemo(
-    () => ({
-      fontSize: 13,
-      opacity: 0.9,
-      letterSpacing: 0.2,
-      marginBottom: 10,
-    }),
-    []
-  );
-
   const rowStyle = useMemo(
     () => ({
       display: "flex",
@@ -159,7 +149,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
 
       <div style={{ paddingBottom: 18 }}>
         <div style={sectionStyle}>
-          <div style={labelStyle}>Appearance</div>
+          <div className="pe-field-label" style={{ marginBottom: 10 }}>Appearance</div>
           <div style={rowStyle}>
             <div onClick={() => onSetTheme("auto")} style={pillStyle(theme === "auto")}>
               Auto
@@ -174,7 +164,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         </div>
 
         <div style={sectionStyle}>
-          <div style={labelStyle}>Language</div>
+          <div className="pe-field-label" style={{ marginBottom: 10 }}>Language</div>
           <div style={rowStyle}>
             <div onClick={() => onSetLang("en")} style={pillStyle(lang === "en")}>
               English
@@ -186,9 +176,9 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         </div>
 
         <div style={sectionStyle}>
-          <div style={labelStyle}>Estimator display</div>
+          <div className="pe-field-label" style={{ marginBottom: 10 }}>Estimator display</div>
           <div style={toggleRowStyle}>
-            <div style={{ fontSize: 14, opacity: 0.95 }}>Show costs</div>
+            <div className="pe-field-helper">Show costs</div>
             <button
               onClick={onToggleCosts}
               style={{
@@ -201,13 +191,13 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
                 minWidth: 92,
               }}
             >
-              {showCosts ? "ON" : "OFF"}
+              {showCosts ? "On" : "Off"}
             </button>
           </div>
         </div>
 
         <div style={sectionStyle}>
-          <div style={labelStyle}>More</div>
+          <div className="pe-field-label" style={{ marginBottom: 10 }}>More</div>
           <div style={{ fontSize: 13, opacity: 0.8, lineHeight: 1.5 }}>
             Advanced settings centralized here.
           </div>

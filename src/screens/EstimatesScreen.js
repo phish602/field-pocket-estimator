@@ -1,6 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 import { useMemo, useState } from "react";
+import Field from "../components/Field";
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -52,7 +53,8 @@ function calcBreakdown(e) {
   const customMultiplier = toNum(e?.customMultiplier || 1);
   const effectiveMultiplier = multiplierMode === "custom" ? (customMultiplier || 1) : (laborMultiplierPreset || 1);
 
-  const hazardPct = toNum(e?.hazardPct || 0);
+  const hazardPct = toNum(e?.hazardPct ?? e?.labor?.hazardPct ?? 0);
+  const riskPct = toNum(e?.riskPct ?? e?.labor?.riskPct ?? 0);
   const materialsMode = e?.materialsMode || "itemized";
   const materialsMarkupPct = toNum(e?.materialsMarkupPct || 0);
   const materialsCost = toNum(e?.materialsCost || 0);
@@ -150,8 +152,9 @@ function calcBreakdown(e) {
 
   // Hazard: match common estimator behavior (apply to billed labor only)
   const hazardAmt = laborBilled * (hazardPct / 100);
+  const riskAmt = laborBilled * (riskPct / 100);
 
-  const revenue = laborBilled + materialsBilled + hazardAmt;
+  const revenue = laborBilled + materialsBilled + hazardAmt + riskAmt;
   const internal = laborInternal + materialsInternal; // hazard assumed pure surcharge unless you later add internal risk cost
   const profit = revenue - internal;
   const margin = safeDiv(profit, revenue);
@@ -160,7 +163,9 @@ function calcBreakdown(e) {
     effectiveMultiplier,
     multiplierMode,
     hazardPct,
+    riskPct,
     hazardAmt,
+    riskAmt,
     materialsMode,
     materialsMarkupPct,
     labor: {
@@ -226,7 +231,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const labelHide = lang === "es" ? "Ocultar" : "Hide";
 
   const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
-  const labelInternal = lang === "es" ? "Costo interno" : "Internal Cost";
+  const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
   const labelProfit = lang === "es" ? "Ganancia" : "Profit";
   const labelMargin = lang === "es" ? "Margen" : "Margin";
 
@@ -253,8 +258,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
       </div>
 
       <div className="pe-grid" style={{ gap: 10 }}>
-        <input
-          className="pe-input"
+        <Field
           placeholder={lang === "es" ? "Buscar…" : "Search…"}
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -345,7 +349,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                   <div style={panel} aria-hidden={!isOpen}>
                     {/* TOTALS */}
                     <div style={subCard}>
-                      <div style={sectionTitle}>{lang === "es" ? "TOTALES" : "TOTALS"}</div>
+                      <div style={sectionTitle}>{lang === "es" ? "Totales" : "Totals"}</div>
                       <div style={row}>
                         <div style={small}>{labelRevenue}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.totals.revenue)}</div>
@@ -366,7 +370,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
                     {/* LABOR */}
                     <div style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "MANO DE OBRA" : "LABOR"}</div>
+                      <div style={sectionTitle}>{lang === "es" ? "Mano de obra" : "Labor"}</div>
                       <div style={row}>
                         <div style={small}>{lang === "es" ? "Base" : "Base"}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.labor.base)}</div>
@@ -427,7 +431,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
                     {/* MATERIALS */}
                     <div style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "MATERIALES" : "MATERIALS"}</div>
+                      <div style={sectionTitle}>{lang === "es" ? "Materiales" : "Materials"}</div>
                       <div style={row}>
                         <div style={small}>{lang === "es" ? "Modo" : "Mode"}</div>
                         <div style={{ fontWeight: 900 }}>{bd.materialsMode === "blanket" ? (lang === "es" ? "Global" : "Blanket") : (lang === "es" ? "Detallado" : "Itemized")}</div>
@@ -487,21 +491,29 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                       </div>
                     </div>
 
-                    {/* HAZARD */}
+                    {/* HAZARD / RISK */}
                     <div style={{ ...subCard, marginTop: 10 }}>
-                      <div style={sectionTitle}>{lang === "es" ? "RIESGO" : "HAZARD"}</div>
+                      <div style={sectionTitle}>{lang === "es" ? "Peligro y Riesgo" : "Hazard & Risk"}</div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Porcentaje" : "Percent"}</div>
+                        <div style={small}>{lang === "es" ? "Peligro %" : "Hazard %"}</div>
                         <div style={{ fontWeight: 900 }}>{pctStr(bd.hazardPct)}</div>
                       </div>
                       <div style={row}>
-                        <div style={small}>{lang === "es" ? "Monto" : "Amount"}</div>
+                        <div style={small}>{lang === "es" ? "Cargo de Peligro" : "Hazard amount"}</div>
                         <div style={{ fontWeight: 900 }}>{money(bd.hazardAmt)}</div>
+                      </div>
+                      <div style={row}>
+                        <div style={small}>{lang === "es" ? "Riesgo %" : "Risk %"}</div>
+                        <div style={{ fontWeight: 900 }}>{pctStr(bd.riskPct)}</div>
+                      </div>
+                      <div style={row}>
+                        <div style={small}>{lang === "es" ? "Cargo de Riesgo" : "Risk amount"}</div>
+                        <div style={{ fontWeight: 900 }}>{money(bd.riskAmt)}</div>
                       </div>
                       <div style={{ fontSize: 12, opacity: 0.72, marginTop: 6 }}>
                         {lang === "es"
-                          ? "El riesgo se calcula sobre la mano de obra facturada."
-                          : "Hazard is calculated on billed labor."}
+                          ? "Se aplica una sola vez sobre la mano de obra facturada."
+                          : "Applied once on billed labor."}
                       </div>
                     </div>
                   </div>

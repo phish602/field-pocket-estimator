@@ -1,6 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 import { useEffect, useMemo, useState } from "react";
+import Field from "../components/Field";
 
 const INVOICES_KEY = "field-pocket-invoices-v1";
 
@@ -93,8 +94,7 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
       </div>
 
       <div className="pe-grid" style={{ gap: 10 }}>
-        <input
-          className="pe-input"
+        <Field
           placeholder={lang === "es" ? "Buscar…" : "Search…"}
           value={q}
           onChange={(e) => setQ(e.target.value)}
