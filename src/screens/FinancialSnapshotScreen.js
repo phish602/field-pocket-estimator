@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Field from "../components/Field";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { computeTotals } from "../estimator/engine";
 
-const ESTIMATES_KEY = "field-pocket-estimates";
-const INVOICES_KEY = "field-pocket-invoices-v1";
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 
 function safeParseJSON(raw, fallback) {
   try {
@@ -114,75 +116,94 @@ function getDueDate(inv) {
   return addDays(base, 30);
 }
 
-function sumInternalLabor(doc) {
-  const lines = Array.isArray(doc?.laborLines) ? doc.laborLines : Array.isArray(doc?.labor?.lines) ? doc.labor.lines : [];
-  let total = 0;
-  for (const ln of lines) {
-    const hrs = asNumber(ln?.hours);
-    const qty = asNumber(ln?.qty || 1) || 1;
-    const rate = asNumber(ln?.trueRateInternal ?? ln?.internalRate ?? ln?.rateInternal);
-    total += hrs * qty * rate;
-  }
-  return total;
+function resolveMaterialsMode(doc) {
+  const explicit = String(doc?.ui?.materialsMode || doc?.materialsMode || "").toLowerCase();
+  if (explicit === "itemized" || explicit === "blanket") return explicit;
+  if (Array.isArray(doc?.materials?.items) && doc.materials.items.length > 0) return "itemized";
+  if (Array.isArray(doc?.materialItems) && doc.materialItems.length > 0) return "itemized";
+  return "blanket";
 }
 
-function sumInternalMaterials(doc) {
-  const items = Array.isArray(doc?.materialItems) ? doc.materialItems : Array.isArray(doc?.materials?.items) ? doc.materials.items : [];
-  if (items.length) {
-    let total = 0;
-    for (const it of items) {
-      const qty = asNumber(it?.qty || 1) || 1;
-      const cost = asNumber(it?.unitCostInternal ?? it?.costInternal ?? it?.cost);
-      total += qty * cost;
-    }
-    return total;
-  }
-  return asNumber(doc?.blanketInternalCost ?? doc?.materials?.blanketInternalCost ?? doc?.materialsCost);
+function toEstimatorState(doc) {
+  const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const multiplierMode = String(doc?.multiplierMode || "").toLowerCase();
+  const customMultiplier = asNumber(doc?.customMultiplier);
+  const presetMultiplier = asNumber(doc?.laborMultiplier);
+  const directMultiplier = asNumber(doc?.labor?.multiplier);
+  const multiplier = directMultiplier > 0
+    ? directMultiplier
+    : (multiplierMode === "custom" ? (customMultiplier || 1) : (presetMultiplier || 1));
+  return {
+    ui: {
+      materialsMode: resolveMaterialsMode(doc),
+    },
+    labor: {
+      hazardPct: asNumber(doc?.labor?.hazardPct ?? doc?.hazardPct),
+      riskPct: asNumber(doc?.labor?.riskPct ?? doc?.riskPct),
+      multiplier: multiplier > 0 ? multiplier : 1,
+      lines: laborLines.map((ln, idx) => ({
+        id: String(ln?.id ?? `labor_${idx}`),
+        qty: Math.max(1, asNumber(ln?.qty || 1)),
+        hours: Math.max(0, asNumber(ln?.hours)),
+        rate: Math.max(0, asNumber(ln?.rate ?? ln?.billRate)),
+        markupPct: asNumber(ln?.markupPct),
+        trueRateInternal: Math.max(0, asNumber(ln?.trueRateInternal ?? ln?.internalRate ?? ln?.rateInternal)),
+      })),
+    },
+    materials: {
+      blanketCost: Math.max(0, asNumber(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost)),
+      blanketInternalCost: Math.max(
+        0,
+        asNumber(doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost ?? doc?.materialsCost)
+      ),
+      markupPct: asNumber(doc?.materials?.markupPct ?? doc?.materialsMarkupPct),
+      items: materialItems.map((it, idx) => ({
+        id: String(it?.id ?? `mat_${idx}`),
+        qty: Math.max(1, asNumber(it?.qty || 1)),
+        priceEach: Math.max(0, asNumber(it?.priceEach ?? it?.chargeEach ?? it?.charge ?? it?.price ?? it?.unitPrice)),
+        markupPct: asNumber(it?.markupPct),
+        unitCostInternal: Math.max(
+          0,
+          asNumber(it?.unitCostInternal ?? it?.costInternal ?? it?.internalCost ?? it?.internalEach ?? it?.internalPrice ?? it?.cost)
+        ),
+      })),
+    },
+  };
 }
 
-function sumLaborRevenue(doc) {
-  const lines = Array.isArray(doc?.laborLines) ? doc.laborLines : Array.isArray(doc?.labor?.lines) ? doc.labor.lines : [];
-  let total = 0;
-  for (const ln of lines) {
-    const hrs = asNumber(ln?.hours);
-    const qty = asNumber(ln?.qty || 1) || 1;
-    const rate = asNumber(ln?.rate ?? ln?.billRate);
-    total += hrs * qty * rate;
-  }
-  return total;
-}
+const FALLBACK_TOTALS_CACHE = new WeakMap();
 
-function sumMaterialRevenue(doc) {
-  const items = Array.isArray(doc?.materialItems) ? doc.materialItems : Array.isArray(doc?.materials?.items) ? doc.materials.items : [];
-  if (items.length) {
-    let total = 0;
-    for (const it of items) {
-      const qty = asNumber(it?.qty || 1) || 1;
-      const price = asNumber(it?.priceEach ?? it?.chargeEach ?? it?.price);
-      total += qty * price;
-    }
-    return total;
+function getFallbackTotals(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  const cached = FALLBACK_TOTALS_CACHE.get(doc);
+  if (cached) return cached;
+  try {
+    const computed = computeTotals(toEstimatorState(doc));
+    FALLBACK_TOTALS_CACHE.set(doc, computed);
+    return computed;
+  } catch {
+    return null;
   }
-  const blanket = asNumber(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost);
-  const markupPct = asNumber(doc?.materials?.markupPct ?? doc?.materialsMarkupPct);
-  return blanket * (1 + markupPct / 100);
 }
 
 function calcRevenue(doc) {
   const direct = doc?.financials?.totalRevenue ?? doc?.totals?.totalRevenue ?? doc?.totalRevenue ?? doc?.grandTotal ?? doc?.total;
   if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
-  return sumLaborRevenue(doc) + sumMaterialRevenue(doc);
+  return asNumber(getFallbackTotals(doc)?.totalRevenue);
 }
 
 function calcCost(doc) {
   const direct = doc?.financials?.totalCost ?? doc?.totals?.totalCost ?? doc?.totalCost;
   if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
-  return sumInternalLabor(doc) + sumInternalMaterials(doc);
+  return asNumber(getFallbackTotals(doc)?.totalCost);
 }
 
 function calcGrossProfit(doc) {
   const direct = doc?.financials?.grossProfit ?? doc?.totals?.grossProfit ?? doc?.grossProfit;
   if (direct !== undefined && direct !== null && String(direct) !== "") return asNumber(direct);
+  const fallback = getFallbackTotals(doc);
+  if (fallback) return asNumber(fallback?.grossProfit);
   return calcRevenue(doc) - calcCost(doc);
 }
 
@@ -428,28 +449,33 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
 
   return (
     <section className="pe-section">
-      <div className="pe-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, position: "relative", minHeight: 56 }}>
-        <div>{title}</div>
+      <div className="pe-card pe-company-shell">
+        <div className="pe-company-profile-header" style={{ position: "relative", minHeight: 56 }}>
+          <div className="pe-company-header-title">
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={title}>{title}</h1>
+          </div>
 
-        <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
-          <img
-            key={spinTick}
-            className="esti-spin"
-            src="/logo/estipaid.svg"
-            alt="EstiPaid"
-            style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))" }}
-            draggable={false}
-          />
-        </div>
+          <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
+            <img
+              key={spinTick}
+              className="esti-spin"
+              src="/logo/estipaid.svg"
+              alt="EstiPaid"
+              style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))" }}
+              draggable={false}
+            />
+          </div>
 
-        <div style={{ width: 110, display: "flex", justifyContent: "flex-end" }}>
-          <Field as="select" value={range} onChange={(e) => setRange(e.target.value)} aria-label={lang === "es" ? "Rango de tiempo" : "Time range"}>
-            <option value="30">{lang === "es" ? "30 días" : "30 Days"}</option>
-            <option value="90">{lang === "es" ? "90 días" : "90 Days"}</option>
-            <option value="ytd">{lang === "es" ? "Año" : "YTD"}</option>
-          </Field>
+          <div className="pe-company-header-controls">
+            <div style={{ width: 110, display: "flex", justifyContent: "flex-end" }}>
+              <Field as="select" value={range} onChange={(e) => setRange(e.target.value)} aria-label={lang === "es" ? "Rango de tiempo" : "Time range"}>
+                <option value="30">{lang === "es" ? "30 días" : "30 Days"}</option>
+                <option value="90">{lang === "es" ? "90 días" : "90 Days"}</option>
+                <option value="ytd">{lang === "es" ? "Año" : "YTD"}</option>
+              </Field>
+            </div>
+          </div>
         </div>
-      </div>
 
       <div className="pe-card" style={{ marginTop: 10 }}>
         <div style={{ display: "grid", gap: 10 }}>
@@ -551,6 +577,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       </div>
 
       <div className="pe-footer" style={{ marginTop: 12 }}>{lang === "es" ? "Vista de solo lectura." : "Display-only view."}</div>
+      </div>
     </section>
   );
 }

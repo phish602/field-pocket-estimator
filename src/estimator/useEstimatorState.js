@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_STATE, STORAGE_KEY } from "./defaultState";
+import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 
 function deepClone(obj) {
   try {
@@ -53,6 +54,38 @@ function uid(prefix) {
   return `${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
 
+function stripInternalNotesForPersistence(state) {
+  const next = { ...(state || {}) };
+  const uiDocType = next?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  if (uiDocType === "invoice") {
+    next.scopeNotes = "";
+    next.additionalNotes = "";
+    next.tradeInsert = { key: "", text: "" };
+  }
+  return next;
+}
+
+function applyDefaultInternalNotesForNewEstimate(state) {
+  const next = deepClone(state || DEFAULT_STATE);
+  const uiDocType = next?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  if (uiDocType !== "estimate") return next;
+  if (String(next?.scopeNotes || "").trim()) return next;
+  let defaultNote = "";
+  try {
+    const settings = loadSettings();
+    defaultNote = String(
+      settings?.docDefaults?.defaultInternalNotesEstimate
+      ?? DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate
+      ?? ""
+    ).trim();
+  } catch {
+    defaultNote = String(DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate || "").trim();
+  }
+  if (!defaultNote) return next;
+  next.scopeNotes = defaultNote;
+  return next;
+}
+
 function setByPath(obj, path, value) {
   const parts = String(path || "").split(".").filter(Boolean);
   if (!parts.length) return obj;
@@ -91,7 +124,7 @@ export function useEstimatorState() {
         return mergeDefaults(base, loaded);
       }
     } catch {}
-    return base;
+    return applyDefaultInternalNotesForNewEstimate(base);
   });
 
   // Debounced autosave to STORAGE_KEY
@@ -102,7 +135,7 @@ export function useEstimatorState() {
 
       saveTimerRef.current = setTimeout(() => {
         try {
-          const next = { ...(state || {}) };
+          const next = stripInternalNotesForPersistence(state);
           next.meta = { ...(next.meta || {}), lastSavedAt: Date.now() };
 
           const serialized = JSON.stringify(next);
@@ -228,9 +261,9 @@ export function useEstimatorState() {
     });
   };
 
-  const saveNow = () => {
+const saveNow = () => {
   try {
-    const next = { ...(state || {}) };
+    const next = stripInternalNotesForPersistence(state);
     next.meta = { ...(next.meta || {}), lastSavedAt: Date.now() };
     const serialized = JSON.stringify(next);
     localStorage.setItem(STORAGE_KEY, serialized);
@@ -243,7 +276,7 @@ const clearAll = () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {}
-    setState(deepClone(DEFAULT_STATE));
+    setState(applyDefaultInternalNotesForNewEstimate(DEFAULT_STATE));
   };
 
   return {

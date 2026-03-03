@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { calculateEstimateWithLaborLines } from "./estimate";
+import { STORAGE_KEYS } from "./constants/storageKeys";
 import "./EstimateForm.css";
 
 const money = new Intl.NumberFormat("en-US", {
@@ -22,8 +23,8 @@ function safeFilename(s) {
   return base.replace(/[\/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim();
 }
 
-const STORAGE_KEY = "field-pocket-estimates";
-const PROFILE_KEY = "field-pocket-profile";
+const STORAGE_KEY = STORAGE_KEYS.ESTIMATES;
+const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 
 export default function EstimateForm() {
   // Company profile (for PDF branding)
@@ -297,7 +298,7 @@ export default function EstimateForm() {
       <main className="pe-card">
         {/* COMPANY PROFILE */}
         <section className="pe-section">
-          <div className="pe-section-title">Company Profile (for PDF)</div>
+          <div className="pe-section-title">User Profile (for PDF)</div>
 
           <div className="pe-grid">
             <input

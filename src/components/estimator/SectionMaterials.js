@@ -8,6 +8,7 @@ export default function SectionMaterials(props) {
     t,
     lang,
     styles,
+    headerIcon,
     money,
     collapseMs,
     triggerHaptic,
@@ -23,11 +24,16 @@ export default function SectionMaterials(props) {
     setMaterialsMarkupPct,
     normalizePercentInput,
     normalizedMarkupPct,
+    lockMarkupToGlobal,
+    globalMarkupPct,
     animateMaterialsTotal,
     materialsBilled,
     materialItems,
+    materialLineTotalsById,
     updateMaterialItem,
     removeMaterialItem,
+    showInternalCostFields,
+    lockInternalCostFields,
     newMaterialItemIds,
     itemizedMaterialsTotal,
     addMaterialItem,
@@ -37,9 +43,12 @@ export default function SectionMaterials(props) {
     <section className="pe-section">
       <div className="pe-divider" style={styles.sectionHeaderDivider} />
       <div style={styles.sectionHeaderRow}>
-        <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>{t("materials")}</div>
-          <div style={styles.sectionAccentLine} />
+        <div style={styles.sectionTitleWithIcon}>
+          <span style={styles.sectionTitleIcon} aria-hidden="true">{headerIcon}</span>
+          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
+            <div className="pe-section-title" style={styles.sectionTitleText}>{t("materials")}</div>
+            <div style={styles.sectionAccentLine} />
+          </div>
         </div>
         {materialsMode === "itemized" && !materialsOpen && (
           <div className="pe-muted" style={styles.laborCollapsedMeta}>
@@ -173,7 +182,13 @@ export default function SectionMaterials(props) {
             {materialItems.map((it, i) => {
               const qtyVal = Math.max(1, Number(it.qty) || 1);
               const eachVal = Number(it.charge) || 0;
-              const lineTotal = qtyVal * eachVal;
+              const mappedLineTotal = materialLineTotalsById?.get
+                ? Number(materialLineTotalsById.get(String(it?.id)))
+                : NaN;
+              const lineTotal = Number.isFinite(mappedLineTotal) ? mappedLineTotal : (qtyVal * eachVal);
+              const lineMarkupValue = lockMarkupToGlobal
+                ? String(globalMarkupPct ?? 0)
+                : String(it?.markupPct ?? "");
               return (
                 <div
                   key={i}
@@ -195,7 +210,7 @@ export default function SectionMaterials(props) {
                     style={{
                       marginTop: 8,
                       display: "grid",
-                      gridTemplateColumns: "1fr 1fr 1fr 40px",
+                      gridTemplateColumns: showInternalCostFields ? "1fr 1fr 1fr 1fr 40px" : "1fr 1fr 1fr 40px",
                       gap: 8,
                       alignItems: "end",
                     }}
@@ -217,19 +232,22 @@ export default function SectionMaterials(props) {
                       </select>
                     </div>
 
-                    <div style={{ display: "grid", gap: 4 }}>
-                      <div style={styles.label}>{t("materialCostInternal")}</div>
-                      <input
-                        className="pe-input"
-                        value={it.cost ?? ""}
-                        onChange={(e) => updateMaterialItem(i, "cost", e.target.value)}
-                        onBlur={(e) => updateMaterialItem(i, "cost", normalizeMoneyInput(e.target.value))}
-                        placeholder="0.00"
-                        inputMode="decimal"
-                        title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
-                        style={{ width: "100%" }}
-                      />
-                    </div>
+                    {showInternalCostFields ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <div style={styles.label}>{t("materialCostInternal")}</div>
+                        <input
+                          className="pe-input"
+                          value={it.cost ?? ""}
+                          onChange={(e) => updateMaterialItem(i, "cost", e.target.value)}
+                          onBlur={(e) => updateMaterialItem(i, "cost", normalizeMoneyInput(e.target.value))}
+                          placeholder="0.00"
+                          inputMode="decimal"
+                          title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
+                          disabled={lockInternalCostFields}
+                          style={{ width: "100%", opacity: lockInternalCostFields ? 0.72 : 1 }}
+                        />
+                      </div>
+                    ) : null}
 
                     <div style={{ display: "grid", gap: 4 }}>
                       <div style={styles.label}>{t("materialCharge")}</div>
@@ -241,6 +259,21 @@ export default function SectionMaterials(props) {
                         placeholder="0.00"
                         inputMode="decimal"
                         style={{ width: "100%" }}
+                      />
+                    </div>
+
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={styles.label}>{t("markupPct")}</div>
+                      <input
+                        className="pe-input"
+                        value={lineMarkupValue}
+                        onChange={(e) => updateMaterialItem(i, "markupPct", e.target.value)}
+                        onBlur={(e) => updateMaterialItem(i, "markupPct", normalizePercentInput(e.target.value))}
+                        placeholder={t("markupPct")}
+                        inputMode="decimal"
+                        disabled={lockMarkupToGlobal}
+                        title={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                        style={{ width: "100%", opacity: lockMarkupToGlobal ? 0.72 : 1 }}
                       />
                     </div>
 

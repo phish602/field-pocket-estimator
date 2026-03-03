@@ -20,9 +20,10 @@ import {
   normalizeMultiplierInput,
   normalizePercentInput,
 } from "./utils/format";
-import { sanitizePdfToken } from "./utils/sanitize";
-import { isCompanyProfileComplete } from "./utils/guards";
+import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
+import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
+import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 
 const money = createMoneyFormatter("en-US", "USD");
@@ -85,6 +86,7 @@ const I18N = {
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
 const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
+const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
@@ -440,6 +442,70 @@ const ADDITIONAL_NOTES_SNIPPETS = [
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 
+function IconCustomer() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="4.2" y="4.8" width="15.6" height="14.4" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="9" cy="10" r="2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M6.8 14.3c.7-1.3 1.5-2 2.2-2s1.5.7 2.2 2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M13.6 9.2h4.2M13.6 12.2h3.4M13.6 15.2h2.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconJobInfo() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="6" y="5" width="12" height="15" rx="2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M9 5.2h6v2H9z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" />
+      <path d="M9 11h6M9 14h6M9 17h4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLabor() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M5.2 7.5 9 11.2M6.6 6.1l3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="m10.3 9.9 3.8-3.8a2.3 2.3 0 1 1 3.3 3.3l-3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m7.7 12.5 3.8 3.8a2.3 2.3 0 0 1-3.3 3.3l-3.8-3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconSpecialConditions() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="9" cy="7" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="15" cy="12" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="11" cy="17" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function IconTotals() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="5" y="4.5" width="14" height="15" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M8.5 8.4h7M8.5 11.6h7" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M9.2 15.6h2.4M12.5 15.6h2.4M9.2 18.1h5.7" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
+  return (
+    <div style={styles.sectionTitleWithIcon}>
+      <span style={styles.sectionTitleIcon} aria-hidden="true">{icon}</span>
+      <div style={{ ...styles.sectionTitleStack, ...(stackStyle || {}) }}>
+        <div className="pe-section-title" style={styles.sectionTitleText}>{title}</div>
+        <div style={styles.sectionAccentLine} />
+      </div>
+    </div>
+  );
+}
+
 const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
 const SHELL_DOCK_HEIGHT = 78;
@@ -451,7 +517,12 @@ const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
 const TOTAL_PULSE_MS = 140;
 
-function createBlankMaterialItem(idOverride) {
+function resolveDefaultMarkupPct(value) {
+  const normalized = normalizePercentInput(value);
+  return normalized === "" ? "0" : normalized;
+}
+
+function createBlankMaterialItem(idOverride, markupPct) {
   return {
     id: idOverride || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     desc: "",
@@ -461,6 +532,7 @@ function createBlankMaterialItem(idOverride) {
     costInternal: "",
     charge: "",
     priceEach: "",
+    markupPct: resolveDefaultMarkupPct(markupPct),
   };
 }
 
@@ -502,6 +574,27 @@ export default function EstimateForm(props) {
     saveNow,
   } = hook();
   const scopeNotes = String(state?.scopeNotes || "");
+  const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
+  const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
+  const globalDefaultMarkupPct = resolveDefaultMarkupPct(pricingSettings?.defaultMarkupPct);
+  const globalDefaultMarkupPctNumber = Number(globalDefaultMarkupPct) || 0;
+  const lockMarkupToGlobal = !!pricingSettings?.lockMarkupToGlobal;
+  const internalSettings = settingsSnapshot?.internal || DEFAULT_SETTINGS.internal;
+  const showInternalCostFields = internalSettings?.showInternalCostFields !== false;
+  const lockInternalCostFields = !!internalSettings?.lockInternalCostFields;
+
+  useEffect(() => {
+    const refresh = (e) => {
+      if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
+      setSettingsSnapshot(loadSettings());
+    };
+    window.addEventListener("estipaid:settings-changed", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("estipaid:settings-changed", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
 
   const [searchCustomerText, setSearchCustomerText] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
@@ -860,6 +953,7 @@ export default function EstimateForm(props) {
       trueRateInternal: "",
       internalRate: "",
       qty: 1,
+      markupPct: globalDefaultMarkupPct,
     });
     patch("labor.lines", lines);
     markRowEnter("labor", newId);
@@ -1022,7 +1116,7 @@ export default function EstimateForm(props) {
 
   function addMaterialItem() {
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
-    const newItem = createBlankMaterialItem();
+    const newItem = createBlankMaterialItem(undefined, globalDefaultMarkupPct);
     items.push(newItem);
     patch("materials.items", items);
     markRowEnter("materials", newItem.id);
@@ -1041,6 +1135,9 @@ export default function EstimateForm(props) {
     } else if (key === "charge") {
       curr.charge = value;
       curr.priceEach = value;
+    } else if (key === "markupPct") {
+      if (lockMarkupToGlobal) return;
+      curr.markupPct = value;
     } else {
       curr[key] = value;
     }
@@ -1052,19 +1149,28 @@ export default function EstimateForm(props) {
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     if (i < 0 || i >= items.length) return;
     if (items.length <= 1) {
-      patch("materials.items", [createBlankMaterialItem(items[0]?.id)]);
+      patch("materials.items", [createBlankMaterialItem(items[0]?.id, globalDefaultMarkupPct)]);
       return;
     }
     patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
-  const computed = useMemo(() => computeTotals(state), [state]);
+  const computed = useMemo(() => computeTotals(state, { settings: settingsSnapshot }), [settingsSnapshot, state]);
 
   const laborTotalsById = useMemo(() => {
     const map = new Map();
     try {
       const arr = computed?.labor?.normalized || [];
       for (const ln of arr) map.set(String(ln?.id), Number(ln?.total || 0));
+    } catch {}
+    return map;
+  }, [computed]);
+
+  const materialLineTotalsById = useMemo(() => {
+    const map = new Map();
+    try {
+      const arr = computed?.materials?.normalized || [];
+      for (const it of arr) map.set(String(it?.id), Number(it?.charge || 0));
     } catch {}
     return map;
   }, [computed]);
@@ -1112,19 +1218,28 @@ export default function EstimateForm(props) {
   const exportPDF = async (mode = "download") => {
     triggerHaptic();
 
-    const companyProfile = loadCompanyProfile();
-    if (!isCompanyProfileComplete(companyProfile)) {
-      const goProfile = window.confirm("Company profile is incomplete. Open Company Profile?");
-      if (goProfile) {
+    const companyGate = requireCompanyProfile({
+      profile: loadCompanyProfile(),
+      message: "User Profile required. Open User Profile?",
+      onRequireProfile: () => {
+        try {
+          window.dispatchEvent(new Event("estipaid:navigate-user-profile"));
+        } catch {}
         try {
           window.dispatchEvent(new Event("estipaid:navigate-company-profile"));
         } catch {}
         try {
+          window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "openUserProfile" } }));
+        } catch {}
+        try {
           window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "openCompanyProfile" } }));
         } catch {}
-      }
+      },
+    });
+    if (!companyGate?.allowed) {
       return;
     }
+    const companyProfile = companyGate.profile || loadCompanyProfile();
 
     try {
       const docNoRaw = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
@@ -1142,27 +1257,39 @@ export default function EstimateForm(props) {
       const projectNumber = String(state?.customer?.projectNumber || "").trim();
       const poNumber = String(state?.job?.poNumber || "").trim();
       const docDate = String(state?.job?.date || "").trim();
+      const includeNotes = uiDocType === "estimate";
       const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
-      const tradeRawForPdf = tradeBlocks.join("\n\n");
-      const scopeWithoutTrade = stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks);
+      const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
+      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks) : "";
+      const companyAddressLine1 = String(companyProfile?.addressLine1 || "").trim();
+      const companyAddressLine2 = String(companyProfile?.addressLine2 || "").trim();
+      const companyCity = String(companyProfile?.city || "").trim();
+      const companyState = String(companyProfile?.state || "").trim();
+      const companyZip = String(companyProfile?.zip || "").trim();
+      const companyCityState = [companyCity, companyState].filter(Boolean).join(", ");
+      const companyCityStateZip = [companyCityState, companyZip].filter(Boolean).join(" ");
+      const companyAddressLines = [companyAddressLine1, companyAddressLine2, companyCityStateZip].filter(Boolean);
+      const companyAddressText = companyAddressLines.length
+        ? companyAddressLines.join("\n")
+        : String(companyProfile?.address || "").trim();
 
       const laborRows = (computed?.labor?.normalized || []).map((ln) => {
         const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
         const label = String(ln?.label || roleLabel || "").trim() || "-";
         const qty = Math.max(1, Number(ln?.qty) || 1);
         const hours = Number(ln?.hours) || 0;
-        const rate = Number(ln?.rate) || 0;
-        const lineTotal = Number(ln?.total || qty * hours * rate);
-        return [label, String(qty), String(hours || 0), money.format(rate), money.format(lineTotal)];
+        const effectiveRate = Number(ln?.effectiveRate ?? ln?.rate) || 0;
+        const lineTotal = Number(ln?.total || qty * hours * effectiveRate);
+        return [label, String(qty), String(hours || 0), money.format(effectiveRate), money.format(lineTotal)];
       });
 
       const materialsRows = (() => {
         if (materialsMode === "itemized") {
-          const rows = (materialItems || []).map((it) => {
+          const rows = (computed?.materials?.normalized || []).map((it) => {
             const desc = String(it?.desc || "").trim() || "-";
             const qty = Math.max(1, Number(it?.qty) || 1);
-            const each = Number(it?.charge ?? it?.priceEach) || 0;
-            const lineTotal = qty * each;
+            const each = Number(it?.effectivePriceEach ?? it?.priceEach ?? 0);
+            const lineTotal = Number(it?.charge || qty * each);
             return [desc, String(qty), money.format(each), money.format(lineTotal)];
           });
           return rows.length ? rows : [["Materials", "1", money.format(0), money.format(0)]];
@@ -1188,7 +1315,12 @@ export default function EstimateForm(props) {
         docType: uiDocType,
         filename,
         documentNumber,
-        company: companyProfile,
+        company: {
+          ...companyProfile,
+          phone: formatPhoneForDisplay(companyProfile?.phone),
+          address: companyAddressText,
+          addressLines: companyAddressLines,
+        },
         customer: {
           name: customerName,
           attn: customerAttn,
@@ -1215,8 +1347,8 @@ export default function EstimateForm(props) {
         laborRows,
         materialRows: materialsRows,
         summaryRows,
-        scopeNotes: scopeWithoutTrade,
-        additionalNotes: String(state?.additionalNotes || "").trim(),
+        scopeNotes: includeNotes ? scopeWithoutTrade : "",
+        additionalNotes: includeNotes ? String(state?.additionalNotes || "").trim() : "",
       }, mode);
     } catch (err) {
       try { console.error(err); } catch {}
@@ -1230,6 +1362,17 @@ export default function EstimateForm(props) {
   };
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const setDocType = (nextDocType) => {
+    const next = nextDocType === "invoice" ? "invoice" : "estimate";
+    if (next === "invoice") {
+      patch("scopeNotes", "");
+      patch("additionalNotes", "");
+      patch("tradeInsert.key", "");
+      patch("tradeInsert.text", "");
+    }
+    patch("ui.docType", next);
+  };
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
     const nextMode = mode === "itemized" ? "itemized" : "blanket";
@@ -1237,7 +1380,7 @@ export default function EstimateForm(props) {
     if (nextMode === "itemized") {
       const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
       if (items.length === 0) {
-        patch("materials.items", [createBlankMaterialItem()]);
+        patch("materials.items", [createBlankMaterialItem(undefined, globalDefaultMarkupPct)]);
       }
     }
   };
@@ -1252,14 +1395,15 @@ export default function EstimateForm(props) {
       qty: Math.max(1, Number(it?.qty) || 1),
       cost: it?.cost ?? it?.unitCostInternal ?? it?.costInternal ?? "",
       charge: it?.charge ?? it?.priceEach ?? "",
+      markupPct: it?.markupPct ?? "",
     }));
   }, [state?.materials?.items]);
   useEffect(() => {
     if (materialsMode !== "itemized") return;
     const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
     if (items.length > 0) return;
-    patch("materials.items", [createBlankMaterialItem()]);
-  }, [materialsMode, patch, state?.materials?.items]);
+    patch("materials.items", [createBlankMaterialItem(undefined, globalDefaultMarkupPct)]);
+  }, [globalDefaultMarkupPct, materialsMode, patch, state?.materials?.items]);
   const laborLines = useMemo(() => {
     const arr = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     return arr.map((ln) => {
@@ -1277,13 +1421,7 @@ export default function EstimateForm(props) {
         return sum + (Number.isFinite(n) && n > 0 ? n : 1);
       }, 0)
     : 0;
-  const itemizedMaterialsTotal = useMemo(() => {
-    return (materialItems || []).reduce((sum, it) => {
-      const qtyVal = Math.max(1, Number(it?.qty) || 1);
-      const eachVal = Number(it?.charge) || 0;
-      return sum + (qtyVal * eachVal);
-    }, 0);
-  }, [materialItems]);
+  const itemizedMaterialsTotal = Number(computed?.materials?.totalCharge || 0);
   const itemizedMaterialsCount = useMemo(() => (materialItems || []).length, [materialItems]);
   const normalizedMarkupPct = Number(normalizePercentInput(materialsMarkupPct));
   const materialsBilled = materialsMode === "itemized"
@@ -1365,39 +1503,36 @@ export default function EstimateForm(props) {
   return (
     <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
       {/* Builder bar */}
-      <div style={styles.builderHeroWrap}>
-        <div className="pe-builder-bar">
-          <div className="pe-title pe-builder-title">
-            {uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder"}
+      <div className="estimatorPageContainer">
+        <div className="tileWidthWrapper">
+          <div className="pe-builder-bar estimatorHeaderRow">
+            <h1 className="pe-title pe-builder-title screenTitle">
+              <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+            </h1>
+            <div className="pe-builder-mode" style={styles.builderModeSegmented}>
+              <button
+                type="button"
+                className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                onClick={() => setDocType("estimate")}
+                style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+              >
+                Estimate
+              </button>
+              <button
+                type="button"
+                className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                onClick={() => setDocType("invoice")}
+                style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+              >
+                Invoice
+              </button>
+            </div>
           </div>
-          <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-            <button
-              type="button"
-              className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-              onClick={() => patch("ui.docType", "estimate")}
-              style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-            >
-              Estimate
-            </button>
-            <button
-              type="button"
-              className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-              onClick={() => patch("ui.docType", "invoice")}
-              style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-            >
-              Invoice
-            </button>
-          </div>
-        </div>
-      </div>
 
-      <div ref={customerTopRef} className="pe-estimator-shell">
+          <div ref={customerTopRef} className="pe-estimator-shell">
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Customer</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
+        <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1455,7 +1590,7 @@ export default function EstimateForm(props) {
             disabled={!selectedCustomerId}
             onClick={() => {
               try {
-                localStorage.setItem("estipaid-customer-edit-target-v1", JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
                 window.dispatchEvent(new Event("estipaid:navigate-customers"));
               } catch {}
             }}
@@ -1530,10 +1665,7 @@ export default function EstimateForm(props) {
 
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Job Info</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
+        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} />
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
@@ -1635,6 +1767,7 @@ export default function EstimateForm(props) {
         </div>
         </section>
 
+        {uiDocType === "estimate" ? (
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
@@ -1747,15 +1880,13 @@ export default function EstimateForm(props) {
           )}
         </div>
         </section>
+        ) : null}
 
       {/* LABOR */}
       <section className="pe-section">
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionHeaderRow}>
-          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-            <div className="pe-section-title" style={styles.sectionTitleText}>{t("labor")}</div>
-            <div style={styles.sectionAccentLine} />
-          </div>
+          <SectionTitleWithIcon icon={<IconLabor />} title={t("labor")} styles={styles} stackStyle={{ marginBottom: 0 }} />
 
           {!laborOpen && (
             <div className="pe-muted" style={styles.laborCollapsedMeta}>
@@ -1842,27 +1973,45 @@ export default function EstimateForm(props) {
                   </div>
 
                   <div style={styles.fieldStack}>
-                    <div style={styles.label}>
-                      {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
-                      <span
-                        className="pe-muted"
-                        style={styles.laborLineOptional}
-                        title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
-                      >
-                        {lang === "es" ? "(opcional)" : "(optional)"}
-                      </span>
-                    </div>
+                    <div style={styles.label}>{t("markupPct")}</div>
                     <input
                       className="pe-input"
-                      placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
-                      value={l.internalRate || l.trueRateInternal || ""}
-                      onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
-                      onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
+                      placeholder={t("markupPct")}
+                      value={lockMarkupToGlobal ? String(globalDefaultMarkupPctNumber) : String(l.markupPct ?? "")}
+                      onChange={(e) => updateLaborLineAt(i, "markupPct", e.target.value)}
+                      onBlur={(e) => updateLaborLineAt(i, "markupPct", normalizePercentInput(e.target.value))}
                       inputMode="decimal"
-                      title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
-                      style={{ width: "100%" }}
+                      disabled={lockMarkupToGlobal}
+                      title={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      style={{ width: "100%", opacity: lockMarkupToGlobal ? 0.72 : 1 }}
                     />
                   </div>
+
+                  {showInternalCostFields ? (
+                    <div style={styles.fieldStack}>
+                      <div style={styles.label}>
+                        {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
+                        <span
+                          className="pe-muted"
+                          style={styles.laborLineOptional}
+                          title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
+                        >
+                          {lang === "es" ? "(opcional)" : "(optional)"}
+                        </span>
+                      </div>
+                      <input
+                        className="pe-input"
+                        placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
+                        value={l.internalRate || l.trueRateInternal || ""}
+                        onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
+                        onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
+                        inputMode="decimal"
+                        title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
+                        disabled={lockInternalCostFields}
+                        style={{ width: "100%", opacity: lockInternalCostFields ? 0.72 : 1 }}
+                      />
+                    </div>
+                  ) : null}
                 </div>
 
                   <div style={styles.laborLineActions}>
@@ -1943,10 +2092,7 @@ export default function EstimateForm(props) {
         <section className="pe-card" style={styles.sectionBlock}>
               <div className="pe-divider" style={styles.sectionHeaderDivider} />
               <div style={styles.sectionHeaderRow}>
-                <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-                  <div className="pe-section-title" style={styles.sectionTitleText}>Special Conditions</div>
-                  <div style={styles.sectionAccentLine} />
-                </div>
+                <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
               </div>
 
               <div style={styles.specialConditionsCardShell}>
@@ -2051,6 +2197,7 @@ export default function EstimateForm(props) {
         t={t}
         lang={lang}
         styles={styles}
+        headerIcon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M12 4.8 5.8 8.1 12 11.4l6.2-3.3L12 4.8Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /><path d="M5.8 12 12 15.3l6.2-3.3M5.8 15.9 12 19.2l6.2-3.3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /></svg>}
         money={money}
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
@@ -2066,11 +2213,16 @@ export default function EstimateForm(props) {
         setMaterialsMarkupPct={setMaterialsMarkupPct}
         normalizePercentInput={normalizePercentInput}
         normalizedMarkupPct={normalizedMarkupPct}
+        lockMarkupToGlobal={lockMarkupToGlobal}
+        globalMarkupPct={globalDefaultMarkupPctNumber}
         animateMaterialsTotal={animateMaterialsTotal}
         materialsBilled={materialsBilled}
         materialItems={materialItems}
+        materialLineTotalsById={materialLineTotalsById}
         updateMaterialItem={updateMaterialItem}
         removeMaterialItem={removeMaterialItem}
+        showInternalCostFields={showInternalCostFields}
+        lockInternalCostFields={lockInternalCostFields}
         newMaterialItemIds={newMaterialItemIds}
         itemizedMaterialsTotal={itemizedMaterialsTotal}
         addMaterialItem={addMaterialItem}
@@ -2081,7 +2233,10 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div className="pe-total">
           <div>
-            <div className="pe-total-label">{t("estimateTotal")}</div>
+            <div className="pe-total-label" style={styles.totalLabelWithIcon}>
+              <span style={styles.sectionTitleIcon} aria-hidden="true"><IconTotals /></span>
+              <span>{t("estimateTotal")}</span>
+            </div>
             <div className="pe-total-meta">
               {lastSavedLabel ? `${totalTallyLine} • ${lastSavedLabel}` : totalTallyLine}
             </div>
@@ -2093,6 +2248,7 @@ export default function EstimateForm(props) {
       </section>
 
       {/* Additional Notes */}
+      {uiDocType === "estimate" ? (
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionTitleStack}>
@@ -2130,7 +2286,10 @@ export default function EstimateForm(props) {
           style={{ minHeight: 120 }}
         />
       </section>
+      ) : null}
 
+      </div>
+        </div>
       </div>
 
       <div style={{ ...styles.estimatorActionBar, bottom: actionBarBottom }}>
@@ -2179,10 +2338,6 @@ export default function EstimateForm(props) {
 }
 
 const styles = {
-  builderHeroWrap: {
-    maxWidth: 720,
-    margin: "0 auto 12px",
-  },
   builderModeSegmented: {
     display: "inline-flex",
     alignItems: "center",
@@ -2192,6 +2347,7 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.12)",
     background: "rgba(255,255,255,0.04)",
     boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.06)",
+    flexShrink: 0,
   },
   builderModeSegment: {
     minWidth: 118,
@@ -2358,6 +2514,18 @@ const styles = {
     width: "fit-content",
     marginBottom: 8,
   },
+  sectionTitleWithIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  sectionTitleIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: 0.68,
+    transform: "translateY(1px)",
+  },
   sectionHeaderDivider: {
     margin: "0 0 8px",
   },
@@ -2398,6 +2566,7 @@ const styles = {
   projectLocationToggleRow: { marginTop: 2 },
   projectLocationToggleLabel: { display: "inline-flex", gap: 10, alignItems: "center", fontSize: 13.5, color: "rgba(229,238,245,0.90)", cursor: "pointer" },
   totalCardHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
+  totalLabelWithIcon: { display: "inline-flex", alignItems: "center", gap: 8 },
   totalCardTally: { fontSize: 13.5, fontWeight: 800, color: "rgba(203,213,225,0.92)" },
   totalBreakdown: { display: "grid", gap: 8 },
   totalBreakdownRow: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" },

@@ -2,6 +2,7 @@
 /* eslint-disable */
 import { useMemo, useState } from "react";
 import Field from "../components/Field";
+import { computeTotals } from "../estimator/engine";
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -29,139 +30,142 @@ function safeDiv(a, b) {
   return A / B;
 }
 
-function getMaterialInternalEach(item) {
-  // Support multiple possible key names
-  const v =
-    item?.internalCost ??
-    item?.costInternal ??
-    item?.internal ??
-    item?.internalEach ??
-    item?.internalPrice ??
-    item?.cost ??
-    "";
-  const n = toNum(v);
-  // If blank/0, treat as "same as billed" to yield 0 margin for that line
-  return n > 0 ? n : null;
+function resolveMaterialsMode(doc) {
+  const explicit = String(doc?.ui?.materialsMode || doc?.materialsMode || "").toLowerCase();
+  if (explicit === "itemized" || explicit === "blanket") return explicit;
+  if (Array.isArray(doc?.materials?.items) && doc.materials.items.length > 0) return "itemized";
+  if (Array.isArray(doc?.materialItems) && doc.materialItems.length > 0) return "itemized";
+  return "itemized";
+}
+
+function toEstimatorState(doc) {
+  const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const multiplierMode = String(doc?.multiplierMode || "").toLowerCase();
+  const customMultiplier = toNum(doc?.customMultiplier);
+  const presetMultiplier = toNum(doc?.laborMultiplier);
+  const directMultiplier = toNum(doc?.labor?.multiplier);
+  const multiplier = directMultiplier > 0
+    ? directMultiplier
+    : (multiplierMode === "custom" ? (customMultiplier || 1) : (presetMultiplier || 1));
+  const materialsMode = resolveMaterialsMode(doc);
+
+  return {
+    ui: {
+      materialsMode,
+    },
+    labor: {
+      hazardPct: toNum(doc?.labor?.hazardPct ?? doc?.hazardPct),
+      riskPct: toNum(doc?.labor?.riskPct ?? doc?.riskPct),
+      multiplier: multiplier > 0 ? multiplier : 1,
+      lines: laborLines.map((ln, idx) => ({
+        id: String(ln?.id ?? `labor_${idx}`),
+        role: String(ln?.role || ""),
+        label: String(ln?.label || ln?.name || ""),
+        qty: Math.max(1, toNum(ln?.qty || 1)),
+        hours: Math.max(0, toNum(ln?.hours)),
+        rate: Math.max(0, toNum(ln?.rate ?? ln?.billRate)),
+        markupPct: toNum(ln?.markupPct),
+        trueRateInternal: Math.max(0, toNum(ln?.trueRateInternal ?? ln?.internalRate ?? ln?.rateInternal)),
+      })),
+    },
+    materials: {
+      blanketCost: Math.max(0, toNum(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost)),
+      blanketInternalCost: Math.max(
+        0,
+        toNum(doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost ?? doc?.materialsCost)
+      ),
+      markupPct: toNum(doc?.materials?.markupPct ?? doc?.materialsMarkupPct),
+      items: materialItems.map((it, idx) => ({
+        id: String(it?.id ?? `mat_${idx}`),
+        desc: String(it?.desc || it?.name || ""),
+        qty: Math.max(1, toNum(it?.qty || 1)),
+        priceEach: Math.max(0, toNum(it?.priceEach ?? it?.chargeEach ?? it?.charge ?? it?.price ?? it?.unitPrice)),
+        markupPct: toNum(it?.markupPct),
+        unitCostInternal: Math.max(
+          0,
+          toNum(it?.unitCostInternal ?? it?.costInternal ?? it?.internalCost ?? it?.internalEach ?? it?.internalPrice ?? it?.cost)
+        ),
+      })),
+    },
+  };
 }
 
 function calcBreakdown(e) {
-  const laborLines = Array.isArray(e?.laborLines) ? e.laborLines : [];
-  const materialItems = Array.isArray(e?.materialItems) ? e.materialItems : [];
+  const state = toEstimatorState(e || {});
+  const computed = computeTotals(state);
+  const effectiveMultiplier = toNum(computed?.multiplier || 1) || 1;
+  const hazardPct = toNum(computed?.hazardPct);
+  const riskPct = toNum(computed?.riskPct);
+  const hazardAmt = toNum(computed?.hazardAmount);
+  const riskAmt = toNum(computed?.riskAmount);
+  const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
+  const materialsMarkupPct = toNum(state?.materials?.markupPct);
 
-  const multiplierMode = e?.multiplierMode || "preset";
-  const laborMultiplierPreset = toNum(e?.laborMultiplier || 1);
-  const customMultiplier = toNum(e?.customMultiplier || 1);
-  const effectiveMultiplier = multiplierMode === "custom" ? (customMultiplier || 1) : (laborMultiplierPreset || 1);
-
-  const hazardPct = toNum(e?.hazardPct ?? e?.labor?.hazardPct ?? 0);
-  const riskPct = toNum(e?.riskPct ?? e?.labor?.riskPct ?? 0);
-  const materialsMode = e?.materialsMode || "itemized";
-  const materialsMarkupPct = toNum(e?.materialsMarkupPct || 0);
-  const materialsCost = toNum(e?.materialsCost || 0);
-
-  // Labor billed/internal
-  const laborRows = laborLines.map((ln, idx) => {
-    const qty = Math.max(1, toNum(ln?.qty || 1));
-    const hours = Math.max(0, toNum(ln?.hours || 0));
-    const rate = Math.max(0, toNum(ln?.rate || 0));
-    const internalRateRaw = toNum(ln?.internalRate || 0);
-    const base = qty * hours * rate;
-    const billed = base * effectiveMultiplier;
-
-    // If internalRate is blank/0, treat internal cost as billed to yield 0 margin
-    const internal = internalRateRaw > 0 ? qty * hours * internalRateRaw : billed;
-
-    const profit = billed - internal;
-    const margin = safeDiv(profit, billed);
-
+  const laborRows = (computed?.labor?.normalized || []).map((ln, idx) => {
+    const billed = toNum(ln?.total) * effectiveMultiplier;
+    const internal = toNum(ln?.internalCost);
     return {
       id: String(ln?.id ?? idx),
       name: String(ln?.label || ln?.name || `Labor ${idx + 1}`),
-      qty,
-      hours,
-      rate,
-      internalRate: internalRateRaw > 0 ? internalRateRaw : null,
-      base,
+      qty: Math.max(1, toNum(ln?.qty || 1)),
+      hours: Math.max(0, toNum(ln?.hours)),
+      rate: toNum(ln?.effectiveRate ?? ln?.rate),
+      internalRate: toNum(ln?.trueRateInternal) > 0 ? toNum(ln?.trueRateInternal) : null,
+      base: toNum(ln?.total),
       billed,
       internal,
-      profit,
-      margin,
+      profit: billed - internal,
+      margin: safeDiv(billed - internal, billed),
     };
   });
 
-  const laborBase = laborRows.reduce((a, r) => a + r.base, 0);
-  const laborBilled = laborRows.reduce((a, r) => a + r.billed, 0);
-  const laborInternal = laborRows.reduce((a, r) => a + r.internal, 0);
+  const laborBase = toNum(computed?.labor?.subtotal);
+  const laborBilled = toNum(computed?.laborAfterMultiplier);
+  const laborInternal = toNum(computed?.labor?.totalCost);
 
-  // Materials billed/internal
   let materialsRows = [];
-  let materialsBilled = 0;
-  let materialsInternal = 0;
-
   if (materialsMode === "blanket") {
-    const billed = materialsCost * (1 + materialsMarkupPct / 100);
-    const internal = materialsCost > 0 ? materialsCost : billed; // if blank, yield 0 margin
-    materialsBilled = billed;
-    materialsInternal = internal;
-    materialsRows = [
-      {
-        id: "blanket",
-        name: "Materials (blanket)",
-        qty: 1,
-        chargeEach: billed,
-        internalEach: materialsCost > 0 ? materialsCost : null,
+    const billed = toNum(computed?.materials?.totalRevenue);
+    const internal = toNum(computed?.materials?.totalCost);
+    materialsRows = [{
+      id: "blanket",
+      name: "Materials (blanket)",
+      qty: 1,
+      chargeEach: billed,
+      internalEach: internal > 0 ? internal : null,
+      billed,
+      internal,
+      profit: billed - internal,
+      margin: safeDiv(billed - internal, billed),
+    }];
+  } else {
+    materialsRows = (computed?.materials?.normalized || []).map((it, idx) => {
+      const billed = toNum(it?.charge);
+      const internal = toNum(it?.internalCost);
+      const internalEachRaw = toNum(it?.unitCostInternal);
+      return {
+        id: String(it?.id ?? idx),
+        name: String(it?.desc || it?.name || `Material ${idx + 1}`),
+        qty: Math.max(1, toNum(it?.qty || 1)),
+        chargeEach: toNum(it?.effectivePriceEach ?? it?.priceEach),
+        internalEach: internalEachRaw > 0 ? internalEachRaw : null,
         billed,
         internal,
         profit: billed - internal,
         margin: safeDiv(billed - internal, billed),
-      },
-    ];
-  } else {
-    materialsRows = materialItems.map((it, idx) => {
-      const qty = Math.max(1, toNum(it?.qty || 1));
-      const chargeEach = Math.max(0, toNum(it?.charge ?? it?.price ?? it?.unitPrice ?? 0));
-      const billed = qty * chargeEach;
-
-      const internalEach = getMaterialInternalEach(it);
-      const internal = internalEach != null ? qty * internalEach : billed;
-
-      const profit = billed - internal;
-      const margin = safeDiv(profit, billed);
-
-      return {
-        id: String(it?.id ?? idx),
-        name: String(it?.desc || it?.name || `Material ${idx + 1}`),
-        qty,
-        chargeEach,
-        internalEach,
-        billed,
-        internal,
-        profit,
-        margin,
       };
     });
-
-    const sumBilled = materialsRows.reduce((a, r) => a + r.billed, 0);
-    const sumInternal = materialsRows.reduce((a, r) => a + r.internal, 0);
-
-    // Itemized mode: do NOT apply extra markupPct unless your estimator does.
-    // (If your estimator applies itemized markup elsewhere, change here.)
-    materialsBilled = sumBilled;
-    materialsInternal = sumInternal;
   }
-
-  // Hazard: match common estimator behavior (apply to billed labor only)
-  const hazardAmt = laborBilled * (hazardPct / 100);
-  const riskAmt = laborBilled * (riskPct / 100);
-
-  const revenue = laborBilled + materialsBilled + hazardAmt + riskAmt;
-  const internal = laborInternal + materialsInternal; // hazard assumed pure surcharge unless you later add internal risk cost
-  const profit = revenue - internal;
-  const margin = safeDiv(profit, revenue);
+  const materialsBilled = toNum(computed?.materials?.totalRevenue);
+  const materialsInternal = toNum(computed?.materials?.totalCost);
+  const revenue = toNum(computed?.totalRevenue);
+  const internal = toNum(computed?.totalCost);
+  const profit = toNum(computed?.grossProfit);
+  const margin = toNum(computed?.grossMarginPct);
 
   return {
     effectiveMultiplier,
-    multiplierMode,
     hazardPct,
     riskPct,
     hazardAmt,
@@ -237,27 +241,29 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
   return (
     <section className="pe-section">
-      <div
-        className="pe-section-title"
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, position: "relative" }}
-      >
-        <div>{labelSaved}</div>
-        <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}>
-          <img
-            key={spinTick}
-            className="esti-spin"
-            src="/logo/estipaid.svg"
-            alt="EstiPaid"
-            style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))" }}
-            draggable={false}
-          />
+      <div className="pe-card pe-company-shell">
+        <div className="pe-company-profile-header" style={{ position: "relative", minHeight: 56 }}>
+          <div className="pe-company-header-title">
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={labelSaved}>{labelSaved}</h1>
+          </div>
+          <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
+            <img
+              key={spinTick}
+              className="esti-spin"
+              src="/logo/estipaid.svg"
+              alt="EstiPaid"
+              style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))" }}
+              draggable={false}
+            />
+          </div>
+          <div className="pe-company-header-controls">
+            <button className="pe-btn" onClick={onDone}>
+              {labelBack}
+            </button>
+          </div>
         </div>
-        <button className="pe-btn" onClick={onDone}>
-          {labelBack}
-        </button>
-      </div>
 
-      <div className="pe-grid" style={{ gap: 10 }}>
+        <div className="pe-grid" style={{ gap: 10 }}>
         <Field
           placeholder={lang === "es" ? "Buscar…" : "Search…"}
           value={q}
@@ -522,6 +528,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
             })
           )}
         </div>
+      </div>
       </div>
     </section>
   );

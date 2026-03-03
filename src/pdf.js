@@ -4,6 +4,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { detectDataUrlType } from "./utils/sanitize";
+import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 
 const FALLBACK_BORDER = [214, 219, 228];
 const FALLBACK_MUTED = [95, 103, 115];
@@ -18,17 +19,26 @@ function asText(v, fallback = "") {
 }
 
 function buildPdfDoc(payload) {
+  const canonicalSettings = loadSettings();
+  const pdfSettings = canonicalSettings?.pdf || DEFAULT_SETTINGS.pdf;
+  const includeLogo = pdfSettings.includeLogo !== false;
+  const compactLayout = !!pdfSettings.compactLayout;
+  const showUnitRates = pdfSettings.showUnitRates !== false;
   const doc = new jsPDF({ orientation: "p", unit: "pt", format: "letter" });
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
 
-  const margin = Number(payload?.layout?.margin) || 32;
+  const margin = Number(payload?.layout?.margin) || (compactLayout ? 24 : 32);
   const contentWidth = pageWidth - margin * 2;
   const border = ensureArray(payload?.layout?.borderColor).length === 3 ? payload.layout.borderColor : FALLBACK_BORDER;
   const muted = ensureArray(payload?.layout?.mutedColor).length === 3 ? payload.layout.mutedColor : FALLBACK_MUTED;
+  const tableFontSize = compactLayout ? 9 : 10;
+  const sectionGap = compactLayout ? 7 : 10;
+  const summaryFontSize = compactLayout ? 9.75 : 10.5;
 
   const uiDocType = payload?.docType === "invoice" ? "invoice" : "estimate";
   const title = uiDocType === "invoice" ? "INVOICE" : "ESTIMATE";
+  const showNotes = uiDocType === "estimate";
 
   const company = payload?.company || {};
   const customer = payload?.customer || {};
@@ -40,9 +50,9 @@ function buildPdfDoc(payload) {
   const scopeNotes = asText(payload?.scopeNotes);
   const additionalNotes = asText(payload?.additionalNotes);
 
-  const headerTop = 36;
-  const logoBoxW = 118;
-  const logoBoxH = 62;
+  const headerTop = compactLayout ? 30 : 36;
+  const logoBoxW = compactLayout ? 104 : 118;
+  const logoBoxH = compactLayout ? 54 : 62;
   const logoBoxX = pageWidth - margin - logoBoxW;
   const logoBoxY = headerTop - 4;
 
@@ -58,7 +68,8 @@ function buildPdfDoc(payload) {
     asText(company.website),
   ].filter(Boolean).join(" • ");
   if (companyMeta) doc.text(companyMeta, margin, headerTop + 14);
-  const companyAddr = asText(company.address);
+  const companyAddrLines = ensureArray(company.addressLines).map((line) => asText(line)).filter(Boolean);
+  const companyAddr = companyAddrLines.length ? companyAddrLines.join("\n") : asText(company.address);
   if (companyAddr) doc.text(companyAddr, margin, headerTop + 28);
 
   doc.setFontSize(12);
@@ -69,7 +80,7 @@ function buildPdfDoc(payload) {
   doc.text(`# ${asText(payload?.documentNumber, "Draft")}`, margin + 68, headerTop + 52);
   doc.text(`Date: ${asText(job.dateDisplay, asText(job.date, "-"))}`, margin + 168, headerTop + 52);
 
-  if (company.logoDataUrl) {
+  if (includeLogo && company.logoDataUrl) {
     try {
       const props = doc.getImageProperties(company.logoDataUrl);
       const iw = Number(props?.width) || 1;
@@ -97,11 +108,11 @@ function buildPdfDoc(payload) {
       [asText(customer.name, "-"), asText(customer.billingAddress, asText(customer.address, "-"))].filter(Boolean).join("\n"),
     ]],
     theme: "grid",
-    styles: { fontSize: 10, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+    styles: { fontSize: tableFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
 
   autoTable(doc, {
     startY: cursorY,
@@ -117,54 +128,96 @@ function buildPdfDoc(payload) {
         ["PO #", asText(job.poNumber, "-")],
       ],
     theme: "grid",
-    styles: { fontSize: 10, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+    styles: { fontSize: tableFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     columnStyles: { 0: { cellWidth: 130, fontStyle: "bold" }, 1: { cellWidth: contentWidth - 130 } },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
 
-  if (tradeInsertText) {
+  if (showNotes && tradeInsertText) {
     autoTable(doc, {
       startY: cursorY,
       head: [["TRADE INSERTS"]],
       body: [[tradeInsertText]],
       theme: "grid",
-      styles: { fontSize: 10, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+      styles: { fontSize: tableFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
       headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
       margin: { left: margin, right: margin },
     });
-    cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+    cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
   }
 
+  const laborTableRows = laborRows.length ? laborRows : [["Labor", "1", "0", "$0.00", "$0.00"]];
+  const laborHead = showUnitRates
+    ? [["LABOR ITEMS", "Qty", "Hours", "Rate", "Line Total"]]
+    : [["LABOR ITEMS", "Qty", "Hours", "Line Total"]];
+  const laborBody = laborTableRows.map((row) => {
+    const arr = Array.isArray(row) ? row : [];
+    if (showUnitRates) {
+      return [
+        asText(arr[0], "Labor"),
+        asText(arr[1], "1"),
+        asText(arr[2], "0"),
+        asText(arr[3], "$0.00"),
+        asText(arr[4], "$0.00"),
+      ];
+    }
+    return [
+      asText(arr[0], "Labor"),
+      asText(arr[1], "1"),
+      asText(arr[2], "0"),
+      asText(arr[4] ?? arr[3], "$0.00"),
+    ];
+  });
   autoTable(doc, {
     startY: cursorY,
-    head: [["LABOR ITEMS", "Qty", "Hours", "Rate", "Line Total"]],
-    body: laborRows.length ? laborRows : [["Labor", "1", "0", "$0.00", "$0.00"]],
+    head: laborHead,
+    body: laborBody,
     theme: "grid",
-    styles: { fontSize: 10, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+    styles: { fontSize: tableFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
 
+  const materialsTableRows = materialRows.length ? materialRows : [["Materials", "1", "$0.00", "$0.00"]];
+  const materialsHead = showUnitRates
+    ? [["MATERIALS ITEMS", "Qty", "Price (each)", "Line Total"]]
+    : [["MATERIALS ITEMS", "Qty", "Line Total"]];
+  const materialsBody = materialsTableRows.map((row) => {
+    const arr = Array.isArray(row) ? row : [];
+    if (showUnitRates) {
+      return [
+        asText(arr[0], "Materials"),
+        asText(arr[1], "1"),
+        asText(arr[2], "$0.00"),
+        asText(arr[3], "$0.00"),
+      ];
+    }
+    return [
+      asText(arr[0], "Materials"),
+      asText(arr[1], "1"),
+      asText(arr[3] ?? arr[2], "$0.00"),
+    ];
+  });
   autoTable(doc, {
     startY: cursorY,
-    head: [["MATERIALS ITEMS", "Qty", "Price (each)", "Line Total"]],
-    body: materialRows.length ? materialRows : [["Materials", "1", "$0.00", "$0.00"]],
+    head: materialsHead,
+    body: materialsBody,
     theme: "grid",
-    styles: { fontSize: 10, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+    styles: { fontSize: tableFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
 
   autoTable(doc, {
     startY: cursorY,
     head: [["SUMMARY / TOTALS", "Amount"]],
     body: summaryRows,
     theme: "grid",
-    styles: { fontSize: 10.5, cellPadding: 6, lineColor: border, lineWidth: 0.5 },
+    styles: { fontSize: summaryFontSize, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5 },
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     columnStyles: { 0: { cellWidth: contentWidth - 130 }, 1: { cellWidth: 130, halign: "right" } },
     didParseCell: (data) => {
@@ -175,28 +228,28 @@ function buildPdfDoc(payload) {
     },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + 10;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
 
-  if (scopeNotes) {
+  if (showNotes && scopeNotes) {
     autoTable(doc, {
       startY: cursorY,
       head: [["SCOPE / NOTES"]],
       body: [[scopeNotes]],
       theme: "grid",
-      styles: { fontSize: 9.5, cellPadding: 6, lineColor: border, lineWidth: 0.5, textColor: [25, 25, 25] },
+      styles: { fontSize: compactLayout ? 9 : 9.5, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5, textColor: [25, 25, 25] },
       headStyles: { fillColor: [248, 250, 252], textColor: [24, 24, 24], fontStyle: "bold" },
       margin: { left: margin, right: margin },
     });
-    cursorY = (doc.lastAutoTable?.finalY || cursorY) + 8;
+    cursorY = (doc.lastAutoTable?.finalY || cursorY) + (compactLayout ? 6 : 8);
   }
 
-  if (additionalNotes) {
+  if (showNotes && additionalNotes) {
     autoTable(doc, {
       startY: cursorY,
       head: [["ADDITIONAL NOTES"]],
       body: [[additionalNotes]],
       theme: "grid",
-      styles: { fontSize: 9.5, cellPadding: 6, lineColor: border, lineWidth: 0.5, textColor: [25, 25, 25] },
+      styles: { fontSize: compactLayout ? 9 : 9.5, cellPadding: compactLayout ? 5 : 6, lineColor: border, lineWidth: 0.5, textColor: [25, 25, 25] },
       headStyles: { fillColor: [248, 250, 252], textColor: [24, 24, 24], fontStyle: "bold" },
       margin: { left: margin, right: margin },
     });

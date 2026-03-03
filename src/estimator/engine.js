@@ -12,13 +12,24 @@ export function clampNum(n, min, max) {
   return Math.max(min, Math.min(max, x));
 }
 
+function resolvePricingSettings(settings) {
+  const src = settings?.pricing && typeof settings.pricing === "object"
+    ? settings.pricing
+    : (settings && typeof settings === "object" ? settings : {});
+  return {
+    defaultMarkupPct: clampNum(src?.defaultMarkupPct, 0, 200),
+    lockMarkupToGlobal: !!src?.lockMarkupToGlobal,
+  };
+}
+
 function safePct(numerator, denominator) {
   const den = toNum(denominator);
   if (den <= 0) return 0;
   return toNum(numerator) / den;
 }
 
-export function calcLabor(lines) {
+export function calcLabor(lines, settings) {
+  const pricing = resolvePricingSettings(settings);
   let subtotal = 0;
   let totalRevenue = 0;
   let totalCost = 0;
@@ -27,8 +38,11 @@ export function calcLabor(lines) {
     const qty = Math.max(1, toNum(ln?.qty) || 1);
     const hours = toNum(ln?.hours);
     const rate = toNum(ln?.rate);
+    const lineMarkupPct = clampNum(ln?.markupPct, 0, 200);
+    const effectiveMarkupPct = pricing.lockMarkupToGlobal ? pricing.defaultMarkupPct : lineMarkupPct;
+    const effectiveRate = rate * (1 + effectiveMarkupPct / 100);
     const trueRateInternal = toNum(ln?.trueRateInternal ?? ln?.internalRate);
-    const total = qty * hours * rate;
+    const total = qty * hours * effectiveRate;
     const internalCost = qty * hours * trueRateInternal;
     const grossProfit = total - internalCost;
     const marginPct = safePct(grossProfit, total);
@@ -41,6 +55,9 @@ export function calcLabor(lines) {
       qty,
       hours,
       rate,
+      markupPct: lineMarkupPct,
+      effectiveMarkupPct,
+      effectiveRate,
       trueRateInternal,
       total,
       internalCost,
@@ -59,17 +76,21 @@ export function calcLabor(lines) {
   };
 }
 
-export function calcMaterials(mode, materials) {
+export function calcMaterials(mode, materials, settings) {
+  const pricing = resolvePricingSettings(settings);
   if (mode === "itemized") {
     let totalCharge = 0;
     let totalRevenue = 0;
     let totalCost = 0;
 
     const normalized = (materials?.items || []).map((it) => {
-      const qty = toNum(it?.qty);
-      const priceEach = toNum(it?.priceEach);
+      const qty = Math.max(1, toNum(it?.qty) || 1);
+      const priceEach = toNum(it?.priceEach ?? it?.charge);
+      const lineMarkupPct = clampNum(it?.markupPct, 0, 200);
+      const effectiveMarkupPct = pricing.lockMarkupToGlobal ? pricing.defaultMarkupPct : lineMarkupPct;
+      const effectivePriceEach = priceEach * (1 + effectiveMarkupPct / 100);
       const unitCostInternal = toNum(it?.unitCostInternal ?? it?.costInternal);
-      const charge = qty * priceEach;
+      const charge = qty * effectivePriceEach;
       const internalCost = qty * unitCostInternal;
       const grossProfit = charge - internalCost;
       const marginPct = safePct(grossProfit, charge);
@@ -77,7 +98,19 @@ export function calcMaterials(mode, materials) {
       totalRevenue += charge;
       totalCost += internalCost;
 
-      return { ...it, qty, priceEach, unitCostInternal, charge, internalCost, grossProfit, marginPct };
+      return {
+        ...it,
+        qty,
+        priceEach,
+        markupPct: lineMarkupPct,
+        effectiveMarkupPct,
+        effectivePriceEach,
+        unitCostInternal,
+        charge,
+        internalCost,
+        grossProfit,
+        marginPct,
+      };
     });
 
     return {
@@ -105,8 +138,9 @@ export function calcMaterials(mode, materials) {
   };
 }
 
-export function computeTotals(state) {
-  const labor = calcLabor(state?.labor?.lines || []);
+export function computeTotals(state, options = {}) {
+  const pricing = resolvePricingSettings(options?.settings);
+  const labor = calcLabor(state?.labor?.lines || [], pricing);
   const hazardPct = clampNum(state?.labor?.hazardPct, 0, 200);
   const riskPct = clampNum(state?.labor?.riskPct, 0, 200);
   const multiplier = clampNum(state?.labor?.multiplier, 0.25, 5);
@@ -118,7 +152,8 @@ export function computeTotals(state) {
 
   const materials = calcMaterials(
     state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket",
-    state?.materials
+    state?.materials,
+    pricing
   );
 
   const totalRevenue = laborAfterAdjustments + materials.totalRevenue;
@@ -137,6 +172,7 @@ export function computeTotals(state) {
     laborAfterMultiplier,
     laborAfterAdjustments,
     materials,
+    pricing,
     totalRevenue,
     totalCost,
     grossProfit,

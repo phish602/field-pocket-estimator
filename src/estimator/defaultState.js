@@ -1,8 +1,10 @@
 // @ts-nocheck
 /* eslint-disable */
 
+import { STORAGE_KEYS } from "../constants/storageKeys";
+
 export const BUILD_TAG = "ESTIPAID_ESTIMATOR_V1_SPLIT";
-export const STORAGE_KEY = "estipaid-estimator-v1";
+export const STORAGE_KEY = STORAGE_KEYS.ESTIMATOR_STATE;
 
 function todayISO() {
   const d = new Date();

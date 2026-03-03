@@ -7,6 +7,9 @@ import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
+import { requireCompanyProfile } from "./utils/guards";
+import { migrateLegacyStorageNamespace } from "./utils/storage";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -60,17 +63,17 @@ const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "Finan
    - Header/Footer are transparent overlays; content scrolls underneath
    ========================================================= */
 
-const LANG_KEY = "estipaid-lang";
-const ESTIMATES_KEY = "estipaid-estimates-v1";
-const ESTIMATES_KEY_LEGACY = "field-pocket-estimates";
+const LANG_KEY = STORAGE_KEYS.LANG;
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+
+try {
+  migrateLegacyStorageNamespace();
+} catch {}
 
 function loadSavedEstimates() {
   try {
-    const rawNew = localStorage.getItem(ESTIMATES_KEY);
-    const rawLegacy = localStorage.getItem(ESTIMATES_KEY_LEGACY);
-    const arrNew = rawNew ? JSON.parse(rawNew) : [];
-    const arrLegacy = rawLegacy ? JSON.parse(rawLegacy) : [];
-    const arr = Array.isArray(arrNew) && arrNew.length ? arrNew : Array.isArray(arrLegacy) ? arrLegacy : [];
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr) ? arr.filter(Boolean) : [];
   } catch {
     return [];
@@ -286,7 +289,7 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
         className="pe-btn pe-btn-ghost"
         style={styles.headerIconBtn}
         onClick={onProfile}
-        aria-label="Open Snapshot"
+  aria-label="Open User Profile"
       >
         <img
           src={src}
@@ -302,11 +305,11 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
 function BottomNav({ active, setActive, disabled, onQuickOpen }) {
   const tabs = useMemo(
     () => [
-      { key: "home", label: "Home", Icon: IconHome },
-      { key: "customers", label: "Customers", Icon: IconCustomers },
-      { key: "create", label: "Create", Icon: IconCreate, center: true },
-      { key: "estimates", label: "Estimates", Icon: IconEstimates },
-      { key: "invoices", label: "Invoices", Icon: IconInvoices },
+      { key: ROUTES.HOME, label: "Home", Icon: IconHome },
+      { key: ROUTES.CUSTOMERS, label: "Customers", Icon: IconCustomers },
+      { key: ROUTES.CREATE, label: "Create", Icon: IconCreate, center: true },
+      { key: ROUTES.ESTIMATES, label: "Estimates", Icon: IconEstimates },
+      { key: ROUTES.INVOICES, label: "Invoices", Icon: IconInvoices },
     ],
     []
   );
@@ -314,9 +317,9 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
   const [createBump, setCreateBump] = useState(false);
 
   const onTab = (t) => {
-    if (disabled && t.key !== "create") return;
+    if (disabled && t.key !== ROUTES.CREATE) return;
 
-    if (t.key === "create") {
+    if (t.key === ROUTES.CREATE) {
       setCreateBump(true);
       setTimeout(() => setCreateBump(false), 260);
     }
@@ -334,7 +337,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
     }
   };
   useEffect(() => {
-    const onTap = () => setActive("home");
+    const onTap = () => setActive(ROUTES.HOME);
     const onLong = () => {
       try {
         onQuickOpen && onQuickOpen();
@@ -353,7 +356,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
 
 
   useEffect(() => {
-    if (active !== "create" && createBump) setCreateBump(false);
+    if (active !== ROUTES.CREATE && createBump) setCreateBump(false);
   }, [active, createBump]);
 
   return (
@@ -362,7 +365,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
         const isActive = active === t.key;
         const isCenter = !!t.center;
         const Icon = t.Icon;
-        const isDisabled = disabled && t.key !== "create";
+        const isDisabled = disabled && t.key !== ROUTES.CREATE;
 
         const btnStyle = {
           ...styles.navBtn,
@@ -400,12 +403,11 @@ function QuickMenu({ open, onClose, onSelect }) {
   if (!open) return null;
 
   const items = [
-    { key: "home", label: "Home" },
-    { key: "create", label: "Create" },
-    { key: "estimates", label: "Estimates" },
-    { key: "invoices", label: "Invoices" },
-    { key: "snapshot", label: "Snapshot" },
-    { key: "companyProfile", label: "Company Profile" },
+    { key: ROUTES.HOME, label: "Home" },
+    { key: ROUTES.CREATE, label: "Create" },
+    { key: ROUTES.ESTIMATES, label: "Estimates" },
+    { key: ROUTES.INVOICES, label: "Invoices" },
+    { key: ROUTES.COMPANY_PROFILE, label: "User Profile" },
   ];
 
   return (
@@ -471,13 +473,21 @@ function Drawer({ open, onClose, onSelect, disabled }) {
         </div>
 
         <div style={styles.drawerList}>
-<button
+          <button
             className="pe-btn pe-btn-ghost"
             style={styles.drawerItem}
             onClick={() => onSelect("company")}
             disabled={disabled}
           >
-            Company Profile
+            User Profile
+          </button>
+
+          <button
+            className="pe-btn pe-btn-ghost"
+            style={styles.drawerItem}
+            onClick={() => onSelect(ROUTES.SNAPSHOT)}
+          >
+            Snapshot
           </button>
 
           <button
@@ -492,7 +502,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
           <button
             className="pe-btn pe-btn-ghost"
             style={styles.drawerItem}
-            onClick={() => onSelect("advanced")}
+            onClick={() => onSelect(ROUTES.ADVANCED)}
           >
             Settings
           </button>
@@ -590,7 +600,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
               onTap();
             }
           }}
-          style={{ display: "flex", justifyContent: "center", transform: "translateX(-14px)", margin: "0 auto 10px", cursor: "pointer" }}
+          style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
         >
         <img
           key={spinTick}
@@ -716,16 +726,20 @@ const styles = {
     height: HEADER_H,
     position: "fixed",
     top: 0,
-    left: 0,
-    right: 0,
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: "min(1100px, calc(100% - 24px))",
+    maxWidth: "100%",
     zIndex: 50,
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     padding: "0 14px",
+    boxSizing: "border-box",
     background: "transparent",
     backdropFilter: "blur(8px)",
     WebkitBackdropFilter: "blur(8px)",
+    minWidth: 0,
   },
   
 
@@ -865,14 +879,17 @@ const styles = {
   bottomnav: {
     height: FOOTER_H,
     position: "fixed",
-    left: 0,
-    right: 0,
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: "min(1100px, calc(100% - 24px))",
+    maxWidth: "100%",
     bottom: 0,
     zIndex: 50,
     display: "flex",
     justifyContent: "space-around",
     alignItems: "flex-start",
     gap: 4,
+    boxSizing: "border-box",
     paddingBottom: "env(safe-area-inset-bottom, 0px)",
     background: "transparent",
     backdropFilter: "blur(10px)",
@@ -999,7 +1016,10 @@ export default function App() {
   }, []);
 
   const [lang] = useState(() => getSavedLang());
-  const [activeTab, setActiveTab] = useState(() => "home");
+  const [activeTab, setActiveTab] = useState(() => ROUTES.HOME);
+  const [userProfileDirty, setUserProfileDirty] = useState(false);
+  const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
+  const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
 
@@ -1018,7 +1038,7 @@ const [spinTick, setSpinTick] = useState(0);
 
 
   // ===== In-progress estimate draft (survives tab switches) =====
-  const ESTIMATE_DRAFT_KEY = "estipaid-estimate-draft-v1";
+  const ESTIMATE_DRAFT_KEY = STORAGE_KEYS.ESTIMATE_DRAFT;
   const hasEstimateDraft = () => {
     try {
       const raw = localStorage.getItem(ESTIMATE_DRAFT_KEY);
@@ -1048,22 +1068,65 @@ const [spinTick, setSpinTick] = useState(0);
     }
   };
 
-  const navigateTo = useCallback((tab) => {
+  useEffect(() => {
+    const onUserProfileDirty = (e) => {
+      const dirty = Boolean(e?.detail?.dirty);
+      setUserProfileDirty(dirty);
+    };
+    window.addEventListener("estipaid:user-profile-dirty", onUserProfileDirty);
+    return () => window.removeEventListener("estipaid:user-profile-dirty", onUserProfileDirty);
+  }, []);
+
+  const ensureBuilderAccess = useCallback(() => {
+    const gate = requireCompanyProfile({
+      message: "User Profile required. Open User Profile?",
+      onRequireProfile: () => setActiveTab(ROUTES.COMPANY_PROFILE),
+    });
+    return !!gate?.allowed;
+  }, []);
+
+  const performNavigation = useCallback((tab) => {
+    const isBuilderTarget =
+      tab === ROUTES.CREATE
+      || tab === ROUTES.ESTIMATE_BUILDER
+      || tab === ROUTES.INVOICE_BUILDER;
+    if (isBuilderTarget && !ensureBuilderAccess()) return;
+
+    if (tab === ROUTES.ESTIMATE_BUILDER) {
+      setCreateIntent(BUILDER_INTENTS.ESTIMATE);
+    } else if (tab === ROUTES.INVOICE_BUILDER) {
+      setCreateIntent(BUILDER_INTENTS.INVOICE);
+    }
+
+    const nextTab = isBuilderTarget ? ROUTES.CREATE : tab;
     try {
-      if (activeTab === "create" && tab !== "create") {
-        try { localStorage.setItem("estipaid-restore-draft-on-create-v1", "1"); } catch {}
+      if (activeTab === ROUTES.CREATE && nextTab !== ROUTES.CREATE) {
+        try { localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1"); } catch {}
         window.dispatchEvent(new Event("estipaid:draft-save-now"));
       }
     } catch {}
     try {
-      setActiveTab(tab);
+      setActiveTab(nextTab);
     } catch {}
-  }, [activeTab]);
+  }, [activeTab, ensureBuilderAccess]);
+
+  const navigateTo = useCallback((tab, options = {}) => {
+    const bypassDirtyGuard = Boolean(options?.bypassDirtyGuard);
+    const isLeavingUserProfile = activeTab === ROUTES.COMPANY_PROFILE && tab !== ROUTES.COMPANY_PROFILE;
+
+    if (!bypassDirtyGuard && isLeavingUserProfile && userProfileDirty) {
+      pendingProfileLeaveTabRef.current = tab;
+      setShowUnsavedProfileModal(true);
+      return;
+    }
+
+    performNavigation(tab);
+  }, [activeTab, userProfileDirty, performNavigation]);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
     const onNavCustomers = () => {
-      try { navigateTo("customers"); } catch {}
+      try { navigateTo(ROUTES.CUSTOMERS); } catch {}
     };
     window.addEventListener("estipaid:navigate-customers", onNavCustomers);
     return () => window.removeEventListener("estipaid:navigate-customers", onNavCustomers);
@@ -1071,10 +1134,10 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     const onNavEstimates = () => {
-      try { navigateTo("estimates"); } catch {}
+      try { navigateTo(ROUTES.ESTIMATES); } catch {}
     };
     const onNavInvoices = () => {
-      try { navigateTo("invoices"); } catch {}
+      try { navigateTo(ROUTES.INVOICES); } catch {}
     };
     window.addEventListener("estipaid:navigate-estimates", onNavEstimates);
     window.addEventListener("estipaid:navigate-invoices", onNavInvoices);
@@ -1087,8 +1150,7 @@ const [spinTick, setSpinTick] = useState(0);
   useEffect(() => {
     const onNavEstimator = () => {
       try {
-        setCreateIntent("estimate");
-        navigateTo("create");
+        navigateTo(ROUTES.ESTIMATE_BUILDER);
       } catch {}
     };
     window.addEventListener("estipaid:navigate-estimator", onNavEstimator);
@@ -1096,18 +1158,33 @@ const [spinTick, setSpinTick] = useState(0);
   }, [navigateTo]);
 
   useEffect(() => {
+    const onNavInvoiceBuilder = () => {
+      try { navigateTo(ROUTES.INVOICE_BUILDER); } catch {}
+    };
+    window.addEventListener("estipaid:navigate-invoice-builder", onNavInvoiceBuilder);
+    return () => window.removeEventListener("estipaid:navigate-invoice-builder", onNavInvoiceBuilder);
+  }, [navigateTo]);
+
+  useEffect(() => {
     const onNavCompanyProfile = () => {
-      try { navigateTo("companyProfile"); } catch {}
+      try { navigateTo(ROUTES.COMPANY_PROFILE); } catch {}
+    };
+    const onNavUserProfile = () => {
+      try { navigateTo(ROUTES.COMPANY_PROFILE); } catch {}
     };
     window.addEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
-    return () => window.removeEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
+    window.addEventListener("estipaid:navigate-user-profile", onNavUserProfile);
+    return () => {
+      window.removeEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
+      window.removeEventListener("estipaid:navigate-user-profile", onNavUserProfile);
+    };
   }, [navigateTo]);
 
   useEffect(() => {
     const refresh = () => setEstimateHistory(loadSavedEstimates());
     refresh();
     const onStorage = (e) => {
-      if (!e?.key || e.key === ESTIMATES_KEY || e.key === ESTIMATES_KEY_LEGACY) refresh();
+      if (!e?.key || e.key === ESTIMATES_KEY) refresh();
     };
     window.addEventListener("storage", onStorage);
     window.addEventListener("estipaid:navigate-estimates", refresh);
@@ -1123,24 +1200,23 @@ const [spinTick, setSpinTick] = useState(0);
       if (!action) return;
 
       if (action === "continueLast" || action === "openCreate") {
-        setCreateIntent("estimate");
-        navigateTo("create");
+        navigateTo(ROUTES.ESTIMATE_BUILDER);
         return;
       }
 
       if (action === "newClear") {
-        try { localStorage.removeItem("estipaid-estimator-v1"); } catch {}
-        try { localStorage.removeItem("estipaid-estimate-draft-v1"); } catch {}
+        try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
+        try { localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT); } catch {}
         return;
       }
 
       if (action === "goEstimatesTab") {
-        navigateTo("estimates");
+        navigateTo(ROUTES.ESTIMATES);
         return;
       }
 
-      if (action === "openCompanyProfile") {
-        navigateTo("companyProfile");
+      if (action === "openCompanyProfile" || action === "openUserProfile") {
+        navigateTo(ROUTES.COMPANY_PROFILE);
       }
     };
 
@@ -1171,13 +1247,20 @@ useEffect(() => {
     setIsScrolled(false);
     setQuickOpen(false);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === ROUTES.COMPANY_PROFILE) return;
+    pendingProfileLeaveTabRef.current = null;
+    setShowUnsavedProfileModal(false);
+    setUserProfileDirty(false);
+  }, [activeTab]);
 const [drawerOpen, setDrawerOpen] = useState(false);
-  const [createIntent, setCreateIntent] = useState("estimate");
+  const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
 
   // Keep a tiny global flag so nested screens can hard-lock into profile when requested
   useEffect(() => {
     try {
-      window.__PE_FORCE_PROFILE__ = createIntent === "profile";
+      window.__PE_FORCE_PROFILE__ = createIntent === BUILDER_INTENTS.PROFILE;
     } catch {
       // ignore
     }
@@ -1209,15 +1292,15 @@ const gated = false;
 
 
   const handleHomeLogoTap = () => {
-    try { navigateTo("home"); } catch {}
+    try { navigateTo(ROUTES.HOME); } catch {}
   };
   const handleHomeLogoLongPress = () => {
     try { setQuickOpen(true); } catch {}
   };
 
   const renderScreen = () => {
-    if (activeTab === "home") return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "customers")
+    if (activeTab === ROUTES.HOME) return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.CUSTOMERS)
       return (
         <CustomersScreen
           lang={lang}
@@ -1225,85 +1308,126 @@ const gated = false;
             try {
               const id = String(p?.id || "");
               if (id) {
-                try { localStorage.setItem("estipaid-selectedCustomerId-v1", id); } catch {}
-                try { localStorage.setItem("estipaid-selectedCustomerSnap-v1", JSON.stringify(p?.customer || null)); } catch {}
+                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_ID, id); } catch {}
+                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_SNAP, JSON.stringify(p?.customer || null)); } catch {}
                 try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p?.customer || null } })); } catch {}
               }
             } catch {}
             try {
-              navigateTo("create");
+              navigateTo(ROUTES.ESTIMATE_BUILDER);
             } catch {}
           }}
         />
       );
-    if (activeTab === "estimates") {
+    if (activeTab === ROUTES.ESTIMATES) {
       return (
         <EstimatesScreen
           lang={lang}
           t={shellT}
           spinTick={spinTick}
           history={estimateHistory}
-          onDone={() => navigateTo("home")}
+          onDone={() => navigateTo(ROUTES.HOME)}
           onOpenEstimate={() => {
-            setCreateIntent("estimate");
-            navigateTo("create");
+            navigateTo(ROUTES.ESTIMATE_BUILDER);
           }}
         />
       );
     }
-    if (activeTab === "invoices") {
+    if (activeTab === ROUTES.INVOICES) {
       return (
         <InvoicesScreen
           lang={lang}
           t={shellT}
           spinTick={spinTick}
-          onDone={() => navigateTo("home")}
+          onDone={() => navigateTo(ROUTES.HOME)}
         />
       );
     }
-    if (activeTab === "companyProfile") return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "advanced") return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "snapshot") return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === "create") return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.CREATE) return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
     return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 
   const onDrawerSelect = (key) => {
     setDrawerOpen(false);
 
-    if (key === "create") {
-      setCreateIntent("estimate");
-      navigateTo("create");
+    if (key === ROUTES.CREATE) {
+      navigateTo(ROUTES.ESTIMATE_BUILDER);
       return;
     }
 
     // Create navigation
-    if (key === "advanced") {
-      navigateTo("advanced");
+    if (key === ROUTES.ADVANCED) {
+      navigateTo(ROUTES.ADVANCED);
       return;
     }
 
-// Company Profile / Templates
+        if (key === ROUTES.SNAPSHOT) {
+          navigateTo(ROUTES.SNAPSHOT);
+          return;
+        }
+
+// User Profile / Templates
     if (key === "company") {
-      navigateTo("companyProfile");
+      navigateTo(ROUTES.COMPANY_PROFILE);
       return;
     }
     if (key === "templates") {
-      setCreateIntent("estimate");
-      navigateTo("create");
+      navigateTo(ROUTES.ESTIMATE_BUILDER);
       return;
     }
 
 // Create actions
     if (key === "editCompany") {
-      navigateTo("snapshot");
+      navigateTo(ROUTES.COMPANY_PROFILE);
       return;
     }
 
 // Fallback: close only
   };
-  const showHeaderSpin = activeTab !== "home" && activeTab !== "companyProfile";
-  const glassOnScroll = activeTab !== "home" && activeTab !== "create";
+  const showHeaderSpin = activeTab !== ROUTES.HOME;
+  const glassOnScroll = activeTab !== ROUTES.HOME && activeTab !== ROUTES.CREATE;
+  const unsavedModalOverlay = {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    zIndex: 9999,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  };
+  const unsavedModalCard = {
+    width: "min(520px, 100%)",
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(10,10,10,0.85)",
+    boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
+    padding: 16,
+    display: "grid",
+    gap: 12,
+  };
+  const unsavedModalTitle = {
+    fontSize: 14,
+    fontWeight: 1000,
+    letterSpacing: "0.7px",
+  };
+  const unsavedModalText = {
+    fontSize: 13,
+    opacity: 0.85,
+    lineHeight: 1.35,
+  };
+  const unsavedModalActions = {
+    display: "flex",
+    gap: 10,
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    marginTop: 6,
+  };
 
   return (
     <div className="pe-wrap pe-app" style={styles.shell}>
@@ -1341,7 +1465,7 @@ const gated = false;
         isScrolled={isScrolled}
         onHeaderSpinTap={() => {
           setQuickOpen(false);
-          navigateTo("home");
+          navigateTo(ROUTES.HOME);
         }}
         onHeaderSpinLongPress={() => {
           setQuickOpen(true);
@@ -1349,7 +1473,7 @@ const gated = false;
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);
-          navigateTo("snapshot");
+          navigateTo(ROUTES.COMPANY_PROFILE);
         }}
       />
       <Drawer
@@ -1366,36 +1490,66 @@ const gated = false;
         onClose={() => setQuickOpen(false)}
         onSelect={(key) => {
           setQuickOpen(false);
-          if (key === "home") {
-            navigateTo("home");
+          if (key === ROUTES.HOME) {
+            navigateTo(ROUTES.HOME);
             return;
           }
-          if (key === "create") {
-            setCreateIntent("estimate");
-            navigateTo("create");
+          if (key === ROUTES.CREATE) {
+            navigateTo(ROUTES.ESTIMATE_BUILDER);
             return;
           }
-          if (key === "estimates") {
-            navigateTo("estimates");
+          if (key === ROUTES.ESTIMATES) {
+            navigateTo(ROUTES.ESTIMATES);
             return;
           }
-          if (key === "invoices") {
-            navigateTo("invoices");
+          if (key === ROUTES.INVOICES) {
+            navigateTo(ROUTES.INVOICES);
             return;
           }
-          if (key === "snapshot") {
-            navigateTo("snapshot");
-            return;
-          }
-          if (key === "companyProfile") {
-            navigateTo("companyProfile");
+          if (key === ROUTES.COMPANY_PROFILE) {
+            navigateTo(ROUTES.COMPANY_PROFILE);
             return;
           }
         }}
       />
+
+      {showUnsavedProfileModal ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Unsaved changes">
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalTitle}>Unsaved changes</div>
+            <div style={unsavedModalText}>
+              You have unsaved changes in your User Profile. If you leave this page, they will be lost.
+            </div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => {
+                  pendingProfileLeaveTabRef.current = null;
+                  setShowUnsavedProfileModal(false);
+                }}
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  const target = pendingProfileLeaveTabRef.current;
+                  pendingProfileLeaveTabRef.current = null;
+                  setShowUnsavedProfileModal(false);
+                  if (target) navigateTo(target, { bypassDirtyGuard: true });
+                }}
+              >
+                Leave without saving
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 <div
         ref={contentRef}
-        className={`pe-content${activeTab === "create" ? " pe-content-estimator" : ""}`}
+        className={`pe-content${activeTab === ROUTES.CREATE ? " pe-content-estimator" : ""}`}
         style={styles.content}
         onScroll={(e) => {
           const st = e.currentTarget ? e.currentTarget.scrollTop : 0;
@@ -1409,8 +1563,7 @@ const gated = false;
       <BottomNav
         active={activeTab}
         setActive={(key) => {
-          if (key === "create") setCreateIntent("estimate");
-          navigateTo(key);
+          navigateTo(key === ROUTES.CREATE ? ROUTES.ESTIMATE_BUILDER : key);
         }}
         onQuickOpen={() => setQuickOpen(true)}
         disabled={gated}
