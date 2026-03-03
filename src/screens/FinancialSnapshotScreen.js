@@ -477,7 +477,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           </div>
         </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ display: "grid", gap: 10 }}>
           <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} tone="ok" />
           <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} tone="ok" />
@@ -496,13 +496,13 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Tendencia de ingresos" : "Revenue Trend"}</div>
         <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Últimas 12 semanas (facturas en el rango)" : "Last 12 weeks (invoices in range)"}</div>
         <Bars data={computed.weekly} />
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Envejecimiento de cuentas por cobrar" : "Receivables Aging"}</div>
         <div className="pe-muted" style={{ marginBottom: 12 }}>{lang === "es" ? "Basado en fecha de vencimiento (Net 30 por defecto)" : "Based on due date (defaults to Net 30)"}</div>
 
@@ -534,7 +534,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Salud del margen" : "Margin Health"}</div>
 
         <div style={{ display: "grid", gap: 10 }}>
@@ -562,7 +562,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pipeline de estimados" : "Estimate Pipeline"}</div>
         <div style={{ display: "grid", gap: 10 }}>
           <KPI label={lang === "es" ? "Valor total" : "Total value"} value={fmtMoney(computed.pipelineValue)} tone="ok" />
@@ -571,7 +571,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10, opacity: 0.98 }}>
+      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
         <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.35 }}>{insight}</div>
       </div>

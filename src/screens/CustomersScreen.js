@@ -244,13 +244,10 @@ const cardBaseStyle = {
   borderRadius: 18,
   padding: 14,
   border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(255,255,255,0.04)",
-  boxShadow: "0 10px 26px rgba(0,0,0,0.30)",
 };
 
 const cardActiveStyle = {
   border: "1px solid rgba(34,197,94,0.50)",
-  background: "rgba(34,197,94,0.06)",
 };
 
 const NET_TERMS_OPTIONS = [
@@ -420,12 +417,11 @@ export default function CustomersScreen({
       const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
       if (rawEditTarget) {
         localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
-        setReturnToEstimator(true);
         const payload = JSON.parse(rawEditTarget);
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
-          if (c) { startEdit(c); }
+          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true }); }
         }
       }
     } catch {}
@@ -552,19 +548,30 @@ export default function CustomersScreen({
   }
 
   function startNew(type = defaultCustomerType) {
+    setReturnToEstimator(false);
     setAutoUseOnSave(false);
     setDraft(emptyDraft(type));
     setMissingRequired({});
     setMode("edit");
   }
 
-  function startEdit(c) {
-    setAutoUseOnSave(false);
+  function startEdit(c, opts = {}) {
+    const useEstimatorReturn = !!opts?.returnToEstimator;
+    const useAutoOnSave = !!opts?.autoUseOnSave;
+    setReturnToEstimator(useEstimatorReturn);
+    setAutoUseOnSave(useAutoOnSave);
     const type = String(c?.type || "residential");
     const base = emptyDraft(type);
     setDraft({ ...base, ...(c || {}) });
     setMissingRequired({});
     setMode("edit");
+  }
+
+  function returnToEstimatorNow() {
+    try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
+    setAutoUseOnSave(false);
+    setReturnToEstimator(false);
+    try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
   }
 
   function saveDraft() {
@@ -707,17 +714,13 @@ export default function CustomersScreen({
           className="pe-btn pe-btn-ghost"
           type="button"
           style={{ marginBottom: 10 }}
-          onClick={() => {
-            try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
-            setReturnToEstimator(false);
-            try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
-          }}
+          onClick={returnToEstimatorNow}
         >
           ← Back to Estimator
         </button>
       )}
       {mode === "list" ? (
-        <div className="pe-card pe-company-shell">
+        <div className="pe-card">
           <div className="pe-company-profile-header">
             <div className="pe-company-header-title">
               <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
@@ -731,7 +734,7 @@ export default function CustomersScreen({
           </div>
 
           <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
+            <div className="pe-card pe-card-content" style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <input
                   className="pe-input"
@@ -744,7 +747,7 @@ export default function CustomersScreen({
             </div>
 
             {filtered.length === 0 ? (
-              <div style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
+              <div className="pe-card pe-card-content" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
                 <div style={{ fontWeight: 800, marginBottom: 6 }}>{label("No saved customers", "Sin clientes guardados")}</div>
                 <div style={{ fontSize: 13.5, opacity: 0.8, marginBottom: 12 }}>
                   {label("Create one to attach to estimates and invoices.", "Crea uno para adjuntarlo a estimaciones y facturas.")}
@@ -759,7 +762,7 @@ export default function CustomersScreen({
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
 
                 return (
-                  <div key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10 }}>
+                  <div className="pe-card pe-card-content" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10 }}>
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
                       <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
@@ -843,14 +846,24 @@ export default function CustomersScreen({
           </div>
         </div>
       ) : (
-        <div className="pe-card pe-company-shell">
+        <div className="pe-card">
           <div className="pe-company-profile-header">
             <div className="pe-company-header-title">
               <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Edit Customer", "Editar Cliente")}>{label("Edit Customer", "Editar Cliente")}</h1>
             </div>
 
             <div className="pe-company-header-controls">
-              <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setMode("list")}>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                onClick={() => {
+                  if (returnToEstimator) {
+                    returnToEstimatorNow();
+                    return;
+                  }
+                  setMode("list");
+                }}
+              >
                 {label("Cancel", "Cancelar")}
               </button>
               <button className="pe-btn" type="button" onClick={saveDraft}>
@@ -862,27 +875,33 @@ export default function CustomersScreen({
             <div className="pe-company-form-inner pe-customer-edit-form">
             <div className="pe-company-form-section">
               <CustomerSectionHeader title={label("Customer Type", "Tipo de Cliente")} />
-              <div className="pe-customer-toggle-row">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraft((d) => ({ ...emptyDraft("residential"), ...d, type: "residential" }));
-                    setMissingRequired({});
-                  }}
-                  className={`pe-btn ${(draft.type || "commercial") === "residential" ? "" : "pe-btn-ghost"}`}
-                >
-                  {label("Residential", "Residencial")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraft((d) => ({ ...emptyDraft("commercial"), ...d, type: "commercial" }));
-                    setMissingRequired({});
-                  }}
-                  className={`pe-btn ${(draft.type || "commercial") === "commercial" ? "" : "pe-btn-ghost"}`}
-                >
-                  {label("Commercial", "Comercial")}
-                </button>
+              <div className="pe-company-grid-12">
+                <div className="pe-company-col-12">
+                  <div className="pe-customer-toggle-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft((d) => ({ ...emptyDraft("residential"), ...d, type: "residential" }));
+                        setMissingRequired({});
+                      }}
+                      className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "residential" ? "is-active" : "pe-btn-ghost"}`}
+                      aria-pressed={(draft.type || "commercial") === "residential"}
+                    >
+                      {label("Residential", "Residencial")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft((d) => ({ ...emptyDraft("commercial"), ...d, type: "commercial" }));
+                        setMissingRequired({});
+                      }}
+                      className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "commercial" ? "is-active" : "pe-btn-ghost"}`}
+                      aria-pressed={(draft.type || "commercial") === "commercial"}
+                    >
+                      {label("Commercial", "Comercial")}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 

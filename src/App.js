@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef, useId } from "react";
 import EstimateForm from "./EstimateForm";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
@@ -55,6 +55,54 @@ const resolveScreen = (mod, fallbackName) => {
 const CompanyProfileScreen = resolveScreen(CompanyProfileScreenMod, "CompanyProfileScreen");
 const AdvancedSettingsScreen = resolveScreen(AdvancedSettingsScreenMod, "AdvancedSettingsScreen");
 const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "FinancialSnapshotScreen");
+
+function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title = "EstiPaid" }) {
+  const baseId = useId().replace(/:/g, "");
+  const grad0 = `${baseId}-linear-gradient`;
+  const grad1 = `${baseId}-linear-gradient1`;
+
+  return (
+    <svg
+      ref={svgRef}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 268.8 222.72"
+      preserveAspectRatio="xMidYMid meet"
+      role="img"
+      aria-label={title}
+      className={className}
+      style={{
+        ...style,
+        WebkitTouchCallout: "none",
+        WebkitUserSelect: "none",
+        userSelect: "none",
+        touchAction: "manipulation",
+      }}
+      draggable={draggable}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <title>{title}</title>
+      <defs>
+        <linearGradient id={grad0} x1="844.97" y1="819.67" x2="36.51" y2="1065.46" gradientTransform="translate(39.09 -127.78) scale(.24)" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#b6d4a5" />
+          <stop offset=".58" stopColor="#4d9ab3" />
+          <stop offset=".9" stopColor="#3b78ba" />
+          <stop offset="1" stopColor="#3f68a0" />
+        </linearGradient>
+        <linearGradient id={grad1} x1="507.94" y1="730.58" x2="102.96" y2="892.1" gradientTransform="translate(39.09 -127.78) scale(.24)" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#78b1ad" />
+          <stop offset="1" stopColor="#427eaf" />
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${grad0})`} d="M181.28,46.03c-4.88-.08-9.76-.16-14.63-.24-8.92.21-18.57.21-27.58,0-7.73.21-16.16.21-23.98,0-12.28.18-24.62.2-37.03.05l.11-.29c1.62-4.34,6.62-9.65,10.25-12.8,13.09-11.33,29.35-16.21,46.44-18.35h91.32s-1.42,10.63-1.42,10.63c-2.36,11.92-5.96,23.48-11.39,34.33l-2.1,4.21c-5.95,11.89-16.42,25.06-26.28,34.13-8.66,7.97-17.95,15.01-28.34,20.51l-4.58,2.42c-8.17,4.32-18.12,8.2-26.89,11.21-10.68,3.67-19.71,7.15-28.2,14.76-3.91,3.5-7.06,7.5-9.78,12.03-6.85,11.39-10.32,24.01-12.58,37.06l-2.29,13.27c-.93-1.8-1.17-3.43-1.55-5.25l-5.84-27.87-2.78-16.9-2.19-15.81-1.21-12.46-.17-3.85c-.29-6.49.22-13.09,4.76-18.14,1.68-1.87,3.44-3.31,5.69-4.45,3.91-1.98,8.09-3.39,12.48-4,.66-.09,1.3-.22,1.97-.22l34.62-.14c2.97-.01,9.92-1.8,12.89-2.74,4.57-1.44,8.75-3.32,13.09-5.34,6.41-2.98,18.52-11.27,23.65-15.92l2.55-2.31c7.32-6.64,13.44-14.27,18.79-22.61.9-1.4,1.33-2.82,2.47-4.06.15-.16.06-.66-.02-.88h-10.25Z" />
+      <path fill={`url(#${grad1})`} d="M92.8,85.35c-6.77.08-13.64.08-20.62,0-2.92-.03-5.82-.08-8.71-.15-.32.11-.64.22-.97.33,2.13-9.76,4.84-18.49,9.03-27.28h96.15s-8.35,8.28-8.35,8.28c-7.3,7.23-25.14,18.65-35.38,18.69l-31.16.13Z" />
+      <path fill="#4994b4" d="M115.1,45.79c.21.07.21.15,0,.24h-15.11c-7.23.21-14.82.21-22.06,0-.11-.24.18-.32.24-.48-.03.09.07.24.28.24h36.64Z" />
+      <path fill="#70adae" d="M166.65,45.79c.21.07.21.15,0,.24h-27.58c-.21-.07-.21-.15,0-.24h27.58Z" />
+      <rect fill="#58a0b1" x="115.1" y="45.79" width="23.98" height=".24" />
+      <path fill="#4987af" d="M92.8,85.35h-20.62c6.68-.6,13.48,0,20.35-.29.17,0,.31.26.27.29Z" />
+      <path fill="#87baab" d="M181.28,46.03h-14.63v-.24h14.36c.18,0,.29.15.26.24Z" />
+    </svg>
+  );
+}
 
 /* =========================================================
    APP SHELL + CREATE FLOW OWNER
@@ -226,8 +274,38 @@ const FOOTER_H = 78;
 /* =========================
    Top bar + bottom nav + drawer
    ========================= */
-function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSpinTap, onHeaderSpinLongPress, isScrolled, glassOnScroll }) {
-  const src = topRightLogoSrc || "/logo/estipaid.svg";
+function TopBar({
+  onMenu,
+  onProfile,
+  topRightLogoSrc,
+  showAddLogoCue,
+  showHeaderSpin,
+  onHeaderSpinTap,
+  onHeaderSpinLongPress,
+  isScrolled,
+  glassOnScroll,
+  routeEnterKey,
+}) {
+  const src = topRightLogoSrc || DEFAULT_LOGO;
+  const isHome = !showHeaderSpin;
+  const estiLogoRef = useRef(null);
+
+  const restartSpin = (el) => {
+    if (!el) return;
+    el.classList.remove("esti-spin");
+    void el.offsetWidth;
+    el.classList.add("esti-spin");
+  };
+
+  useEffect(() => {
+    if (isHome) return;
+    restartSpin(estiLogoRef.current);
+  }, [routeEnterKey, isHome]);
+
+  useEffect(() => {
+    console.log("TopBar MOUNT");
+    return () => console.log("TopBar UNMOUNT");
+  }, []);
 
   return (
     <div style={{ ...styles.topbar, ...(glassOnScroll && isScrolled ? styles.topbarScrolled : null) }}>
@@ -242,8 +320,9 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
 
       
 
-      {showHeaderSpin ? (
+      {!isHome ? (
         <button
+          key={`header-brand-wrap-${routeEnterKey || "default"}`}
           type="button"
           style={styles.headerSpinBtn}
           aria-label="Go Home (Hold for Shortcuts)"
@@ -272,31 +351,38 @@ function TopBar({ onMenu, onProfile, topRightLogoSrc, showHeaderSpin, onHeaderSp
             e.currentTarget.__lpTimer = null;
           }}
         >
-          <img
-            src={DEFAULT_LOGO}
-            alt="EstiPaid"
+          <EstiPaidInlineLogo
+            svgRef={estiLogoRef}
             className="esti-spin"
             style={styles.profileLogo}
             draggable={false}
-            onError={(e) => {
-              try { e.currentTarget.src = DEFAULT_LOGO; } catch {}
-            }}
           />
         </button>
-      ) : null}
+      ) : (
+        <div
+          aria-hidden="true"
+          style={{ ...styles.headerSpinBtn, pointerEvents: "none", cursor: "default" }}
+        />
+      )}
 
 <button
+        key={`header-user-wrap-${routeEnterKey || "default"}`}
         className="pe-btn pe-btn-ghost"
         style={styles.headerIconBtn}
         onClick={onProfile}
   aria-label="Open User Profile"
       >
-        <img
-          src={src}
-          alt="Company logo"
-          style={styles.profileLogo}
-          draggable={false}
-        />
+        <div style={styles.profileLogoWrap}>
+          {showAddLogoCue ? <span style={styles.profileLogoCueRing} aria-hidden="true" /> : null}
+          <img
+            src={src}
+            alt="Company logo"
+            style={styles.profileLogo}
+            draggable={false}
+          />
+          {showAddLogoCue ? <span style={styles.profileLogoCueBadge} aria-hidden="true">+</span> : null}
+          {showAddLogoCue ? <span style={styles.profileLogoCueText} aria-hidden="true">Add Logo</span> : null}
+        </div>
       </button>
     </div>
   );
@@ -602,11 +688,9 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           }}
           style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
         >
-        <img
+        <EstiPaidInlineLogo
           key={spinTick}
           className="esti-spin"
-          src="/logo/estipaid.svg"
-          alt="EstiPaid"
           style={{
             height: 110,
             width: "auto",
@@ -862,6 +946,59 @@ const styles = {
     margin: "0 auto",
     objectFit: "contain",
     filter: "drop-shadow(0 8px 18px rgba(0,0,0,0.35))",
+    position: "relative",
+    zIndex: 2,
+  },
+  profileLogoWrap: {
+    position: "relative",
+    width: 40,
+    height: 40,
+    display: "grid",
+    placeItems: "center",
+  },
+  profileLogoCueRing: {
+    position: "absolute",
+    inset: -2,
+    borderRadius: 999,
+    border: "1px dashed rgba(186, 230, 253, 0.32)",
+    boxShadow: "0 0 10px rgba(147, 197, 253, 0.14)",
+    opacity: 0.2,
+    animation: "peLogoCuePulse 2.8s ease-in-out infinite",
+    pointerEvents: "none",
+    zIndex: 1,
+  },
+  profileLogoCueBadge: {
+    position: "absolute",
+    right: -1,
+    bottom: -1,
+    width: 13,
+    height: 13,
+    borderRadius: 999,
+    border: "1px solid rgba(191, 219, 254, 0.44)",
+    background: "rgba(15, 23, 42, 0.74)",
+    color: "rgba(239, 246, 255, 0.92)",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 10,
+    fontWeight: 900,
+    lineHeight: 1,
+    pointerEvents: "none",
+    zIndex: 3,
+  },
+  profileLogoCueText: {
+    position: "absolute",
+    left: "50%",
+    bottom: -10,
+    transform: "translateX(-50%)",
+    fontSize: 8,
+    fontWeight: 900,
+    letterSpacing: "0.08em",
+    color: "rgba(219, 234, 254, 0.68)",
+    textTransform: "uppercase",
+    textShadow: "0 1px 4px rgba(0,0,0,0.32)",
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+    zIndex: 3,
   },
 
   // full-height scroll under overlays
@@ -1017,6 +1154,7 @@ export default function App() {
 
   const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => ROUTES.HOME);
+  const [routeEnterSeq, setRouteEnterSeq] = useState(0);
   const [userProfileDirty, setUserProfileDirty] = useState(false);
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
   const pendingProfileLeaveTabRef = useRef(null);
@@ -1077,13 +1215,19 @@ const [spinTick, setSpinTick] = useState(0);
     return () => window.removeEventListener("estipaid:user-profile-dirty", onUserProfileDirty);
   }, []);
 
+  const enterTab = useCallback((nextTab, intent) => {
+    if (intent) setCreateIntent(intent);
+    setActiveTab(nextTab);
+    if (nextTab !== ROUTES.HOME) setRouteEnterSeq((n) => n + 1);
+  }, []);
+
   const ensureBuilderAccess = useCallback(() => {
     const gate = requireCompanyProfile({
       message: "User Profile required. Open User Profile?",
-      onRequireProfile: () => setActiveTab(ROUTES.COMPANY_PROFILE),
+      onRequireProfile: () => enterTab(ROUTES.COMPANY_PROFILE),
     });
     return !!gate?.allowed;
-  }, []);
+  }, [enterTab]);
 
   const performNavigation = useCallback((tab) => {
     const isBuilderTarget =
@@ -1092,11 +1236,9 @@ const [spinTick, setSpinTick] = useState(0);
       || tab === ROUTES.INVOICE_BUILDER;
     if (isBuilderTarget && !ensureBuilderAccess()) return;
 
-    if (tab === ROUTES.ESTIMATE_BUILDER) {
-      setCreateIntent(BUILDER_INTENTS.ESTIMATE);
-    } else if (tab === ROUTES.INVOICE_BUILDER) {
-      setCreateIntent(BUILDER_INTENTS.INVOICE);
-    }
+    let nextIntent = null;
+    if (tab === ROUTES.ESTIMATE_BUILDER) nextIntent = BUILDER_INTENTS.ESTIMATE;
+    else if (tab === ROUTES.INVOICE_BUILDER) nextIntent = BUILDER_INTENTS.INVOICE;
 
     const nextTab = isBuilderTarget ? ROUTES.CREATE : tab;
     try {
@@ -1105,10 +1247,8 @@ const [spinTick, setSpinTick] = useState(0);
         window.dispatchEvent(new Event("estipaid:draft-save-now"));
       }
     } catch {}
-    try {
-      setActiveTab(nextTab);
-    } catch {}
-  }, [activeTab, ensureBuilderAccess]);
+    try { enterTab(nextTab, nextIntent); } catch {}
+  }, [activeTab, ensureBuilderAccess, enterTab]);
 
   const navigateTo = useCallback((tab, options = {}) => {
     const bypassDirtyGuard = Boolean(options?.bypassDirtyGuard);
@@ -1266,11 +1406,11 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     }
   }, [createIntent]);
 const gated = false;
-  const topRightLogoSrc = useMemo(() => {
-    const DEFAULT = "/logo/estipaid.svg";
+  const topRightLogoMeta = useMemo(() => {
+    const DEFAULT = DEFAULT_LOGO;
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
-      if (!raw) return DEFAULT;
+      if (!raw) return { src: DEFAULT, hasCustomLogo: false };
       const obj = JSON.parse(raw);
       const candidates = [
         obj?.logoDataUrl,
@@ -1280,15 +1420,17 @@ const gated = false;
         obj?.companyLogo,
       ];
       const picked = candidates.find((s) => typeof s === "string" && s.trim().length > 0);
-      return picked || DEFAULT;
+      return { src: picked || DEFAULT, hasCustomLogo: Boolean(picked) };
     } catch {
-      return DEFAULT;
+      return { src: DEFAULT, hasCustomLogo: false };
     }
   // activeTab intentionally triggers a re-read of localStorage when the user
   // navigates between tabs (e.g. after saving a new company logo); activeTab is
   // not referenced inside the callback body so exhaustive-deps flags it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+  const topRightLogoSrc = topRightLogoMeta.src;
+  const showAddLogoCue = !topRightLogoMeta.hasCustomLogo;
 
 
   const handleHomeLogoTap = () => {
@@ -1388,6 +1530,9 @@ const gated = false;
 // Fallback: close only
   };
   const showHeaderSpin = activeTab !== ROUTES.HOME;
+  const routeEnterKey = activeTab === ROUTES.HOME
+    ? "home"
+    : `${activeTab}:${createIntent || ""}:${routeEnterSeq}`;
   const glassOnScroll = activeTab !== ROUTES.HOME && activeTab !== ROUTES.CREATE;
   const unsavedModalOverlay = {
     position: "fixed",
@@ -1450,6 +1595,10 @@ const gated = false;
   82%{transform:rotate(372deg);}
   100%{transform:rotate(360deg);}
 }
+@keyframes peLogoCuePulse{
+  0%,100%{opacity:.17;transform:scale(1);}
+  50%{opacity:.24;transform:scale(1.02);}
+}
 .esti-spin{
   animation:estiSpinPremium 0.6s cubic-bezier(.22,.9,.28,1);
   transform-origin:50% 50%;
@@ -1460,7 +1609,9 @@ const gated = false;
 
       <TopBar
         topRightLogoSrc={topRightLogoSrc}
+        showAddLogoCue={showAddLogoCue}
         showHeaderSpin={showHeaderSpin}
+        routeEnterKey={routeEnterKey}
         glassOnScroll={glassOnScroll}
         isScrolled={isScrolled}
         onHeaderSpinTap={() => {
@@ -1473,7 +1624,7 @@ const gated = false;
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);
-          navigateTo(ROUTES.COMPANY_PROFILE);
+          if (activeTab !== ROUTES.COMPANY_PROFILE) navigateTo(ROUTES.COMPANY_PROFILE);
         }}
       />
       <Drawer

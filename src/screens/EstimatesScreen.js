@@ -324,7 +324,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               const sectionTitle = { fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" };
 
               return (
-                <div key={id || Math.random()} style={card}>
+                <div className="pe-card pe-card-content" key={id || Math.random()} style={card}>
                   <div style={row}>
                     <div style={{ display: "grid", gap: 2 }}>
                       <div style={{ fontWeight: 800 }}>{e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}</div>
@@ -354,7 +354,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
                   <div style={panel} aria-hidden={!isOpen}>
                     {/* TOTALS */}
-                    <div style={subCard}>
+                    <div className="pe-card pe-card-content" style={subCard}>
                       <div style={sectionTitle}>{lang === "es" ? "Totales" : "Totals"}</div>
                       <div style={row}>
                         <div style={small}>{labelRevenue}</div>
@@ -375,7 +375,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     </div>
 
                     {/* LABOR */}
-                    <div style={{ ...subCard, marginTop: 10 }}>
+                    <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
                       <div style={sectionTitle}>{lang === "es" ? "Mano de obra" : "Labor"}</div>
                       <div style={row}>
                         <div style={small}>{lang === "es" ? "Base" : "Base"}</div>
@@ -436,7 +436,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     </div>
 
                     {/* MATERIALS */}
-                    <div style={{ ...subCard, marginTop: 10 }}>
+                    <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
                       <div style={sectionTitle}>{lang === "es" ? "Materiales" : "Materials"}</div>
                       <div style={row}>
                         <div style={small}>{lang === "es" ? "Modo" : "Mode"}</div>
@@ -498,7 +498,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     </div>
 
                     {/* HAZARD / RISK */}
-                    <div style={{ ...subCard, marginTop: 10 }}>
+                    <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
                       <div style={sectionTitle}>{lang === "es" ? "Peligro y Riesgo" : "Hazard & Risk"}</div>
                       <div style={row}>
                         <div style={small}>{lang === "es" ? "Peligro %" : "Hazard %"}</div>

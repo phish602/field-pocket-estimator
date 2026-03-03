@@ -1,7 +1,20 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React from "react";
+import React, { useLayoutEffect, useRef } from "react";
+
+const BLANKET_DESCRIPTION_MIN_HEIGHT = 100;
+
+function autoResizeNotesTextarea(el) {
+  if (!el) return;
+  const minHeight = BLANKET_DESCRIPTION_MIN_HEIGHT;
+  try {
+    el.style.height = "auto";
+    el.style.overflowY = "hidden";
+    const nextHeight = Math.max(el.scrollHeight || 0, minHeight);
+    el.style.height = `${nextHeight}px`;
+  } catch {}
+}
 
 export default function SectionMaterials(props) {
   const {
@@ -22,6 +35,8 @@ export default function SectionMaterials(props) {
     normalizeMoneyInput,
     materialsMarkupPct,
     setMaterialsMarkupPct,
+    materialsBlanketDescription,
+    setMaterialsBlanketDescription,
     normalizePercentInput,
     normalizedMarkupPct,
     lockMarkupToGlobal,
@@ -37,7 +52,23 @@ export default function SectionMaterials(props) {
     newMaterialItemIds,
     itemizedMaterialsTotal,
     addMaterialItem,
+    trashIcon,
   } = props || {};
+  const blanketDescriptionRef = useRef(null);
+  const blanketDescriptionValue = String(materialsBlanketDescription || "");
+
+  useLayoutEffect(() => {
+    if (materialsMode !== "blanket") return;
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeNotesTextarea(blanketDescriptionRef.current))
+      : null;
+    if (raf === null) autoResizeNotesTextarea(blanketDescriptionRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [blanketDescriptionValue, materialsMode]);
 
   return (
     <section className="pe-section">
@@ -159,6 +190,20 @@ export default function SectionMaterials(props) {
               />
             </div>
           </div>
+          <div style={{ marginTop: 10, display: "grid", gap: 4 }}>
+            <div style={styles.label}>{t("materialsBlanketDescriptionLabel")}</div>
+            <textarea
+              ref={blanketDescriptionRef}
+              className="pe-input pe-textarea"
+              value={blanketDescriptionValue}
+              onChange={(e) => {
+                setMaterialsBlanketDescription?.(e.target.value);
+                autoResizeNotesTextarea(e.target);
+              }}
+              placeholder={t("materialsBlanketDescriptionPlaceholder")}
+              style={{ minHeight: BLANKET_DESCRIPTION_MIN_HEIGHT, resize: "none" }}
+            />
+          </div>
           <div className="pe-row pe-row-slim">
             <div className="pe-muted">
               {lang === "es"
@@ -189,10 +234,11 @@ export default function SectionMaterials(props) {
               const lineMarkupValue = lockMarkupToGlobal
                 ? String(globalMarkupPct ?? 0)
                 : String(it?.markupPct ?? "");
+              const materialItemCardClass = `pe-card pe-card-content${newMaterialItemIds?.[String(it.id)] ? " pe-anim-enter" : ""}`;
               return (
                 <div
                   key={i}
-                  className={newMaterialItemIds?.[String(it.id)] ? "pe-anim-enter" : ""}
+                  className={materialItemCardClass}
                   style={{ ...styles.cardShell, marginTop: 0 }}
                 >
                   <div style={{ display: "grid", gap: 4 }}>
@@ -278,19 +324,19 @@ export default function SectionMaterials(props) {
                     </div>
 
                     <button
-                      className="pe-btn pe-btn-ghost"
+                      className="pe-btn pe-btn-ghost pe-labor-trash-btn"
                       type="button"
                       onClick={() => removeMaterialItem(i)}
                       title={
-                        materialItems.length === 1
+                        i === 0
                           ? (lang === "es"
-                            ? "Limpiar línea (la última partida no se puede borrar)"
-                            : "Clear line (last item can't be removed)")
+                            ? "Limpiar partida base (la fila se mantiene)"
+                            : "Clear base item (row stays)")
                           : (lang === "es" ? "Quitar material" : "Remove item")
                       }
-                      style={styles.lineDeleteBtn}
+                      style={styles.lineTrashBtn}
                     >
-                      −
+                      {trashIcon || "🗑"}
                     </button>
                   </div>
 

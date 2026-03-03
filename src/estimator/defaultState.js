@@ -58,6 +58,7 @@ export const DEFAULT_STATE = {
   materials: {
     blanketCost: "",
     blanketInternalCost: "",
+    materialsBlanketDescription: "",
     markupPct: 0,
     items: [{ id: "m1", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" }],
   },

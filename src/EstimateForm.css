@@ -210,34 +210,84 @@
 
 .pe-btn-ghost { background: rgba(255,255,255,0.03); }
 
-.pe-card {
-  max-width: 720px;
-  margin: 0 auto;
-  background: linear-gradient(
-    180deg,
-    rgba(255,255,255,0.06),
-    rgba(255,255,255,0.02)
-  );
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-  overflow: hidden;
+.pe-labor-add-circle {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.62));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 10px rgba(2, 6, 23, 0.32);
+}
+
+.pe-labor-add-circle:hover {
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.78), rgba(15, 23, 42, 0.66));
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.pe-labor-add-circle:active {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(2, 6, 23, 0.74));
+  box-shadow: inset 0 2px 6px rgba(2, 6, 23, 0.5);
+}
+
+.pe-labor-trash-btn {
+  color: rgba(252, 165, 165, 0.9);
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.2), rgba(69, 10, 10, 0.14));
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  box-shadow: inset 0 1px 0 rgba(254, 202, 202, 0.08);
+}
+
+.pe-labor-trash-btn:hover {
+  color: rgba(254, 202, 202, 0.96);
+  border-color: rgba(252, 165, 165, 0.48);
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.26), rgba(69, 10, 10, 0.18));
+}
+
+.pe-labor-trash-btn:active {
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.3), rgba(69, 10, 10, 0.22));
+  box-shadow: inset 0 2px 6px rgba(69, 10, 10, 0.4);
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-clear {
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.32), rgba(185, 28, 28, 0.24));
+  border-color: rgba(248, 113, 113, 0.62);
+  color: #ffffff;
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-clear:hover {
+  border-color: rgba(252, 165, 165, 0.75);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.38), rgba(185, 28, 28, 0.28));
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-clear:active {
+  background: linear-gradient(180deg, rgba(220, 38, 38, 0.42), rgba(153, 27, 27, 0.32));
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-clear:disabled {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.2), rgba(185, 28, 28, 0.16));
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-export {
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.34), rgba(22, 163, 74, 0.24));
+  border-color: rgba(74, 222, 128, 0.62);
+  color: #ffffff;
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-export:hover {
+  border-color: rgba(134, 239, 172, 0.78);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.42), rgba(21, 128, 61, 0.3));
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-export:active {
+  background: linear-gradient(180deg, rgba(22, 163, 74, 0.46), rgba(21, 128, 61, 0.36));
+}
+
+.pe-estimator-sticky-actions .pe-estimator-action-export:disabled {
+  border-color: rgba(74, 222, 128, 0.42);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(22, 163, 74, 0.16));
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .pe-estimator-shell {
-  max-width: 720px;
-  margin: 0 auto;
-  background: linear-gradient(
-    180deg,
-    rgba(255,255,255,0.06),
-    rgba(255,255,255,0.02)
-  );
-  border: 1px solid var(--line);
-  border-radius: 18px;
   padding: var(--pe-estimator-tile-pad, 18px);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-  overflow: hidden;
 }
 
 .pe-estimator-shell .pe-card {
@@ -286,6 +336,14 @@
   gap: 10px;
   align-items: end;
   width: 100%;
+}
+
+.pe-jobinfo-top-grid-res-no-po {
+  grid-template-columns: 2.4fr 1fr;
+}
+
+.pe-jobinfo-top-grid-com-po {
+  grid-template-columns: 2.4fr 1fr 1fr 1fr;
 }
 
 .pe-jobinfo-address-row-a {
@@ -616,6 +674,8 @@
 
 @media (max-width: 700px) {
   .pe-jobinfo-top-grid,
+  .pe-jobinfo-top-grid-res-no-po,
+  .pe-jobinfo-top-grid-com-po,
   .pe-jobinfo-address-row-a,
   .pe-jobinfo-address-row-b {
     grid-template-columns: 1fr;

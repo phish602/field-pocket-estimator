@@ -109,6 +109,7 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
             ) : (
               filtered.map((x) => (
                 <div
+                  className="pe-card pe-card-content"
                   key={String(x?.id || x?.invoiceNumber || Math.random())}
                   style={{
                     padding: 12,

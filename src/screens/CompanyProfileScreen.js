@@ -185,6 +185,9 @@ export default function CompanyProfileScreen() {
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
   const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
   const fileInputRef = useRef(null);
+  const brandingCardRef = useRef(null);
+  const brandingUploadButtonRef = useRef(null);
+  const brandingFocusTimerRef = useRef(null);
   const saveFlashTimerRef = useRef(null);
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
   const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
@@ -197,6 +200,10 @@ export default function CompanyProfileScreen() {
     if (saveFlashTimerRef.current) {
       clearTimeout(saveFlashTimerRef.current);
       saveFlashTimerRef.current = null;
+    }
+    if (brandingFocusTimerRef.current) {
+      clearTimeout(brandingFocusTimerRef.current);
+      brandingFocusTimerRef.current = null;
     }
   }, []);
 
@@ -252,6 +259,73 @@ export default function CompanyProfileScreen() {
   const fieldLabelClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-label" : "");
   const fieldControlClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-input" : "");
   const fieldRequiredError = (fieldKey) => (isFieldMissing(fieldKey) ? "This field is required." : "");
+  const openLogoPicker = () => {
+    if (!fileInputRef.current) return;
+    try {
+      fileInputRef.current.click();
+    } catch {}
+  };
+  const focusUploadButton = () => {
+    if (!brandingUploadButtonRef.current) return;
+    try {
+      brandingUploadButtonRef.current.focus({ preventScroll: true });
+    } catch {
+      try {
+        brandingUploadButtonRef.current.focus();
+      } catch {}
+    }
+  };
+  const handleLogoInputChange = async (e) => {
+    const f = e?.target?.files && e.target.files[0];
+    if (!f) return;
+    const dataUrl = await fileToDataUrl(f);
+    setProfile((p) => ({ ...p, logoDataUrl: dataUrl || "" }));
+    setLogoFileName(String(f.name || ""));
+    try {
+      e.target.value = "";
+    } catch {}
+  };
+  const removeLogo = () => {
+    setProfile((p) => ({ ...p, logoDataUrl: "" }));
+    setLogoFileName("");
+    try {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch {}
+  };
+
+  useEffect(() => {
+    const onFocusBranding = (event) => {
+      const openPicker = event?.detail?.openPicker !== false;
+      const brandingNode = brandingCardRef.current;
+      if (!brandingNode) return;
+      const viewportHeight = Math.max(
+        Number(window?.innerHeight) || 0,
+        Number(document?.documentElement?.clientHeight) || 0,
+      );
+      const rect = brandingNode.getBoundingClientRect();
+      const isVisible = rect.top >= 0 && rect.bottom <= viewportHeight;
+      if (isVisible) {
+        if (openPicker) {
+          openLogoPicker();
+        } else {
+          focusUploadButton();
+        }
+        return;
+      }
+      try {
+        brandingNode.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch {}
+      if (brandingFocusTimerRef.current) {
+        clearTimeout(brandingFocusTimerRef.current);
+      }
+      brandingFocusTimerRef.current = setTimeout(() => {
+        focusUploadButton();
+        brandingFocusTimerRef.current = null;
+      }, 300);
+    };
+    window.addEventListener("estipaid:company-logo-focus", onFocusBranding);
+    return () => window.removeEventListener("estipaid:company-logo-focus", onFocusBranding);
+  }, []);
 
   const doExplicitSave = () => {
     const missing = getMissingRequiredFields(profile);
@@ -388,7 +462,7 @@ export default function CompanyProfileScreen() {
       ) : null}
 
       <div className="pe-card pe-company-shell">
-        <div className="pe-company-profile-header">
+        <div className="pe-company-profile-header pe-company-profile-header-profile">
           <div className="pe-company-header-title">
             <img
               src="/logo/estipaid.svg"
@@ -399,17 +473,16 @@ export default function CompanyProfileScreen() {
             <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="User Profile">User Profile</h1>
           </div>
 
-          <div className="pe-company-header-controls">
-            <div className={`pe-company-save-indicator ${saveFlash ? "is-visible" : ""}`} aria-live="polite">
-              Saved
-            </div>
-
+          <div className="pe-company-header-controls pe-company-header-controls-profile">
             <button type="button" className="pe-btn" onClick={doExplicitSave}>
               Save
             </button>
             <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(true)}>
               Clear
             </button>
+            <div className={`pe-company-save-indicator ${saveFlash ? "is-visible" : ""}`} aria-live="polite">
+              Saved
+            </div>
           </div>
         </div>
 
@@ -428,53 +501,102 @@ export default function CompanyProfileScreen() {
         ) : null}
 
         <div className="pe-company-form-inner">
-          <div className="pe-company-form-section">
-            <ProfileSectionHeader icon={<IconBuilding />} title="COMPANY" />
-            <div className="pe-company-grid-12">
-              <Field
-                fieldClassName="pe-company-col-12"
-                labelClassName={fieldLabelClassName("companyName")}
-                controlClassName={fieldControlClassName("companyName")}
-                label="Company name *"
-                id={REQUIRED_FIELD_META.companyName.inputId}
-                errorText={fieldRequiredError("companyName")}
-                value={profile.companyName}
-                placeholder="BVW Contracting Solutions"
-                onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
-              />
+          <div className="pe-company-top-layout">
+            <div className="pe-company-form-section pe-company-top-main">
+              <ProfileSectionHeader icon={<IconBuilding />} title="COMPANY" />
+              <div className="pe-company-grid-12">
+                <Field
+                  fieldClassName="pe-company-col-12"
+                  labelClassName={fieldLabelClassName("companyName")}
+                  controlClassName={fieldControlClassName("companyName")}
+                  label="Company name *"
+                  id={REQUIRED_FIELD_META.companyName.inputId}
+                  errorText={fieldRequiredError("companyName")}
+                  value={profile.companyName}
+                  placeholder="BVW Contracting Solutions"
+                  onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
+                />
 
-              <Field
-                fieldClassName="pe-company-col-5"
-                labelClassName={fieldLabelClassName("phone")}
-                controlClassName={fieldControlClassName("phone")}
-                label="Phone *"
-                id={REQUIRED_FIELD_META.phone.inputId}
-                type="tel"
-                inputMode="tel"
-                autoComplete="tel"
-                errorText={fieldRequiredError("phone")}
-                value={formatPhoneForDisplay(profile.phone)}
-                placeholder="(602) 555-1234"
-                onChange={(e) => setProfile((p) => ({ ...p, phone: sanitizePhoneDigits(e.target.value, 11) }))}
-              />
+                <Field
+                  fieldClassName="pe-company-col-5"
+                  labelClassName={fieldLabelClassName("phone")}
+                  controlClassName={fieldControlClassName("phone")}
+                  label="Phone *"
+                  id={REQUIRED_FIELD_META.phone.inputId}
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  errorText={fieldRequiredError("phone")}
+                  value={formatPhoneForDisplay(profile.phone)}
+                  placeholder="(602) 555-1234"
+                  onChange={(e) => setProfile((p) => ({ ...p, phone: sanitizePhoneDigits(e.target.value, 11) }))}
+                />
 
-              <Field
-                fieldClassName="pe-company-col-7"
-                label="Email"
-                type="email"
-                autoComplete="email"
-                value={profile.email}
-                placeholder="office@yourcompany.com"
-                onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
-              />
+                <Field
+                  fieldClassName="pe-company-col-7"
+                  label="Email"
+                  type="email"
+                  autoComplete="email"
+                  value={profile.email}
+                  placeholder="office@yourcompany.com"
+                  onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
+                />
 
-              <Field
-                fieldClassName="pe-company-col-12"
-                label="Website"
-                value={profile.website}
-                placeholder="www.yourcompany.com"
-                onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
+                <Field
+                  fieldClassName="pe-company-col-12"
+                  label="Website"
+                  value={profile.website}
+                  placeholder="www.yourcompany.com"
+                  onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div id="company-profile-branding" ref={brandingCardRef} className="pe-card pe-card-content pe-company-top-branding-col pe-company-branding-card pe-branding-tile">
+              <ProfileSectionHeader icon={<IconImage />} title="BRANDING" />
+              <input
+                ref={fileInputRef}
+                className="pe-company-hidden-file"
+                type="file"
+                accept="image/*"
+                onChange={handleLogoInputChange}
               />
+              <div className="pe-company-branding-preview-wrap">
+                <div className="pe-company-branding-preview">
+                  {profile.logoDataUrl ? (
+                    <img
+                      src={profile.logoDataUrl}
+                      alt="Company logo preview"
+                      className="pe-company-branding-preview-img"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="pe-company-branding-placeholder">
+                      <span className="pe-company-branding-placeholder-icon" aria-hidden="true"><IconImage /></span>
+                      <span>No logo uploaded</span>
+                    </div>
+                  )}
+                </div>
+                <div className="pe-field-helper pe-company-branding-helper">Used on PDFs/exports</div>
+              </div>
+              <div className="pe-company-upload-row">
+                <button
+                  ref={brandingUploadButtonRef}
+                  type="button"
+                  className="pe-btn pe-company-upload-btn"
+                  onClick={openLogoPicker}
+                >
+                  Upload Logo
+                </button>
+                {profile.logoDataUrl ? (
+                  <button type="button" className="pe-btn pe-btn-ghost" onClick={removeLogo}>
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+              <div className="pe-company-upload-name">
+                {logoFileName || (profile.logoDataUrl ? "Logo on file" : "No file selected")}
+              </div>
             </div>
           </div>
 
@@ -571,49 +693,6 @@ export default function CompanyProfileScreen() {
                 placeholder="12-3456789"
                 onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
               />
-            </div>
-          </div>
-
-          <div className="pe-company-form-section">
-            <div className="pe-company-section-divider" aria-hidden="true" />
-            <ProfileSectionHeader icon={<IconImage />} title="BRANDING" />
-            <div className="pe-company-grid-12">
-              <div className="pe-field pe-company-col-6">
-                <div className="pe-field-label">Company logo</div>
-                <div className="pe-company-upload-row">
-                  <input
-                    ref={fileInputRef}
-                    className="pe-company-hidden-file"
-                    type="file"
-                    accept="image/*"
-                    onChange={async (e) => {
-                      const f = e.target.files && e.target.files[0];
-                      if (!f) return;
-                      const dataUrl = await fileToDataUrl(f);
-                      setProfile((p) => ({ ...p, logoDataUrl: dataUrl || "" }));
-                      setLogoFileName(String(f.name || ""));
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="pe-btn pe-company-upload-btn"
-                    onClick={() => {
-                      if (fileInputRef.current) fileInputRef.current.click();
-                    }}
-                  >
-                    Upload Logo
-                  </button>
-                  <div className="pe-company-upload-name">
-                    {logoFileName || (profile.logoDataUrl ? "Logo on file" : "No file selected")}
-                  </div>
-                </div>
-              </div>
-
-              <div className="pe-company-col-6 pe-company-logo-status-wrap">
-                <div className={`pe-company-logo-status ${profile.logoDataUrl ? "is-ready" : ""}`}>
-                  {logoFileName || (profile.logoDataUrl ? "Logo on file" : "No logo uploaded")}
-                </div>
-              </div>
             </div>
           </div>
 

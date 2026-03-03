@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { calculateEstimateWithLaborLines } from "./estimate";
@@ -25,6 +25,7 @@ function safeFilename(s) {
 
 const STORAGE_KEY = STORAGE_KEYS.ESTIMATES;
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
+const SCOPE_NOTES_MIN_HEIGHT = 170;
 
 export default function EstimateForm() {
   // Company profile (for PDF branding)
@@ -39,6 +40,7 @@ export default function EstimateForm() {
   const [date, setDate] = useState(todayISO());
   const [client, setClient] = useState("");
   const [description, setDescription] = useState("");
+  const descriptionRef = useRef(null);
 
   // Labor
   const [laborLines, setLaborLines] = useState([newLaborLine()]);
@@ -76,6 +78,29 @@ export default function EstimateForm() {
     multiplierMode === "custom"
       ? Number(customMultiplier) || 1
       : Number(laborMultiplier) || 1;
+
+  const autoResizeScopeNotes = (el) => {
+    if (!el) return;
+    el.style.boxSizing = "border-box";
+    el.style.resize = "none";
+    el.style.height = "0px";
+    const raw = Number(el.scrollHeight) || SCOPE_NOTES_MIN_HEIGHT;
+    const next = Math.max(SCOPE_NOTES_MIN_HEIGHT, raw);
+    el.style.height = `${next}px`;
+    el.style.overflowY = "hidden";
+  };
+
+  useLayoutEffect(() => {
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeScopeNotes(descriptionRef.current))
+      : null;
+    if (raf === null) autoResizeScopeNotes(descriptionRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [description]);
 
   const {
     laborBase,
@@ -343,10 +368,15 @@ export default function EstimateForm() {
           </div>
 
           <textarea
+            ref={descriptionRef}
             className="pe-input pe-textarea"
             value={description}
-            onChange={(e)=>setDescription(e.target.value)}
+            onChange={(e)=>{
+              setDescription(e.target.value);
+              autoResizeScopeNotes(e.target);
+            }}
             placeholder="Scope / notes"
+            style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
           />
         </section>
 

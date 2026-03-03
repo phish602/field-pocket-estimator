@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
 
 const ESTIPAID_PREFIX = "estipaid-";
+const NOTES_TEXTAREA_MIN_HEIGHT = 170;
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -144,6 +145,19 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
   const importInputRef = useRef(null);
+  const defaultInternalNotesRef = useRef(null);
+  const defaultInternalNotes = String(settings?.docDefaults?.defaultInternalNotesEstimate || "");
+
+  const autoResizeNotesField = (el) => {
+    if (!el) return;
+    el.style.boxSizing = "border-box";
+    el.style.resize = "none";
+    el.style.height = "0px";
+    const raw = Number(el.scrollHeight) || NOTES_TEXTAREA_MIN_HEIGHT;
+    const next = Math.max(NOTES_TEXTAREA_MIN_HEIGHT, raw);
+    el.style.height = `${next}px`;
+    el.style.overflowY = "hidden";
+  };
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -157,6 +171,18 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       window.removeEventListener("estipaid:settings-changed", onStorage);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeNotesField(defaultInternalNotesRef.current))
+      : null;
+    if (raf === null) autoResizeNotesField(defaultInternalNotesRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [defaultInternalNotes]);
 
   const sectionStyle = useMemo(
     () => ({
@@ -300,7 +326,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         </div>
 
         <div className="pe-company-form-inner" style={{ gap: 12, paddingBottom: 8 }}>
-          <div style={sectionStyle}>
+          <div className="pe-card pe-card-content" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Business Rules</div>
             <SettingRow
               title="Default Markup %"
@@ -380,20 +406,22 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div style={sectionStyle}>
+          <div className="pe-card pe-card-content" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Document Defaults</div>
             <SettingRow
               title="Default Internal Notes (Estimate only)"
               hint="Pre-filled internal notes template for new estimate docs."
               control={(
                 <textarea
+                  ref={defaultInternalNotesRef}
                   className="pe-input pe-textarea"
-                  value={String(settings?.docDefaults?.defaultInternalNotesEstimate || "")}
+                  value={defaultInternalNotes}
                   onChange={(e) => writeSettings((prev) => ({
                     ...prev,
                     docDefaults: { ...(prev.docDefaults || {}), defaultInternalNotesEstimate: e.target.value },
                   }))}
-                  style={{ minHeight: 90, width: "min(520px, 100%)" }}
+                  onInput={(e) => autoResizeNotesField(e.currentTarget)}
+                  style={{ minHeight: NOTES_TEXTAREA_MIN_HEIGHT, resize: "none", width: "min(520px, 100%)" }}
                 />
               )}
             />
@@ -402,7 +430,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             </div>
           </div>
 
-          <div style={sectionStyle}>
+          <div className="pe-card pe-card-content" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Internal Controls</div>
             <SettingRow
               title="Show Internal Cost Fields"
@@ -436,7 +464,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div style={sectionStyle}>
+          <div className="pe-card pe-card-content" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>PDF / Export</div>
             <SettingRow
               title="Include Logo"
@@ -476,7 +504,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div style={sectionStyle}>
+          <div className="pe-card pe-card-content" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Customer Defaults</div>
             <SettingRow
               title="Default customer type"

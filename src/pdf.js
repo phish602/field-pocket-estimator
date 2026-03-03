@@ -18,6 +18,20 @@ function asText(v, fallback = "") {
   return s || fallback;
 }
 
+function clampWrappedText(doc, text, maxWidth, maxLines) {
+  const clean = asText(text).replace(/\r\n/g, "\n");
+  if (!clean) return "";
+  const width = Math.max(80, Number(maxWidth) || 0);
+  const lines = doc.splitTextToSize(clean, width);
+  if (!Array.isArray(lines) || lines.length === 0) return "";
+  const limit = Math.max(1, Number(maxLines) || 1);
+  if (lines.length <= limit) return lines.join("\n");
+  const clipped = lines.slice(0, limit);
+  const last = String(clipped[limit - 1] || "").replace(/\s+$/g, "");
+  clipped[limit - 1] = last ? `${last}…` : "…";
+  return clipped.join("\n");
+}
+
 function buildPdfDoc(payload) {
   const canonicalSettings = loadSettings();
   const pdfSettings = canonicalSettings?.pdf || DEFAULT_SETTINGS.pdf;
@@ -45,6 +59,8 @@ function buildPdfDoc(payload) {
   const job = payload?.job || {};
   const laborRows = ensureArray(payload?.laborRows);
   const materialRows = ensureArray(payload?.materialRows);
+  const materialsMode = payload?.materialsMode === "itemized" ? "itemized" : "blanket";
+  const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
   const summaryRows = ensureArray(payload?.summaryRows);
   const tradeInsertText = asText(payload?.tradeInsertText);
   const scopeNotes = asText(payload?.scopeNotes);
@@ -210,7 +226,39 @@ function buildPdfDoc(payload) {
     headStyles: { fillColor: [242, 245, 249], textColor: [24, 24, 24], fontStyle: "bold" },
     margin: { left: margin, right: margin },
   });
-  cursorY = (doc.lastAutoTable?.finalY || cursorY) + sectionGap;
+  cursorY = (doc.lastAutoTable?.finalY || cursorY);
+
+  if (materialsMode === "blanket" && materialsBlanketDescription) {
+    const descIndent = compactLayout ? 10 : 12;
+    const descMaxWidth = contentWidth - (descIndent * 2);
+    const clampedDesc = clampWrappedText(doc, materialsBlanketDescription, descMaxWidth, compactLayout ? 4 : 5);
+    if (clampedDesc) {
+      const descLines = clampedDesc.split("\n");
+      const lineHeight = compactLayout ? 10 : 11;
+      const topGap = compactLayout ? 5 : 7;
+      const labelOffset = lineHeight;
+      const bodyOffset = lineHeight + 2;
+      const blockHeight = (labelOffset + bodyOffset) + (descLines.length * lineHeight);
+      let descStartY = cursorY + topGap;
+      const bottomSafety = pageHeight - 42;
+      if (descStartY + blockHeight > bottomSafety) {
+        doc.addPage();
+        descStartY = margin + 16;
+      }
+
+      doc.setFontSize(compactLayout ? 8.5 : 9);
+      doc.setFont(undefined, "bold");
+      doc.setTextColor(...muted);
+      doc.text("Materials Description:", margin + descIndent, descStartY + labelOffset);
+
+      doc.setFont(undefined, "normal");
+      doc.setTextColor(28, 31, 38);
+      doc.text(descLines, margin + descIndent, descStartY + bodyOffset + lineHeight);
+
+      cursorY = descStartY + blockHeight;
+    }
+  }
+  cursorY += sectionGap;
 
   autoTable(doc, {
     startY: cursorY,

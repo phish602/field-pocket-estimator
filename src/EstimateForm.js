@@ -47,6 +47,8 @@ const I18N = {
     materialsModeItemized: "Itemized",
     materialsCost: "Materials cost",
     markupPct: "Markup %",
+    materialsBlanketDescriptionLabel: "Materials Description (prints on PDF)",
+    materialsBlanketDescriptionPlaceholder: "Example: Include primer, caulk, fasteners, sundries, and disposal.",
     addMaterialItem: "+ Add Item",
     materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
     materialDesc: "Description",
@@ -73,6 +75,8 @@ const I18N = {
     materialsModeItemized: "Detallado",
     materialsCost: "Costo de materiales",
     markupPct: "Margen %",
+    materialsBlanketDescriptionLabel: "Descripción de materiales (se imprime en PDF)",
+    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye primer, sellador, fijaciones, insumos y disposición.",
     addMaterialItem: "+ Agregar Partida",
     materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
     materialDesc: "Descripción",
@@ -494,6 +498,17 @@ function IconTotals() {
   );
 }
 
+function IconTrash() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M4.8 7.2h14.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M9.2 7.2V5.8h5.6v1.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M7.3 7.2v10.2a1.8 1.8 0 0 0 1.8 1.8h5.8a1.8 1.8 0 0 0 1.8-1.8V7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10.2 10.3v6.1M13.8 10.3v6.1" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
   return (
     <div style={styles.sectionTitleWithIcon}>
@@ -512,7 +527,6 @@ const SHELL_DOCK_HEIGHT = 78;
 const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
 const SCOPE_NOTES_MIN_HEIGHT = 170;
-const LABOR_MINUS_HOLD_MS = 550;
 const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
 const TOTAL_PULSE_MS = 140;
@@ -520,6 +534,12 @@ const TOTAL_PULSE_MS = 140;
 function resolveDefaultMarkupPct(value) {
   const normalized = normalizePercentInput(value);
   return normalized === "" ? "0" : normalized;
+}
+
+function normalizeLaborQtyValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.round(parsed));
 }
 
 function createBlankMaterialItem(idOverride, markupPct) {
@@ -554,10 +574,9 @@ export default function EstimateForm(props) {
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
   const scopeNotesRef = useRef(null);
+  const additionalNotesRef = useRef(null);
   const actionBarRef = useRef(null);
   const didNormalizeLaborRef = useRef(false);
-  const laborHoldTimerRef = useRef(null);
-  const laborHoldFiredRef = useRef(null);
   const rowEnterTimerRef = useRef([]);
   const totalPulseTimerRef = useRef({ labor: null, materials: null, estimate: null });
   const previousTotalsRef = useRef(null);
@@ -574,6 +593,7 @@ export default function EstimateForm(props) {
     saveNow,
   } = hook();
   const scopeNotes = String(state?.scopeNotes || "");
+  const additionalNotes = String(state?.additionalNotes || "");
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
   const globalDefaultMarkupPct = resolveDefaultMarkupPct(pricingSettings?.defaultMarkupPct);
@@ -640,10 +660,6 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     return () => {
-      if (laborHoldTimerRef.current) {
-        clearTimeout(laborHoldTimerRef.current);
-        laborHoldTimerRef.current = null;
-      }
       const rowTimers = Array.isArray(rowEnterTimerRef.current) ? rowEnterTimerRef.current : [];
       rowTimers.forEach((t) => t && clearTimeout(t));
       rowEnterTimerRef.current = [];
@@ -768,6 +784,18 @@ export default function EstimateForm(props) {
     };
   }, [notesOpen, scopeNotes]);
 
+  useLayoutEffect(() => {
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeScopeNotes(additionalNotesRef.current))
+      : null;
+    if (raf === null) autoResizeScopeNotes(additionalNotesRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [additionalNotes]);
+
   function handleClearScopeNotes() {
     if (!scopeNotes.trim()) return;
     const ok = window.confirm("Unsaved notes will be lost. Clear notes?");
@@ -811,9 +839,17 @@ export default function EstimateForm(props) {
     const showProjectAddress = !!projectAddress && projectAddress !== billingAddress;
     const netTermsLabel = getNetTermsLabel(c);
     const netTermsDays = getNetTermsDays(c);
-    return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays };
+    const poRequired = !!c?.poRequired;
+    return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
   const hasSelectedNetTerms = useMemo(() => getNetTermsDays(selectedCustomerProfile) !== null, [selectedCustomerProfile]);
+  const isCommercialJob = selectedProfile?.customerType === "commercial";
+  const effectivePoRequired = !!selectedProfile?.poRequired;
+  const jobInfoTopGridClassName = isCommercialJob && effectivePoRequired
+    ? "pe-jobinfo-top-grid pe-jobinfo-top-grid-com-po"
+    : (!isCommercialJob && !effectivePoRequired)
+      ? "pe-jobinfo-top-grid pe-jobinfo-top-grid-res-no-po"
+      : "pe-jobinfo-top-grid";
   const projectLocationSame = state?.customer?.projectSameAsCustomer !== false;
   const manualProjectStreet = String(state?.customer?.projectAddress || "").trim();
   const manualProjectLine2 = String(state?.job?.location || "").trim();
@@ -841,6 +877,23 @@ export default function EstimateForm(props) {
     if (typeof state?.customer?.projectSameAsCustomer === "boolean") return;
     patch("customer.projectSameAsCustomer", true);
   }, [patch, state?.customer?.projectSameAsCustomer]);
+
+  useEffect(() => {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    if (!lines.length) return;
+    let changed = false;
+    const normalized = lines.map((ln) => {
+      const nextQty = normalizeLaborQtyValue(ln?.qty);
+      if (String(ln?.qty ?? "") !== String(nextQty)) {
+        changed = true;
+        return { ...ln, qty: String(nextQty) };
+      }
+      return ln;
+    });
+    if (changed) {
+      patch("labor.lines", normalized);
+    }
+  }, [patch, state?.labor?.lines]);
 
   // One-time labor normalization:
   // - ensure a single default line when empty
@@ -935,8 +988,8 @@ export default function EstimateForm(props) {
   function decrementLaborQty(id) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines.find((x) => String(x?.id) === String(id));
-    const current = Number(ln?.qty);
-    const next = Math.max(1, Number.isFinite(current) && current > 0 ? current - 1 : 1);
+    const current = normalizeLaborQtyValue(ln?.qty);
+    const next = Math.max(1, current - 1);
     updateLaborLine(id, { qty: String(next) });
   }
 
@@ -1001,7 +1054,7 @@ export default function EstimateForm(props) {
       return;
     }
     if (key === "qty") {
-      patchLineByIndex(i, { qty: String(Math.max(1, Number(value) || 1)) });
+      patchLineByIndex(i, { qty: String(normalizeLaborQtyValue(value)) });
       return;
     }
     patchLineByIndex(i, { [key]: value });
@@ -1024,42 +1077,57 @@ export default function EstimateForm(props) {
   }
 
   function removeLaborLineAt(i) {
+    if (isStaticLaborRow(i)) {
+      clearLaborLineAt(i);
+      return;
+    }
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines[i];
     if (!ln) return;
     removeLaborLine(ln.id);
   }
 
-  function clearLaborMinusHoldTimer() {
-    if (!laborHoldTimerRef.current) return;
-    clearTimeout(laborHoldTimerRef.current);
-    laborHoldTimerRef.current = null;
+  function isStaticLaborRow(i) {
+    return i === 0;
   }
 
-  function startLaborMinusHold(i) {
-    clearLaborMinusHoldTimer();
-    laborHoldFiredRef.current = null;
-    const holdKey = String(laborLines?.[i]?.id ?? i);
-    laborHoldTimerRef.current = setTimeout(() => {
-      laborHoldFiredRef.current = holdKey;
-      removeLaborLineAt(i);
-      laborHoldTimerRef.current = null;
-    }, LABOR_MINUS_HOLD_MS);
+  function clearLaborLineAt(i) {
+    if (!laborLines?.[i]) return;
+    patchLineByIndex(i, {
+      role: "",
+      label: "",
+      hours: "",
+      rate: "",
+      trueRateInternal: "",
+      internalRate: "",
+      qty: "1",
+      markupPct: globalDefaultMarkupPct,
+    });
   }
 
   function handleLaborMinus(i) {
-    const holdKey = String(laborLines?.[i]?.id ?? i);
-    const firedKey = laborHoldFiredRef.current;
-    if (firedKey) {
-      laborHoldFiredRef.current = null;
-      if (firedKey === holdKey) return;
-    }
     if (!laborLines?.[i]) {
       return;
     }
-    const q = Math.max(1, Number(laborLines?.[i]?.qty) || 1);
-    if (q > 1) {
-      updateLaborLineAt(i, "qty", String(q - 1));
+    const currentQty = normalizeLaborQtyValue(laborLines?.[i]?.qty);
+
+    if (isStaticLaborRow(i)) {
+      if (currentQty <= 1) return;
+      patchLineByIndex(i, { qty: String(currentQty - 1) });
+      return;
+    }
+
+    if (currentQty > 1) {
+      patchLineByIndex(i, { qty: String(currentQty - 1) });
+      return;
+    }
+    removeLaborLineAt(i);
+  }
+
+  function handleLaborTrash(i) {
+    if (!laborLines?.[i]) return;
+    if (isStaticLaborRow(i)) {
+      clearLaborLineAt(i);
       return;
     }
     removeLaborLineAt(i);
@@ -1148,8 +1216,9 @@ export default function EstimateForm(props) {
   function removeMaterialItem(i) {
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     if (i < 0 || i >= items.length) return;
-    if (items.length <= 1) {
-      patch("materials.items", [createBlankMaterialItem(items[0]?.id, globalDefaultMarkupPct)]);
+    if (i === 0) {
+      items[0] = createBlankMaterialItem(items[0]?.id, globalDefaultMarkupPct);
+      patch("materials.items", items);
       return;
     }
     patch("materials.items", items.filter((_, idx) => idx !== i));
@@ -1258,6 +1327,7 @@ export default function EstimateForm(props) {
       const poNumber = String(state?.job?.poNumber || "").trim();
       const docDate = String(state?.job?.date || "").trim();
       const includeNotes = uiDocType === "estimate";
+      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
       const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
       const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
       const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks) : "";
@@ -1346,6 +1416,8 @@ export default function EstimateForm(props) {
         tradeInsertText: tradeRawForPdf,
         laborRows,
         materialRows: materialsRows,
+        materialsMode,
+        materialsBlanketDescription: materialsMode === "blanket" ? materialsBlanketDescription : "",
         summaryRows,
         scopeNotes: includeNotes ? scopeWithoutTrade : "",
         additionalNotes: includeNotes ? String(state?.additionalNotes || "").trim() : "",
@@ -1363,14 +1435,9 @@ export default function EstimateForm(props) {
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
   const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
   const setDocType = (nextDocType) => {
     const next = nextDocType === "invoice" ? "invoice" : "estimate";
-    if (next === "invoice") {
-      patch("scopeNotes", "");
-      patch("additionalNotes", "");
-      patch("tradeInsert.key", "");
-      patch("tradeInsert.text", "");
-    }
     patch("ui.docType", next);
   };
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
@@ -1388,6 +1455,8 @@ export default function EstimateForm(props) {
   const setMaterialsCost = (v) => patch("materials.blanketCost", v);
   const materialsMarkupPct = String(state?.materials?.markupPct ?? "");
   const setMaterialsMarkupPct = (v) => patch("materials.markupPct", v);
+  const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "");
+  const setMaterialsBlanketDescription = (v) => patch("materials.materialsBlanketDescription", v);
   const materialItems = useMemo(() => {
     const arr = Array.isArray(state?.materials?.items) ? state.materials.items : [];
     return arr.map((it) => ({
@@ -1529,7 +1598,7 @@ export default function EstimateForm(props) {
             </div>
           </div>
 
-          <div ref={customerTopRef} className="pe-estimator-shell">
+          <div ref={customerTopRef} className="pe-card pe-estimator-shell">
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
         <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
@@ -1634,12 +1703,14 @@ export default function EstimateForm(props) {
                   <div style={styles.customerProfileValue}>{selectedProfile.email}</div>
                 </div>
               ) : null}
-              {selectedProfile.netTermsLabel ? (
-                <div style={styles.customerProfileItem}>
-                  <div style={styles.customerProfileLabel}>Net terms</div>
-                  <div style={styles.customerProfileValue}>{selectedProfile.netTermsLabel}</div>
-                </div>
-              ) : null}
+              <div style={styles.customerProfileItem}>
+                <div style={styles.customerProfileLabel}>Customer type</div>
+                <div style={styles.customerProfileValue}>{selectedProfile.customerType === "commercial" ? "Commercial" : "Residential"}</div>
+              </div>
+              <div style={styles.customerProfileItem}>
+                <div style={styles.customerProfileLabel}>Net terms</div>
+                <div style={styles.customerProfileValue}>{selectedProfile.netTermsLabel || "—"}</div>
+              </div>
               {selectedProfile.billingAddress ? (
                 <div style={{ ...styles.customerProfileItem, ...styles.customerProfileItemFull }}>
                   <div style={styles.customerProfileLabel}>Billing address</div>
@@ -1669,24 +1740,27 @@ export default function EstimateForm(props) {
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
-            <div className="pe-jobinfo-top-grid">
+            <div className={jobInfoTopGridClassName}>
               <div>
-                <label style={styles.label}>Project #</label>
-                <input className="pe-input" value={state.customer.projectNumber || ""} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project # (optional)" />
+                <label style={styles.label}>Project name</label>
+                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
               </div>
-              <div>
-                <label style={styles.label}>PO number</label>
-                <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
-              </div>
+              {isCommercialJob ? (
+                <div>
+                  <label style={styles.label}>Project #</label>
+                  <input className="pe-input" value={state.customer.projectNumber || ""} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project # (optional)" />
+                </div>
+              ) : null}
+              {effectivePoRequired ? (
+                <div>
+                  <label style={styles.label}>PO number</label>
+                  <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
+                </div>
+              ) : null}
               <div>
                 <label style={styles.label}>Date</label>
                 <input className="pe-input" type="date" value={state.job.date} onChange={(e) => patch("job.date", e.target.value)} />
               </div>
-            </div>
-
-            <div style={{ marginTop: 10 }}>
-              <label style={styles.label}>Project name</label>
-              <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
             </div>
 
             <div style={{ ...styles.projectLocationToggleRow, marginTop: 10 }}>
@@ -1771,10 +1845,7 @@ export default function EstimateForm(props) {
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
-          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-            <div className="pe-section-title" style={styles.sectionTitleText}>Scope / Notes</div>
-            <div style={styles.sectionAccentLine} />
-          </div>
+          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope / Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
@@ -2020,41 +2091,42 @@ export default function EstimateForm(props) {
                     title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
                     style={styles.laborQtyLabel}
                   >
-                    x{Number(l.qty) || 1}
+                    x{normalizeLaborQtyValue(l?.qty)}
                   </div>
-
-                  <button
-                    className="pe-btn pe-btn-ghost"
-                    type="button"
-                    onClick={() => duplicateLaborLine(i)}
-                    title={
-                      lang === "es"
-                        ? "Duplicar trabajador en esta línea (no agrega fila)"
-                        : "Duplicate laborer on this SAME line (does not add a new row)"
-                    }
-                  >
-                    {t("duplicate")}
-                  </button>
 
                   <div style={styles.laborLineTotalWrap}>
                     <span style={styles.laborLineTotalLabel}>Line total</span>
                     <span style={styles.laborLineTotalValue}>{money.format(laborTotalsById.get(String(l.id)) || 0)}</span>
                   </div>
 
+                  <div style={styles.laborLineActionButtons}>
+                    <button
+                      className="pe-btn pe-btn-ghost"
+                      type="button"
+                      onClick={() => handleLaborMinus(i)}
+                      title={lang === "es" ? "Disminuir cantidad" : "Decrease quantity"}
+                      style={styles.lineDeleteBtn}
+                    >
+                      −
+                    </button>
+                    <button
+                      className="pe-btn pe-btn-ghost pe-labor-add-circle"
+                      type="button"
+                      onClick={() => duplicateLaborLine(i)}
+                      title={lang === "es" ? "Duplicar trabajador en esta línea" : "Duplicate laborer on this line"}
+                      style={styles.lineAddBtn}
+                    >
+                      +
+                    </button>
+                  </div>
                   <button
-                    className="pe-btn pe-btn-ghost"
+                    className="pe-btn pe-btn-ghost pe-labor-trash-btn"
                     type="button"
-                    onClick={() => handleLaborMinus(i)}
-                    onMouseDown={() => startLaborMinusHold(i)}
-                    onMouseUp={clearLaborMinusHoldTimer}
-                    onMouseLeave={clearLaborMinusHoldTimer}
-                    onTouchStart={() => startLaborMinusHold(i)}
-                    onTouchEnd={clearLaborMinusHoldTimer}
-                    onTouchCancel={clearLaborMinusHoldTimer}
-                    title={lang === "es" ? "Disminuir / Quitar (mantener para quitar línea)" : "Decrease / Remove (hold to remove line)"}
-                    style={styles.lineDeleteBtn}
+                    onClick={() => handleLaborTrash(i)}
+                    title={lang === "es" ? "Eliminar línea" : "Delete line"}
+                    style={styles.lineTrashBtn}
                   >
-                    −
+                    <IconTrash />
                   </button>
                   </div>
                 </div>
@@ -2211,6 +2283,8 @@ export default function EstimateForm(props) {
         normalizeMoneyInput={normalizeMoneyInput}
         materialsMarkupPct={materialsMarkupPct}
         setMaterialsMarkupPct={setMaterialsMarkupPct}
+        materialsBlanketDescription={materialsBlanketDescription}
+        setMaterialsBlanketDescription={setMaterialsBlanketDescription}
         normalizePercentInput={normalizePercentInput}
         normalizedMarkupPct={normalizedMarkupPct}
         lockMarkupToGlobal={lockMarkupToGlobal}
@@ -2226,6 +2300,7 @@ export default function EstimateForm(props) {
         newMaterialItemIds={newMaterialItemIds}
         itemizedMaterialsTotal={itemizedMaterialsTotal}
         addMaterialItem={addMaterialItem}
+        trashIcon={<IconTrash />}
       />
 
       {/* TOTAL */}
@@ -2235,7 +2310,7 @@ export default function EstimateForm(props) {
           <div>
             <div className="pe-total-label" style={styles.totalLabelWithIcon}>
               <span style={styles.sectionTitleIcon} aria-hidden="true"><IconTotals /></span>
-              <span>{t("estimateTotal")}</span>
+              <span>{totalLabel}</span>
             </div>
             <div className="pe-total-meta">
               {lastSavedLabel ? `${totalTallyLine} • ${lastSavedLabel}` : totalTallyLine}
@@ -2248,13 +2323,9 @@ export default function EstimateForm(props) {
       </section>
 
       {/* Additional Notes */}
-      {uiDocType === "estimate" ? (
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Additional Notes</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
+        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Additional Notes" styles={styles} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
@@ -2279,14 +2350,17 @@ export default function EstimateForm(props) {
           </button>
         </div>
         <textarea
+          ref={additionalNotesRef}
           className="pe-input pe-textarea"
-          value={state.additionalNotes || ""}
-          onChange={(e) => patch("additionalNotes", e.target.value)}
+          value={additionalNotes}
+          onChange={(e) => {
+            patch("additionalNotes", e.target.value);
+            autoResizeScopeNotes(e.target);
+          }}
           placeholder="Additional notes, terms, exclusions…"
-          style={{ minHeight: 120 }}
+          style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
       </section>
-      ) : null}
 
       </div>
         </div>
@@ -2294,14 +2368,14 @@ export default function EstimateForm(props) {
 
       <div style={{ ...styles.estimatorActionBar, bottom: actionBarBottom }}>
         <div ref={actionBarRef} style={styles.estimatorActionBarInner}>
-          <div style={styles.estimatorActionButtons}>
+          <div style={styles.estimatorActionButtons} className="pe-estimator-sticky-actions">
             <button className="pe-btn" type="button" onClick={onSaveNow} style={styles.estimatorActionButton}>
               Save
             </button>
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+            <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
               Clear
             </button>
-            <button className="pe-btn" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
               Export PDF
             </button>
           </div>
@@ -2466,14 +2540,43 @@ const styles = {
   laborLineTotalWrap: { marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" },
   laborLineTotalLabel: { color: "var(--muted)", fontSize: 13, fontWeight: 800 },
   laborLineTotalValue: { color: "var(--text)", fontSize: 14, fontWeight: 900 },
+  laborLineActionButtons: { display: "inline-flex", gap: 8, alignItems: "center" },
   lineDeleteBtn: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
     borderRadius: 999,
     display: "grid",
     placeItems: "center",
     padding: 0,
     fontSize: 22,
+    lineHeight: 1,
+    alignSelf: "end",
+  },
+  lineAddBtn: {
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 24,
+    lineHeight: 1,
+    alignSelf: "end",
+  },
+  lineTrashBtn: {
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 14,
     lineHeight: 1,
     alignSelf: "end",
   },
