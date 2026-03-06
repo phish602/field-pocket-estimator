@@ -93,7 +93,12 @@ const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
 const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
+const SAVE_PROMPT_TIMEOUT_MS = 2200;
 function readSavedCustomers() {
   try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
 }
@@ -149,6 +154,100 @@ function triggerHaptic() {
       navigator.vibrate(10);
     }
   } catch {}
+}
+
+function readSavedDocList(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function toDocTimestamp(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getMostRecentSavedTimestamp(doc) {
+  const savedAt = toDocTimestamp(doc?.savedAt ?? doc?.meta?.savedAt ?? doc?.meta?.lastSavedAt);
+  if (savedAt > 0) return savedAt;
+  const updatedAt = toDocTimestamp(doc?.updatedAt);
+  if (updatedAt > 0) return updatedAt;
+  const dateVal = toDocTimestamp(doc?.date);
+  if (dateVal > 0) return dateVal;
+  return 0;
+}
+
+function formatSavedTimestamp(ts) {
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yyyy = String(d.getFullYear());
+    const hh = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    return `${mm}/${dd}/${yyyy} ${hh}:${min}`;
+  } catch {
+    return "";
+  }
+}
+
+function createSavedDocId() {
+  return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readPendingEditTarget() {
+  try {
+    const invoiceId = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
+    if (invoiceId) {
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return { type: "invoice", id: invoiceId };
+    }
+    const estimateId = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+    if (estimateId) {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return { type: "estimate", id: estimateId };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingEditTarget(type) {
+  try {
+    if (!type || type === "estimate") localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    if (!type || type === "invoice") localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+  } catch {}
+}
+
+function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
+  const arr = Array.isArray(list) ? list.filter(Boolean) : [];
+  const record = nextRecord && typeof nextRecord === "object" ? nextRecord : {};
+  const recordId = String(record?.id || "").trim();
+  const fallbackValue = fallbackNumberKey ? String(record?.[fallbackNumberKey] || "").trim() : "";
+
+  const matchIndex = arr.findIndex((item) => {
+    const sameId = recordId && String(item?.id || "").trim() === recordId;
+    if (sameId) return true;
+    if (!fallbackNumberKey || !fallbackValue) return false;
+    return String(item?.[fallbackNumberKey] || "").trim() === fallbackValue;
+  });
+
+  if (matchIndex < 0) return [record, ...arr];
+  const existing = arr[matchIndex] && typeof arr[matchIndex] === "object" ? arr[matchIndex] : {};
+  const merged = { ...existing, ...record };
+  const next = arr.filter((_, idx) => idx !== matchIndex);
+  return [merged, ...next];
 }
 
 // Labor role presets (value = key, display = label)
@@ -531,6 +630,15 @@ const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
 const TOTAL_PULSE_MS = 140;
 
+function toDirtySnapshot(s) {
+  if (!s || typeof s !== "object") return "";
+  const meta = {
+    ...(s.meta || {}),
+    lastSavedAt: 0,
+  };
+  return JSON.stringify({ ...s, meta });
+}
+
 function resolveDefaultMarkupPct(value) {
   const normalized = normalizePercentInput(value);
   return normalized === "" ? "0" : normalized;
@@ -558,6 +666,14 @@ function createBlankMaterialItem(idOverride, markupPct) {
 
 export default function EstimateForm(props) {
   const { embeddedInShell = false } = props || {};
+  const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
+  const editingRecordId = String(editTarget?.id || "").trim();
+  const editingTargetType = editTarget?.type === "invoice" ? "invoice" : (editTarget?.type === "estimate" ? "estimate" : "");
+  const isEditMode = Boolean(editingRecordId);
+  const isInvoiceEditMode = isEditMode && editingTargetType === "invoice";
+  const isEditModeRef = useRef(isEditMode);
+  const openedEditIdRef = useRef(editingRecordId);
+  const openedDocNumberRef = useRef("");
   const lang = useMemo(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
@@ -570,7 +686,6 @@ export default function EstimateForm(props) {
     () => (key) => I18N[lang]?.[key] || I18N.en?.[key] || key,
     [lang]
   );
-
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
   const scopeNotesRef = useRef(null);
@@ -591,7 +706,8 @@ export default function EstimateForm(props) {
     updateLaborLine,
     clearAll,
     saveNow,
-  } = hook();
+    replaceState,
+  } = hook({ persistDraft: !isEditMode });
   const scopeNotes = String(state?.scopeNotes || "");
   const additionalNotes = String(state?.additionalNotes || "");
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
@@ -602,6 +718,28 @@ export default function EstimateForm(props) {
   const internalSettings = settingsSnapshot?.internal || DEFAULT_SETTINGS.internal;
   const showInternalCostFields = internalSettings?.showInternalCostFields !== false;
   const lockInternalCostFields = !!internalSettings?.lockInternalCostFields;
+
+  useEffect(() => {
+    isEditModeRef.current = isEditMode;
+  }, [isEditMode]);
+
+  useEffect(() => {
+    if (!isEditMode) {
+      openedEditIdRef.current = "";
+      openedDocNumberRef.current = "";
+      return;
+    }
+    if (!openedEditIdRef.current) {
+      openedEditIdRef.current = editingRecordId;
+    }
+  }, [editingRecordId, isEditMode]);
+
+  useEffect(() => {
+    return () => {
+      if (!isEditModeRef.current) return;
+      clearPendingEditTarget();
+    };
+  }, []);
 
   useEffect(() => {
     const refresh = (e) => {
@@ -633,6 +771,14 @@ export default function EstimateForm(props) {
   const [materialsOpen, setMaterialsOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(true);
   const [pdfPromptOpen, setPdfPromptOpen] = useState(false);
+  const [savePrompt, setSavePrompt] = useState(null);
+  const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
+  const [savePulse, setSavePulse] = useState(false);
+  const saveBaselineRef = useRef("");
+  const hasSaveBaselineRef = useRef(false);
+  const lastSavedAtSeenRef = useRef(0);
+  const wasDirtyRef = useRef(false);
+  const savePulseTimerRef = useRef(null);
   const [multiplierMode, setMultiplierMode] = useState(() => {
     const m = Number(state?.labor?.multiplier);
     if (m === 1 || m === 1.1 || m === 1.2 || m === 1.25) return "preset";
@@ -653,10 +799,118 @@ export default function EstimateForm(props) {
   }, []);
 
   useEffect(() => {
-    try {
-      console.log("Loaded EstimateForm BUILD:", BUILD_TAG);
-    } catch {}
+    if (!savePrompt) return undefined;
+    const timer = setTimeout(() => setSavePrompt(null), SAVE_PROMPT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [savePrompt]);
+
+  useEffect(() => {
+    const snapshot = toDirtySnapshot(state);
+    if (!hasSaveBaselineRef.current) {
+      saveBaselineRef.current = snapshot;
+      hasSaveBaselineRef.current = true;
+      lastSavedAtSeenRef.current = Number(state?.meta?.lastSavedAt || 0);
+      setSaveNeedsAttention(false);
+      return;
+    }
+
+    const currentSavedAt = Number(state?.meta?.lastSavedAt || 0);
+    if (currentSavedAt > 0 && currentSavedAt !== lastSavedAtSeenRef.current) {
+      saveBaselineRef.current = snapshot;
+      lastSavedAtSeenRef.current = currentSavedAt;
+      setSaveNeedsAttention(false);
+      wasDirtyRef.current = false;
+      return;
+    }
+
+    const dirty = snapshot !== saveBaselineRef.current;
+    setSaveNeedsAttention(dirty);
+
+    if (dirty && !wasDirtyRef.current) {
+      setSavePulse(true);
+      if (savePulseTimerRef.current) clearTimeout(savePulseTimerRef.current);
+      savePulseTimerRef.current = setTimeout(() => {
+        setSavePulse(false);
+        savePulseTimerRef.current = null;
+      }, 240);
+    }
+
+    if (!dirty) {
+      setSavePulse(false);
+      if (savePulseTimerRef.current) {
+        clearTimeout(savePulseTimerRef.current);
+        savePulseTimerRef.current = null;
+      }
+    }
+
+    wasDirtyRef.current = dirty;
+  }, [state]);
+
+  useEffect(() => () => {
+    if (savePulseTimerRef.current) {
+      clearTimeout(savePulseTimerRef.current);
+      savePulseTimerRef.current = null;
+    }
   }, []);
+
+  useEffect(() => {
+    if (!isEditMode || !editingRecordId) return;
+    const sourceKey = isInvoiceEditMode ? INVOICES_KEY : ESTIMATES_KEY;
+    const list = readSavedDocList(sourceKey);
+    const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
+    if (!match || typeof replaceState !== "function") {
+      setSavePrompt({
+        tone: "error",
+        message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Switched to new mode.`,
+      });
+      openedEditIdRef.current = "";
+      openedDocNumberRef.current = "";
+      setEditTarget(null);
+      return;
+    }
+    openedEditIdRef.current = String(editingRecordId || match?.id || "").trim();
+    openedDocNumberRef.current = String(
+      match?.estimateNumber
+      || match?.invoiceNumber
+      || match?.job?.docNumber
+      || match?.customer?.projectNumber
+      || ""
+    ).trim();
+    const createdAt = Number(match?.createdAt || Date.now()) || Date.now();
+    const hydrated = {
+      ...match,
+      ui: {
+        ...(match?.ui || {}),
+        docType: isInvoiceEditMode ? "invoice" : "estimate",
+      },
+      meta: {
+        ...(match?.meta || {}),
+        savedDocId: String(match?.id || editingRecordId),
+        savedDocCreatedAt: createdAt,
+      },
+    };
+    replaceState(hydrated, { persistNow: false, persistDraft: false });
+
+    const loadedCustomerId = String(match?.customerId || match?.customer?.id || "").trim();
+    setSelectedCustomerId(loadedCustomerId);
+    setSelectedCustomerProfile(match?.customer && typeof match.customer === "object" ? match.customer : null);
+
+    const loadedMultiplier = Number(match?.labor?.multiplier);
+    if (loadedMultiplier === 1 || loadedMultiplier === 1.1 || loadedMultiplier === 1.2 || loadedMultiplier === 1.25) {
+      setMultiplierMode("preset");
+    } else {
+      setMultiplierMode("custom");
+    }
+
+    const displayName = String(
+      match?.customerName
+      || match?.customer?.displayName
+      || match?.customer?.name
+      || match?.customer?.company
+      || ""
+    ).trim();
+    if (displayName) setSearchCustomerText(displayName);
+  }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
 
   useEffect(() => {
     return () => {
@@ -1265,23 +1519,174 @@ export default function EstimateForm(props) {
     setMultiplierMode("preset");
   };
 
+  const onCancelEdit = () => {
+    if (!isEditMode) return;
+    const ok = window.confirm(`Discard changes to this ${isInvoiceEditMode ? "invoice" : "estimate"}?`);
+    if (!ok) return;
+    clearPendingEditTarget(editingTargetType);
+    openedEditIdRef.current = "";
+    openedDocNumberRef.current = "";
+    setEditTarget(null);
+    try {
+      window.dispatchEvent(new Event(isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
+    } catch {}
+  };
+
   const onSaveNow = () => {
-    const prevSavedAt = Number(state?.meta?.lastSavedAt || 0);
     try {
-      saveNow?.();
+      triggerHaptic();
+      const customerName = String(state?.customer?.name || selectedProfile?.displayName || "").trim();
+      const missing = [];
+      if (!customerName) missing.push("customer");
+      if (!String(state?.job?.date || "").trim()) missing.push("date");
+
+      if (missing.length > 0) {
+        const missingLabel = missing.map((it) => (it === "customer" ? "Customer" : "Date")).join(", ");
+        setSavePrompt({
+          tone: "warn",
+          message: `Cannot save yet. Missing: ${missingLabel}.`,
+        });
+        return;
+      }
+
+      const now = Date.now();
+      const docNumber = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
+      const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
+      const openedEditId = String(openedEditIdRef.current || "").trim();
+      const currentMetaSavedDocId = String(state?.meta?.savedDocId || "").trim();
+      if (
+        isEditMode
+        && openedEditId
+        && (
+          (forcedEditId && forcedEditId !== openedEditId)
+          || (currentMetaSavedDocId && currentMetaSavedDocId !== openedEditId)
+        )
+      ) {
+        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
+        return;
+      }
+      const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
+      const existingEstimates = readSavedDocList(ESTIMATES_KEY);
+      const existingInvoices = readSavedDocList(INVOICES_KEY);
+
+      const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
+      const existingById = savedDocId
+        ? (
+          isInvoiceEditMode
+            ? findById(existingInvoices)
+            : (findById(existingEstimates) || findById(existingInvoices))
+        )
+        : null;
+
+      const matchedByNumber = !savedDocId && docNumber
+        ? (
+          uiDocType === "invoice"
+            ? (
+              existingInvoices.find((x) => String(x?.invoiceNumber || "").trim() === docNumber)
+              || existingEstimates.find((x) => String(x?.invoiceNumber || "").trim() === docNumber)
+            )
+            : existingEstimates.find((x) => String(x?.estimateNumber || "").trim() === docNumber)
+        )
+        : null;
+
+      if (isEditMode && !existingById) {
+        setSavePrompt({ tone: "error", message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Unable to update.` });
+        return;
+      }
+
+      const existingMatch = existingById || matchedByNumber;
+      const recordId = savedDocId || String(existingMatch?.id || "").trim() || createSavedDocId();
+      if (isEditMode && openedEditId && recordId !== openedEditId) {
+        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
+        return;
+      }
+      const createdAt = savedDocCreatedAt > 0
+        ? savedDocCreatedAt
+        : Number(existingMatch?.createdAt || now) || now;
+
+      const persistedDraft = saveNow?.(
+        { savedDocId: recordId, savedDocCreatedAt: createdAt },
+        { persistDraft: !isEditMode }
+      ) || null;
+      let persistedState = persistedDraft;
+      if ((!persistedState || typeof persistedState !== "object") && !isEditMode) {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        persistedState = raw ? JSON.parse(raw) : null;
+      }
+      if (!persistedState || typeof persistedState !== "object") {
+        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+        return;
+      }
+
+      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      const updatedAt = Date.now();
+      const estimateNumber = saveDocType === "estimate"
+        ? docNumber
+        : String(existingMatch?.estimateNumber || "").trim();
+      const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
+      const projectName = String(state?.customer?.projectName || "").trim();
+      const projectNumber = String(state?.customer?.projectNumber || "").trim();
+      const savedRecord = {
+        ...persistedState,
+        id: recordId,
+        docType: saveDocType,
+        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+        customerName,
+        projectName,
+        projectNumber,
+        estimateNumber,
+        invoiceNumber,
+        date: String(state?.job?.date || "").trim(),
+        dueDate: String(state?.job?.due || "").trim(),
+        poNumber: String(state?.job?.poNumber || "").trim(),
+        total: Number(totalRevenue || 0),
+        savedAt: updatedAt,
+        ts: updatedAt,
+        createdAt,
+        updatedAt,
+      };
+
+      const nextEstimates = upsertSavedDoc(
+        existingEstimates,
+        savedRecord,
+        saveDocType === "invoice" ? "invoiceNumber" : "estimateNumber"
+      );
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+
+      if (saveDocType === "invoice") {
+        const nextInvoices = upsertSavedDoc(existingInvoices, savedRecord, "invoiceNumber");
+        localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+      } else {
+        const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
+        if (filteredInvoices.length !== existingInvoices.length) {
+          localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
+        }
+      }
+
+      const savedLabel = docNumber
+        ? `${saveDocType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`
+        : (projectName || customerName);
+      setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
+
+      if (isEditMode) {
+        clearPendingEditTarget(editingTargetType);
+        openedEditIdRef.current = "";
+        openedDocNumberRef.current = "";
+        setEditTarget(null);
+      }
+
+      setTimeout(() => {
+        try {
+          const navEvent = isEditMode
+            ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
+            : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
+          window.dispatchEvent(new Event(navEvent));
+        } catch {}
+      }, 180);
     } catch {
-      return;
+      setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
     }
-    let persistedSavedAt = prevSavedAt;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
-      persistedSavedAt = Number(parsed?.meta?.lastSavedAt || 0);
-    } catch {}
-    if (persistedSavedAt <= prevSavedAt) return;
-    try {
-      window.dispatchEvent(new Event(uiDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
-    } catch {}
   };
 
   const exportPDF = async (mode = "download") => {
@@ -1435,6 +1840,21 @@ export default function EstimateForm(props) {
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
   const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const editPrimaryTitle = isInvoiceEditMode ? "EDIT INVOICE" : "EDIT ESTIMATE";
+  const editDocNumberRaw = String(
+    state?.estimateNumber
+    || state?.invoiceNumber
+    || state?.docNumber
+    || state?.documentNumber
+    || state?.number
+    || state?.job?.docNumber
+    || state?.document?.number
+    || state?.doc?.number
+    || ""
+  ).trim();
+  const editSecondaryTitle = `#${editDocNumberRaw || "(no number)"}`;
+  const editUpdatedTs = getMostRecentSavedTimestamp(state);
+  const editUpdatedLabel = editUpdatedTs > 0 ? `Last updated ${formatSavedTimestamp(editUpdatedTs)}` : "";
   const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
   const setDocType = (nextDocType) => {
     const next = nextDocType === "invoice" ? "invoice" : "estimate";
@@ -1568,6 +1988,11 @@ export default function EstimateForm(props) {
   const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
+  const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
+  const saveToastToneStyle = savePrompt?.tone === "error"
+    ? styles.saveToastError
+    : (savePrompt?.tone === "warn" ? styles.saveToastWarn : styles.saveToastSuccess);
+  const actionButtonsStyle = isEditMode ? styles.estimatorActionButtonsEdit : styles.estimatorActionButtons;
 
   return (
     <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
@@ -1575,27 +2000,42 @@ export default function EstimateForm(props) {
       <div className="estimatorPageContainer">
         <div className="tileWidthWrapper">
           <div className="pe-builder-bar estimatorHeaderRow">
-            <h1 className="pe-title pe-builder-title screenTitle">
-              <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
-            </h1>
-            <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-              <button
-                type="button"
-                className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                onClick={() => setDocType("estimate")}
-                style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-              >
-                Estimate
-              </button>
-              <button
-                type="button"
-                className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                onClick={() => setDocType("invoice")}
-                style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-              >
-                Invoice
-              </button>
-            </div>
+            {isEditMode ? (
+              <>
+                <div style={styles.editHeaderStack}>
+                  <h1 className="pe-title pe-builder-title screenTitle" style={styles.editHeaderPrimary}>
+                    {editPrimaryTitle}
+                  </h1>
+                  <div style={styles.editHeaderSecondary}>{editSecondaryTitle}</div>
+                  {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
+                </div>
+                <div style={styles.editModeBadge}>EDIT MODE</div>
+              </>
+            ) : (
+              <>
+                <h1 className="pe-title pe-builder-title screenTitle">
+                  <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+                </h1>
+                <div className="pe-builder-mode" style={styles.builderModeSegmented}>
+                  <button
+                    type="button"
+                    className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                    onClick={() => setDocType("estimate")}
+                    style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                  >
+                    Estimate
+                  </button>
+                  <button
+                    type="button"
+                    className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                    onClick={() => setDocType("invoice")}
+                    style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                  >
+                    Invoice
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           <div ref={customerTopRef} className="pe-card pe-estimator-shell">
@@ -2150,7 +2590,7 @@ export default function EstimateForm(props) {
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro" onClick={handleLaborPrimary} type="button">
+            <button className="pe-btn pe-btn-micro pe-shortcut-tip" data-shortcut="+" onClick={handleLaborPrimary} type="button">
               {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
           </div>
@@ -2366,15 +2806,46 @@ export default function EstimateForm(props) {
         </div>
       </div>
 
+      {savePrompt ? (
+        <div style={{ ...styles.saveToastWrap, bottom: saveToastBottom }}>
+          <div role="status" aria-live="polite" style={{ ...styles.saveToast, ...saveToastToneStyle }}>
+            {String(savePrompt?.message || "Saved")}
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ ...styles.estimatorActionBar, bottom: actionBarBottom }}>
         <div ref={actionBarRef} style={styles.estimatorActionBarInner}>
-          <div style={styles.estimatorActionButtons} className="pe-estimator-sticky-actions">
-            <button className="pe-btn" type="button" onClick={onSaveNow} style={styles.estimatorActionButton}>
-              Save
+          <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
+            <button
+              className="pe-btn pe-shortcut-tip"
+              data-shortcut="Ctrl + S"
+              type="button"
+              onClick={onSaveNow}
+              style={{
+                ...styles.estimatorActionButton,
+                transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
+                ...(saveNeedsAttention
+                  ? {
+                      borderColor: "rgba(74,222,128,0.5)",
+                      boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
+                    }
+                  : null),
+                ...(savePulse ? { transform: "scale(1.02)" } : null),
+              }}
+            >
+              {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
             </button>
-            <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
-              Clear
-            </button>
+            {isEditMode ? (
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
+                Cancel Edit
+              </button>
+            ) : null}
+            {!isEditMode ? (
+              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+                Clear
+              </button>
+            ) : null}
             <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
               Export PDF
             </button>
@@ -2436,6 +2907,46 @@ const styles = {
     boxShadow: "0 0 0 1px rgba(34,197,94,0.16), 0 6px 16px rgba(0,0,0,0.25)",
     transform: "translateZ(0)",
     transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+  },
+  editHeaderStack: {
+    minWidth: 0,
+    flex: "1 1 auto",
+    display: "grid",
+    gap: 2,
+  },
+  editHeaderPrimary: {
+    margin: 0,
+    fontSize: "clamp(18px, 3.5vw, 27px)",
+    letterSpacing: "0.09em",
+    textTransform: "uppercase",
+    lineHeight: 1.04,
+  },
+  editHeaderSecondary: {
+    fontSize: 16,
+    fontWeight: 900,
+    letterSpacing: "0.03em",
+    color: "rgba(226,236,244,0.94)",
+  },
+  editHeaderMeta: {
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: "0.02em",
+    color: "rgba(196,212,224,0.78)",
+  },
+  editModeBadge: {
+    flexShrink: 0,
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.08)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10)",
+    padding: "6px 10px",
+    fontSize: 11,
+    fontWeight: 900,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.92)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
   },
   sectionBlock: {},
   totalsBlockWrap: { maxWidth: 720, margin: "14px auto 0" },
@@ -2740,6 +3251,45 @@ const styles = {
     fontWeight: 600,
     lineHeight: 1.2,
   },
+  saveToastWrap: {
+    position: "fixed",
+    left: 0,
+    right: 0,
+    zIndex: 1000,
+    pointerEvents: "none",
+    display: "flex",
+    justifyContent: "center",
+    padding: "0 14px",
+  },
+  saveToast: {
+    width: "100%",
+    maxWidth: 980,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(16, 24, 40, 0.88)",
+    color: "rgba(241,245,249,0.98)",
+    boxShadow: "0 14px 30px rgba(0,0,0,0.32)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    padding: "10px 12px",
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: 900,
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+  },
+  saveToastSuccess: {
+    borderColor: "rgba(34,197,94,0.42)",
+    background: "linear-gradient(180deg, rgba(22,101,52,0.5), rgba(16,24,40,0.9))",
+  },
+  saveToastWarn: {
+    borderColor: "rgba(245,158,11,0.5)",
+    background: "linear-gradient(180deg, rgba(133,77,14,0.54), rgba(16,24,40,0.9))",
+  },
+  saveToastError: {
+    borderColor: "rgba(239,68,68,0.54)",
+    background: "linear-gradient(180deg, rgba(127,29,29,0.6), rgba(16,24,40,0.92))",
+  },
   estimatorActionBar: {
     position: "fixed",
     left: 0,
@@ -2767,7 +3317,14 @@ const styles = {
     padding: 10,
   },
   estimatorActionButtons: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
+  estimatorActionButtonsEdit: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
   estimatorActionButton: { width: "100%" },
+  estimatorActionButtonCompact: {
+    fontSize: 13,
+    paddingLeft: 10,
+    paddingRight: 10,
+    whiteSpace: "nowrap",
+  },
   dueHint: { marginTop: 6, fontSize: 12, color: "rgba(156,163,175,0.9)" },
   selectedCustomerText: { marginTop: 8, fontSize: 13, color: "rgba(233,241,248,0.86)" },
   customerProfilePanel: {

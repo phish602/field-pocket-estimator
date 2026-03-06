@@ -240,14 +240,66 @@ function labelOf(lang, en, es) {
   return lang === "es" ? es : en;
 }
 
+function EmptyCustomersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" strokeWidth="1.9" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 12.2c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3Z" />
+        <path d="M4.8 18c.8-2.5 2.6-3.8 4.2-3.8s3.4 1.3 4.2 3.8" />
+        <path d="M14.2 10.2h5" opacity="0.9" />
+        <path d="M14.2 13.2h4.2" opacity="0.75" />
+      </g>
+    </svg>
+  );
+}
+
+function ValidCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" fill="rgba(34,197,94,0.18)" stroke="rgba(74,222,128,0.75)" strokeWidth="1.5" />
+      <path d="M8.2 12.2 10.8 14.8 15.8 9.8" fill="none" stroke="rgba(134,239,172,0.96)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function hasValidPhoneValue(value) {
+  const digits = digitsOnly(value);
+  return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
+}
+
+function hasValidEmailValue(value) {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+function validHelperText() {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(134,239,172,0.9)" }}>
+      <ValidCheckIcon />
+      Valid
+    </span>
+  );
+}
+
 const cardBaseStyle = {
-  borderRadius: 18,
   padding: 14,
-  border: "1px solid rgba(255,255,255,0.10)",
 };
 
 const cardActiveStyle = {
   border: "1px solid rgba(34,197,94,0.50)",
+};
+
+const stickyListHeaderStyle = {
+  position: "sticky",
+  top: 0,
+  zIndex: 12,
+  paddingTop: 6,
+  paddingBottom: 8,
+  background: "linear-gradient(180deg, rgba(8,18,28,0.9), rgba(8,18,28,0.62))",
+  backdropFilter: "blur(8px)",
+  WebkitBackdropFilter: "blur(8px)",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
 };
 
 const NET_TERMS_OPTIONS = [
@@ -372,6 +424,9 @@ export default function CustomersScreen({
   const [localCustomers, setLocalCustomers] = useState(() => (Array.isArray(customers) ? [] : readCustomers()));
   const [q, setQ] = useState("");
   const [mode, setMode] = useState("list"); // list | edit
+  const [showListSkeleton, setShowListSkeleton] = useState(true);
+  const [toastMessage, setToastMessage] = useState("");
+  const [showToast, setShowToast] = useState(false);
   const [draft, setDraft] = useState(() => emptyDraft(defaultCustomerType));
   const [returnToEstimator, setReturnToEstimator] = useState(false);
   const [autoUseOnSave, setAutoUseOnSave] = useState(false);
@@ -407,6 +462,17 @@ export default function CustomersScreen({
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [customers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!showToast) return undefined;
+    const timer = window.setTimeout(() => setShowToast(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [showToast]);
 
   const list = useMemo(() => (Array.isArray(customers) ? customers : localCustomers), [customers, localCustomers]);
 
@@ -663,6 +729,8 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
 
     setMode("list");
+    setToastMessage(label("Customer saved", "Cliente guardado"));
+    setShowToast(true);
 
     if (autoUseOnSave && typeof onDone === "function") {
       try {
@@ -721,20 +789,20 @@ export default function CustomersScreen({
       )}
       {mode === "list" ? (
         <div className="pe-card">
-          <div className="pe-company-profile-header">
+          <div className="pe-company-profile-header" style={stickyListHeaderStyle}>
             <div className="pe-company-header-title">
               <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
             </div>
 
               <div className="pe-company-header-controls">
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
-                  {label("Create", "Crear")}
+                  {label("Add Customer", "Agregar cliente")}
                 </button>
               </div>
           </div>
 
-          <div style={{ display: "grid", gap: 12 }}>
-            <div className="pe-card pe-card-content" style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
+          <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 12 }}>
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <input
                   className="pe-input"
@@ -746,23 +814,42 @@ export default function CustomersScreen({
               </div>
             </div>
 
-            {filtered.length === 0 ? (
-              <div className="pe-card pe-card-content" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>{label("No saved customers", "Sin clientes guardados")}</div>
-                <div style={{ fontSize: 13.5, opacity: 0.8, marginBottom: 12 }}>
-                  {label("Create one to attach to estimates and invoices.", "Crea uno para adjuntarlo a estimaciones y facturas.")}
+            {showListSkeleton ? (
+              <div className="pe-skeleton-stack" aria-hidden="true">
+                {[0, 1, 2].map((idx) => (
+                  <div key={`customer-skel-${idx}`} className="pe-skeleton-card">
+                    <div className="pe-skeleton-row">
+                      <div className="pe-skeleton-col">
+                        <div className="pe-skeleton-line w55" />
+                        <div className="pe-skeleton-line w70" />
+                        <div className="pe-skeleton-line w85" />
+                      </div>
+                      <div className="pe-skeleton-actions">
+                        <div className="pe-skeleton-button" />
+                        <div className="pe-skeleton-button" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : list.length === 0 ? (
+              <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
+                <div style={{ display: "grid", placeItems: "center", marginBottom: 8, opacity: 0.68 }}>
+                  <EmptyCustomersIcon />
                 </div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet. Add your first customer to begin.</div>
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
-                  {label("Create Customer", "Crear Cliente")}
+                  {label("Add Customer", "Agregar cliente")}
                 </button>
               </div>
             ) : (
-              filtered.map((c) => {
+              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
+              {filtered.map((c) => {
                 const id = String(c?.id || "");
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
 
                 return (
-                  <div className="pe-card pe-card-content" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10 }}>
+                  <div className="pe-card pe-card-content ep-glass-tile" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10, cursor: "pointer" }}>
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
                       <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
@@ -841,7 +928,8 @@ export default function CustomersScreen({
                     </div>
                   </div>
                 );
-              })
+              })}
+              </div>
             )}
           </div>
         </div>
@@ -957,12 +1045,14 @@ export default function CustomersScreen({
                     <Field
                       fieldClassName="pe-company-col-12"
                       label={label("Company name *", "Nombre de la compañía *")}
+                      placeholder={label("Example: Desert Ridge HOA", "Ejemplo: Desert Ridge HOA")}
                       value={draft.companyName}
                       onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-7"
                       label={label("Main contact *", "Contacto principal *")}
+                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
                       value={draft.contactName}
                       onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))}
                     />
@@ -981,7 +1071,8 @@ export default function CustomersScreen({
                       type="tel"
                       inputMode="tel"
                       autoComplete="tel"
-                      placeholder="(555) 555-5555"
+                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      helperText={hasValidPhoneValue(draft.comPhone) ? validHelperText() : ""}
                       value={draft.comPhone}
                       onChange={(e) => {
                         clearMissingRequiredField("phone");
@@ -997,7 +1088,8 @@ export default function CustomersScreen({
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder="name@company.com"
+                      placeholder={label("Example: office@desertridgehoa.com", "Ejemplo: oficina@desertridgehoa.com")}
+                      helperText={hasValidEmailValue(draft.comEmail) ? validHelperText() : ""}
                       value={draft.comEmail}
                       onChange={(e) => {
                         clearMissingRequiredField("email");
@@ -1010,7 +1102,7 @@ export default function CustomersScreen({
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder="ap@company.com"
+                      placeholder={label("Example: ap@desertridgehoa.com", "Ejemplo: cuentas@desertridgehoa.com")}
                       value={draft.apEmail}
                       onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))}
                     />
@@ -1025,6 +1117,7 @@ export default function CustomersScreen({
                       label={label("Address 1 *", "Dirección 1 *")}
                       type="text"
                       autoComplete="street-address"
+                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                       value={draft.jobsite.street}
                       onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))}
                     />
@@ -1033,6 +1126,7 @@ export default function CustomersScreen({
                       label={label("City *", "Ciudad *")}
                       type="text"
                       autoComplete="address-level2"
+                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                       value={draft.jobsite.city}
                       onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))}
                     />
@@ -1068,6 +1162,7 @@ export default function CustomersScreen({
                           label={label("Address 1", "Dirección 1")}
                           type="text"
                           autoComplete="street-address"
+                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                           value={draft.billing.street}
                           onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))}
                         />
@@ -1076,6 +1171,7 @@ export default function CustomersScreen({
                           label={label("City", "Ciudad")}
                           type="text"
                           autoComplete="address-level2"
+                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                           value={draft.billing.city}
                           onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))}
                         />
@@ -1106,6 +1202,7 @@ export default function CustomersScreen({
                     <Field
                       fieldClassName="pe-company-col-12"
                       label={label("Full name *", "Nombre completo *")}
+                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
                       value={draft.fullName}
                       onChange={(e) => setDraft((d) => ({ ...d, fullName: e.target.value }))}
                     />
@@ -1118,7 +1215,8 @@ export default function CustomersScreen({
                       type="tel"
                       inputMode="tel"
                       autoComplete="tel"
-                      placeholder="(555) 555-5555"
+                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      helperText={hasValidPhoneValue(draft.resPhone) ? validHelperText() : ""}
                       value={draft.resPhone}
                       onChange={(e) => {
                         clearMissingRequiredField("phone");
@@ -1134,7 +1232,8 @@ export default function CustomersScreen({
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder="name@email.com"
+                      placeholder={label("Example: alex.smith@email.com", "Ejemplo: alex.smith@email.com")}
+                      helperText={hasValidEmailValue(draft.resEmail) ? validHelperText() : ""}
                       value={draft.resEmail}
                       onChange={(e) => {
                         clearMissingRequiredField("email");
@@ -1152,6 +1251,7 @@ export default function CustomersScreen({
                       label={label("Address 1 *", "Dirección 1 *")}
                       type="text"
                       autoComplete="street-address"
+                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                       value={draft.resService.street}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, street: e.target.value } }))}
                     />
@@ -1160,6 +1260,7 @@ export default function CustomersScreen({
                       label={label("City *", "Ciudad *")}
                       type="text"
                       autoComplete="address-level2"
+                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                       value={draft.resService.city}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, city: e.target.value } }))}
                     />
@@ -1195,6 +1296,7 @@ export default function CustomersScreen({
                           label={label("Address 1", "Dirección 1")}
                           type="text"
                           autoComplete="street-address"
+                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                           value={draft.resBilling.street}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, street: e.target.value } }))}
                         />
@@ -1203,6 +1305,7 @@ export default function CustomersScreen({
                           label={label("City", "Ciudad")}
                           type="text"
                           autoComplete="address-level2"
+                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                           value={draft.resBilling.city}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, city: e.target.value } }))}
                         />
@@ -1229,6 +1332,9 @@ export default function CustomersScreen({
           </div>
         </div>
       )}
+      {showToast ? (
+        <div className="pe-toast" role="status" aria-live="polite">{toastMessage}</div>
+      ) : null}
     </section>
   );
 }

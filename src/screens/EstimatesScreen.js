@@ -1,8 +1,159 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useMemo, useState } from "react";
-import Field from "../components/Field";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { computeTotals } from "../estimator/engine";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+
+const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const STATUS_PENDING = "pending";
+const STATUS_APPROVED = "approved";
+const STATUS_LOST = "lost";
+
+function normalizeEstimateStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === STATUS_APPROVED) return STATUS_APPROVED;
+  if (raw === STATUS_LOST) return STATUS_LOST;
+  return STATUS_PENDING;
+}
+
+function sortEstimatesByDateDesc(a, b) {
+  const bTs = getMostRecentTimestamp(b);
+  const aTs = getMostRecentTimestamp(a);
+  if (bTs !== aTs) return bTs - aTs;
+  return String(b?.id || "").localeCompare(String(a?.id || ""));
+}
+
+function createSavedDocId() {
+  return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readSavedEstimatesList() {
+  try {
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function cloneAsNewEstimate(record, nowTs = Date.now()) {
+  let cloned = {};
+  try {
+    cloned = JSON.parse(JSON.stringify(record || {})) || {};
+  } catch {
+    cloned = { ...(record || {}) };
+  }
+
+  const now = Number(nowTs) || Date.now();
+  const next = {
+    ...cloned,
+    id: createSavedDocId(),
+    savedAt: now,
+    updatedAt: now,
+    createdAt: now,
+    ts: now,
+    status: STATUS_PENDING,
+  };
+
+  next.estimateNumber = "";
+  next.invoiceNumber = "";
+  next.docNumber = "";
+  next.documentNumber = "";
+  next.documentNo = "";
+  next.number = "";
+
+  next.job = {
+    ...(next.job || {}),
+    docNumber: "",
+  };
+  next.customer = {
+    ...(next.customer || {}),
+    projectNumber: "",
+  };
+
+  const meta = {
+    ...(next.meta || {}),
+    savedDocId: String(next.id || ""),
+    savedDocCreatedAt: now,
+    lastSavedAt: now,
+  };
+  next.meta = meta;
+
+  return next;
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M4.8 7.2h14.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M9.2 7.2V5.8h5.6v1.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M7.3 7.2v10.2a1.8 1.8 0 0 0 1.8 1.8h5.8a1.8 1.8 0 0 0 1.8-1.8V7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10.2 10.3v6.1M13.8 10.3v6.1" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M4.8 19.2h3.2l9.6-9.6a2.3 2.3 0 1 0-3.2-3.2l-9.6 9.6v3.2Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" />
+      <path d="M12.6 8.2l3.2 3.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function WavyFormIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="9" cy="7" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="15" cy="12" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="11" cy="17" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+      <rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <rect x="5" y="5" width="10" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.9" opacity="0.9" />
+    </svg>
+  );
+}
+
+function EmptyEstimateIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" strokeWidth="1.9" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 6.8h8" />
+        <path d="M8 10.2h8" opacity="0.85" />
+        <path d="M8 13.6h6.2" opacity="0.7" />
+        <path d="M7 6.2h10c.6 0 1 .4 1 1V18c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V7.2c0-.6.4-1 1-1Z" opacity="0.95" />
+        <path d="M17.7 8.2v1" opacity="0.7" />
+        <path d="M17.7 11.6v1" opacity="0.55" />
+      </g>
+    </svg>
+  );
+}
+
+function estimateIdentity(doc) {
+  const id = String(doc?.id || "").trim();
+  if (id) return `id:${id}`;
+  const num = String(
+    doc?.estimateNumber
+    || doc?.docNumber
+    || doc?.documentNumber
+    || doc?.documentNo
+    || doc?.number
+    || doc?.job?.docNumber
+    || ""
+  ).trim();
+  return num ? `num:${num}` : "";
+}
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -28,6 +179,25 @@ function safeDiv(a, b) {
   const B = toNum(b);
   if (!B) return 0;
   return A / B;
+}
+
+function toTimestamp(v) {
+  if (v === null || v === undefined || v === "") return 0;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const num = Number(v);
+  if (Number.isFinite(num) && num > 0) return num;
+  const parsed = Date.parse(String(v));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getMostRecentTimestamp(doc) {
+  const savedAt = toTimestamp(doc?.savedAt ?? doc?.meta?.savedAt ?? doc?.meta?.lastSavedAt);
+  if (savedAt > 0) return savedAt;
+  const updatedAt = toTimestamp(doc?.updatedAt);
+  if (updatedAt > 0) return updatedAt;
+  const dateVal = toTimestamp(doc?.date);
+  if (dateVal > 0) return dateVal;
+  return 0;
 }
 
 function resolveMaterialsMode(doc) {
@@ -197,27 +367,190 @@ function calcBreakdown(e) {
 }
 
 export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDone, spinTick = 0 }) {
-  const [q, setQ] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
-  const list = useMemo(() => (Array.isArray(history) ? history : []), [history]);
+  const [draggingEstimateId, setDraggingEstimateId] = useState(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [showListSkeleton, setShowListSkeleton] = useState(true);
+  const [showCopyToast, setShowCopyToast] = useState(false);
+  const [revenueValuePulse, setRevenueValuePulse] = useState({
+    pending: false,
+    approved: false,
+    lost: false,
+  });
+  const prevRevenueRef = useRef(null);
+  const list = useMemo(() => {
+    const arr = Array.isArray(history) ? history.filter(Boolean) : [];
+    return arr
+      .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
+      .sort(sortEstimatesByDateDesc);
+  }, [history]);
 
-  const filtered = useMemo(() => {
-    const s = String(q || "").trim().toLowerCase();
-    if (!s) return list;
-    return list.filter((e) => {
-      const pn = String(e?.projectName || "").toLowerCase();
-      const cn = String(e?.customerName || "").toLowerCase();
-      const en = String(e?.estimateNumber || "").toLowerCase();
-      const inv = String(e?.invoiceNumber || "").toLowerCase();
-      return pn.includes(s) || cn.includes(s) || en.includes(s) || inv.includes(s);
+  const filteredEstimates = useMemo(() => {
+    const query = String(searchQuery || "").trim().toLowerCase();
+    if (!query) return list;
+
+    return list.filter((estimate) => {
+      const name = String(
+        estimate?.name
+        || estimate?.estimateName
+        || estimate?.projectName
+        || estimate?.title
+        || ""
+      ).toLowerCase();
+      const number = String(
+        estimate?.number
+        || estimate?.estimateNumber
+        || estimate?.docNumber
+        || estimate?.documentNumber
+        || ""
+      ).toLowerCase();
+      const customerName = String(
+        estimate?.customerName
+        || estimate?.customer?.name
+        || ""
+      ).toLowerCase();
+
+      return (
+        name.includes(query)
+        || number.includes(query)
+        || customerName.includes(query)
+      );
     });
-  }, [list, q]);
+  }, [list, searchQuery]);
 
-  const fmtDate = (ts) => {
+  const pendingEstimates = useMemo(
+    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_PENDING).slice().sort(sortEstimatesByDateDesc),
+    [filteredEstimates]
+  );
+  const approvedEstimates = useMemo(
+    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_APPROVED).slice().sort(sortEstimatesByDateDesc),
+    [filteredEstimates]
+  );
+  const lostEstimates = useMemo(
+    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_LOST).slice().sort(sortEstimatesByDateDesc),
+    [filteredEstimates]
+  );
+
+  const pipelineSections = useMemo(
+    () => [
+      {
+        key: STATUS_PENDING,
+        title: lang === "es" ? "En espera de respuesta" : "Awaiting Response",
+        items: pendingEstimates,
+      },
+      {
+        key: STATUS_APPROVED,
+        title: lang === "es" ? "Aprobado" : "Approved",
+        items: approvedEstimates,
+      },
+      {
+        key: STATUS_LOST,
+        title: lang === "es" ? "Perdido" : "Lost",
+        items: lostEstimates,
+      },
+    ],
+    [lang, pendingEstimates, approvedEstimates, lostEstimates]
+  );
+
+  const revenueForecast = useMemo(() => {
+    const totals = {
+      pendingRevenue: 0,
+      approvedRevenue: 0,
+      lostRevenue: 0,
+    };
+
+    for (const estimate of list) {
+      const status = normalizeEstimateStatus(estimate?.status);
+      const amount = toNum(estimate?.total);
+      if (status === STATUS_APPROVED) totals.approvedRevenue += amount;
+      else if (status === STATUS_LOST) totals.lostRevenue += amount;
+      else totals.pendingRevenue += amount;
+    }
+
+    return totals;
+  }, [list]);
+
+  useEffect(() => {
+    const prev = prevRevenueRef.current;
+    if (!prev) {
+      prevRevenueRef.current = revenueForecast;
+      return undefined;
+    }
+
+    const nextPulse = {
+      pending: prev.pendingRevenue !== revenueForecast.pendingRevenue,
+      approved: prev.approvedRevenue !== revenueForecast.approvedRevenue,
+      lost: prev.lostRevenue !== revenueForecast.lostRevenue,
+    };
+    prevRevenueRef.current = revenueForecast;
+
+    if (!nextPulse.pending && !nextPulse.approved && !nextPulse.lost) return undefined;
+
+    setRevenueValuePulse(nextPulse);
+    const timer = window.setTimeout(() => {
+      setRevenueValuePulse({ pending: false, approved: false, lost: false });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    revenueForecast.pendingRevenue,
+    revenueForecast.approvedRevenue,
+    revenueForecast.lostRevenue,
+    revenueForecast,
+  ]);
+
+  useEffect(() => {
     try {
-      const d = new Date(Number(ts));
+      localStorage.setItem(ESTIMATES_SEARCH_KEY, String(searchQuery ?? ""));
+    } catch {}
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!showCopyToast) return undefined;
+    const timer = window.setTimeout(() => setShowCopyToast(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [showCopyToast]);
+
+  const copyEstimateNumber = async (estimateNumber, evt) => {
+    if (evt?.stopPropagation) evt.stopPropagation();
+    const value = String(estimateNumber || "").trim();
+    if (!value) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setShowCopyToast(true);
+    } catch {}
+  };
+
+  const fmtUpdated = (doc) => {
+    try {
+      const ts = getMostRecentTimestamp(doc);
+      if (!ts) return "";
+      const d = new Date(ts);
       if (Number.isNaN(d.getTime())) return "";
-      return d.toLocaleString();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const yyyy = String(d.getFullYear());
+      const hh = String(d.getHours()).padStart(2, "0");
+      const min = String(d.getMinutes()).padStart(2, "0");
+      return `Updated ${mm}/${dd}/${yyyy} ${hh}:${min}`;
     } catch {
       return "";
     }
@@ -227,24 +560,161 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     setExpanded((m) => ({ ...m, [id]: !m[id] }));
   };
 
+  const openEstimate = (estimate) => {
+    const id = String(estimate?.id || "").trim();
+    try {
+      if (id) localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, id);
+      else localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    } catch {}
+    if (onOpenEstimate) onOpenEstimate(estimate);
+  };
+
+  const setEstimateStatus = (estimate, nextStatus) => {
+    const normalized = normalizeEstimateStatus(nextStatus);
+    const targetIdentity = estimateIdentity(estimate);
+    const targetId = String(estimate?.id || "").trim();
+
+    try {
+      const existing = readSavedEstimatesList();
+      const next = existing.map((item) => {
+        const matches = targetIdentity
+          ? estimateIdentity(item) === targetIdentity
+          : String(item?.id || "").trim() === targetId;
+        if (!matches) return item;
+        return { ...item, status: normalized };
+      });
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
+      try {
+        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+      } catch {}
+    } catch {}
+  };
+
+  const onRequestDelete = (estimate) => {
+    setDeleteTarget(estimate || null);
+    setDeleteConfirmOpen(true);
+  };
+
+  const onCancelDelete = () => {
+    setDeleteConfirmOpen(false);
+    setDeleteTarget(null);
+  };
+
+  const onConfirmDelete = () => {
+    const target = deleteTarget;
+    if (!target) {
+      onCancelDelete();
+      return;
+    }
+
+    const targetIdentity = estimateIdentity(target);
+    const deletedId = String(target?.id || "").trim();
+
+    try {
+      const existing = readSavedEstimatesList();
+      const next = existing.filter((item) => {
+        if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
+        return String(item?.id || "").trim() !== deletedId;
+      });
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
+
+      if (deletedId) {
+        const currentEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+        if (currentEditTarget === deletedId) {
+          localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+        }
+      }
+
+      try {
+        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+      } catch {}
+    } catch {}
+
+    if (deletedId) {
+      setExpanded((prev) => {
+        if (!prev || !Object.prototype.hasOwnProperty.call(prev, deletedId)) return prev;
+        const next = { ...prev };
+        delete next[deletedId];
+        return next;
+      });
+    }
+
+    onCancelDelete();
+  };
+
+  useEffect(() => {
+    if (!deleteConfirmOpen) return undefined;
+    const onKeyDown = (evt) => {
+      if (evt.key !== "Escape") return;
+      evt.preventDefault();
+      setDeleteConfirmOpen(false);
+      setDeleteTarget(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteConfirmOpen]);
+
   const labelSaved = lang === "es" ? "Estimaciones guardadas" : "Saved Estimates";
   const labelBack = lang === "es" ? "Volver" : "Back";
 
   const labelOpen = lang === "es" ? "Abrir" : "Open";
   const labelDetails = lang === "es" ? "Detalles" : "Details";
   const labelHide = lang === "es" ? "Ocultar" : "Hide";
+  const labelDuplicate = lang === "es" ? "Duplicar" : "Duplicate";
+  const labelDelete = "Delete";
+  const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
+  const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
 
   const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
   const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
   const labelProfit = lang === "es" ? "Ganancia" : "Profit";
   const labelMargin = lang === "es" ? "Margen" : "Margin";
+  const labelSavedWithCount = `${labelSaved} (${filteredEstimates.length})`;
+  const deleteTargetNumber = String(
+    deleteTarget?.estimateNumber
+    || deleteTarget?.docNumber
+    || deleteTarget?.documentNumber
+    || deleteTarget?.documentNo
+    || deleteTarget?.number
+    || deleteTarget?.job?.docNumber
+    || ""
+  ).trim();
+  const deleteTargetName = String(
+    deleteTarget?.projectName
+    || deleteTarget?.estimateName
+    || deleteTarget?.name
+    || deleteTarget?.title
+    || deleteTarget?.jobName
+    || deleteTarget?.customerName
+    || ""
+  ).trim();
+  const deleteTargetDetail = deleteTarget
+    ? `Estimate: ${deleteTargetName || "(unnamed)"}${deleteTargetNumber ? ` • #${deleteTargetNumber}` : ""}`
+    : "";
+
+  const duplicateEstimate = (estimate) => {
+    try {
+      const now = Date.now();
+      const duplicate = cloneAsNewEstimate(estimate, now);
+
+      const existing = readSavedEstimatesList();
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify([duplicate, ...existing]));
+
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      try {
+        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+      } catch {}
+    } catch {}
+  };
+
+  const hasNoMatchingResults = String(searchQuery || "").trim().length > 0 && filteredEstimates.length === 0;
 
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
         <div className="pe-company-profile-header" style={{ position: "relative", minHeight: 56 }}>
           <div className="pe-company-header-title">
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={labelSaved}>{labelSaved}</h1>
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={labelSavedWithCount}>{labelSavedWithCount}</h1>
           </div>
           <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
             <img
@@ -263,42 +733,344 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
           </div>
         </div>
 
-        <div className="pe-grid" style={{ gap: 10 }}>
-        <Field
-          placeholder={lang === "es" ? "Buscar…" : "Search…"}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+        <div
+          className="pe-estimates-container"
+          style={{
+            width: "100%",
+            maxWidth: "1400px",
+            margin: "0 auto",
+            padding: "0 24px",
+            boxSizing: "border-box",
+          }}
+        >
 
-        <div style={{ display: "grid", gap: 10 }}>
-          {filtered.length === 0 ? (
-            <div style={{ opacity: 0.8, fontSize: 14 }}>{lang === "es" ? "Nada guardado todavía." : "Nothing saved yet."}</div>
+          <div
+            className="pe-estimates-search"
+            style={{
+              width: "100%",
+              marginBottom: "18px",
+            }}
+          >
+            <div className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
+              <input
+                type="text"
+                className="pe-input pe-estimates-search-input"
+                placeholder="Search estimates by name, number, or customer..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(evt) => {
+                  if (evt.key === "Escape") {
+                    evt.preventDefault();
+                    setSearchQuery("");
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  display: "block",
+                  padding: "10px 14px",
+                  borderRadius: "10px",
+                  paddingRight: 42,
+                }}
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="pe-btn pe-btn-ghost"
+                  aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
+                  onClick={() => setSearchQuery("")}
+                  style={{
+                    position: "absolute",
+                    right: 6,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    width: 30,
+                    height: 30,
+                    minWidth: 30,
+                    minHeight: 30,
+                    borderRadius: 999,
+                    padding: 0,
+                    lineHeight: 1,
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div
+            className="pe-estimate-revenue-bar"
+            style={{
+              width: "100%",
+              marginBottom: "22px",
+            }}
+          >
+            <div className="pe-revenue-stat">
+              <div className="pe-revenue-label">{lang === "es" ? "Pendiente" : "Pending"}</div>
+              <div className={`pe-revenue-value${revenueValuePulse.pending ? " updated" : ""}`}>{money(revenueForecast.pendingRevenue)}</div>
+            </div>
+            <div className="pe-revenue-stat">
+              <div className="pe-revenue-label">{lang === "es" ? "Aprobado" : "Approved"}</div>
+              <div className={`pe-revenue-value${revenueValuePulse.approved ? " updated" : ""}`}>{money(revenueForecast.approvedRevenue)}</div>
+            </div>
+            <div className="pe-revenue-stat">
+              <div className="pe-revenue-label">{lang === "es" ? "Perdido" : "Lost"}</div>
+              <div className={`pe-revenue-value${revenueValuePulse.lost ? " updated" : ""}`}>{money(revenueForecast.lostRevenue)}</div>
+            </div>
+          </div>
+
+          <div
+            className={`pe-pipeline-board${showListSkeleton ? "" : " pe-content-fade-in"}`}
+            onDragOver={(e) => {
+              const el = document.elementFromPoint(e.clientX, e.clientY);
+              console.log("CURSOR ELEMENT:", el?.className);
+              console.log("CURSOR TAG:", el?.tagName);
+              console.log("PARENT:", el?.parentElement?.className);
+            }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 16,
+              width: "100%",
+              maxWidth: "100%",
+              boxSizing: "border-box",
+              alignItems: "start",
+            }}
+          >
+          {showListSkeleton ? (
+              <div className="pe-skeleton-stack" aria-hidden="true">
+                {[0, 1, 2].map((idx) => (
+                  <div key={`estimate-skel-${idx}`} className="pe-skeleton-card">
+                    <div className="pe-skeleton-row">
+                      <div className="pe-skeleton-col">
+                        <div className="pe-skeleton-line w55" />
+                        <div className="pe-skeleton-line w85" />
+                        <div className="pe-skeleton-line w40" />
+                      </div>
+                      <div style={{ display: "grid", gap: 6, justifyItems: "end" }}>
+                        <div style={{ display: "flex", gap: 10 }}>
+                          <div className="pe-skeleton-pill" />
+                          <div className="pe-skeleton-pill" />
+                        </div>
+                        <div className="pe-skeleton-actions" style={{ marginTop: 0 }}>
+                          <div className="pe-skeleton-button" />
+                          <div className="pe-skeleton-button" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+          ) : list.length === 0 ? (
+              <div style={{ opacity: 0.8, fontSize: 14, textAlign: "center", display: "grid", justifyItems: "center", gap: 6 }}>
+                <div style={{ opacity: 0.68 }}>
+                  <EmptyEstimateIcon />
+                </div>
+                <div>No estimates yet. Create your first estimate.</div>
+              </div>
           ) : (
-            filtered.map((e) => {
-              const id = String(e?.id || "");
-              const isOpen = Boolean(expanded[id]);
-              const bd = calcBreakdown(e);
+            <>
+              {hasNoMatchingResults ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    opacity: 0.6,
+                    gridColumn: "1 / -1",
+                  }}
+                >
+                  No matching estimates
+                </div>
+              ) : null}
+              {pipelineSections.map((section) => {
+              const sectionRevenue = section.key === STATUS_APPROVED
+                ? revenueForecast.approvedRevenue
+                : section.key === STATUS_LOST
+                  ? revenueForecast.lostRevenue
+                  : revenueForecast.pendingRevenue;
+              const sectionRevenueText = section.key === STATUS_APPROVED
+                ? (lang === "es" ? "de ingresos ganados" : "won revenue")
+                : section.key === STATUS_LOST
+                  ? (lang === "es" ? "de ingresos perdidos" : "lost revenue")
+                  : (lang === "es" ? "de ingresos pendientes" : "pending revenue");
+
+              return (
+                <div
+                  key={`section-${section.key}`}
+                  className="pe-pipeline-section"
+                  data-section-key={section.key}
+                  style={{
+                    width: "100%",
+                    minWidth: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "12px",
+                  }}
+                >
+                  <div
+                    className="pe-pipeline-bucket"
+                    onDragOver={(e) => {
+                      if (draggingEstimateId) e.preventDefault();
+                    }}
+                    onDrop={() => {
+                      if (!draggingEstimateId) return;
+                      setEstimateStatus({ id: draggingEstimateId }, section.key);
+                      setDraggingEstimateId(null);
+                    }}
+                    style={{
+                      width: "100%",
+                      minWidth: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 12,
+                    }}
+                  >
+                    <div
+                      className="pe-pipeline-dropzone"
+                    >
+                      <div className="pe-pipeline-header" style={{ display: "grid", gap: 2 }}>
+                        <div
+                          className="pe-pipeline-tile-drop"
+                        >
+                          <div
+                            className="pe-pipeline-title"
+                            style={{
+                              fontWeight: 800,
+                              fontSize: "13px",
+                              letterSpacing: ".08em",
+                              textTransform: "uppercase",
+                              opacity: 0.7,
+                            }}
+                          >
+                            {section.title} ({section.items.length})
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.74 }}>
+                          {money(sectionRevenue)} {sectionRevenueText}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      className="pe-pipeline-cards"
+                      style={{
+                        display: "grid",
+                        gap: "12px",
+                        minHeight: "120px",
+                    }}
+                  >
+                    {section.items.map((entry) => {
+                      const estimate = entry;
+                      const e = estimate;
+                      const id = String(e?.id || "");
+                      const isOpen = Boolean(expanded[id]);
+                      const status = normalizeEstimateStatus(e?.status);
+                      const bd = calcBreakdown(e);
+                      const isActiveCard = isOpen;
 
               const card = {
-                padding: 12,
-                borderRadius: 14,
+                padding: 16,
+                borderRadius: 16,
                 border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(0,0,0,0.12)",
-                display: "grid",
-                gap: 10,
+                background: "rgba(255,255,255,0.04)",
+                boxSizing: "border-box",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                cursor: "pointer",
+                width: "100%",
+                maxWidth: "100%",
+                minWidth: 0,
+                ...(isActiveCard
+                  ? {
+                      border: "1px solid rgba(34,197,94,0.42)",
+                      background: "rgba(255,255,255,0.07)",
+                      boxShadow: "0 0 0 1px rgba(34,197,94,0.18), 0 10px 22px rgba(0,0,0,0.28)",
+                    }
+                  : null),
               };
 
-              const small = { fontSize: 12, opacity: 0.75 };
-              const row = { display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" };
+              const small = { fontSize: 11.5, opacity: 0.68, letterSpacing: "0.2px" };
+              const cardBodyLine = {
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              };
+              const updatedTextLine = {
+                ...small,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              };
+              const row = {
+                display: "grid",
+                gridTemplateRows: "auto auto auto",
+                rowGap: "8px",
+                width: "100%",
+              };
+              const headerRow = {
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: 8,
+              };
+              const customerEstimateRow = {
+                display: "flex",
+                justifyContent: "space-between",
+                gap: "8px",
+                minWidth: 0,
+              };
+              const customerField = {
+                ...cardBodyLine,
+                fontSize: 12.5,
+                opacity: 0.78,
+                lineHeight: 1.2,
+                minWidth: 0,
+                flex: "1 1 auto",
+              };
+              const estimateField = {
+                ...cardBodyLine,
+                fontSize: 12.5,
+                opacity: 0.78,
+                lineHeight: 1.2,
+                minWidth: 0,
+                flex: "0 1 auto",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+              };
+              const metricLabel = {
+                fontSize: 10.5,
+                fontWeight: 900,
+                opacity: 0.82,
+                letterSpacing: "1px",
+                textTransform: "uppercase",
+                textAlign: "center",
+                lineHeight: 1.1,
+              };
+
+              const metricRow = {
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "nowrap",
+                columnGap: 12,
+                gap: "8px",
+                minWidth: 0,
+              };
 
               const pill = (ok) => ({
                 padding: "6px 10px",
                 borderRadius: 999,
                 border: "1px solid rgba(255,255,255,0.14)",
                 background: ok ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
+                boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
                 fontSize: 12,
                 fontWeight: 800,
                 letterSpacing: "0.3px",
+                flexShrink: 0,
                 whiteSpace: "nowrap",
               });
 
@@ -322,39 +1094,150 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               };
 
               const sectionTitle = { fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" };
+              const updatedLine = fmtUpdated(e);
+              const statusClassName = status === STATUS_APPROVED
+                ? "pe-status-approved"
+                : status === STATUS_LOST
+                  ? "pe-status-lost"
+                  : "pe-status-pending";
+              const statusLabel = status === STATUS_APPROVED
+                ? (lang === "es" ? "Aprobado" : "Approved")
+                : status === STATUS_LOST
+                  ? (lang === "es" ? "Perdido" : "Lost")
+                  : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
 
               return (
-                <div className="pe-card pe-card-content" key={id || Math.random()} style={card}>
+                <div
+                  className="pe-card pe-card-content pe-saved-estimate-card pe-estimate-card"
+                  key={id || Math.random()}
+                  style={card}
+                  draggable
+                  onDragStart={() => {
+                    setDraggingEstimateId(estimate.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingEstimateId(null);
+                  }}
+                >
                   <div style={row}>
-                    <div style={{ display: "grid", gap: 2 }}>
-                      <div style={{ fontWeight: 800 }}>{e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}</div>
-                      <div style={{ fontSize: 13, opacity: 0.85 }}>
-                        {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
-                        {e?.estimateNumber ? ` • ${t("estimateNumLabel")} ${e.estimateNumber}` : ""}
-                        {e?.invoiceNumber ? ` • ${t("invoiceNumLabel")} ${e.invoiceNumber}` : ""}
+                    <div style={headerRow}>
+                      <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            fontSize: "15px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
+                        </div>
+                        <div style={customerEstimateRow}>
+                          <div style={customerField}>
+                            {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
+                          </div>
+                          <div style={estimateField}>
+                            {e?.estimateNumber ? (
+                              <>
+                                <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap" }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
+                                <button
+                                  type="button"
+                                  className="ep-icon-btn ep-icon-btn--sm ep-icon-btn--glass"
+                                  aria-label="Copy estimate number"
+                                  title="Copy estimate number"
+                                  onClick={(evt) => copyEstimateNumber(e?.estimateNumber, evt)}
+                                  style={{ marginLeft: 6, verticalAlign: "middle" }}
+                                >
+                                  <CopyIcon />
+                                </button>
+                              </>
+                            ) : null}
+                            {e?.invoiceNumber ? (
+                              <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap", marginLeft: e?.estimateNumber ? 6 : 0 }}>
+                                {`${e?.estimateNumber ? "• " : ""}${t("invoiceNumLabel")} ${e.invoiceNumber}`}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        {updatedLine ? <div style={updatedTextLine}>{updatedLine}</div> : null}
                       </div>
-                      <div style={small}>{fmtDate(e?.updatedAt || e?.ts || e?.createdAt || e?.id)}</div>
+                      <div
+                        className={`pe-estimate-status ${statusClassName}`}
+                        style={{
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {statusLabel}
+                      </div>
                     </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
+                      <div style={metricRow}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                          <div style={metricLabel}>{labelTotalMetric}</div>
+                          <div style={pill(true)} title={labelRevenue}>
+                            {money(bd.totals.revenue)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                          <div style={metricLabel}>{labelMarginMetric}</div>
+                          <div style={pill(false)} title={labelMargin}>
+                            {(bd.totals.margin * 100).toFixed(1)}%
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <div style={pill(true)} title={labelRevenue}>
-                        {money(bd.totals.revenue)}
-                      </div>
-                      <div style={pill(false)} title={labelMargin}>
-                        {(bd.totals.margin * 100).toFixed(1)}%
-                      </div>
-                      <button className="pe-btn" onClick={() => onOpenEstimate && onOpenEstimate(e)}>
+                  <div className="pe-estimate-actions">
+                    <div
+                      className="actions-right pe-estimate-actions-row"
+                      style={{
+                        display: "flex",
+                        gap: 10,
+                        marginTop: 8,
+                      }}
+                    >
+                      <button className="pe-btn" type="button" onClick={() => openEstimate(e)}>
                         {labelOpen}
                       </button>
-                      <button className="pe-btn pe-btn-ghost" onClick={() => toggle(id)}>
+                      <button className="pe-btn pe-btn-ghost" type="button" onClick={() => toggle(id)}>
                         {isOpen ? labelHide : labelDetails}
                       </button>
                     </div>
                   </div>
 
                   <div style={panel} aria-hidden={!isOpen}>
-                    {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={subCard}>
+                      <div style={sectionTitle}>{lang === "es" ? "Estado" : "Status"}</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          className={status === STATUS_APPROVED ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                          type="button"
+                          onClick={() => setEstimateStatus(e, STATUS_APPROVED)}
+                        >
+                          {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
+                        </button>
+                        <button
+                          className={status === STATUS_LOST ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                          type="button"
+                          onClick={() => setEstimateStatus(e, STATUS_LOST)}
+                        >
+                          {lang === "es" ? "Marcar perdido" : "Mark Lost"}
+                        </button>
+                        <button
+                          className={status === STATUS_PENDING ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                          type="button"
+                          onClick={() => setEstimateStatus(e, STATUS_PENDING)}
+                        >
+                          {lang === "es" ? "Restablecer a pendiente" : "Reset to Pending"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* TOTALS */}
+                    <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
                       <div style={sectionTitle}>{lang === "es" ? "Totales" : "Totals"}</div>
                       <div style={row}>
                         <div style={small}>{labelRevenue}</div>
@@ -525,11 +1408,89 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                   </div>
                 </div>
               );
-            })
+            })}
+                  </div>
+                </div>
+                </div>
+              );
+              })
+              }
+            </>
           )}
         </div>
       </div>
       </div>
+
+      {deleteConfirmOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete estimate confirmation"
+          onClick={onCancelDelete}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1300,
+            background: "rgba(4,8,14,0.58)",
+            backdropFilter: "blur(3px)",
+            WebkitBackdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 12,
+          }}
+        >
+          <div
+            className="pe-card pe-card-content"
+            onClick={(evt) => evt.stopPropagation()}
+            style={{
+              width: "min(560px, 96vw)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "linear-gradient(180deg, rgba(20,28,42,0.94), rgba(7,11,18,0.92))",
+              boxShadow: "0 20px 54px rgba(0,0,0,0.45)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+              padding: 16,
+              color: "rgba(245,248,252,0.98)",
+              display: "grid",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "0.2px" }}>
+              Delete estimate?
+            </div>
+            <div style={{ fontSize: 14, opacity: 0.9 }}>
+              This will permanently delete this estimate. This can&apos;t be undone.
+            </div>
+            {deleteTargetDetail ? (
+              <div style={{ fontSize: 13, opacity: 0.82 }}>
+                {deleteTargetDetail}
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 4 }}>
+              <button type="button" className="pe-btn pe-btn-ghost" onClick={onCancelDelete}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={onConfirmDelete}
+                style={{
+                  borderColor: "rgba(248,113,113,0.65)",
+                  background: "linear-gradient(180deg, rgba(185,28,28,0.74), rgba(127,29,29,0.7))",
+                  color: "#fff",
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {showCopyToast ? (
+        <div className="pe-toast" role="status" aria-live="polite">Estimate number copied</div>
+      ) : null}
     </section>
   );
 }

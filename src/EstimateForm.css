@@ -203,9 +203,17 @@
   font-weight: 800;
   font-size: 13px;
   max-width: 100%;
+  transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
 }
 
-.pe-btn:hover { border-color: rgba(255,255,255,0.18); }
+@media (hover: hover) and (pointer: fine) {
+  .pe-btn:hover:not(:disabled) {
+    border-color: rgba(255,255,255,0.18);
+    box-shadow: 0 0 12px rgba(0,200,120,0.35);
+    transform: translateY(-1px);
+  }
+}
+
 .pe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .pe-btn-ghost { background: rgba(255,255,255,0.03); }

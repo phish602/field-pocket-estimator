@@ -188,9 +188,6 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
     () => ({
       margin: 0,
       padding: "14px 14px",
-      borderRadius: 14,
-      background: "rgba(255,255,255,0.06)",
-      border: "1px solid rgba(255,255,255,0.08)",
       display: "grid",
       gap: 12,
     }),
@@ -325,8 +322,8 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
           </div>
         </div>
 
-        <div className="pe-company-form-inner" style={{ gap: 12, paddingBottom: 8 }}>
-          <div className="pe-card pe-card-content" style={sectionStyle}>
+        <div className="pe-company-form-inner ep-section-gap-sm" style={{ gap: 12, paddingBottom: 8 }}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Business Rules</div>
             <SettingRow
               title="Default Markup %"
@@ -406,7 +403,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Document Defaults</div>
             <SettingRow
               title="Default Internal Notes (Estimate only)"
@@ -430,7 +427,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             </div>
           </div>
 
-          <div className="pe-card pe-card-content" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Internal Controls</div>
             <SettingRow
               title="Show Internal Cost Fields"
@@ -464,7 +461,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>PDF / Export</div>
             <SettingRow
               title="Include Logo"
@@ -504,7 +501,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Customer Defaults</div>
             <SettingRow
               title="Default customer type"
@@ -548,7 +545,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div style={{ ...sectionStyle, border: "1px solid rgba(239,68,68,0.38)" }}>
+          <div className="ep-glass-tile ep-tile-hover" style={{ ...sectionStyle, border: "1px solid rgba(239,68,68,0.38)" }}>
             <div className="pe-field-label" style={{ marginBottom: 2, color: "rgba(254,202,202,0.95)" }}>
               System &amp; Data (Danger Zone)
             </div>

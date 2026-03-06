@@ -266,6 +266,30 @@ function buildWeeklySeries(invoices) {
   return weeks;
 }
 
+function useCountUp(targetValue, durationMs = 720) {
+  const [value, setValue] = useState(0);
+
+  useEffect(() => {
+    const target = asNumber(targetValue);
+    let rafId = 0;
+    let startTs = 0;
+
+    const tick = (ts) => {
+      if (!startTs) startTs = ts;
+      const p = Math.min(1, (ts - startTs) / durationMs);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setValue(target * eased);
+      if (p < 1) rafId = window.requestAnimationFrame(tick);
+    };
+
+    setValue(0);
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [targetValue, durationMs]);
+
+  return value;
+}
+
 function Donut({ segments, size = 180, stroke = 18, centerLabelTop, centerLabelBottom }) {
   const r = (size - stroke) / 2;
   const c = size / 2;
@@ -477,32 +501,36 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           </div>
         </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md">
         <div style={{ display: "grid", gap: 10 }}>
-          <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} tone="ok" />
-          <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} tone="ok" />
+          <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} numericValue={computed.revenue} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} numericValue={computed.grossProfit} formatValue={fmtMoney} tone="ok" />
           <KPI
             label={lang === "es" ? "Margen promedio" : "Avg margin"}
             value={fmtPct(computed.marginPct)}
+            numericValue={computed.marginPct}
+            formatValue={fmtPct}
             tone={computed.marginPct >= 25 ? "ok" : computed.marginPct >= 15 ? "warn" : "bad"}
           />
-          <KPI label={lang === "es" ? "Cuentas por cobrar" : "Outstanding receivables"} value={fmtMoney(computed.arTotal)} tone={computed.arTotal > 0 ? "warn" : "ok"} />
+          <KPI label={lang === "es" ? "Cuentas por cobrar" : "Outstanding receivables"} value={fmtMoney(computed.arTotal)} numericValue={computed.arTotal} formatValue={fmtMoney} tone={computed.arTotal > 0 ? "warn" : "ok"} />
           <KPI
             label={lang === "es" ? "Delinquent" : "Delinquent"}
             value={fmtMoney(computed.delinquentTotal)}
+            numericValue={computed.delinquentTotal}
+            formatValue={fmtMoney}
             tone={computed.delinquentTotal > 0 ? "bad" : "ok"}
             note={!computed.aging.canCompute ? (lang === "es" ? "Faltan fechas de vencimiento/terminos en algunas facturas." : "Some invoices missing due date/terms.") : ""}
           />
         </div>
       </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Tendencia de ingresos" : "Revenue Trend"}</div>
         <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Últimas 12 semanas (facturas en el rango)" : "Last 12 weeks (invoices in range)"}</div>
         <Bars data={computed.weekly} />
       </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Envejecimiento de cuentas por cobrar" : "Receivables Aging"}</div>
         <div className="pe-muted" style={{ marginBottom: 12 }}>{lang === "es" ? "Basado en fecha de vencimiento (Net 30 por defecto)" : "Based on due date (defaults to Net 30)"}</div>
 
@@ -514,7 +542,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           />
         </div>
 
-        <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+        <div className="ep-section-gap-sm" style={{ display: "grid", gap: 8 }}>
           {(donutSegments.length ? donutSegments : []).map((s) => (
             <div key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -534,7 +562,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Salud del margen" : "Margin Health"}</div>
 
         <div style={{ display: "grid", gap: 10 }}>
@@ -562,35 +590,40 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pipeline de estimados" : "Estimate Pipeline"}</div>
         <div style={{ display: "grid", gap: 10 }}>
-          <KPI label={lang === "es" ? "Valor total" : "Total value"} value={fmtMoney(computed.pipelineValue)} tone="ok" />
-          <KPI label={lang === "es" ? "Cantidad" : "Count"} value={String(computed.pipelineCount)} tone="ok" />
-          <KPI label={lang === "es" ? "Promedio" : "Average size"} value={fmtMoney(computed.avgEstimate)} tone="ok" />
+          <KPI label={lang === "es" ? "Valor total" : "Total value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Cantidad" : "Count"} value={String(computed.pipelineCount)} numericValue={computed.pipelineCount} formatValue={(n) => String(Math.round(asNumber(n)))} tone="ok" />
+          <KPI label={lang === "es" ? "Promedio" : "Average size"} value={fmtMoney(computed.avgEstimate)} numericValue={computed.avgEstimate} formatValue={fmtMoney} tone="ok" />
         </div>
       </div>
 
-      <div className="pe-card pe-card-content" style={{ marginTop: 10 }}>
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
         <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.35 }}>{insight}</div>
       </div>
 
-      <div className="pe-footer" style={{ marginTop: 12 }}>{lang === "es" ? "Vista de solo lectura." : "Display-only view."}</div>
+      <div className="pe-footer ep-section-gap-sm">{lang === "es" ? "Vista de solo lectura." : "Display-only view."}</div>
       </div>
     </section>
   );
 }
 
-function KPI({ label, value, tone = "ok", note = "" }) {
+function KPI({ label, value, tone = "ok", note = "", numericValue, formatValue }) {
   const stripe = tone === "ok" ? "rgba(34,197,94,0.75)" : tone === "warn" ? "rgba(245,158,11,0.85)" : "rgba(239,68,68,0.85)";
+  const canAnimate = Number.isFinite(Number(numericValue));
+  const animatedNumber = useCountUp(canAnimate ? numericValue : 0, 720);
+  const displayValue = canAnimate
+    ? (typeof formatValue === "function" ? formatValue(animatedNumber) : String(animatedNumber))
+    : value;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12, borderRadius: 16, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12 }}>
       <div style={{ width: 6, borderRadius: 999, background: stripe }} />
       <div style={{ display: "grid", gap: 4 }}>
         <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</div>
-        <div style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{value}</div>
+        <div style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{displayValue}</div>
         {note ? <div style={{ fontSize: 12, opacity: 0.7 }}>{note}</div> : null}
       </div>
     </div>
@@ -601,7 +634,7 @@ function MiniRow({ left, mid, right, tone = "ok" }) {
   const c = tone === "ok" ? "rgba(34,197,94,0.95)" : tone === "warn" ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)";
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(0,0,0,0.10)" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px" }}>
       <div style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</div>
       <div style={{ fontWeight: 900, opacity: 0.88 }}>{mid}</div>
       <div style={{ fontWeight: 950, color: c }}>{right}</div>

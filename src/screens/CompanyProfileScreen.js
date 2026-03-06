@@ -90,6 +90,15 @@ function IconImage() {
   );
 }
 
+function ValidCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" fill="rgba(34,197,94,0.18)" stroke="rgba(74,222,128,0.75)" strokeWidth="1.5" />
+      <path d="M8.2 12.2 10.8 14.8 15.8 9.8" fill="none" stroke="rgba(134,239,172,0.96)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function ProfileSectionHeader({ icon, title }) {
   return (
     <div className="pe-company-section-heading">
@@ -112,6 +121,21 @@ function stripNonCompanyFields(profile) {
 function hasValidPhone(phone) {
   const digits = sanitizePhoneDigits(phone, 11);
   return digits.length === 10 || digits.length === 11;
+}
+
+function hasValidEmail(email) {
+  const v = String(email || "").trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+function validHelperText() {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(134,239,172,0.9)" }}>
+      <ValidCheckIcon />
+      Valid
+    </span>
+  );
 }
 
 function serializeProfileState(profile) {
@@ -181,6 +205,8 @@ export default function CompanyProfileScreen() {
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [saveFlash, setSaveFlash] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const [logoFileName, setLogoFileName] = useState("");
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
   const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
@@ -237,6 +263,12 @@ export default function CompanyProfileScreen() {
     if (!showMissingRequiredPrompt) return;
     if (missingRequiredFields.length === 0) setShowMissingRequiredPrompt(false);
   }, [showMissingRequiredPrompt, missingRequiredFields]);
+
+  useEffect(() => {
+    if (!showToast) return undefined;
+    const timer = window.setTimeout(() => setShowToast(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [showToast]);
 
   const focusRequiredField = (fieldKey) => {
     const inputId = REQUIRED_FIELD_META[fieldKey]?.inputId;
@@ -370,6 +402,8 @@ export default function CompanyProfileScreen() {
     if (ok) {
       setLastSavedSnapshot(serializeProfileState(profile));
       setSaveFlash(true);
+      setToastMessage("Profile updated");
+      setShowToast(true);
       if (saveFlashTimerRef.current) clearTimeout(saveFlashTimerRef.current);
       saveFlashTimerRef.current = setTimeout(() => {
         setSaveFlash(false);
@@ -500,7 +534,7 @@ export default function CompanyProfileScreen() {
           </div>
         ) : null}
 
-        <div className="pe-company-form-inner">
+        <div className="pe-company-form-inner ep-section-gap-sm">
           <div className="pe-company-top-layout">
             <div className="pe-company-form-section pe-company-top-main">
               <ProfileSectionHeader icon={<IconBuilding />} title="COMPANY" />
@@ -513,7 +547,7 @@ export default function CompanyProfileScreen() {
                   id={REQUIRED_FIELD_META.companyName.inputId}
                   errorText={fieldRequiredError("companyName")}
                   value={profile.companyName}
-                  placeholder="BVW Contracting Solutions"
+                  placeholder="Example: Desert Ridge HOA"
                   onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
                 />
 
@@ -527,8 +561,9 @@ export default function CompanyProfileScreen() {
                   inputMode="tel"
                   autoComplete="tel"
                   errorText={fieldRequiredError("phone")}
+                  helperText={hasValidPhone(profile.phone) ? validHelperText() : ""}
                   value={formatPhoneForDisplay(profile.phone)}
-                  placeholder="(602) 555-1234"
+                  placeholder="Example: 602-555-0147"
                   onChange={(e) => setProfile((p) => ({ ...p, phone: sanitizePhoneDigits(e.target.value, 11) }))}
                 />
 
@@ -537,8 +572,9 @@ export default function CompanyProfileScreen() {
                   label="Email"
                   type="email"
                   autoComplete="email"
+                  helperText={hasValidEmail(profile.email) ? validHelperText() : ""}
                   value={profile.email}
-                  placeholder="office@yourcompany.com"
+                  placeholder="Example: office@desertridgehoa.com"
                   onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
                 />
 
@@ -546,13 +582,13 @@ export default function CompanyProfileScreen() {
                   fieldClassName="pe-company-col-12"
                   label="Website"
                   value={profile.website}
-                  placeholder="www.yourcompany.com"
+                  placeholder="Example: www.desertridgehoa.com"
                   onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
                 />
               </div>
             </div>
 
-            <div id="company-profile-branding" ref={brandingCardRef} className="pe-card pe-card-content pe-company-top-branding-col pe-company-branding-card pe-branding-tile">
+            <div id="company-profile-branding" ref={brandingCardRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover pe-company-top-branding-col pe-company-branding-card pe-branding-tile">
               <ProfileSectionHeader icon={<IconImage />} title="BRANDING" />
               <input
                 ref={fileInputRef}
@@ -613,7 +649,7 @@ export default function CompanyProfileScreen() {
                 autoComplete="address-line1"
                 errorText={fieldRequiredError("addressLine1")}
                 value={profile.addressLine1}
-                placeholder="1234 E Camelback Rd"
+                placeholder="Example: 1234 E Camelback Rd, Phoenix AZ"
                 onChange={(e) => setProfile((p) => ({ ...p, addressLine1: e.target.value }))}
               />
 
@@ -622,7 +658,7 @@ export default function CompanyProfileScreen() {
                 label="Address line 2"
                 autoComplete="address-line2"
                 value={profile.addressLine2}
-                placeholder="Suite / Unit (optional)"
+                placeholder="Example: Suite 200"
                 onChange={(e) => setProfile((p) => ({ ...p, addressLine2: e.target.value }))}
               />
 
@@ -635,7 +671,7 @@ export default function CompanyProfileScreen() {
                 autoComplete="address-level2"
                 errorText={fieldRequiredError("city")}
                 value={profile.city}
-                placeholder="Phoenix"
+                placeholder="Example: Phoenix"
                 onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value }))}
               />
 
@@ -711,6 +747,9 @@ export default function CompanyProfileScreen() {
           </div>
         </div>
       </div>
+      {showToast ? (
+        <div className="pe-toast" role="status" aria-live="polite">{toastMessage}</div>
+      ) : null}
     </section>
   );
 }

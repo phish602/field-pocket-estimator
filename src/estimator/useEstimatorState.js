@@ -111,9 +111,10 @@ function setByPath(obj, path, value) {
   return root;
 }
 
-export function useEstimatorState() {
+export function useEstimatorState(options = {}) {
   const saveTimerRef = useRef(null);
   const lastSerializedRef = useRef("");
+  const persistDraft = options?.persistDraft !== false;
 
   const [state, setState] = useState(() => {
     const base = deepClone(DEFAULT_STATE);
@@ -132,6 +133,7 @@ export function useEstimatorState() {
     try {
       if (!state || typeof state !== "object") return;
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (!persistDraft) return;
 
       saveTimerRef.current = setTimeout(() => {
         try {
@@ -160,7 +162,7 @@ export function useEstimatorState() {
       return undefined;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+  }, [persistDraft, state]);
 
   // patch(path, value)
   const patch = (path, value) => {
@@ -261,22 +263,58 @@ export function useEstimatorState() {
     });
   };
 
-const saveNow = () => {
-  try {
-    const next = stripInternalNotesForPersistence(state);
-    next.meta = { ...(next.meta || {}), lastSavedAt: Date.now() };
-    const serialized = JSON.stringify(next);
-    localStorage.setItem(STORAGE_KEY, serialized);
-    lastSerializedRef.current = serialized;
-    setState(next);
-  } catch {}
-};
-
-const clearAll = () => {
+  const saveNow = (metaPatch = null, saveOptions = null) => {
     try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {}
+      const next = stripInternalNotesForPersistence(state);
+      const extraMeta = metaPatch && typeof metaPatch === "object" ? metaPatch : {};
+      const persistOverride = saveOptions && typeof saveOptions === "object"
+        ? saveOptions.persistDraft
+        : undefined;
+      const shouldPersistDraft = persistOverride === undefined ? persistDraft : persistOverride !== false;
+      next.meta = { ...(next.meta || {}), ...extraMeta, lastSavedAt: Date.now() };
+      const serialized = JSON.stringify(next);
+      if (shouldPersistDraft) {
+        localStorage.setItem(STORAGE_KEY, serialized);
+        lastSerializedRef.current = serialized;
+      }
+      setState(next);
+      return next;
+    } catch {
+      return null;
+    }
+  };
+
+  const clearAll = () => {
+    if (persistDraft) {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {}
+    }
     setState(applyDefaultInternalNotesForNewEstimate(DEFAULT_STATE));
+  };
+
+  const replaceState = (nextState, replaceOptions = null) => {
+    try {
+      const base = deepClone(DEFAULT_STATE);
+      const merged = mergeDefaults(base, deepClone(nextState || {}));
+      setState(merged);
+
+      const persistNow = !!replaceOptions?.persistNow;
+      const persistOverride = replaceOptions && typeof replaceOptions === "object"
+        ? replaceOptions.persistDraft
+        : undefined;
+      const shouldPersistDraft = persistOverride === undefined ? persistDraft : persistOverride !== false;
+      if (persistNow && shouldPersistDraft) {
+        const persisted = stripInternalNotesForPersistence(merged);
+        persisted.meta = { ...(persisted.meta || {}), lastSavedAt: Date.now() };
+        const serialized = JSON.stringify(persisted);
+        localStorage.setItem(STORAGE_KEY, serialized);
+        lastSerializedRef.current = serialized;
+      }
+      return merged;
+    } catch {
+      return null;
+    }
   };
 
   return {
@@ -290,6 +328,8 @@ const clearAll = () => {
     dupMaterialItem,
     removeMaterialItem,
     updateMaterialItem,
+    saveNow,
+    replaceState,
     clearAll,
   };
 }
