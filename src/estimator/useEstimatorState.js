@@ -59,7 +59,6 @@ function stripInternalNotesForPersistence(state) {
   const uiDocType = next?.ui?.docType === "invoice" ? "invoice" : "estimate";
   if (uiDocType === "invoice") {
     next.scopeNotes = "";
-    next.additionalNotes = "";
     next.tradeInsert = { key: "", text: "" };
   }
   return next;

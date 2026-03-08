@@ -25,6 +25,13 @@ function sortEstimatesByDateDesc(a, b) {
   return String(b?.id || "").localeCompare(String(a?.id || ""));
 }
 
+function normalizeEstimateList(records) {
+  const arr = Array.isArray(records) ? records.filter(Boolean) : [];
+  return arr
+    .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
+    .sort(sortEstimatesByDateDesc);
+}
+
 function createSavedDocId() {
   return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -368,70 +375,61 @@ function calcBreakdown(e) {
 
 export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDone, spinTick = 0 }) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [customerFilter, setCustomerFilter] = useState("all");
+  const [valueFilter, setValueFilter] = useState("all");
+  const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
   const [draggingEstimateId, setDraggingEstimateId] = useState(null);
+  const [touchDraggingId, setTouchDraggingId] = useState(null);
+  const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
+  const touchStartTimer = useRef(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [invoicePromptTarget, setInvoicePromptTarget] = useState(null);
   const [revenueValuePulse, setRevenueValuePulse] = useState({
     pending: false,
     approved: false,
     lost: false,
   });
+  const boardRef = useRef(null);
   const prevRevenueRef = useRef(null);
-  const list = useMemo(() => {
-    const arr = Array.isArray(history) ? history.filter(Boolean) : [];
-    return arr
-      .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
-      .sort(sortEstimatesByDateDesc);
+  useEffect(() => {
+    setEstimates(normalizeEstimateList(history));
   }, [history]);
 
-  const filteredEstimates = useMemo(() => {
-    const query = String(searchQuery || "").trim().toLowerCase();
-    if (!query) return list;
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!boardRef.current) return;
 
-    return list.filter((estimate) => {
-      const name = String(
-        estimate?.name
-        || estimate?.estimateName
-        || estimate?.projectName
-        || estimate?.title
-        || ""
-      ).toLowerCase();
-      const number = String(
-        estimate?.number
-        || estimate?.estimateNumber
-        || estimate?.docNumber
-        || estimate?.documentNumber
-        || ""
-      ).toLowerCase();
-      const customerName = String(
-        estimate?.customerName
-        || estimate?.customer?.name
-        || ""
-      ).toLowerCase();
+      if (!boardRef.current.contains(event.target)) {
+        setExpanded({});
+      }
+    };
 
-      return (
-        name.includes(query)
-        || number.includes(query)
-        || customerName.includes(query)
-      );
-    });
-  }, [list, searchQuery]);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
-  const pendingEstimates = useMemo(
-    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_PENDING).slice().sort(sortEstimatesByDateDesc),
-    [filteredEstimates]
+  useEffect(
+    () => () => {
+      if (touchStartTimer.current) {
+        clearTimeout(touchStartTimer.current);
+      }
+    },
+    []
   );
-  const approvedEstimates = useMemo(
-    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_APPROVED).slice().sort(sortEstimatesByDateDesc),
-    [filteredEstimates]
-  );
-  const lostEstimates = useMemo(
-    () => filteredEstimates.filter((e) => normalizeEstimateStatus(e?.status) === STATUS_LOST).slice().sort(sortEstimatesByDateDesc),
-    [filteredEstimates]
-  );
+
+  const pendingEstimates =
+    (estimates || []).filter((e) => e?.status === "pending");
+  const approvedEstimates =
+    (estimates || []).filter((e) => e?.status === "approved");
+  const lostEstimates =
+    (estimates || []).filter((e) => e?.status === "lost");
 
   const pipelineSections = useMemo(
     () => [
@@ -454,6 +452,48 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     [lang, pendingEstimates, approvedEstimates, lostEstimates]
   );
 
+  const matchesSearch = (estimate) => {
+    const q = (searchQuery || "").toLowerCase();
+    const status = String(statusFilter || "all").toLowerCase();
+    const value = String(valueFilter || "all").toLowerCase();
+
+    const name =
+      String(estimate?.name || "").toLowerCase();
+
+    const customer =
+      String(
+        estimate?.customer?.name
+        || estimate?.customer
+        || ""
+      ).toLowerCase();
+
+    const number =
+      String(
+        estimate?.estimateNumber
+        || ""
+      ).toLowerCase();
+
+    const matchesText = !q
+      || name.includes(q)
+      || customer.includes(q)
+      || number.includes(q);
+
+    const matchesStatus = status === "all"
+      || normalizeEstimateStatus(estimate?.status) === normalizeEstimateStatus(status);
+
+    const total = toNum(estimate?.total);
+    const matchesValue = value === "all"
+      || (value === "small" && total < 1000)
+      || (value === "medium" && total >= 1000 && total < 10000)
+      || (value === "large" && total >= 10000);
+
+    return (
+      matchesText
+      && matchesStatus
+      && matchesValue
+    );
+  };
+
   const revenueForecast = useMemo(() => {
     const totals = {
       pendingRevenue: 0,
@@ -461,7 +501,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
       lostRevenue: 0,
     };
 
-    for (const estimate of list) {
+    for (const estimate of estimates) {
       const status = normalizeEstimateStatus(estimate?.status);
       const amount = toNum(estimate?.total);
       if (status === STATUS_APPROVED) totals.approvedRevenue += amount;
@@ -470,7 +510,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     }
 
     return totals;
-  }, [list]);
+  }, [estimates]);
 
   useEffect(() => {
     const prev = prevRevenueRef.current;
@@ -505,6 +545,18 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
       localStorage.setItem(ESTIMATES_SEARCH_KEY, String(searchQuery ?? ""));
     } catch {}
   }, [searchQuery]);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const status = String(params.get("status") || "").trim();
+      const customer = String(params.get("customer") || "").trim();
+      const value = String(params.get("value") || "").trim();
+      if (status) setStatusFilter(status);
+      if (customer) setCustomerFilter(customer);
+      if (value) setValueFilter(value);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
@@ -557,7 +609,12 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   };
 
   const toggle = (id) => {
-    setExpanded((m) => ({ ...m, [id]: !m[id] }));
+    setExpanded((prev) => {
+      const next = {};
+      const isOpening = !prev[id];
+      if (isOpening) next[id] = true;
+      return next;
+    });
   };
 
   const openEstimate = (estimate) => {
@@ -573,6 +630,39 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     const normalized = normalizeEstimateStatus(nextStatus);
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
+
+    setEstimates((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).map((item) => {
+        const matches = targetIdentity
+          ? estimateIdentity(item) === targetIdentity
+          : String(item?.id || "").trim() === targetId;
+        if (!matches) return item;
+        return { ...item, status: normalized };
+      });
+      return next.slice().sort(sortEstimatesByDateDesc);
+    });
+
+    setExpanded({});
+
+    if (normalized === STATUS_APPROVED) {
+      setTimeout(() => {
+        setInvoicePromptTarget(estimate);
+      }, 0);
+    }
+
+    setExpanded((prev) => ({
+      ...prev,
+      [String(estimate?.id || "")]: false,
+    }));
+
+    setExpanded((prev) => {
+      const id = String(estimate?.id || "").trim();
+      if (!id) return prev;
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
 
     try {
       const existing = readSavedEstimatesList();
@@ -590,6 +680,56 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     } catch {}
   };
 
+  const moveEstimateToStatus = (estimateId, status) => {
+    const draggedId = String(estimateId || "").trim();
+    const movedEstimate = (estimates || []).find(
+      (e) => String(e?.id || "") === draggedId
+    );
+    const normalized = normalizeEstimateStatus(status);
+    if (!draggedId) return;
+
+    setEstimates((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).map((est) => {
+        if (String(est?.id || "") !== draggedId) return est;
+        return { ...est, status: normalized };
+      });
+      return next.slice().sort(sortEstimatesByDateDesc);
+    });
+
+    setExpanded({});
+
+    if (normalized === STATUS_APPROVED && movedEstimate) {
+      setTimeout(() => {
+        setInvoicePromptTarget(movedEstimate);
+      }, 0);
+    }
+
+    setExpanded((prev) => ({
+      ...prev,
+      [String(estimateId || "")]: false,
+    }));
+
+    setExpanded((prev) => {
+      if (!draggedId) return prev;
+      if (!prev[draggedId]) return prev;
+      const next = { ...prev };
+      delete next[draggedId];
+      return next;
+    });
+
+    try {
+      const existing = readSavedEstimatesList();
+      const next = existing.map((est) => {
+        if (String(est?.id || "").trim() !== draggedId) return est;
+        return { ...est, status: normalized };
+      });
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
+      try {
+        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+      } catch {}
+    } catch {}
+  };
+
   const onRequestDelete = (estimate) => {
     setDeleteTarget(estimate || null);
     setDeleteConfirmOpen(true);
@@ -598,6 +738,17 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const onCancelDelete = () => {
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
+  };
+
+  const handleInvoicePromptLater = () => {
+    setInvoicePromptTarget(null);
+  };
+
+  const handleInvoicePromptYes = () => {
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+    setInvoicePromptTarget(null);
   };
 
   const onConfirmDelete = () => {
@@ -669,7 +820,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
   const labelProfit = lang === "es" ? "Ganancia" : "Profit";
   const labelMargin = lang === "es" ? "Margen" : "Margin";
-  const labelSavedWithCount = `${labelSaved} (${filteredEstimates.length})`;
+  const visibleEstimatesCount = (estimates || []).filter(matchesSearch).length;
+  const labelSavedWithCount = `${labelSaved} (${visibleEstimatesCount})`;
   const deleteTargetNumber = String(
     deleteTarget?.estimateNumber
     || deleteTarget?.docNumber
@@ -696,18 +848,48 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     try {
       const now = Date.now();
       const duplicate = cloneAsNewEstimate(estimate, now);
+      const draftExists = !!localStorage.getItem("estipaid-estimate-draft-v1");
+
+      if (draftExists) {
+        const confirmOpen = window.confirm(
+          "You have an estimate currently in progress.\nOpening this duplicate will replace your current draft.\nContinue?"
+        );
+        if (!confirmOpen) return;
+      }
 
       const existing = readSavedEstimatesList();
       localStorage.setItem(ESTIMATES_KEY, JSON.stringify([duplicate, ...existing]));
 
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      setExpanded({});
+
+      try {
+        localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, duplicate.id);
+      } catch {}
+
       try {
         window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+      } catch {}
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent("pe-shell-action", {
+            detail: { action: "openCreate" },
+          })
+        );
       } catch {}
     } catch {}
   };
 
-  const hasNoMatchingResults = String(searchQuery || "").trim().length > 0 && filteredEstimates.length === 0;
+  const hasActiveFilters =
+    String(searchQuery || "").trim().length > 0
+    || statusFilter !== "all"
+    || valueFilter !== "all";
+  const hasNoMatchingResults = hasActiveFilters && visibleEstimatesCount === 0;
+
+  const onRevenueTileClick = (statusKey) => {
+    const normalized = normalizeEstimateStatus(statusKey);
+    setStatusFilter((prev) => (normalizeEstimateStatus(prev) === normalized ? "all" : normalized));
+  };
 
   return (
     <section className="pe-section">
@@ -798,6 +980,48 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 </button>
               ) : null}
             </div>
+
+            <div
+              className="pe-estimate-filters"
+              style={{
+                display: "flex",
+                gap: "10px",
+                justifyContent: "center",
+                marginTop: "12px",
+                marginBottom: "20px",
+              }}
+            >
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="all">All Status</option>
+                <option value="pending">Pending</option>
+                <option value="approved">Approved</option>
+                <option value="lost">Lost</option>
+              </select>
+
+              <select
+                value={valueFilter}
+                onChange={(e) => setValueFilter(e.target.value)}
+              >
+                <option value="all">All Values</option>
+                <option value="small">Under $1k</option>
+                <option value="medium">$1k-$10k</option>
+                <option value="large">$10k+</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("all");
+                  setValueFilter("all");
+                }}
+              >
+                Clear
+              </button>
+            </div>
           </div>
 
           <div
@@ -807,31 +1031,62 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               marginBottom: "22px",
             }}
           >
-            <div className="pe-revenue-stat">
+            <div
+              className={`pe-revenue-stat${normalizeEstimateStatus(statusFilter) === STATUS_PENDING ? " pe-tile-active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onRevenueTileClick(STATUS_PENDING)}
+              onKeyDown={(evt) => {
+                if (evt.key === "Enter" || evt.key === " ") {
+                  evt.preventDefault();
+                  onRevenueTileClick(STATUS_PENDING);
+                }
+              }}
+            >
               <div className="pe-revenue-label">{lang === "es" ? "Pendiente" : "Pending"}</div>
               <div className={`pe-revenue-value${revenueValuePulse.pending ? " updated" : ""}`}>{money(revenueForecast.pendingRevenue)}</div>
             </div>
-            <div className="pe-revenue-stat">
+            <div
+              className={`pe-revenue-stat${normalizeEstimateStatus(statusFilter) === STATUS_APPROVED ? " pe-tile-active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onRevenueTileClick(STATUS_APPROVED)}
+              onKeyDown={(evt) => {
+                if (evt.key === "Enter" || evt.key === " ") {
+                  evt.preventDefault();
+                  onRevenueTileClick(STATUS_APPROVED);
+                }
+              }}
+            >
               <div className="pe-revenue-label">{lang === "es" ? "Aprobado" : "Approved"}</div>
               <div className={`pe-revenue-value${revenueValuePulse.approved ? " updated" : ""}`}>{money(revenueForecast.approvedRevenue)}</div>
             </div>
-            <div className="pe-revenue-stat">
+            <div
+              className={`pe-revenue-stat${normalizeEstimateStatus(statusFilter) === STATUS_LOST ? " pe-tile-active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onRevenueTileClick(STATUS_LOST)}
+              onKeyDown={(evt) => {
+                if (evt.key === "Enter" || evt.key === " ") {
+                  evt.preventDefault();
+                  onRevenueTileClick(STATUS_LOST);
+                }
+              }}
+            >
               <div className="pe-revenue-label">{lang === "es" ? "Perdido" : "Lost"}</div>
               <div className={`pe-revenue-value${revenueValuePulse.lost ? " updated" : ""}`}>{money(revenueForecast.lostRevenue)}</div>
             </div>
           </div>
 
           <div
+            ref={boardRef}
             className={`pe-pipeline-board${showListSkeleton ? "" : " pe-content-fade-in"}`}
-            onDragOver={(e) => {
-              const el = document.elementFromPoint(e.clientX, e.clientY);
-              console.log("CURSOR ELEMENT:", el?.className);
-              console.log("CURSOR TAG:", el?.tagName);
-              console.log("PARENT:", el?.parentElement?.className);
-            }}
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gridTemplateColumns:
+                statusFilter === "all"
+                  ? "repeat(3, minmax(0, 1fr))"
+                  : "minmax(0, 1fr)",
               gap: 16,
               width: "100%",
               maxWidth: "100%",
@@ -863,7 +1118,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                   </div>
                 ))}
               </div>
-          ) : list.length === 0 ? (
+          ) : estimates.length === 0 ? (
               <div style={{ opacity: 0.8, fontSize: 14, textAlign: "center", display: "grid", justifyItems: "center", gap: 6 }}>
                 <div style={{ opacity: 0.68 }}>
                   <EmptyEstimateIcon />
@@ -884,6 +1139,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 </div>
               ) : null}
               {pipelineSections.map((section) => {
+              if (statusFilter !== "all" && section.key !== statusFilter) return null;
               const sectionRevenue = section.key === STATUS_APPROVED
                 ? revenueForecast.approvedRevenue
                 : section.key === STATUS_LOST
@@ -905,24 +1161,22 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     minWidth: 0,
                     display: "flex",
                     flexDirection: "column",
+                    alignItems: "stretch",
+                    height: "auto",
+                    position: "relative",
                     gap: "12px",
                   }}
                 >
                   <div
                     className="pe-pipeline-bucket"
-                    onDragOver={(e) => {
-                      if (draggingEstimateId) e.preventDefault();
-                    }}
-                    onDrop={() => {
-                      if (!draggingEstimateId) return;
-                      setEstimateStatus({ id: draggingEstimateId }, section.key);
-                      setDraggingEstimateId(null);
-                    }}
                     style={{
                       width: "100%",
                       minWidth: 0,
                       display: "flex",
                       flexDirection: "column",
+                      alignItems: "stretch",
+                      height: "auto",
+                      position: "relative",
                       gap: 12,
                     }}
                   >
@@ -954,13 +1208,32 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
                     <div
                       className="pe-pipeline-cards"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+
+                        const draggedId =
+                          e.dataTransfer.getData("text/plain")
+                          || draggingEstimateId;
+
+                        if (!draggedId) return;
+
+                        setEstimateStatus({ id: draggedId }, section.key);
+                        setDraggingEstimateId(null);
+                      }}
                       style={{
-                        display: "grid",
-                        gap: "12px",
-                        minHeight: "120px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "14px",
+                        alignItems: "stretch",
+                        width: "100%",
+                        minHeight: "400px",
+                        flexGrow: 1,
                     }}
                   >
-                    {section.items.map((entry) => {
+                    {section.items.filter(matchesSearch).map((entry) => {
                       const estimate = entry;
                       const e = estimate;
                       const id = String(e?.id || "");
@@ -1108,15 +1381,104 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
               return (
                 <div
-                  className="pe-card pe-card-content pe-saved-estimate-card pe-estimate-card"
-                  key={id || Math.random()}
+                  className={`pe-card pe-saved-estimate-card pe-estimate-card ${draggingEstimateId === id ? "pe-dragging" : ""}`}
+                  key={String(
+                    e?.id
+                    || e?.estimateId
+                    || e?.uuid
+                    || `${estimateIdentity(e)}:${getMostRecentTimestamp(e)}:${String(e?.projectName || "")}:${String(e?.customerName || "")}`
+                  )}
                   style={card}
-                  draggable
-                  onDragStart={() => {
-                    setDraggingEstimateId(estimate.id);
+                  draggable={true}
+                  onTouchStart={(e) => {
+                    const touch = e.touches?.[0];
+                    if (!touch) return;
+
+                    if (touchStartTimer.current) {
+                      clearTimeout(touchStartTimer.current);
+                    }
+
+                    touchStartTimer.current = setTimeout(() => {
+                      setTouchDraggingId(id);
+                      setTouchDragPos({
+                        x: touch.clientX,
+                        y: touch.clientY,
+                      });
+                      setDraggingEstimateId(id);
+                    }, 350);
                   }}
-                  onDragEnd={() => {
+                  onTouchMove={(e) => {
+                    if (!touchDraggingId) return;
+
+                    const touch = e.touches?.[0];
+                    if (!touch) return;
+                    e.preventDefault();
+
+                    setTouchDragPos({
+                      x: touch.clientX,
+                      y: touch.clientY,
+                    });
+                  }}
+                  onTouchEnd={(e) => {
+                    if (touchStartTimer.current) {
+                      clearTimeout(touchStartTimer.current);
+                    }
+                    touchStartTimer.current = null;
+
+                    if (!touchDraggingId) return;
+
+                    const touch = e.changedTouches?.[0];
+                    const clientX = touch?.clientX ?? touchDragPos.x;
+                    const clientY = touch?.clientY ?? touchDragPos.y;
+                    const el = document.elementFromPoint(clientX, clientY);
+                    const column = el?.closest(".pe-pipeline-section");
+
+                    if (column) {
+                      const status = column.getAttribute("data-section-key");
+                      moveEstimateToStatus(touchDraggingId, status);
+                    }
+
+                    setTouchDraggingId(null);
                     setDraggingEstimateId(null);
+                  }}
+                  onTouchCancel={() => {
+                    if (touchStartTimer.current) {
+                      clearTimeout(touchStartTimer.current);
+                    }
+                    touchStartTimer.current = null;
+                    setTouchDraggingId(null);
+                    setDraggingEstimateId(null);
+                  }}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", id);
+
+                    const el = e.currentTarget;
+
+                    el.style.transform = "scale(1.03)";
+                    el.style.boxShadow = "0 16px 36px rgba(0,0,0,0.55)";
+                    el.style.opacity = "0.8";
+                    el.style.cursor = "grabbing";
+                    el.style.zIndex = "999";
+
+                    setDraggingEstimateId(id);
+                  }}
+                  onDragEnd={(e) => {
+                    const el = e.currentTarget;
+
+                    setDraggingEstimateId(null);
+
+                    if (el) {
+                      el.style.transform = "";
+                      el.style.boxShadow = "";
+                      el.style.opacity = "";
+                      el.style.zIndex = "";
+                      el.style.cursor = "grab";
+
+                      requestAnimationFrame(() => {
+                        el.style.cursor = "";
+                      });
+                    }
                   }}
                 >
                   <div style={row}>
@@ -1215,7 +1577,10 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                         <button
                           className={status === STATUS_APPROVED ? "pe-btn" : "pe-btn pe-btn-ghost"}
                           type="button"
-                          onClick={() => setEstimateStatus(e, STATUS_APPROVED)}
+                          onClick={() => {
+                            setEstimateStatus(e, STATUS_APPROVED);
+                            setInvoicePromptTarget(e);
+                          }}
                         >
                           {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
                         </button>
@@ -1232,6 +1597,17 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                           onClick={() => setEstimateStatus(e, STATUS_PENDING)}
                         >
                           {lang === "es" ? "Restablecer a pendiente" : "Reset to Pending"}
+                        </button>
+                        <button
+                          className="pe-btn pe-btn-secondary pe-btn-duplicate"
+                          type="button"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            duplicateEstimate(estimate);
+                          }}
+                        >
+                          <CopyIcon />
+                          Duplicate
                         </button>
                       </div>
                     </div>
@@ -1405,6 +1781,26 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                           : "Applied once on billed labor."}
                       </div>
                     </div>
+
+                    <div
+                      className="actions-right pe-estimate-actions-row"
+                      style={{
+                        display: "flex",
+                        gap: 10,
+                        marginTop: 10,
+                      }}
+                    >
+                      <button
+                        className="pe-btn pe-btn-ghost"
+                        type="button"
+                        onClick={(evt) => {
+                          evt.stopPropagation();
+                          onRequestDelete(e);
+                        }}
+                      >
+                        {labelDelete}
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -1488,6 +1884,59 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
           </div>
         </div>
       ) : null}
+      {invoicePromptTarget && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000
+          }}
+        >
+          <div
+            className="pe-card"
+            style={{
+              width: 360,
+              maxWidth: "90%",
+              textAlign: "center",
+              padding: 24
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Create Invoice?</h3>
+
+            <p style={{ opacity: 0.8 }}>
+              This estimate was moved to Approved.
+              Would you like to create an invoice now?
+            </p>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                gap: 12,
+                marginTop: 18
+              }}
+            >
+              <button
+                className="pe-btn"
+                onClick={handleInvoicePromptLater}
+              >
+                No, Later
+              </button>
+
+              <button
+                className="pe-btn pe-btn-primary"
+                onClick={handleInvoicePromptYes}
+              >
+                Yes, Create Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showCopyToast ? (
         <div className="pe-toast" role="status" aria-live="polite">Estimate number copied</div>
       ) : null}

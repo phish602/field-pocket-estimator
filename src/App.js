@@ -113,6 +113,7 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
 
 const LANG_KEY = STORAGE_KEYS.LANG;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 
 try {
   migrateLegacyStorageNamespace();
@@ -601,10 +602,10 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick }) {
+function CreateFlow({ gated, intent, spinTick, resetSeq }) {
   return (
     <div>
-      <EstimateForm key={"estimate"} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
+      <EstimateForm key={`estimate:${resetSeq}`} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
     </div>
   );
 }
@@ -1157,6 +1158,9 @@ export default function App() {
   const [routeEnterSeq, setRouteEnterSeq] = useState(0);
   const [userProfileDirty, setUserProfileDirty] = useState(false);
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
+  const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
+  const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
+  const [createResetSeq, setCreateResetSeq] = useState(0);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -1241,6 +1245,15 @@ const [spinTick, setSpinTick] = useState(0);
     else if (tab === ROUTES.INVOICE_BUILDER) nextIntent = BUILDER_INTENTS.INVOICE;
 
     const nextTab = isBuilderTarget ? ROUTES.CREATE : tab;
+    if (isBuilderTarget) {
+      try {
+        const editTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+        if (editTarget) setCreateEditSessionActive(true);
+      } catch {}
+    } else {
+      setCreateEditSessionActive(false);
+      setShowCreateFromEditModal(false);
+    }
     try {
       if (activeTab === ROUTES.CREATE && nextTab !== ROUTES.CREATE) {
         try { localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1"); } catch {}
@@ -1262,6 +1275,40 @@ const [spinTick, setSpinTick] = useState(0);
 
     performNavigation(tab);
   }, [activeTab, userProfileDirty, performNavigation]);
+
+  const continueCreateFromEdit = useCallback(() => {
+    setShowCreateFromEditModal(false);
+    setCreateEditSessionActive(false);
+    try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+
+    let draftRaw = "";
+    try {
+      draftRaw = String(localStorage.getItem(ESTIMATE_DRAFT_KEY) || "");
+    } catch {}
+
+    if (draftRaw) {
+      try { localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw); } catch {}
+    } else {
+      try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
+    }
+
+    setCreateResetSeq((n) => n + 1);
+    navigateTo(ROUTES.ESTIMATE_BUILDER);
+  }, [ESTIMATE_DRAFT_KEY, navigateTo]);
+
+  const onCreateButtonRoute = useCallback(() => {
+    let editTarget = "";
+    try {
+      editTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+    } catch {}
+
+    if (editTarget || createEditSessionActive) {
+      setShowCreateFromEditModal(true);
+      return;
+    }
+
+    navigateTo(ROUTES.ESTIMATE_BUILDER);
+  }, [createEditSessionActive, navigateTo]);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
@@ -1488,7 +1535,7 @@ const gated = false;
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === ROUTES.CREATE) return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} />;
+    if (activeTab === ROUTES.CREATE) return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} resetSeq={createResetSeq} />;
     return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 
@@ -1496,7 +1543,7 @@ const gated = false;
     setDrawerOpen(false);
 
     if (key === ROUTES.CREATE) {
-      navigateTo(ROUTES.ESTIMATE_BUILDER);
+      onCreateButtonRoute();
       return;
     }
 
@@ -1646,7 +1693,7 @@ const gated = false;
             return;
           }
           if (key === ROUTES.CREATE) {
-            navigateTo(ROUTES.ESTIMATE_BUILDER);
+            onCreateButtonRoute();
             return;
           }
           if (key === ROUTES.ESTIMATES) {
@@ -1663,6 +1710,34 @@ const gated = false;
           }
         }}
       />
+
+      {showCreateFromEditModal ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new estimate">
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalText}>
+              You are currently editing an estimate.
+              Starting a new estimate will discard any unsaved progress.
+              Continue?
+            </div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setShowCreateFromEditModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={continueCreateFromEdit}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showUnsavedProfileModal ? (
         <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Unsaved changes">
@@ -1714,7 +1789,11 @@ const gated = false;
       <BottomNav
         active={activeTab}
         setActive={(key) => {
-          navigateTo(key === ROUTES.CREATE ? ROUTES.ESTIMATE_BUILDER : key);
+          if (key === ROUTES.CREATE) {
+            onCreateButtonRoute();
+            return;
+          }
+          navigateTo(key);
         }}
         onQuickOpen={() => setQuickOpen(true)}
         disabled={gated}

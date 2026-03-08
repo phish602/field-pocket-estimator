@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useLayoutEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const BLANKET_DESCRIPTION_MIN_HEIGHT = 100;
 
@@ -55,7 +55,48 @@ export default function SectionMaterials(props) {
     trashIcon,
   } = props || {};
   const blanketDescriptionRef = useRef(null);
+  const noteInputRefs = useRef({});
+  const [noteOpenById, setNoteOpenById] = useState({});
   const blanketDescriptionValue = String(materialsBlanketDescription || "");
+
+  useEffect(() => {
+    setNoteOpenById((prev) => {
+      const next = {};
+      for (let i = 0; i < materialItems.length; i += 1) {
+        const item = materialItems[i];
+        const id = String(item?.id ?? i);
+        next[id] = Object.prototype.hasOwnProperty.call(prev, id)
+          ? prev[id]
+          : !!String(item?.note || "").trim();
+      }
+
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length !== nextKeys.length) return next;
+      for (const key of nextKeys) {
+        if (prev[key] !== next[key]) return next;
+      }
+      return prev;
+    });
+  }, [materialItems]);
+
+  function openMaterialNote(materialNoteId) {
+    setNoteOpenById((prev) => ({ ...prev, [materialNoteId]: true }));
+    const focusNoteInput = () => {
+      try {
+        noteInputRefs.current?.[materialNoteId]?.focus?.();
+      } catch {}
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(focusNoteInput);
+      return;
+    }
+    setTimeout(focusNoteInput, 0);
+  }
+
+  function closeMaterialNote(materialNoteId) {
+    setNoteOpenById((prev) => ({ ...prev, [materialNoteId]: false }));
+  }
 
   useLayoutEffect(() => {
     if (materialsMode !== "blanket") return;
@@ -227,6 +268,10 @@ export default function SectionMaterials(props) {
             {materialItems.map((it, i) => {
               const qtyVal = Math.max(1, Number(it.qty) || 1);
               const eachVal = Number(it.charge) || 0;
+              const materialNoteId = String(it?.id ?? i);
+              const materialNoteValue = String(it?.note || "");
+              const materialNoteHasContent = materialNoteValue.trim().length > 0;
+              const materialNoteOpen = !!noteOpenById[materialNoteId];
               const mappedLineTotal = materialLineTotalsById?.get
                 ? Number(materialLineTotalsById.get(String(it?.id)))
                 : NaN;
@@ -250,6 +295,53 @@ export default function SectionMaterials(props) {
                       placeholder={lang === "es" ? "Descripción" : "Description"}
                       style={{ width: "100%" }}
                     />
+                  </div>
+
+                  <div style={{ display: "grid", gap: materialNoteOpen ? 6 : 0, marginTop: 8 }}>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => {
+                        if (materialNoteOpen) closeMaterialNote(materialNoteId);
+                        else openMaterialNote(materialNoteId);
+                      }}
+                      aria-expanded={materialNoteOpen}
+                      style={{
+                        justifySelf: "start",
+                        padding: 0,
+                        minHeight: 0,
+                        border: 0,
+                        background: "transparent",
+                        color: "rgba(203,213,225,0.78)",
+                        fontSize: 12.5,
+                        fontWeight: 700,
+                        letterSpacing: "0.01em",
+                      }}
+                    >
+                      {materialNoteOpen
+                        ? (lang === "es" ? "Ocultar nota" : "Hide note")
+                        : materialNoteHasContent
+                          ? (lang === "es" ? "Editar nota" : "Edit note")
+                          : (lang === "es" ? "+ Agregar nota" : "+ Add note")}
+                    </button>
+
+                    {materialNoteOpen ? (
+                      <input
+                        ref={(el) => {
+                          if (el) noteInputRefs.current[materialNoteId] = el;
+                          else delete noteInputRefs.current[materialNoteId];
+                        }}
+                        className="pe-input"
+                        value={materialNoteValue}
+                        onChange={(e) => updateMaterialItem(i, "note", e.target.value)}
+                        placeholder={t("materialNotePlaceholder")}
+                        style={{
+                          width: "100%",
+                          fontSize: 13,
+                          color: "rgba(229,238,245,0.92)",
+                        }}
+                      />
+                    ) : null}
                   </div>
 
                   <div

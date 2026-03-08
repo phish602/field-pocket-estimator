@@ -52,6 +52,8 @@ const I18N = {
     addMaterialItem: "+ Add Item",
     materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
     materialDesc: "Description",
+    materialNote: "Line note (optional)",
+    materialNotePlaceholder: "Prints under this item in the PDF",
     materialQty: "Qty",
     materialCostInternal: "Cost (internal)",
     materialCharge: "Price (each)",
@@ -80,6 +82,8 @@ const I18N = {
     addMaterialItem: "+ Agregar Partida",
     materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
     materialDesc: "Descripción",
+    materialNote: "Nota de línea (opcional)",
+    materialNotePlaceholder: "Se imprime debajo de esta partida en el PDF",
     materialQty: "Cant.",
     materialCostInternal: "Costo (interno)",
     materialCharge: "Precio (c/u)",
@@ -654,6 +658,7 @@ function createBlankMaterialItem(idOverride, markupPct) {
   return {
     id: idOverride || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     desc: "",
+    note: "",
     qty: 1,
     cost: "",
     unitCostInternal: "",
@@ -1450,6 +1455,8 @@ export default function EstimateForm(props) {
     const curr = { ...(items[i] || {}) };
     if (key === "qty") {
       curr.qty = Math.max(1, Number(value) || 1);
+    } else if (key === "note") {
+      curr.note = String(value ?? "");
     } else if (key === "cost") {
       curr.cost = value;
       curr.unitCostInternal = value;
@@ -1732,6 +1739,7 @@ export default function EstimateForm(props) {
       const poNumber = String(state?.job?.poNumber || "").trim();
       const docDate = String(state?.job?.date || "").trim();
       const includeNotes = uiDocType === "estimate";
+      const additionalNotesText = String(state?.additionalNotes || "").trim();
       const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
       const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
       const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
@@ -1760,14 +1768,29 @@ export default function EstimateForm(props) {
 
       const materialsRows = (() => {
         if (materialsMode === "itemized") {
-          const rows = (computed?.materials?.normalized || []).map((it) => {
-            const desc = String(it?.desc || "").trim() || "-";
-            const qty = Math.max(1, Number(it?.qty) || 1);
-            const each = Number(it?.effectivePriceEach ?? it?.priceEach ?? 0);
-            const lineTotal = Number(it?.charge || qty * each);
-            return [desc, String(qty), money.format(each), money.format(lineTotal)];
-          });
-          return rows.length ? rows : [["Materials", "1", money.format(0), money.format(0)]];
+          const materialNotesById = new Map(
+            (Array.isArray(state?.materials?.items) ? state.materials.items : []).map((item, index) => [
+              String(item?.id || `idx_${index}`),
+              String(item?.note || "").trim(),
+            ])
+          );
+          const rows = (computed?.materials?.normalized || [])
+            .filter((it) => String(it?.desc || "").trim())
+            .map((it) => {
+              const desc = String(it?.desc || "").trim();
+              const note = materialNotesById.get(String(it?.id || "")) || "";
+              const qty = Math.max(1, Number(it?.qty) || 1);
+              const each = Number(it?.effectivePriceEach ?? it?.priceEach ?? 0);
+              const lineTotal = Number(it?.charge || qty * each);
+              return {
+                desc,
+                note,
+                qty: String(qty),
+                each: money.format(each),
+                total: money.format(lineTotal),
+              };
+            });
+          return rows;
         }
         return [[
           "Blanket Materials",
@@ -1801,6 +1824,12 @@ export default function EstimateForm(props) {
           attn: customerAttn,
           address: customerAddress,
           billingAddress,
+          netTermsType: String(state?.customer?.netTermsType || "").trim(),
+          netTermsDays:
+            state?.customer?.netTermsDays === null || state?.customer?.netTermsDays === undefined
+              ? ""
+              : String(state?.customer?.netTermsDays),
+          netTermsLabel: String(selectedProfile?.netTermsLabel || "").trim(),
         },
         job: {
           date: docDate,
@@ -1825,7 +1854,7 @@ export default function EstimateForm(props) {
         materialsBlanketDescription: materialsMode === "blanket" ? materialsBlanketDescription : "",
         summaryRows,
         scopeNotes: includeNotes ? scopeWithoutTrade : "",
-        additionalNotes: includeNotes ? String(state?.additionalNotes || "").trim() : "",
+        additionalNotes: additionalNotesText,
       }, mode);
     } catch (err) {
       try { console.error(err); } catch {}
@@ -1881,6 +1910,7 @@ export default function EstimateForm(props) {
     const arr = Array.isArray(state?.materials?.items) ? state.materials.items : [];
     return arr.map((it) => ({
       ...it,
+      note: String(it?.note || ""),
       qty: Math.max(1, Number(it?.qty) || 1),
       cost: it?.cost ?? it?.unitCostInternal ?? it?.costInternal ?? "",
       charge: it?.charge ?? it?.priceEach ?? "",

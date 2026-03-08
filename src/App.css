@@ -556,6 +556,11 @@ body {
   text-align: center;
 }
 
+.pe-tile-active {
+  border-color: rgba(255,255,255,0.45);
+  background: rgba(255,255,255,0.08);
+}
+
 .pe-revenue-label {
   font-size: 11px;
   font-weight: 900;
@@ -623,13 +628,21 @@ body {
   width: 100%;
 }
 
+.pe-pipeline-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .pe-pipeline-cards {
   display: grid;
   gap: 14px;
-  min-height: 180px !important;
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 6px;
   padding-bottom: 16px;
-  border-radius: 12px;
-  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  align-content: start;
+  scrollbar-width: thin;
 }
 
 .pe-pipeline-cards.drag-over,
@@ -642,14 +655,47 @@ body {
 .pe-estimate-card {
   pointer-events: auto;
   cursor: grab;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pe-estimate-card:hover {
+  cursor: grab;
+  transform: translateY(-3px);
+  box-shadow: 0 12px 26px rgba(0,0,0,0.35);
 }
 
 .pe-estimate-card:active {
   cursor: grabbing;
 }
 
+.pe-card.pe-saved-estimate-card.pe-estimate-card {
+  cursor: grab;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pe-card.pe-saved-estimate-card.pe-estimate-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 26px rgba(0,0,0,0.35);
+}
+
+.pe-card.pe-saved-estimate-card.pe-estimate-card:active {
+  cursor: grabbing;
+}
+
 .pe-dragging {
-  opacity: 0.45;
+  opacity: 0.75;
+  transform: scale(1.03);
+  box-shadow: 0 16px 36px rgba(0,0,0,0.55);
+  cursor: grabbing !important;
+}
+
+.pe-touch-dragging {
+  position: fixed;
+  transform: scale(1.05);
+  box-shadow: 0 18px 40px rgba(0,0,0,0.6);
+  opacity: .9;
+  pointer-events: none;
+  z-index: 9999;
 }
 
 @media (min-width: 821px) {
@@ -1186,6 +1232,45 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
 }
 
+.pe-estimate-filters {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  margin-bottom: 20px;
+}
+
+.pe-estimate-filters select {
+  background: rgba(20, 30, 40, 0.65);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #e8f1f5;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  outline: none;
+  transition: all .15s ease;
+}
+
+.pe-estimate-filters select:hover {
+  border-color: rgba(255,255,255,0.18);
+}
+
+.pe-estimate-filters button {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #dbe7ee;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.pe-estimate-filters button:hover {
+  background: rgba(255,255,255,0.12);
+}
+
 .pe-company-meta {
   margin-top: 4px;
   font-size: 11px;
@@ -1316,8 +1401,31 @@ body {
 
 .pe-estimates-container {
   max-width: none !important;
+  overflow-x: hidden;
 }
 
 .pe-estimates-container > * {
   max-width: 100% !important;
+}
+
+.pe-pipeline-board {
+  width: 100%;
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .pe-estimate-revenue-bar {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .pe-pipeline-board {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 20px;
+  }
+
+  .pe-pipeline-section {
+    width: 100%;
+  }
 }
