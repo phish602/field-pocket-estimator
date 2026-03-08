@@ -258,8 +258,127 @@ function buildProjectText(job) {
   ].filter(Boolean).join("\n");
 }
 
-function drawLogo(doc, logoDataUrl, x, y) {
-  if (!logoDataUrl) return;
+function resolveLogoFallbackSourceText(company) {
+  const firstName = asText(company?.firstName);
+  const lastName = asText(company?.lastName);
+  const joinedName = [firstName, lastName].filter(Boolean).join(" ").trim();
+  const candidates = [
+    company?.companyName,
+    company?.businessName,
+    company?.legalName,
+    company?.displayName,
+    company?.name,
+    company?.fullName,
+    company?.ownerName,
+    company?.contactName,
+    company?.attn,
+    joinedName,
+  ];
+
+  for (const candidate of candidates) {
+    const text = asText(candidate);
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function buildLogoFallbackInitials(company) {
+  const source = resolveLogoFallbackSourceText(company)
+    .replace(/[^\w\s&/-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!source) return "EP";
+
+  const rawWords = source
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (!rawWords.length) return "EP";
+
+  const acronymCandidate = rawWords[0].replace(/[^A-Za-z0-9]/g, "");
+  if (
+    acronymCandidate.length >= 2
+    && acronymCandidate.length <= 3
+    && /[A-Z]/.test(rawWords[0])
+    && rawWords[0] === rawWords[0].toUpperCase()
+  ) {
+    return acronymCandidate.toUpperCase();
+  }
+
+  const genericWords = new Set([
+    "and",
+    "co",
+    "company",
+    "corp",
+    "corporation",
+    "enterprise",
+    "enterprises",
+    "group",
+    "holding",
+    "holdings",
+    "inc",
+    "incorporated",
+    "limited",
+    "llc",
+    "ltd",
+    "partners",
+    "partner",
+    "service",
+    "services",
+    "solution",
+    "solutions",
+    "system",
+    "systems",
+    "the",
+  ]);
+
+  const words = rawWords
+    .map((part) => part.replace(/[^A-Za-z0-9]/g, ""))
+    .filter(Boolean);
+  const filteredWords = words.filter((word) => !genericWords.has(word.toLowerCase()));
+  const meaningfulWords = filteredWords.length ? filteredWords : words;
+
+  if (!meaningfulWords.length) return "EP";
+  if (meaningfulWords.length === 1) {
+    return meaningfulWords[0].slice(0, 3).toUpperCase();
+  }
+
+  return meaningfulWords
+    .slice(0, 2)
+    .map((word) => word.charAt(0).toUpperCase())
+    .join("")
+    .slice(0, 3) || "EP";
+}
+
+function drawLogoFallbackBadge(doc, company, x, y) {
+  const badgeWidth = 48;
+  const badgeHeight = 22;
+  const initials = buildLogoFallbackInitials(company);
+  const fontSize = initials.length >= 3 ? 12.6 : 14.6;
+
+  doc.setDrawColor(165, 165, 165);
+  doc.setFillColor(245, 245, 245);
+  doc.setLineWidth(0.45);
+  doc.roundedRect(x, y, badgeWidth, badgeHeight, 2.8, 2.8, "FD");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(fontSize);
+  doc.setTextColor(44, 44, 44);
+  doc.text(initials, x + (badgeWidth / 2), y + (badgeHeight / 2) + 0.2, {
+    align: "center",
+    baseline: "middle",
+  });
+  doc.setTextColor(20, 20, 20);
+}
+
+function drawLogo(doc, company, x, y) {
+  const logoDataUrl = asText(company?.logoDataUrl);
+  if (!logoDataUrl) {
+    drawLogoFallbackBadge(doc, company, x, y);
+    return;
+  }
 
   try {
     const props = doc.getImageProperties(logoDataUrl);
@@ -278,7 +397,9 @@ function drawLogo(doc, logoDataUrl, x, y) {
       drawWidth,
       drawHeight
     );
-  } catch {}
+  } catch {
+    drawLogoFallbackBadge(doc, company, x, y);
+  }
 }
 
 function safeParseJson(raw) {
@@ -659,7 +780,7 @@ function buildPdfDoc(payload) {
     return TOTALS_TOP_OFFSET + rowsHeight + TOTALS_KEEP_BUFFER + TOTALS_HEIGHT_SAFETY;
   }
 
-  drawLogo(doc, company?.logoDataUrl, LEFT, LOGO_Y);
+  drawLogo(doc, company, LEFT, LOGO_Y);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(7.5);

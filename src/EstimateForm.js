@@ -25,6 +25,7 @@ import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
 import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
@@ -101,6 +102,8 @@ const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
+const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
 function readSavedCustomers() {
@@ -136,6 +139,39 @@ function flattenCustomerForEstimator(c) {
   const svc = c.resService || {};
   const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
   return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
+}
+
+function buildSelectedCustomerProfileFromDraft(customerState, customerId = "", customerList = []) {
+  const sid = String(customerId || customerState?.id || "").trim();
+  if (!sid) return null;
+
+  const matchedCustomer = Array.isArray(customerList)
+    ? customerList.find((item) => String(item?.id || "").trim() === sid)
+    : null;
+
+  if (matchedCustomer) {
+    return {
+      ...matchedCustomer,
+      ...flattenCustomerForEstimator(matchedCustomer),
+      id: sid,
+    };
+  }
+
+  const name = String(customerState?.name || "").trim();
+  return {
+    id: sid,
+    name,
+    fullName: name,
+    attn: String(customerState?.attn || "").trim(),
+    phone: String(customerState?.phone || "").trim(),
+    email: String(customerState?.email || "").trim(),
+    netTermsType: String(customerState?.netTermsType || "").trim(),
+    netTermsDays: customerState?.netTermsDays === null || customerState?.netTermsDays === undefined
+      ? ""
+      : String(customerState?.netTermsDays),
+    address: String(customerState?.address || "").trim(),
+    billingAddress: String(customerState?.billingAddress || "").trim(),
+  };
 }
 
 function formatAddressObject(a) {
@@ -206,6 +242,29 @@ function formatSavedTimestamp(ts) {
 
 function createSavedDocId() {
   return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function writeProfileReturnTarget(value) {
+  try {
+    const route = String(value?.route || "").trim();
+    if (!route) {
+      localStorage.removeItem(PROFILE_RETURN_TARGET_KEY);
+      return null;
+    }
+    const next = { route };
+    if (route === ROUTES.CREATE) {
+      next.intent = value?.intent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE;
+      const editType = value?.editContext?.type === "invoice" ? "invoice" : (value?.editContext?.type === "estimate" ? "estimate" : "");
+      const editId = String(value?.editContext?.id || "").trim();
+      if (editType && editId) {
+        next.editContext = { type: editType, id: editId };
+      }
+    }
+    localStorage.setItem(PROFILE_RETURN_TARGET_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return null;
+  }
 }
 
 function readPendingEditTarget() {
@@ -740,6 +799,34 @@ export default function EstimateForm(props) {
   }, [editingRecordId, isEditMode]);
 
   useEffect(() => {
+    try {
+      if (!isEditMode || !editingRecordId || !editingTargetType) {
+        localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        return undefined;
+      }
+
+      localStorage.setItem(
+        ACTIVE_EDIT_CONTEXT_KEY,
+        JSON.stringify({ type: editingTargetType, id: editingRecordId })
+      );
+    } catch {}
+
+    return () => {
+      try {
+        const raw = localStorage.getItem(ACTIVE_EDIT_CONTEXT_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (
+          String(parsed?.id || "").trim() === editingRecordId
+          && String(parsed?.type || "").trim() === editingTargetType
+        ) {
+          localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        }
+      } catch {}
+    };
+  }, [editingRecordId, editingTargetType, isEditMode]);
+
+  useEffect(() => {
     return () => {
       if (!isEditModeRef.current) return;
       clearPendingEditTarget();
@@ -759,9 +846,15 @@ export default function EstimateForm(props) {
     };
   }, []);
 
-  const [searchCustomerText, setSearchCustomerText] = useState("");
-  const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(null);
+  const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
+  const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
+  const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(() => (
+    buildSelectedCustomerProfileFromDraft(
+      state?.customer,
+      state?.customer?.id,
+      readSavedCustomers()
+    )
+  ));
   const [dropdownHoverKey, setDropdownHoverKey] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
@@ -918,6 +1011,39 @@ export default function EstimateForm(props) {
   }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
 
   useEffect(() => {
+    if (isEditMode) return;
+    const draftCustomerId = String(state?.customer?.id || "").trim();
+
+    if (!draftCustomerId) {
+      if (selectedCustomerId) setSelectedCustomerId("");
+      if (selectedCustomerProfile) setSelectedCustomerProfile(null);
+      return;
+    }
+
+    if (String(selectedCustomerId || "") === draftCustomerId && selectedCustomerProfile) {
+      return;
+    }
+
+    const nextProfile = buildSelectedCustomerProfileFromDraft(state?.customer, draftCustomerId, allCustomers);
+    if (!nextProfile) return;
+
+    setSelectedCustomerId(draftCustomerId);
+    setSelectedCustomerProfile(nextProfile);
+
+    if (!String(searchCustomerText || "").trim()) {
+      const displayName = customerDisplayName(nextProfile) || String(nextProfile?.name || "").trim();
+      if (displayName) setSearchCustomerText(displayName);
+    }
+  }, [
+    allCustomers,
+    isEditMode,
+    searchCustomerText,
+    selectedCustomerId,
+    selectedCustomerProfile,
+    state?.customer,
+  ]);
+
+  useEffect(() => {
     return () => {
       const rowTimers = Array.isArray(rowEnterTimerRef.current) ? rowEnterTimerRef.current : [];
       rowTimers.forEach((t) => t && clearTimeout(t));
@@ -945,6 +1071,7 @@ export default function EstimateForm(props) {
         setSelectedCustomerProfile(c);
         const display = customerDisplayName(c) || String(c.name || "").trim();
         if (display) setSearchCustomerText(display);
+        patch("customer.id", sid);
         if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
         if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
         if (String(c.phone || "").trim()) patch("customer.phone", String(c.phone || "").trim());
@@ -1193,6 +1320,7 @@ export default function EstimateForm(props) {
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
+      patch("customer.id", "");
       patch("customer.name", "");
       patch("customer.attn", "");
       patch("customer.phone", "");
@@ -1214,6 +1342,7 @@ export default function EstimateForm(props) {
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
+      patch("customer.id", "");
       patch("customer.netTermsType", "");
       patch("customer.netTermsDays", "");
       try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
@@ -1227,6 +1356,7 @@ export default function EstimateForm(props) {
     const payloadCustomer = { ...c, ...flat };
     setSelectedCustomerProfile(payloadCustomer);
     setDropdownOpen(false);
+    patch("customer.id", id);
     try {
       const payload = { id, customer: payloadCustomer, ts: Date.now() };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
@@ -1703,6 +1833,13 @@ export default function EstimateForm(props) {
       profile: loadCompanyProfile(),
       message: "User Profile required. Open User Profile?",
       onRequireProfile: () => {
+        writeProfileReturnTarget({
+          route: ROUTES.CREATE,
+          intent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+          editContext: isEditMode && editingRecordId && editingTargetType
+            ? { type: editingTargetType, id: editingRecordId }
+            : null,
+        });
         try {
           window.dispatchEvent(new Event("estipaid:navigate-user-profile"));
         } catch {}

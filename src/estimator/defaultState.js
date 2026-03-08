@@ -21,6 +21,7 @@ export const DEFAULT_STATE = {
   },
 
   customer: {
+    id: "",
     name: "",
     attn: "",
     phone: "",

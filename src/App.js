@@ -114,6 +114,114 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
 const LANG_KEY = STORAGE_KEYS.LANG;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
+const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+
+function safeParseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEditContext(value) {
+  if (!value || typeof value !== "object") return null;
+  const type = value?.type === "invoice" ? "invoice" : (value?.type === "estimate" ? "estimate" : "");
+  const id = String(value?.id || "").trim();
+  if (!type || !id) return null;
+  return { type, id };
+}
+
+function normalizeProfileReturnTarget(value) {
+  if (!value || typeof value !== "object") return null;
+
+  const legacyEditContext = normalizeEditContext(value);
+  if (legacyEditContext) {
+    return {
+      route: ROUTES.CREATE,
+      intent: legacyEditContext.type === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+      editContext: legacyEditContext,
+    };
+  }
+
+  const routeCandidate = String(value?.route || value?.tab || "").trim();
+  const route = Object.values(ROUTES).includes(routeCandidate) ? routeCandidate : "";
+  if (!route || route === ROUTES.COMPANY_PROFILE) return null;
+
+  if (route === ROUTES.CREATE || route === ROUTES.ESTIMATE_BUILDER || route === ROUTES.INVOICE_BUILDER) {
+    const next = {
+      route: ROUTES.CREATE,
+      intent: route === ROUTES.INVOICE_BUILDER
+        ? BUILDER_INTENTS.INVOICE
+        : (value?.intent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE),
+    };
+    const editContext = normalizeEditContext(value?.editContext);
+    if (editContext) next.editContext = editContext;
+    return next;
+  }
+
+  return { route };
+}
+
+function readActiveEditContext() {
+  try {
+    const raw = localStorage.getItem(ACTIVE_EDIT_CONTEXT_KEY);
+    if (!raw) return null;
+    return normalizeEditContext(safeParseJson(raw));
+  } catch {
+    return null;
+  }
+}
+
+function readProfileReturnTarget() {
+  try {
+    const raw = localStorage.getItem(PROFILE_RETURN_TARGET_KEY);
+    if (!raw) return null;
+    return normalizeProfileReturnTarget(safeParseJson(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileReturnTarget(value) {
+  const normalized = normalizeProfileReturnTarget(value);
+  try {
+    if (!normalized) {
+      localStorage.removeItem(PROFILE_RETURN_TARGET_KEY);
+      return null;
+    }
+    localStorage.setItem(PROFILE_RETURN_TARGET_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function clearProfileReturnTarget() {
+  try {
+    localStorage.removeItem(PROFILE_RETURN_TARGET_KEY);
+  } catch {}
+}
+
+function buildProfileReturnTarget(activeTab, createIntent) {
+  if (!activeTab || activeTab === ROUTES.COMPANY_PROFILE) {
+    return null;
+  }
+
+  if (activeTab === ROUTES.CREATE) {
+    const target = {
+      route: ROUTES.CREATE,
+      intent: createIntent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+    };
+    const editContext = readActiveEditContext();
+    if (editContext) target.editContext = editContext;
+    return target;
+  }
+
+  return { route: activeTab };
+}
 
 try {
   migrateLegacyStorageNamespace();
@@ -1161,6 +1269,7 @@ export default function App() {
   const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createResetSeq, setCreateResetSeq] = useState(0);
+  const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -1225,13 +1334,20 @@ const [spinTick, setSpinTick] = useState(0);
     if (nextTab !== ROUTES.HOME) setRouteEnterSeq((n) => n + 1);
   }, []);
 
+  const prepareCompanyProfileReturnTarget = useCallback(() => {
+    writeProfileReturnTarget(buildProfileReturnTarget(activeTab, createIntent));
+  }, [activeTab, createIntent]);
+
   const ensureBuilderAccess = useCallback(() => {
     const gate = requireCompanyProfile({
       message: "User Profile required. Open User Profile?",
-      onRequireProfile: () => enterTab(ROUTES.COMPANY_PROFILE),
+      onRequireProfile: () => {
+        prepareCompanyProfileReturnTarget();
+        enterTab(ROUTES.COMPANY_PROFILE);
+      },
     });
     return !!gate?.allowed;
-  }, [enterTab]);
+  }, [enterTab, prepareCompanyProfileReturnTarget]);
 
   const performNavigation = useCallback((tab) => {
     const isBuilderTarget =
@@ -1275,6 +1391,11 @@ const [spinTick, setSpinTick] = useState(0);
 
     performNavigation(tab);
   }, [activeTab, userProfileDirty, performNavigation]);
+
+  const navigateToCompanyProfile = useCallback((options = {}) => {
+    prepareCompanyProfileReturnTarget();
+    navigateTo(ROUTES.COMPANY_PROFILE, options);
+  }, [navigateTo, prepareCompanyProfileReturnTarget]);
 
   const continueCreateFromEdit = useCallback(() => {
     setShowCreateFromEditModal(false);
@@ -1354,10 +1475,10 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     const onNavCompanyProfile = () => {
-      try { navigateTo(ROUTES.COMPANY_PROFILE); } catch {}
+      try { navigateToCompanyProfile(); } catch {}
     };
     const onNavUserProfile = () => {
-      try { navigateTo(ROUTES.COMPANY_PROFILE); } catch {}
+      try { navigateToCompanyProfile(); } catch {}
     };
     window.addEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
     window.addEventListener("estipaid:navigate-user-profile", onNavUserProfile);
@@ -1365,6 +1486,52 @@ const [spinTick, setSpinTick] = useState(0);
       window.removeEventListener("estipaid:navigate-company-profile", onNavCompanyProfile);
       window.removeEventListener("estipaid:navigate-user-profile", onNavUserProfile);
     };
+  }, [navigateToCompanyProfile]);
+
+  useEffect(() => {
+    const onProfileSaveReturn = () => {
+      const target = readProfileReturnTarget();
+      if (!target) return;
+
+      let didNavigate = false;
+
+      if (target.route === ROUTES.CREATE) {
+        const editContext = normalizeEditContext(target?.editContext);
+
+        try {
+          if (editContext?.type === "invoice") {
+            localStorage.setItem(EDIT_INVOICE_TARGET_KEY, editContext.id);
+            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+          } else if (editContext?.type === "estimate") {
+            localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, editContext.id);
+            localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+          } else {
+            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+            localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+          }
+        } catch {}
+
+        try {
+          navigateTo(
+            target.intent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER,
+            { bypassDirtyGuard: true }
+          );
+          didNavigate = true;
+        } catch {}
+      } else {
+        try {
+          navigateTo(target.route, { bypassDirtyGuard: true });
+          didNavigate = true;
+        } catch {}
+      }
+
+      if (didNavigate) {
+        clearProfileReturnTarget();
+      }
+    };
+
+    window.addEventListener("estipaid:profile-save-return", onProfileSaveReturn);
+    return () => window.removeEventListener("estipaid:profile-save-return", onProfileSaveReturn);
   }, [navigateTo]);
 
   useEffect(() => {
@@ -1403,13 +1570,13 @@ const [spinTick, setSpinTick] = useState(0);
       }
 
       if (action === "openCompanyProfile" || action === "openUserProfile") {
-        navigateTo(ROUTES.COMPANY_PROFILE);
+        navigateToCompanyProfile();
       }
     };
 
     window.addEventListener("pe-shell-action", onShellAction);
     return () => window.removeEventListener("pe-shell-action", onShellAction);
-  }, [navigateTo]);
+  }, [navigateTo, navigateToCompanyProfile]);
 
   // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
   useEffect(() => {
@@ -1440,9 +1607,9 @@ useEffect(() => {
     pendingProfileLeaveTabRef.current = null;
     setShowUnsavedProfileModal(false);
     setUserProfileDirty(false);
+    clearProfileReturnTarget();
   }, [activeTab]);
 const [drawerOpen, setDrawerOpen] = useState(false);
-  const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
 
   // Keep a tiny global flag so nested screens can hard-lock into profile when requested
   useEffect(() => {
@@ -1560,7 +1727,7 @@ const gated = false;
 
 // User Profile / Templates
     if (key === "company") {
-      navigateTo(ROUTES.COMPANY_PROFILE);
+      navigateToCompanyProfile();
       return;
     }
     if (key === "templates") {
@@ -1570,7 +1737,7 @@ const gated = false;
 
 // Create actions
     if (key === "editCompany") {
-      navigateTo(ROUTES.COMPANY_PROFILE);
+      navigateToCompanyProfile();
       return;
     }
 
@@ -1671,7 +1838,7 @@ const gated = false;
         onMenu={() => setDrawerOpen(true)}
         onProfile={() => {
           setDrawerOpen(false);
-          if (activeTab !== ROUTES.COMPANY_PROFILE) navigateTo(ROUTES.COMPANY_PROFILE);
+          if (activeTab !== ROUTES.COMPANY_PROFILE) navigateToCompanyProfile();
         }}
       />
       <Drawer
@@ -1705,7 +1872,7 @@ const gated = false;
             return;
           }
           if (key === ROUTES.COMPANY_PROFILE) {
-            navigateTo(ROUTES.COMPANY_PROFILE);
+            navigateToCompanyProfile();
             return;
           }
         }}

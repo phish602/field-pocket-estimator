@@ -12,6 +12,7 @@ import {
 } from "../utils/storage";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
+const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 const REQUIRED_FIELD_META = {
@@ -178,6 +179,17 @@ function saveProfile(p) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function readProfileReturnTarget() {
+  try {
+    const raw = localStorage.getItem(PROFILE_RETURN_TARGET_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -409,6 +421,13 @@ export default function CompanyProfileScreen() {
         setSaveFlash(false);
         saveFlashTimerRef.current = null;
       }, 1500);
+
+      const returnTarget = readProfileReturnTarget();
+      if (returnTarget) {
+        try {
+          window.dispatchEvent(new CustomEvent("estipaid:profile-save-return"));
+        } catch {}
+      }
     }
   };
 
@@ -614,6 +633,16 @@ export default function CompanyProfileScreen() {
                   )}
                 </div>
                 <div className="pe-field-helper pe-company-branding-helper">Used on PDFs/exports</div>
+                {!profile.logoDataUrl ? (
+                  <>
+                    <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 6 }}>
+                      No logo uploaded yet - your PDF will use a branded initials badge until you add one.
+                    </div>
+                    <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 2, opacity: 0.78 }}>
+                      Upload a logo anytime to replace it.
+                    </div>
+                  </>
+                ) : null}
               </div>
               <div className="pe-company-upload-row">
                 <button
