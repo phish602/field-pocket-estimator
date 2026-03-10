@@ -511,7 +511,7 @@ function TopBar({
   );
 }
 
-function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible }) {
+function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mobileCreateChromeMotion }) {
   const tabs = useMemo(
     () => [
       { key: ROUTES.HOME, label: "Home", Icon: IconHome },
@@ -572,6 +572,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible }) 
     <div
       style={{
         ...styles.bottomnav,
+        ...(mobileCreateChromeMotion ? styles.bottomnavCreateMotion : null),
         ...(!chromeVisible ? styles.bottomnavHidden : null),
       }}
       role="navigation"
@@ -825,18 +826,20 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           }}
           style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
         >
-        <EstiPaidInlineLogo
-          key={spinTick}
-          className="esti-spin"
-          style={{
-            height: 110,
-            width: "auto",
-            display: "block",
-            objectFit: "contain",
-            filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
-          }}
-          draggable={false}
-        />
+          <div style={{ transform: "translateX(-15px)" }}>
+            <EstiPaidInlineLogo
+              key={spinTick}
+              className="esti-spin"
+              style={{
+                height: 110,
+                width: "auto",
+                display: "block",
+                objectFit: "contain",
+                filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
+              }}
+              draggable={false}
+            />
+          </div>
         </div>
 <div
           style={{
@@ -1173,6 +1176,10 @@ const styles = {
     backgroundColor: "var(--pe-app-bg-solid)",
     boxSizing: "border-box",
   },
+  contentCreateMobile: {
+    paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
+    scrollPaddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
+  },
 
   // overlay footer
   bottomnav: {
@@ -1199,6 +1206,9 @@ const styles = {
     pointerEvents: "auto",
     transition: "transform 220ms ease, opacity 180ms ease",
     willChange: "transform, opacity",
+  },
+  bottomnavCreateMotion: {
+    transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
   },
   bottomnavHidden: {
     transform: "translate(-50%, calc(100% + env(safe-area-inset-bottom, 0px) + 24px))",
@@ -1669,6 +1679,10 @@ const [spinTick, setSpinTick] = useState(0);
   const [isScrolled, setIsScrolled] = useState(false);
   const isScrolledRef = useRef(false);
   const [chromeVisible, setChromeVisible] = useState(true);
+  const [isMobileChromeViewport, setIsMobileChromeViewport] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia("(max-width: 820px)").matches;
+  });
   const chromeVisibleRef = useRef(true);
   const chromeScrollStateRef = useRef({ lastTop: 0, anchorTop: 0, direction: "none" });
   const [quickOpen, setQuickOpen] = useState(false);
@@ -1691,6 +1705,15 @@ const [spinTick, setSpinTick] = useState(0);
     setChromeVisibility(true);
     setQuickOpen(false);
   }, [activeTab, setChromeVisibility]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mobileQuery = window.matchMedia("(max-width: 820px)");
+    const syncMobileViewport = () => setIsMobileChromeViewport(mobileQuery.matches);
+    syncMobileViewport();
+    mobileQuery.addEventListener("change", syncMobileViewport);
+    return () => mobileQuery.removeEventListener("change", syncMobileViewport);
+  }, []);
 
   useEffect(() => {
     if (activeTab === ROUTES.COMPANY_PROFILE) return;
@@ -2094,7 +2117,9 @@ const gated = false;
       ) : null}
       <div
         className={`pe-content${activeTab === ROUTES.CREATE ? " pe-content-estimator" : ""}`}
-        style={styles.content}
+        style={activeTab === ROUTES.CREATE && isMobileChromeViewport
+          ? { ...styles.content, ...styles.contentCreateMobile }
+          : styles.content}
       >
         {renderScreen()}
       </div>
@@ -2102,6 +2127,7 @@ const gated = false;
       <BottomNav
         active={activeTab}
         chromeVisible={chromeVisible}
+        mobileCreateChromeMotion={activeTab === ROUTES.CREATE && isMobileChromeViewport}
         setActive={(key) => {
           if (key === ROUTES.CREATE) {
             onCreateButtonRoute();

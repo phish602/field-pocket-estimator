@@ -17,7 +17,7 @@ function todayISO() {
 export const DEFAULT_STATE = {
   ui: {
     docType: "estimate",
-    materialsMode: "blanket",
+    materialsMode: "itemized",
   },
 
   customer: {

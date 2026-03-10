@@ -9,6 +9,7 @@ import { BUILD_TAG, STORAGE_KEY } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
+import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
 import { exportPdf } from "./pdf";
@@ -17,7 +18,6 @@ import {
   formatDateMMDDYYYY,
   normalizeHoursInput,
   normalizeMoneyInput,
-  normalizeMultiplierInput,
   normalizePercentInput,
 } from "./utils/format";
 import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
@@ -693,6 +693,10 @@ const SCOPE_NOTES_MIN_HEIGHT = 170;
 const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
 const TOTAL_PULSE_MS = 140;
+const STEPPED_PERCENT_OPTIONS = Array.from({ length: 51 }, (_, index) => index);
+const MARKUP_PRESET_OPTIONS = Array.from({ length: 101 }, (_, index) => index);
+const CUSTOM_PERCENT_OPTION_VALUE = "__custom__";
+const SPECIAL_CONDITIONS_PENDING_DEFAULT = Object.freeze({ hazard: false, risk: false });
 
 function toDirtySnapshot(s) {
   if (!s || typeof s !== "object") return "";
@@ -712,6 +716,109 @@ function normalizeLaborQtyValue(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 1;
   return Math.max(1, Math.round(parsed));
+}
+
+function derivePresetSelection(value, options, normalizeValue = normalizePercentInput, fallbackValue = "0") {
+  const normalized = normalizeValue(value);
+  if (normalized === "") return fallbackValue;
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return CUSTOM_PERCENT_OPTION_VALUE;
+  if (Number.isInteger(numeric) && options.includes(numeric)) {
+    return String(numeric);
+  }
+  return CUSTOM_PERCENT_OPTION_VALUE;
+}
+
+function deriveSteppedPercentSelection(value) {
+  return derivePresetSelection(value, STEPPED_PERCENT_OPTIONS, normalizePercentInput, "0");
+}
+
+function deriveMarkupSelection(value) {
+  return derivePresetSelection(value, MARKUP_PRESET_OPTIONS, normalizePercentInput, "0");
+}
+
+function normalizeInlineNumberDraft(value, { min = 0, max = Number.POSITIVE_INFINITY, integer = false } = {}) {
+  const cleaned = integer
+    ? String(value ?? "").replace(/[^\d]/g, "")
+    : String(value ?? "").replace(/[^\d.]/g, "");
+  if (integer) {
+    if (!cleaned) return "";
+    const numeric = Number(cleaned);
+    if (!Number.isFinite(numeric)) return "";
+    let nextValue = numeric;
+    if (Number.isFinite(min)) nextValue = Math.max(min, nextValue);
+    if (Number.isFinite(max)) nextValue = Math.min(max, nextValue);
+    return String(Math.round(nextValue));
+  }
+
+  const dot = cleaned.indexOf(".");
+  const normalized = dot === -1
+    ? cleaned
+    : `${cleaned.slice(0, dot + 1)}${cleaned.slice(dot + 1).replace(/\./g, "")}`;
+  if (!normalized || normalized === ".") return "";
+
+  const hasTrailingDot = normalized.endsWith(".");
+  const numericSource = hasTrailingDot ? normalized.slice(0, -1) : normalized;
+  const numeric = Number(numericSource);
+  if (!Number.isFinite(numeric)) return "";
+
+  let clamped = numeric;
+  if (Number.isFinite(min)) clamped = Math.max(min, clamped);
+  if (Number.isFinite(max)) clamped = Math.min(max, clamped);
+  if (hasTrailingDot && clamped === numeric) return `${clamped}.`;
+  return String(clamped);
+}
+
+function normalizeInlineNumberFinal(
+  value,
+  { min = 0, max = Number.POSITIVE_INFINITY, integer = false, fallback = "0" } = {}
+) {
+  const normalized = normalizeInlineNumberDraft(value, { min, max, integer });
+  if (normalized === "") return fallback;
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return fallback;
+  let nextValue = numeric;
+  if (Number.isFinite(min)) nextValue = Math.max(min, nextValue);
+  if (Number.isFinite(max)) nextValue = Math.min(max, nextValue);
+  if (integer) nextValue = Math.round(nextValue);
+  return String(nextValue);
+}
+
+function normalizeCustomPercentDraft(value) {
+  return normalizeInlineNumberDraft(value, { min: 0, max: 50 });
+}
+
+function normalizeCustomPercentFinal(value) {
+  return normalizeInlineNumberFinal(value, { min: 0, max: 50, fallback: "0" });
+}
+
+function normalizeCustomMarkupDraft(value, max = 200) {
+  return normalizeInlineNumberDraft(value, { min: 0, max });
+}
+
+function normalizeCustomMarkupFinal(value, max = 200) {
+  return normalizeInlineNumberFinal(value, { min: 0, max, fallback: "0" });
+}
+
+function hasUsableCustomPercentValue(value) {
+  const normalized = normalizeCustomPercentDraft(value);
+  if (normalized === "") return false;
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric);
+}
+
+function isSteppedPercentValueComplete(selection, value) {
+  if (selection !== CUSTOM_PERCENT_OPTION_VALUE) return true;
+  return hasUsableCustomPercentValue(value);
+}
+
+function isSpecialConditionsSectionComplete(hazardSelection, hazardValue, riskSelection, riskValue) {
+  return isSteppedPercentValueComplete(hazardSelection, hazardValue)
+    && isSteppedPercentValueComplete(riskSelection, riskValue);
+}
+
+function formatSpecialConditionsSummaryValue(value) {
+  return normalizeCustomPercentFinal(value);
 }
 
 function createBlankMaterialItem(idOverride, markupPct) {
@@ -863,6 +970,14 @@ export default function EstimateForm(props) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
   const [actionBarHeight, setActionBarHeight] = useState(ACTION_BAR_MIN_HEIGHT);
+  const [specialConditionsOpen, setSpecialConditionsOpen] = useState(() => !isSpecialConditionsSectionComplete(
+    deriveSteppedPercentSelection(state?.labor?.hazardPct),
+    state?.labor?.hazardPct,
+    deriveSteppedPercentSelection(state?.labor?.riskPct),
+    state?.labor?.riskPct
+  ));
+  const [activeSpecialConditionsCustomField, setActiveSpecialConditionsCustomField] = useState("");
+  const [specialConditionsPendingCommitByField, setSpecialConditionsPendingCommitByField] = useState(SPECIAL_CONDITIONS_PENDING_DEFAULT);
   const [isMobileActionBarViewport, setIsMobileActionBarViewport] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
     return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
@@ -885,11 +1000,7 @@ export default function EstimateForm(props) {
   const lastSavedAtSeenRef = useRef(0);
   const wasDirtyRef = useRef(false);
   const savePulseTimerRef = useRef(null);
-  const [multiplierMode, setMultiplierMode] = useState(() => {
-    const m = Number(state?.labor?.multiplier);
-    if (m === 1 || m === 1.1 || m === 1.2 || m === 1.25) return "preset";
-    return "custom";
-  });
+  const pendingSpecialConditionsAutoCollapseRef = useRef(false);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -996,17 +1107,21 @@ export default function EstimateForm(props) {
       },
     };
     replaceState(hydrated, { persistNow: false, persistDraft: false });
+    const hydratedHazardSelection = deriveSteppedPercentSelection(hydrated?.labor?.hazardPct);
+    const hydratedRiskSelection = deriveSteppedPercentSelection(hydrated?.labor?.riskPct);
+    setSpecialConditionsOpen(!isSpecialConditionsSectionComplete(
+      hydratedHazardSelection,
+      hydrated?.labor?.hazardPct,
+      hydratedRiskSelection,
+      hydrated?.labor?.riskPct
+    ));
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
 
     const loadedCustomerId = String(match?.customerId || match?.customer?.id || "").trim();
     setSelectedCustomerId(loadedCustomerId);
     setSelectedCustomerProfile(match?.customer && typeof match.customer === "object" ? match.customer : null);
-
-    const loadedMultiplier = Number(match?.labor?.multiplier);
-    if (loadedMultiplier === 1 || loadedMultiplier === 1.1 || loadedMultiplier === 1.2 || loadedMultiplier === 1.25) {
-      setMultiplierMode("preset");
-    } else {
-      setMultiplierMode("custom");
-    }
 
     const displayName = String(
       match?.customerName
@@ -1390,15 +1505,6 @@ export default function EstimateForm(props) {
     } catch {}
   }
 
-  function handleMultiplierSelect(value) {
-    if (value === "custom") {
-      setMultiplierMode("custom");
-      return;
-    }
-    setMultiplierMode("preset");
-    patch("labor.multiplier", value);
-  }
-
   function decrementLaborQty(id) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines.find((x) => String(x?.id) === String(id));
@@ -1678,7 +1784,10 @@ export default function EstimateForm(props) {
   const onClearAll = () => {
     if (!window.confirm("Clear everything and start fresh?")) return;
     clearAll();
-    setMultiplierMode("preset");
+    setSpecialConditionsOpen(false);
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
   };
 
   const onCancelEdit = () => {
@@ -1692,6 +1801,62 @@ export default function EstimateForm(props) {
     try {
       window.dispatchEvent(new Event(isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
     } catch {}
+  };
+
+  const setSpecialConditionsFieldPendingCommit = (fieldKey, nextIsPending) => {
+    setSpecialConditionsPendingCommitByField((current) => {
+      if (current?.[fieldKey] === nextIsPending) return current;
+      return {
+        ...current,
+        [fieldKey]: nextIsPending,
+      };
+    });
+  };
+
+  const handleSpecialConditionsModeChange = (fieldKey, detail = null) => {
+    const source = String(detail?.source || "");
+    setSpecialConditionsOpen(true);
+    if (source === "select-custom") {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+      setActiveSpecialConditionsCustomField(fieldKey);
+      return;
+    }
+    if (source === "custom-to-select") {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+      setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+      return;
+    }
+    if (source === "select-preset") {
+      pendingSpecialConditionsAutoCollapseRef.current = true;
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+      setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+    }
+  };
+
+  const handleSpecialConditionsEditingChange = (fieldKey, isEditing, detail = null) => {
+    setSpecialConditionsOpen(true);
+    if (isEditing) {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+      setActiveSpecialConditionsCustomField(fieldKey);
+      return;
+    }
+    if (detail?.isCommitted === true) {
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+    } else if (detail?.source === "blur") {
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+    }
+    setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+  };
+
+  const handleSpecialConditionsCommit = (path, nextValue, fieldKey, detail = null) => {
+    patch(path, nextValue);
+    setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+    const hasValidCommit = detail?.isValid === true && detail?.isCommitted !== false;
+    setSpecialConditionsFieldPendingCommit(fieldKey, !hasValidCommit);
+    pendingSpecialConditionsAutoCollapseRef.current = hasValidCommit;
   };
 
   const onSaveNow = () => {
@@ -2125,6 +2290,16 @@ export default function EstimateForm(props) {
   const laborBase = Number(computed?.labor?.subtotal || 0);
   const currentMultiplier = Number(computed?.multiplier ?? state?.labor?.multiplier);
   const laborMultiplier = Number.isFinite(currentMultiplier) && currentMultiplier > 0 ? currentMultiplier : 1;
+  const hazardPctSelection = deriveSteppedPercentSelection(state?.labor?.hazardPct);
+  const riskPctSelection = deriveSteppedPercentSelection(state?.labor?.riskPct);
+  const hazardPctComplete = isSteppedPercentValueComplete(hazardPctSelection, state?.labor?.hazardPct);
+  const riskPctComplete = isSteppedPercentValueComplete(riskPctSelection, state?.labor?.riskPct);
+  const specialConditionsComplete = hazardPctComplete && riskPctComplete;
+  const specialConditionsHasPendingCommit = !!(
+    specialConditionsPendingCommitByField?.hazard
+    || specialConditionsPendingCommitByField?.risk
+  );
+  const specialConditionsSummary = `Hazard: ${formatSpecialConditionsSummaryValue(state?.labor?.hazardPct)}% • Risk: ${formatSpecialConditionsSummaryValue(state?.labor?.riskPct)}%`;
   const hazardPctNormalized = Number(normalizePercentInput(computed?.hazardPct ?? state?.labor?.hazardPct));
   const riskPctNormalized = Number(normalizePercentInput(computed?.riskPct ?? state?.labor?.riskPct));
   const hazardEnabled = Number.isFinite(hazardPctNormalized) && hazardPctNormalized > 0;
@@ -2138,15 +2313,6 @@ export default function EstimateForm(props) {
   const itemizedCollapsedSummary = `${
     itemizedMaterialsCount === 1 ? "1 item" : `${itemizedMaterialsCount} items`
   } • Total ${money.format(itemizedMaterialsTotal)}`;
-  const multiplierSelectValue = multiplierMode === "custom"
-    ? "custom"
-    : (laborMultiplier === 1.1
-      ? "1.1"
-      : laborMultiplier === 1.2
-        ? "1.2"
-        : laborMultiplier === 1.25
-          ? "1.25"
-          : "1");
   const totalTallyLine = `${laborLineCount} ${t("laborLines")}`
     + (totalLaborers !== laborLineCount ? ` • ${totalLaborers} ${t("laborers")}` : "")
     + (laborMultiplier !== 1 ? ` • ${laborMultiplier}${t("complexity")}` : "")
@@ -2177,6 +2343,15 @@ export default function EstimateForm(props) {
     };
   }, [displayedMaterialsTotal, laborBase, totalRevenue]);
 
+  useEffect(() => {
+    if (!pendingSpecialConditionsAutoCollapseRef.current) return;
+    if (!specialConditionsComplete) return;
+    if (activeSpecialConditionsCustomField) return;
+    if (specialConditionsHasPendingCommit) return;
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+    setSpecialConditionsOpen(false);
+  }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
+
   const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
@@ -2190,9 +2365,11 @@ export default function EstimateForm(props) {
     ? {
         ...styles.estimatorActionBar,
         bottom: actionBarBottom,
+        paddingLeft: "max(10px, env(safe-area-inset-left, 0px))",
+        paddingRight: "max(10px, env(safe-area-inset-right, 0px))",
         transform: mobileBottomChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
         opacity: mobileBottomChromeVisible ? 1 : 0,
-        transition: "transform 220ms ease, opacity 180ms ease",
+        transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
         willChange: "transform, opacity",
       }
     : { ...styles.estimatorActionBar, bottom: actionBarBottom };
@@ -2731,15 +2908,24 @@ export default function EstimateForm(props) {
 
                   <div style={styles.fieldStack}>
                     <div style={styles.label}>{t("markupPct")}</div>
-                    <input
-                      className="pe-input"
-                      placeholder={t("markupPct")}
+                    <InlineCustomNumberField
                       value={lockMarkupToGlobal ? String(globalDefaultMarkupPctNumber) : String(l.markupPct ?? "")}
-                      onChange={(e) => updateLaborLineAt(i, "markupPct", e.target.value)}
-                      onBlur={(e) => updateLaborLineAt(i, "markupPct", normalizePercentInput(e.target.value))}
+                      options={MARKUP_PRESET_OPTIONS}
+                      customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                      deriveSelection={deriveMarkupSelection}
+                      optionToValue={(selection) => String(Number(selection))}
+                      formatOptionLabel={(value) => `${value}%`}
+                      normalizeDraft={(value) => normalizeCustomMarkupDraft(value, 200)}
+                      normalizeFinal={(value) => normalizeCustomMarkupFinal(value, 200)}
+                      onValueChange={(nextValue) => updateLaborLineAt(i, "markupPct", nextValue)}
+                      onValueCommit={(nextValue) => updateLaborLineAt(i, "markupPct", nextValue)}
                       inputMode="decimal"
+                      placeholder={t("markupPct")}
                       disabled={lockMarkupToGlobal}
-                      title={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      selectTitle={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      inputTitle={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      suffix="%"
+                      requireExplicitCommit={isMobileActionBarViewport}
                       style={{ width: "100%", opacity: lockMarkupToGlobal ? 0.72 : 1 }}
                     />
                   </div>
@@ -2843,112 +3029,142 @@ export default function EstimateForm(props) {
         )}
       </section>
 
-      <div
-        className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
-        style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
-      >
-        <section className="pe-card" style={styles.sectionBlock}>
-              <div className="pe-divider" style={styles.sectionHeaderDivider} />
-              <div style={styles.sectionHeaderRow}>
-                <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+      <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.sectionHeaderRow}>
+          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          {!specialConditionsOpen ? (
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              style={styles.scopeCollapseBtn}
+              onClick={() => setSpecialConditionsOpen(true)}
+              title="Expand special conditions"
+            >
+              Expand ▾
+            </button>
+          ) : null}
+        </div>
+
+        <div
+          className={`pe-collapse ${specialConditionsOpen ? "pe-open" : ""}`}
+          style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div style={styles.specialConditionsCardShell}>
+            <div className="pe-special-conditions-grid" style={styles.specialConditionsGrid}>
+              <div style={styles.fieldStack}>
+                <div style={styles.label}>Hazard / Site Conditions</div>
+                <div className="pe-muted" style={styles.specialConditionsHelper}>
+                  Physical/site constraints & safety burden.
+                </div>
+                <InlineCustomNumberField
+                  value={String(state?.labor?.hazardPct ?? "")}
+                  options={STEPPED_PERCENT_OPTIONS}
+                  customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                  deriveSelection={deriveSteppedPercentSelection}
+                  optionToValue={(selection) => String(Number(selection))}
+                  formatOptionLabel={(value) => `${value}%`}
+                  normalizeDraft={normalizeCustomPercentDraft}
+                  normalizeFinal={normalizeCustomPercentFinal}
+                  onValueChange={(nextValue) => {
+                    setSpecialConditionsOpen(true);
+                    pendingSpecialConditionsAutoCollapseRef.current = false;
+                    patch("labor.hazardPct", nextValue);
+                  }}
+                  onValueCommit={(nextValue, detail) => handleSpecialConditionsCommit("labor.hazardPct", nextValue, "hazard", detail)}
+                  onModeChange={(detail) => handleSpecialConditionsModeChange("hazard", detail)}
+                  onEditingChange={(isEditing, detail) => handleSpecialConditionsEditingChange("hazard", isEditing, detail)}
+                  inputMode="decimal"
+                  selectTitle="Percent of adjusted labor only"
+                  inputTitle="Custom percent of adjusted labor only"
+                  className="pe-input pe-special-conditions-input"
+                  wrapperStyle={styles.specialConditionsPercentWrap}
+                  style={styles.specialConditionsCompactInput}
+                  suffix="%"
+                  suffixStyle={styles.specialConditionsPercentSuffix}
+                  enterKeyHint="done"
+                  requireExplicitCommit={isMobileActionBarViewport}
+                />
               </div>
 
-              <div style={styles.specialConditionsCardShell}>
-                <div className="pe-special-conditions-grid">
-                  <div style={styles.fieldStack}>
-                    <div style={styles.label}>Hazard / Site Conditions</div>
-                    <div className="pe-muted" style={styles.specialConditionsHelper}>
-                      Physical/site constraints & safety burden.
-                    </div>
-                    <div style={styles.specialConditionsPercentWrap}>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.hazardPct ?? 0)}
-                        onChange={(e) => patch("labor.hazardPct", e.target.value)}
-                        onBlur={(e) => patch("labor.hazardPct", normalizePercentInput(e.target.value))}
-                        inputMode="decimal"
-                        pattern="[0-9]*"
-                        title="Percent of adjusted labor only"
-                        style={styles.specialConditionsCompactInput}
-                      />
-                      <span style={styles.specialConditionsPercentSuffix}>%</span>
-                    </div>
-                  </div>
-
-                  <div style={styles.fieldStack}>
-                    <div style={styles.label}>Risk / Uncertainty Buffer</div>
-                    <div className="pe-muted" style={styles.specialConditionsHelper}>
-                      Unknowns & contingency for scope/schedule.
-                    </div>
-                    <div style={styles.specialConditionsPercentWrap}>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.riskPct ?? 0)}
-                        onChange={(e) => patch("labor.riskPct", e.target.value)}
-                        onBlur={(e) => patch("labor.riskPct", normalizePercentInput(e.target.value))}
-                        inputMode="decimal"
-                        pattern="[0-9]*"
-                        style={styles.specialConditionsCompactInput}
-                      />
-                      <span style={styles.specialConditionsPercentSuffix}>%</span>
-                    </div>
-                  </div>
-
-                  <div style={styles.fieldStack} className="pe-special-conditions-main-field">
-                    <div style={styles.label}>Condition</div>
-                    <select
-                      className="pe-input"
-                      value={multiplierSelectValue}
-                      onChange={(e) => handleMultiplierSelect(e.target.value)}
-                      style={{ width: "100%" }}
-                    >
-                      <option value="1">{t("standard")}</option>
-                      <option value="1.1">{t("difficultAccess")}</option>
-                      <option value="1.2">{t("highRisk")}</option>
-                      <option value="1.25">{t("offHours")}</option>
-                      <option value="custom">{t("customEllipsis")}</option>
-                    </select>
-                  </div>
+              <div style={styles.fieldStack}>
+                <div style={styles.label}>Risk / Uncertainty Buffer</div>
+                <div className="pe-muted" style={styles.specialConditionsHelper}>
+                  Unknowns & contingency for scope/schedule.
                 </div>
-
-                {multiplierMode === "custom" && (
-                  <div className="pe-special-conditions-grid" style={{ marginTop: 8 }}>
-                    <div style={styles.fieldStack} className="pe-special-conditions-main-field">
-                      <div style={styles.label}>Custom multiplier</div>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.multiplier ?? "")}
-                        onChange={(e) => patch("labor.multiplier", e.target.value)}
-                        onBlur={(e) => patch("labor.multiplier", normalizeMultiplierInput(e.target.value))}
-                        placeholder="Custom labor multiplier (ex: 1.18)"
-                        inputMode="decimal"
-                        style={{ width: "100%" }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div className="pe-row pe-row-slim">
-                  <div className="pe-muted">Adjusted labor</div>
-                  <div className="pe-value">{money.format(adjustedLabor)}</div>
-                </div>
-
-                {hazardEnabled && (
-                  <div className="pe-row pe-row-slim">
-                    <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
-                    <div className="pe-value">{money.format(hazardFee)}</div>
-                  </div>
-                )}
-
-                {riskEnabled && (
-                  <div className="pe-row pe-row-slim">
-                    <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
-                    <div className="pe-value">{money.format(riskFee)}</div>
-                  </div>
-                )}
+                <InlineCustomNumberField
+                  value={String(state?.labor?.riskPct ?? "")}
+                  options={STEPPED_PERCENT_OPTIONS}
+                  customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                  deriveSelection={deriveSteppedPercentSelection}
+                  optionToValue={(selection) => String(Number(selection))}
+                  formatOptionLabel={(value) => `${value}%`}
+                  normalizeDraft={normalizeCustomPercentDraft}
+                  normalizeFinal={normalizeCustomPercentFinal}
+                  onValueChange={(nextValue) => {
+                    setSpecialConditionsOpen(true);
+                    pendingSpecialConditionsAutoCollapseRef.current = false;
+                    patch("labor.riskPct", nextValue);
+                  }}
+                  onValueCommit={(nextValue, detail) => handleSpecialConditionsCommit("labor.riskPct", nextValue, "risk", detail)}
+                  onModeChange={(detail) => handleSpecialConditionsModeChange("risk", detail)}
+                  onEditingChange={(isEditing, detail) => handleSpecialConditionsEditingChange("risk", isEditing, detail)}
+                  inputMode="decimal"
+                  selectTitle="Percent of adjusted labor only"
+                  inputTitle="Custom percent of adjusted labor only"
+                  className="pe-input pe-special-conditions-input"
+                  wrapperStyle={styles.specialConditionsPercentWrap}
+                  style={styles.specialConditionsCompactInput}
+                  suffix="%"
+                  suffixStyle={styles.specialConditionsPercentSuffix}
+                  enterKeyHint="done"
+                  requireExplicitCommit={isMobileActionBarViewport}
+                />
               </div>
-        </section>
-      </div>
+            </div>
+
+            <div className="pe-row pe-row-slim">
+              <div className="pe-muted">Adjusted labor</div>
+              <div className="pe-value">{money.format(adjustedLabor)}</div>
+            </div>
+
+            {hazardEnabled && (
+              <div className="pe-row pe-row-slim">
+                <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
+                <div className="pe-value">{money.format(hazardFee)}</div>
+              </div>
+            )}
+
+            {riskEnabled && (
+              <div className="pe-row pe-row-slim">
+                <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
+                <div className="pe-value">{money.format(riskFee)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div
+          className={`pe-collapse ${specialConditionsOpen ? "" : "pe-open"}`}
+          style={{ ...styles.notesCollapsedPreviewWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div className="pe-muted" style={styles.specialConditionsCollapsedSummary}>
+            {specialConditionsSummary}
+          </div>
+        </div>
+        {specialConditionsOpen ? (
+          <div style={styles.scopeCollapseRow}>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              style={styles.scopeCollapseBtn}
+              onClick={() => setSpecialConditionsOpen(false)}
+              title="Collapse special conditions"
+            >
+              Collapse ▴
+            </button>
+          </div>
+        ) : null}
+      </section>
 
       {/* MATERIALS */}
       <SectionMaterials
@@ -2987,6 +3203,7 @@ export default function EstimateForm(props) {
         itemizedMaterialsTotal={itemizedMaterialsTotal}
         addMaterialItem={addMaterialItem}
         trashIcon={<IconTrash />}
+        requireExplicitPickerCommit={isMobileActionBarViewport}
       />
 
       {/* TOTAL */}
@@ -3012,7 +3229,7 @@ export default function EstimateForm(props) {
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Additional Notes" styles={styles} />
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
@@ -3179,6 +3396,9 @@ const styles = {
     background: "rgba(0,0,0,0.12)",
     marginTop: 6,
   },
+  specialConditionsGrid: {
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+  },
   specialConditionsField: { display: "grid", gap: 4 },
   specialConditionsCompactInput: {
     width: "100%",
@@ -3205,6 +3425,14 @@ const styles = {
     fontWeight: 700,
     lineHeight: 1.2,
     marginBottom: 2,
+  },
+  specialConditionsCollapsedSummary: {
+    marginTop: 2,
+    marginBottom: 4,
+    fontSize: 13,
+    lineHeight: 1.35,
+    opacity: 0.9,
+    fontWeight: 700,
   },
   laborCollapsedRow: { maxWidth: 720, margin: "0 auto", padding: "2px 4px 0" },
   laborCollapsedHeader: { display: "grid", gridTemplateColumns: "auto auto 1fr auto", alignItems: "center", gap: 12, marginBottom: 10 },
