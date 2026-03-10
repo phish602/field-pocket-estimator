@@ -2,17 +2,18 @@
 /* eslint-disable */
 import React, { useEffect, useMemo, useState } from "react";
 import Field from "../components/Field";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
+import { computeTotals } from "../estimator/engine";
 
-const CUSTOMERS_KEY = "estipaid-customers-v1";
-const CUSTOMERS_KEY_LEGACY = "field-pocket-customers-v1";
-const PENDING_CUSTOMER_USE_KEY = "estipaid-pending-customer-use-v1";
-const PENDING_CUSTOMER_EDIT_KEY = "estipaid-pending-customer-edit-v1";
-const PENDING_CUSTOMER_CREATE_KEY = "estipaid-pending-customer-create-v1";
-const CUSTOMER_EDIT_TARGET_KEY = "estipaid-customer-edit-target-v1";
+const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
+const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
+const PENDING_CUSTOMER_EDIT_KEY = STORAGE_KEYS.PENDING_CUSTOMER_EDIT;
+const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
+const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 
 // ===== Customer KPI (live-compute) =====
-const ESTIMATES_KEY = "estipaid-estimates-v1";
-const ESTIMATES_KEY_LEGACY = "field-pocket-estimates";
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -35,88 +36,76 @@ function moneyUSD(v) {
 
 function readSavedDocs() {
   try {
-    const rawNew = localStorage.getItem(ESTIMATES_KEY);
-    const rawLegacy = localStorage.getItem(ESTIMATES_KEY_LEGACY);
-    const arrNew = rawNew ? safeParse(rawNew, []) : [];
-    const arrLegacy = rawLegacy ? safeParse(rawLegacy, []) : [];
-    const arr = Array.isArray(arrNew) && arrNew.length ? arrNew : Array.isArray(arrLegacy) ? arrLegacy : [];
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const arr = raw ? safeParse(raw, []) : [];
     return (Array.isArray(arr) ? arr : []).filter(Boolean);
   } catch {
     return [];
   }
 }
 
-function getMaterialInternalEach(item) {
-  const v =
-    item?.internalCost ??
-    item?.costInternal ??
-    item?.internal ??
-    item?.internalEach ??
-    item?.internalPrice ??
-    item?.cost ??
-    "";
-  const n = toNum(v);
-  return n > 0 ? n : null;
+function resolveMaterialsMode(doc) {
+  const explicit = String(doc?.ui?.materialsMode || doc?.materialsMode || "").toLowerCase();
+  if (explicit === "itemized" || explicit === "blanket") return explicit;
+  if (Array.isArray(doc?.materials?.items) && doc.materials.items.length > 0) return "itemized";
+  if (Array.isArray(doc?.materialItems) && doc.materialItems.length > 0) return "itemized";
+  return "itemized";
+}
+
+function toEstimatorState(doc) {
+  const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const multiplierMode = String(doc?.multiplierMode || "").toLowerCase();
+  const customMultiplier = toNum(doc?.customMultiplier);
+  const presetMultiplier = toNum(doc?.laborMultiplier);
+  const directMultiplier = toNum(doc?.labor?.multiplier);
+  const multiplier = directMultiplier > 0
+    ? directMultiplier
+    : (multiplierMode === "custom" ? (customMultiplier || 1) : (presetMultiplier || 1));
+  return {
+    ui: {
+      materialsMode: resolveMaterialsMode(doc),
+    },
+    labor: {
+      hazardPct: toNum(doc?.labor?.hazardPct ?? doc?.hazardPct),
+      riskPct: toNum(doc?.labor?.riskPct ?? doc?.riskPct),
+      multiplier: multiplier > 0 ? multiplier : 1,
+      lines: laborLines.map((ln, idx) => ({
+        id: String(ln?.id ?? `labor_${idx}`),
+        qty: Math.max(1, toNum(ln?.qty || 1)),
+        hours: Math.max(0, toNum(ln?.hours)),
+        rate: Math.max(0, toNum(ln?.rate ?? ln?.billRate)),
+        markupPct: toNum(ln?.markupPct),
+        trueRateInternal: Math.max(0, toNum(ln?.trueRateInternal ?? ln?.internalRate ?? ln?.rateInternal)),
+      })),
+    },
+    materials: {
+      blanketCost: Math.max(0, toNum(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost)),
+      blanketInternalCost: Math.max(
+        0,
+        toNum(doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost ?? doc?.materialsCost)
+      ),
+      markupPct: toNum(doc?.materials?.markupPct ?? doc?.materialsMarkupPct),
+      items: materialItems.map((it, idx) => ({
+        id: String(it?.id ?? `mat_${idx}`),
+        qty: Math.max(1, toNum(it?.qty || 1)),
+        priceEach: Math.max(0, toNum(it?.priceEach ?? it?.chargeEach ?? it?.charge ?? it?.price ?? it?.unitPrice)),
+        markupPct: toNum(it?.markupPct),
+        unitCostInternal: Math.max(
+          0,
+          toNum(it?.unitCostInternal ?? it?.costInternal ?? it?.internalCost ?? it?.internalEach ?? it?.internalPrice ?? it?.cost)
+        ),
+      })),
+    },
+  };
 }
 
 function calcBreakdown(e) {
-  const laborLines = Array.isArray(e?.laborLines) ? e.laborLines : [];
-  const materialItems = Array.isArray(e?.materialItems) ? e.materialItems : [];
-
-  const multiplierMode = e?.multiplierMode || "preset";
-  const laborMultiplierPreset = toNum(e?.laborMultiplier || 1);
-  const customMultiplier = toNum(e?.customMultiplier || 1);
-  const effectiveMultiplier = multiplierMode === "custom" ? (customMultiplier || 1) : (laborMultiplierPreset || 1);
-
-  const hazardPct = toNum(e?.hazardPct ?? e?.labor?.hazardPct ?? 0);
-  const riskPct = toNum(e?.riskPct ?? e?.labor?.riskPct ?? 0);
-  const materialsMode = e?.materialsMode || "itemized";
-  const materialsMarkupPct = toNum(e?.materialsMarkupPct || 0);
-  const materialsCost = toNum(e?.materialsCost || 0);
-
-  const laborRows = laborLines.map((ln, idx) => {
-    const qty = Math.max(1, toNum(ln?.qty || 1));
-    const hours = Math.max(0, toNum(ln?.hours || 0));
-    const rate = Math.max(0, toNum(ln?.rate || 0));
-    const internalRateRaw = toNum(ln?.internalRate || 0);
-    const base = qty * hours * rate;
-    const billed = base * effectiveMultiplier;
-    const internal = internalRateRaw > 0 ? qty * hours * internalRateRaw : billed;
-    return { billed, internal };
-  });
-
-  const laborBilled = laborRows.reduce((a, r) => a + r.billed, 0);
-  const laborInternal = laborRows.reduce((a, r) => a + r.internal, 0);
-
-  let materialsBilled = 0;
-  let materialsInternal = 0;
-
-  if (materialsMode === "blanket") {
-    const billed = materialsCost * (1 + materialsMarkupPct / 100);
-    const internal = materialsCost > 0 ? materialsCost : billed;
-    materialsBilled = billed;
-    materialsInternal = internal;
-  } else {
-    const rows = materialItems.map((it) => {
-      const qty = Math.max(1, toNum(it?.qty || 1));
-      const chargeEach = Math.max(0, toNum(it?.charge ?? it?.price ?? it?.unitPrice ?? 0));
-      const billed = qty * chargeEach;
-      const internalEach = getMaterialInternalEach(it);
-      const internal = internalEach != null ? qty * internalEach : billed;
-      return { billed, internal };
-    });
-    materialsBilled = rows.reduce((a, r) => a + r.billed, 0);
-    materialsInternal = rows.reduce((a, r) => a + r.internal, 0);
-  }
-
-  const hazardAmt = laborBilled * (hazardPct / 100);
-  const riskAmt = laborBilled * (riskPct / 100);
-
-  const revenue = laborBilled + materialsBilled + hazardAmt + riskAmt;
-  const internal = laborInternal + materialsInternal;
-  const profit = revenue - internal;
+  const computed = computeTotals(toEstimatorState(e || {}));
+  const revenue = toNum(computed?.totalRevenue);
+  const internal = toNum(computed?.totalCost);
+  const profit = toNum(computed?.grossProfit);
   const margin = safeDiv(profit, revenue);
-
   return { revenue, internal, profit, margin };
 }
 
@@ -133,11 +122,8 @@ function safeParse(raw, fallback) {
 }
 
 function readCustomers() {
-  const rawNew = localStorage.getItem(CUSTOMERS_KEY);
-  const rawLegacy = localStorage.getItem(CUSTOMERS_KEY_LEGACY);
-  const arrNew = rawNew ? safeParse(rawNew, []) : [];
-  const arrLegacy = rawLegacy ? safeParse(rawLegacy, []) : [];
-  const arr = Array.isArray(arrNew) && arrNew.length ? arrNew : Array.isArray(arrLegacy) ? arrLegacy : [];
+  const raw = localStorage.getItem(CUSTOMERS_KEY);
+  const arr = raw ? safeParse(raw, []) : [];
   return (Array.isArray(arr) ? arr : []).filter(Boolean);
 }
 
@@ -145,9 +131,6 @@ function persistCustomers(list) {
   const safe = Array.isArray(list) ? list : [];
   try {
     localStorage.setItem(CUSTOMERS_KEY, JSON.stringify(safe));
-  } catch {}
-  try {
-    localStorage.setItem(CUSTOMERS_KEY_LEGACY, JSON.stringify(safe));
   } catch {}
 }
 
@@ -257,26 +240,67 @@ function labelOf(lang, en, es) {
   return lang === "es" ? es : en;
 }
 
+function EmptyCustomersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+      <g stroke="currentColor" strokeWidth="1.9" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 12.2c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3Z" />
+        <path d="M4.8 18c.8-2.5 2.6-3.8 4.2-3.8s3.4 1.3 4.2 3.8" />
+        <path d="M14.2 10.2h5" opacity="0.9" />
+        <path d="M14.2 13.2h4.2" opacity="0.75" />
+      </g>
+    </svg>
+  );
+}
+
+function ValidCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" fill="rgba(34,197,94,0.18)" stroke="rgba(74,222,128,0.75)" strokeWidth="1.5" />
+      <path d="M8.2 12.2 10.8 14.8 15.8 9.8" fill="none" stroke="rgba(134,239,172,0.96)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function hasValidPhoneValue(value) {
+  const digits = digitsOnly(value);
+  return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
+}
+
+function hasValidEmailValue(value) {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+function validHelperText() {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(134,239,172,0.9)" }}>
+      <ValidCheckIcon />
+      Valid
+    </span>
+  );
+}
+
 const cardBaseStyle = {
-  borderRadius: 18,
   padding: 14,
-  border: "1px solid rgba(255,255,255,0.10)",
-  background: "rgba(255,255,255,0.04)",
-  boxShadow: "0 10px 26px rgba(0,0,0,0.30)",
 };
 
 const cardActiveStyle = {
   border: "1px solid rgba(34,197,94,0.50)",
-  background: "rgba(34,197,94,0.06)",
 };
 
-const twoCol = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: 10,
+const stickyListHeaderStyle = {
+  position: "sticky",
+  top: 0,
+  zIndex: 12,
+  paddingTop: 6,
+  paddingBottom: 8,
+  background: "linear-gradient(180deg, rgba(8,18,28,0.9), rgba(8,18,28,0.62))",
+  backdropFilter: "blur(8px)",
+  WebkitBackdropFilter: "blur(8px)",
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
 };
-
-const fullRow = { gridColumn: "1 / -1" };
 
 const NET_TERMS_OPTIONS = [
   { value: "DUE_UPON_RECEIPT", labelEn: "Due upon receipt", labelEs: "Pago al recibir" },
@@ -284,6 +308,45 @@ const NET_TERMS_OPTIONS = [
   { value: "NET_30", labelEn: "Net 30", labelEs: "Neto 30" },
   { value: "NET_CUSTOM", labelEn: "Net custom", labelEs: "Neto personalizado" },
 ];
+
+const ESTIMATOR_SECTION_TITLE_STACK_STYLE = {
+  display: "inline-flex",
+  flexDirection: "column",
+  alignItems: "flex-start",
+  gap: "var(--customer-section-header-gap, 6px)",
+  width: "fit-content",
+  marginBottom: "var(--customer-section-underline-gap, 14px)",
+};
+
+const ESTIMATOR_SECTION_TITLE_TEXT_STYLE = {
+  marginBottom: 0,
+  fontSize: 17,
+  fontWeight: 950,
+  letterSpacing: "0.15em",
+  lineHeight: 1.04,
+  textTransform: "uppercase",
+  color: "rgba(236,242,250,0.96)",
+  textShadow: "0 1px 4px rgba(0,0,0,0.32), 0 6px 14px rgba(0,0,0,0.2)",
+};
+
+const ESTIMATOR_SECTION_ACCENT_LINE_STYLE = {
+  width: "100%",
+  height: 3,
+  background: "linear-gradient(90deg, rgba(34,197,94,0.78) 0%, rgba(59,130,246,0.74) 100%)",
+  clipPath: "polygon(2% 0, 100% 0, 98% 100%, 0 100%)",
+  filter: "drop-shadow(0 0 2px rgba(34,197,94,0.16))",
+};
+
+function CustomerSectionHeader({ title }) {
+  return (
+    <div className="pe-company-section-heading">
+      <div style={ESTIMATOR_SECTION_TITLE_STACK_STYLE}>
+        <div className="pe-section-title" style={ESTIMATOR_SECTION_TITLE_TEXT_STYLE}>{title}</div>
+        <div style={ESTIMATOR_SECTION_ACCENT_LINE_STYLE} />
+      </div>
+    </div>
+  );
+}
 
 function emptyDraft(type = "residential") {
   return {
@@ -353,27 +416,63 @@ export default function CustomersScreen({
 }) {
   const label = (en, es) => labelOf(lang, en, es);
 
+  const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
+  const customerSettings = settingsSnapshot?.customer || DEFAULT_SETTINGS.customer;
+  const defaultCustomerType = customerSettings?.defaultCustomerType === "commercial" ? "commercial" : "residential";
+  const requirePhone = !!customerSettings?.requirePhone;
+  const requireEmail = !!customerSettings?.requireEmail;
   const [localCustomers, setLocalCustomers] = useState(() => (Array.isArray(customers) ? [] : readCustomers()));
   const [q, setQ] = useState("");
   const [mode, setMode] = useState("list"); // list | edit
-  const [draft, setDraft] = useState(() => emptyDraft("residential"));
+  const [showListSkeleton, setShowListSkeleton] = useState(true);
+  const [toastMessage, setToastMessage] = useState("");
+  const [showToast, setShowToast] = useState(false);
+  const [draft, setDraft] = useState(() => emptyDraft(defaultCustomerType));
   const [returnToEstimator, setReturnToEstimator] = useState(false);
   const [autoUseOnSave, setAutoUseOnSave] = useState(false);
+  const [missingRequired, setMissingRequired] = useState({});
+
+  const phoneFieldMissing = !!missingRequired.phone;
+  const emailFieldMissing = !!missingRequired.email;
 
   useEffect(() => {
     if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
   }, [customers]);
 
   useEffect(() => {
+    const refresh = (e) => {
+      if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
+      setSettingsSnapshot(loadSettings());
+    };
+    window.addEventListener("estipaid:settings-changed", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("estipaid:settings-changed", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
     const onStorage = (e) => {
       if (!e) return;
-      if (e.key === CUSTOMERS_KEY || e.key === CUSTOMERS_KEY_LEGACY) {
+      if (e.key === CUSTOMERS_KEY) {
         if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
       }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [customers]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!showToast) return undefined;
+    const timer = window.setTimeout(() => setShowToast(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [showToast]);
 
   const list = useMemo(() => (Array.isArray(customers) ? customers : localCustomers), [customers, localCustomers]);
 
@@ -384,12 +483,11 @@ export default function CustomersScreen({
       const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
       if (rawEditTarget) {
         localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
-        setReturnToEstimator(true);
         const payload = JSON.parse(rawEditTarget);
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
-          if (c) { startEdit(c); }
+          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true }); }
         }
       }
     } catch {}
@@ -420,12 +518,13 @@ export default function CustomersScreen({
             setAutoUseOnSave(true);
           }
         } catch {}
-        setDraft(emptyDraft("residential"));
+        setDraft(emptyDraft(defaultCustomerType));
+        setMissingRequired({});
         setMode("edit");
         localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
       }
     } catch {}
-  }, [list]);
+  }, [defaultCustomerType, list]);
 
   const customerKpis = useMemo(() => {
     const docs = readSavedDocs();
@@ -505,22 +604,44 @@ export default function CustomersScreen({
   });
 }, [list, q]);
 
-  function startNew(type = "commercial") {
+  function clearMissingRequiredField(field) {
+    setMissingRequired((prev) => {
+      if (!prev?.[field]) return prev;
+      const next = { ...(prev || {}) };
+      delete next[field];
+      return next;
+    });
+  }
+
+  function startNew(type = defaultCustomerType) {
+    setReturnToEstimator(false);
     setAutoUseOnSave(false);
     setDraft(emptyDraft(type));
+    setMissingRequired({});
     setMode("edit");
   }
 
-  function startEdit(c) {
-    setAutoUseOnSave(false);
+  function startEdit(c, opts = {}) {
+    const useEstimatorReturn = !!opts?.returnToEstimator;
+    const useAutoOnSave = !!opts?.autoUseOnSave;
+    setReturnToEstimator(useEstimatorReturn);
+    setAutoUseOnSave(useAutoOnSave);
     const type = String(c?.type || "residential");
     const base = emptyDraft(type);
     setDraft({ ...base, ...(c || {}) });
+    setMissingRequired({});
     setMode("edit");
   }
 
+  function returnToEstimatorNow() {
+    try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
+    setAutoUseOnSave(false);
+    setReturnToEstimator(false);
+    try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
+  }
+
   function saveDraft() {
-    const d = draft || emptyDraft("residential");
+    const d = draft || emptyDraft(defaultCustomerType);
     const type = String(d.type || "residential");
 
     if (type === "commercial") {
@@ -537,6 +658,24 @@ export default function CustomersScreen({
       if (!String(d.resService?.state || "").trim()) return alert(label("State is required.", "Estado es requerido."));
       if (!String(d.resService?.zip || "").trim()) return alert(label("ZIP is required.", "ZIP es requerido."));
     }
+
+    const nextMissing = {};
+    const phoneValue = type === "commercial" ? d?.comPhone : d?.resPhone;
+    const emailValue = type === "commercial" ? d?.comEmail : d?.resEmail;
+    if (requirePhone && !String(phoneValue || "").trim()) nextMissing.phone = true;
+    if (requireEmail && !String(emailValue || "").trim()) nextMissing.email = true;
+    if (Object.keys(nextMissing).length > 0) {
+      setMissingRequired(nextMissing);
+      const requiredBits = [];
+      if (nextMissing.phone) requiredBits.push(label("phone", "teléfono"));
+      if (nextMissing.email) requiredBits.push(label("email", "correo"));
+      alert(label(
+        `Please add required ${requiredBits.join(" and ")} before saving.`,
+        `Agrega ${requiredBits.join(" y ")} requerid${requiredBits.length > 1 ? "os" : "o"} antes de guardar.`
+      ));
+      return;
+    }
+    setMissingRequired({});
 
     const termsType = String(d?.netTermsType || "").trim() || "DUE_UPON_RECEIPT";
     const validTerms = new Set(["DUE_UPON_RECEIPT", "NET_15", "NET_30", "NET_CUSTOM"]);
@@ -590,6 +729,8 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
 
     setMode("list");
+    setToastMessage(label("Customer saved", "Cliente guardado"));
+    setShowToast(true);
 
     if (autoUseOnSave && typeof onDone === "function") {
       try {
@@ -634,8 +775,6 @@ export default function CustomersScreen({
     if (typeof onDone === "function") onDone({ id, customer: c });
   }
 
-  const editorTitle = mode === "edit" ? label("Customer", "Cliente") : label("Customers", "Clientes");
-
   return (
     <section className="pe-section">
       {returnToEstimator && (
@@ -643,193 +782,223 @@ export default function CustomersScreen({
           className="pe-btn pe-btn-ghost"
           type="button"
           style={{ marginBottom: 10 }}
-          onClick={() => {
-            try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
-            setReturnToEstimator(false);
-            try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
-          }}
+          onClick={returnToEstimatorNow}
         >
           ← Back to Estimator
         </button>
       )}
-      <div className="pe-section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div>{editorTitle}</div>
-        {mode === "list" ? (
-          <button className="pe-btn" type="button" onClick={() => startNew("commercial")}>
-            {label("Create", "Crear")}
-          </button>
-        ) : (
-          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => { setAutoUseOnSave(false); setMode("list"); }}>
-            {label("Back", "Atrás")}
-          </button>
-        )}
-      </div>
-
       {mode === "list" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <div style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <input
-                className="pe-input"
-                placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                style={{ flex: "1 1 280px" }}
-              />
-</div>
+        <div className="pe-card">
+          <div className="pe-company-profile-header" style={stickyListHeaderStyle}>
+            <div className="pe-company-header-title">
+              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
+            </div>
+
+              <div className="pe-company-header-controls">
+                <button className="pe-btn" type="button" onClick={() => startNew()}>
+                  {label("Add Customer", "Agregar cliente")}
+                </button>
+              </div>
           </div>
 
-          {filtered.length === 0 ? (
-            <div style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
-              <div style={{ fontWeight: 800, marginBottom: 6 }}>{label("No saved customers", "Sin clientes guardados")}</div>
-              <div style={{ fontSize: 13.5, opacity: 0.8, marginBottom: 12 }}>
-                {label("Create one to attach to estimates and invoices.", "Crea uno para adjuntarlo a estimaciones y facturas.")}
+          <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 12 }}>
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <input
+                  className="pe-input"
+                  placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  style={{ flex: "1 1 280px" }}
+                />
               </div>
-              <button className="pe-btn" type="button" onClick={() => startNew("commercial")}>
-                {label("Create Customer", "Crear Cliente")}
-              </button>
             </div>
-          ) : (
-            filtered.map((c) => {
-              const id = String(c?.id || "");
-              const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
 
-              return (
-                <div key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10 }}>
-                  <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
-                    <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
-                      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                        <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: 0.2 }}>{displayName(c)}</div>
-                        <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
-                          {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
-                        </div>
-                        {active ? <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+            {showListSkeleton ? (
+              <div className="pe-skeleton-stack" aria-hidden="true">
+                {[0, 1, 2].map((idx) => (
+                  <div key={`customer-skel-${idx}`} className="pe-skeleton-card">
+                    <div className="pe-skeleton-row">
+                      <div className="pe-skeleton-col">
+                        <div className="pe-skeleton-line w55" />
+                        <div className="pe-skeleton-line w70" />
+                        <div className="pe-skeleton-line w85" />
                       </div>
-
-                      {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
-                      {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
-                      {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
-
-                      {/* KPIs (live computed from saved estimates/invoices) */}
-                      {customerKpis && id ? (
-                        <div
-                          style={{
-                            marginTop: 6,
-                            paddingTop: 10,
-                            borderTop: "1px solid rgba(255,255,255,0.10)",
-                            display: "grid",
-                            gridTemplateColumns: "1fr 1fr",
-                            gap: 10,
-                          }}
-                        >
-                          <div style={{ display: "grid", gap: 2 }}>
-                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                              {label("Revenue", "Ingresos")}
-                            </div>
-                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
-                              {moneyUSD(customerKpis[id]?.revenue || 0)}
-                            </div>
-                          </div>
-                          <div style={{ display: "grid", gap: 2 }}>
-                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                              {label("Avg margin", "Margen prom.")}
-                            </div>
-                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
-                              {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
-                            </div>
-                          </div>
-                          <div style={{ display: "grid", gap: 2 }}>
-                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                              {label("Jobs", "Trabajos")}
-                            </div>
-                            <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
-                              {toNum(customerKpis[id]?.estimateCount || 0) + toNum(customerKpis[id]?.invoiceCount || 0)}
-                            </div>
-                          </div>
-                          <div style={{ display: "grid", gap: 2 }}>
-                            <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                              {label("Last", "Último")}
-                            </div>
-                            <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.85 }}>
-                              {String(customerKpis[id]?.lastDate || "—") || "—"}
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
-                      <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
-                        {label("Use", "Usar")}
-                      </button>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                        <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
-                          {label("Edit", "Editar")}
-                        </button>
-                        <button className="pe-btn pe-btn-ghost" type="button" onClick={() => del(c?.id)} style={{ width: "100%" }}>
-                          {label("Delete", "Eliminar")}
-                        </button>
+                      <div className="pe-skeleton-actions">
+                        <div className="pe-skeleton-button" />
+                        <div className="pe-skeleton-button" />
                       </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            ) : list.length === 0 ? (
+              <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
+                <div style={{ display: "grid", placeItems: "center", marginBottom: 8, opacity: 0.68 }}>
+                  <EmptyCustomersIcon />
                 </div>
-              );
-            })
-          )}
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet. Add your first customer to begin.</div>
+                <button className="pe-btn" type="button" onClick={() => startNew()}>
+                  {label("Add Customer", "Agregar cliente")}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
+              {filtered.map((c) => {
+                const id = String(c?.id || "");
+                const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
+
+                return (
+                  <div className="pe-card pe-card-content ep-glass-tile" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10, cursor: "pointer" }}>
+                    <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
+                      <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                          <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: 0.2 }}>{displayName(c)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
+                            {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
+                          </div>
+                          {active ? <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+                        </div>
+
+                        {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
+                        {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
+                        {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
+
+                        {/* KPIs (live computed from saved estimates/invoices) */}
+                        {customerKpis && id ? (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              paddingTop: 10,
+                              borderTop: "1px solid rgba(255,255,255,0.10)",
+                              display: "grid",
+                              gridTemplateColumns: "1fr 1fr",
+                              gap: 10,
+                            }}
+                          >
+                            <div style={{ display: "grid", gap: 2 }}>
+                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Revenue", "Ingresos")}
+                              </div>
+                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                                {moneyUSD(customerKpis[id]?.revenue || 0)}
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 2 }}>
+                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Avg margin", "Margen prom.")}
+                              </div>
+                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                                {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 2 }}>
+                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Jobs", "Trabajos")}
+                              </div>
+                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                                {toNum(customerKpis[id]?.estimateCount || 0) + toNum(customerKpis[id]?.invoiceCount || 0)}
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 2 }}>
+                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Last", "Último")}
+                              </div>
+                              <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.85 }}>
+                                {String(customerKpis[id]?.lastDate || "—") || "—"}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
+                        <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
+                          {label("Use", "Usar")}
+                        </button>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
+                            {label("Edit", "Editar")}
+                          </button>
+                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => del(c?.id)} style={{ width: "100%" }}>
+                            {label("Delete", "Eliminar")}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              </div>
+            )}
+          </div>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          <div style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <FieldLabel>{label("Customer type", "Tipo de cliente")}</FieldLabel>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button
-  type="button"
-  onClick={() => setDraft((d) => ({ ...emptyDraft("residential"), ...d, type: "residential" }))}
-  className="pe-btn"
-  style={{
-    flex: 1,
-    cursor: "pointer",
-    opacity: (draft.type || "commercial") === "residential" ? 1 : 0.75,
-    background: (draft.type || "commercial") === "residential" ? "rgba(255,255,255,0.10)" : "transparent",
-    border: (draft.type || "commercial") === "residential" ? "1px solid rgba(255,255,255,0.22)" : "1px solid rgba(255,255,255,0.10)",
-  }}
->
-  {label("Residential", "Residencial")}
-</button>
+        <div className="pe-card">
+          <div className="pe-company-profile-header">
+            <div className="pe-company-header-title">
+              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Edit Customer", "Editar Cliente")}>{label("Edit Customer", "Editar Cliente")}</h1>
+            </div>
 
-<button
-  type="button"
-  onClick={() => setDraft((d) => ({ ...emptyDraft("commercial"), ...d, type: "commercial" }))}
-  className="pe-btn"
-  style={{
-    flex: 1,
-    cursor: "pointer",
-    opacity: (draft.type || "commercial") === "commercial" ? 1 : 0.75,
-    background: (draft.type || "commercial") === "commercial" ? "rgba(255,255,255,0.10)" : "transparent",
-    border: (draft.type || "commercial") === "commercial" ? "1px solid rgba(255,255,255,0.22)" : "1px solid rgba(255,255,255,0.10)",
-  }}
->
-  {label("Commercial", "Comercial")}
-</button>
-</div>
-              </div>
+            <div className="pe-company-header-controls">
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                onClick={() => {
+                  if (returnToEstimator) {
+                    returnToEstimatorNow();
+                    return;
+                  }
+                  setMode("list");
+                }}
+              >
+                {label("Cancel", "Cancelar")}
+              </button>
+              <button className="pe-btn" type="button" onClick={saveDraft}>
+                {label("Save", "Guardar")}
+              </button>
+            </div>
+          </div>
 
-              <div style={{ display: "flex", gap: 10 }}>
-                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => setMode("list")}>
-                  {label("Cancel", "Cancelar")}
-                </button>
-                <button className="pe-btn" type="button" onClick={saveDraft}>
-                  {label("Save", "Guardar")}
-                </button>
+            <div className="pe-company-form-inner pe-customer-edit-form">
+            <div className="pe-company-form-section">
+              <CustomerSectionHeader title={label("Customer Type", "Tipo de Cliente")} />
+              <div className="pe-company-grid-12">
+                <div className="pe-company-col-12">
+                  <div className="pe-customer-toggle-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft((d) => ({ ...emptyDraft("residential"), ...d, type: "residential" }));
+                        setMissingRequired({});
+                      }}
+                      className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "residential" ? "is-active" : "pe-btn-ghost"}`}
+                      aria-pressed={(draft.type || "commercial") === "residential"}
+                    >
+                      {label("Residential", "Residencial")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft((d) => ({ ...emptyDraft("commercial"), ...d, type: "commercial" }));
+                        setMissingRequired({});
+                      }}
+                      className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "commercial" ? "is-active" : "pe-btn-ghost"}`}
+                      aria-pressed={(draft.type || "commercial") === "commercial"}
+                    >
+                      {label("Commercial", "Comercial")}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div style={{ ...cardBaseStyle, padding: 12 }}>
-              <div style={twoCol}>
+            <div className="pe-company-form-section">
+              <CustomerSectionHeader title={label("Billing Preferences", "Preferencias de Facturación")} />
+              <div className="pe-company-grid-12">
                 <Field
                   as="select"
+                  fieldClassName="pe-company-col-7"
                   label={label("Net terms", "Términos de pago")}
                   value={String(draft.netTermsType || "DUE_UPON_RECEIPT")}
                   onChange={(e) => {
@@ -845,6 +1014,7 @@ export default function CustomersScreen({
                 </Field>
                 {String(draft.netTermsType || "") === "NET_CUSTOM" ? (
                   <Field
+                    fieldClassName="pe-company-col-5"
                     label={label("Custom days", "Días personalizados")}
                     type="number"
                     inputMode="numeric"
@@ -855,215 +1025,251 @@ export default function CustomersScreen({
                     onChange={(e) => setDraft((d) => ({ ...d, netTermsDays: e.target.value }))}
                   />
                 ) : (
-                  <div />
+                  <div className="pe-company-col-5" />
                 )}
+
+                {(draft.type || "residential") === "commercial" ? (
+                  <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                    <input type="checkbox" checked={Boolean(draft.poRequired)} onChange={(e) => setDraft((d) => ({ ...d, poRequired: e.target.checked }))} />
+                    <span className="pe-field-helper">{label("PO required", "PO Requerido")}</span>
+                  </label>
+                ) : null}
               </div>
             </div>
 
             {(draft.type || "residential") === "commercial" ? (
-              <div style={{ display: "grid", gap: 12 }}>
-                <div style={{ ...cardBaseStyle, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <div style={{ fontWeight: 950 }}>{label("Company Information", "Información de la compañía")}</div>
+              <>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Company", "Compañía")} />
+                  <div className="pe-company-grid-12">
+                    <Field
+                      fieldClassName="pe-company-col-12"
+                      label={label("Company name *", "Nombre de la compañía *")}
+                      placeholder={label("Example: Desert Ridge HOA", "Ejemplo: Desert Ridge HOA")}
+                      value={draft.companyName}
+                      onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-7"
+                      label={label("Main contact *", "Contacto principal *")}
+                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
+                      value={draft.contactName}
+                      onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-5"
+                      label={label("Contact title", "Puesto")}
+                      value={draft.contactTitle}
+                      onChange={(e) => setDraft((d) => ({ ...d, contactTitle: e.target.value }))}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-5"
+                      label={requirePhone ? label("Phone *", "Teléfono *") : label("Phone", "Teléfono")}
+                      labelClassName={phoneFieldMissing ? "pe-company-field-missing-label" : ""}
+                      controlClassName={phoneFieldMissing ? "pe-company-field-missing-input" : ""}
+                      errorText={phoneFieldMissing ? label("Phone is required by settings.", "El teléfono es requerido por configuración.") : ""}
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      helperText={hasValidPhoneValue(draft.comPhone) ? validHelperText() : ""}
+                      value={draft.comPhone}
+                      onChange={(e) => {
+                        clearMissingRequiredField("phone");
+                        setDraft((d) => ({ ...d, comPhone: formatPhoneUS(e.target.value) }));
+                      }}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-7"
+                      label={requireEmail ? label("Email *", "Correo *") : label("Email", "Correo")}
+                      labelClassName={emailFieldMissing ? "pe-company-field-missing-label" : ""}
+                      controlClassName={emailFieldMissing ? "pe-company-field-missing-input" : ""}
+                      errorText={emailFieldMissing ? label("Email is required by settings.", "El correo es requerido por configuración.") : ""}
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      placeholder={label("Example: office@desertridgehoa.com", "Ejemplo: oficina@desertridgehoa.com")}
+                      helperText={hasValidEmailValue(draft.comEmail) ? validHelperText() : ""}
+                      value={draft.comEmail}
+                      onChange={(e) => {
+                        clearMissingRequiredField("email");
+                        setDraft((d) => ({ ...d, comEmail: e.target.value }));
+                      }}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-12"
+                      label={label("AP email", "Correo de Cuentas por Pagar")}
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      placeholder={label("Example: ap@desertridgehoa.com", "Ejemplo: cuentas@desertridgehoa.com")}
+                      value={draft.apEmail}
+                      onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))}
+                    />
                   </div>
-
-                  
-                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                  <div style={twoCol}>
-                        <Field
-                          label={label("Company name *", "Nombre de la compañía *")}
-                          value={draft.companyName}
-                          onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))}
-                        />
-                        <Field
-                          label={label("Primary contact *", "Contacto principal *")}
-                          value={draft.contactName}
-                          onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))}
-                        />
-
-                        <Field
-                          label={label("Contact title", "Puesto")}
-                          value={draft.contactTitle}
-                          onChange={(e) => setDraft((d) => ({ ...d, contactTitle: e.target.value }))}
-                        />
-                        <Field
-                          label={label("Phone", "Teléfono")}
-                          type="tel"
-                          inputMode="tel"
-                          autoComplete="tel"
-                          placeholder="(555) 555-5555"
-                          value={draft.comPhone}
-                          onChange={(e) => setDraft((d) => ({ ...d, comPhone: formatPhoneUS(e.target.value) }))}
-                        />
-
-                        <Field
-                          label={label("Primary email", "Correo")}
-                          type="email"
-                          inputMode="email"
-                          autoComplete="email"
-                          placeholder="name@company.com"
-                          value={draft.comEmail}
-                          onChange={(e) => setDraft((d) => ({ ...d, comEmail: e.target.value }))}
-                        />
-                        <Field
-                          label={label("AP email", "Correo de Cuentas por Pagar")}
-                          type="email"
-                          inputMode="email"
-                          autoComplete="email"
-                          placeholder="ap@company.com"
-                          value={draft.apEmail}
-                          onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))}
-                        />
-                      </div>
-
-                      <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-                        <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
-                          <input type="checkbox" checked={Boolean(draft.poRequired)} onChange={(e) => setDraft((d) => ({ ...d, poRequired: e.target.checked }))} />
-                          <span className="pe-field-helper">{label("PO required", "PO Requerido")}</span>
-                        </label>
-                      </div>
-                    </div>
                 </div>
 
-                <div style={{ ...cardBaseStyle, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <div style={{ fontWeight: 950 }}>{label("Jobsite & Billing", "Sitio de trabajo y facturación")}</div>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Jobsite Address", "Dirección del Sitio")} />
+                  <div className="pe-company-grid-12">
+                    <Field
+                      fieldClassName="pe-company-col-12"
+                      label={label("Address 1 *", "Dirección 1 *")}
+                      type="text"
+                      autoComplete="street-address"
+                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                      value={draft.jobsite.street}
+                      onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))}
+                    />
+                    <Field
+                      fieldClassName="pe-company-col-5"
+                      label={label("City *", "Ciudad *")}
+                      type="text"
+                      autoComplete="address-level2"
+                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                      value={draft.jobsite.city}
+                      onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))}
+                    />
+                    <div className="pe-field pe-company-col-4">
+                      <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
+                      <StateSelect value={draft.jobsite.state} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, state: e.target.value } }))} />
+                    </div>
+                    <Field
+                      fieldClassName="pe-company-col-3"
+                      label={label("ZIP *", "ZIP *")}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="postal-code"
+                      placeholder="85001"
+                      value={draft.jobsite.zip}
+                      onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, zip: formatZipUS(e.target.value) } }))}
+                    />
                   </div>
+                </div>
 
-                  
-                    <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Jobsite address", "Dirección del sitio")}</div>
-                      <div style={twoCol}>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Billing", "Facturación")} />
+                  <div className="pe-company-grid-12">
+                    <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                      <input type="checkbox" checked={Boolean(draft.billSameAsJob)} onChange={(e) => setDraft((d) => ({ ...d, billSameAsJob: e.target.checked }))} />
+                      <span className="pe-field-helper">{label("Billing same as jobsite", "Facturación igual al sitio")}</span>
+                    </label>
+
+                    {!draft.billSameAsJob ? (
+                      <>
                         <Field
-                          fieldClassName=""
-                          className=""
-                          label={label("Street *", "Calle *")}
+                          fieldClassName="pe-company-col-12"
+                          label={label("Address 1", "Dirección 1")}
                           type="text"
                           autoComplete="street-address"
-                          value={draft.jobsite.street}
-                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))}
-                          wrapperStyle={fullRow}
+                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                          value={draft.billing.street}
+                          onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))}
                         />
                         <Field
-                          label={label("City *", "Ciudad *")}
+                          fieldClassName="pe-company-col-5"
+                          label={label("City", "Ciudad")}
                           type="text"
                           autoComplete="address-level2"
-                          value={draft.jobsite.city}
-                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))}
+                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                          value={draft.billing.city}
+                          onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))}
                         />
-                        <div className="pe-field">
-                          <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
-                          <StateSelect value={draft.jobsite.state} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, state: e.target.value } }))} />
+                        <div className="pe-field pe-company-col-4">
+                          <FieldLabel>{label("State", "Estado")}</FieldLabel>
+                          <StateSelect value={draft.billing.state} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, state: e.target.value } }))} placeholder={label("State", "Estado")} />
                         </div>
                         <Field
-                          label={label("ZIP *", "ZIP *")}
+                          fieldClassName="pe-company-col-3"
+                          label={label("ZIP", "ZIP")}
                           type="text"
                           inputMode="numeric"
                           autoComplete="postal-code"
                           placeholder="85001"
-                          value={draft.jobsite.zip}
-                          onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, zip: formatZipUS(e.target.value) } }))}
+                          value={draft.billing.zip}
+                          onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, zip: formatZipUS(e.target.value) } }))}
                         />
-                      </div>
-
-                      <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
-                        <input type="checkbox" checked={Boolean(draft.billSameAsJob)} onChange={(e) => setDraft((d) => ({ ...d, billSameAsJob: e.target.checked }))} />
-                        <span className="pe-field-helper">{label("Billing same as jobsite", "Facturación igual al sitio")}</span>
-                      </label>
-
-                      {!draft.billSameAsJob ? (
-                        <div style={{ display: "grid", gap: 10 }}>
-                          <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing address", "Dirección de facturación")}</div>
-                          <div style={twoCol}>
-                            <Field
-                              label={label("Street", "Calle")}
-                              type="text"
-                              autoComplete="street-address"
-                              value={draft.billing.street}
-                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))}
-                              wrapperStyle={fullRow}
-                            />
-                            <Field
-                              label={label("City", "Ciudad")}
-                              type="text"
-                              autoComplete="address-level2"
-                              value={draft.billing.city}
-                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))}
-                            />
-                            <div className="pe-field">
-                              <FieldLabel>{label("State", "Estado")}</FieldLabel>
-                              <StateSelect value={draft.billing.state} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, state: e.target.value } }))} placeholder={label("State", "Estado")} />
-                            </div>
-                            <Field
-                              label={label("ZIP", "ZIP")}
-                              type="text"
-                              inputMode="numeric"
-                              autoComplete="postal-code"
-                              placeholder="85001"
-                              value={draft.billing.zip}
-                              onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, zip: formatZipUS(e.target.value) } }))}
-                            />
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
+              </>
             ) : (
-              <div style={{ display: "grid", gap: 12 }}>
-                <div style={{ ...cardBaseStyle, padding: 12 }}>
-                  <div style={{ fontWeight: 950, marginBottom: 10 }}>{label("Residential Contact", "Contacto residencial")}</div>
-                  <div style={twoCol}>
+              <>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Customer", "Cliente")} />
+                  <div className="pe-company-grid-12">
                     <Field
+                      fieldClassName="pe-company-col-12"
                       label={label("Full name *", "Nombre completo *")}
+                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
                       value={draft.fullName}
                       onChange={(e) => setDraft((d) => ({ ...d, fullName: e.target.value }))}
-                      wrapperStyle={fullRow}
                     />
                     <Field
-                      label={label("Phone", "Teléfono")}
+                      fieldClassName="pe-company-col-5"
+                      label={requirePhone ? label("Phone *", "Teléfono *") : label("Phone", "Teléfono")}
+                      labelClassName={phoneFieldMissing ? "pe-company-field-missing-label" : ""}
+                      controlClassName={phoneFieldMissing ? "pe-company-field-missing-input" : ""}
+                      errorText={phoneFieldMissing ? label("Phone is required by settings.", "El teléfono es requerido por configuración.") : ""}
                       type="tel"
                       inputMode="tel"
                       autoComplete="tel"
-                      placeholder="(555) 555-5555"
+                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      helperText={hasValidPhoneValue(draft.resPhone) ? validHelperText() : ""}
                       value={draft.resPhone}
-                      onChange={(e) => setDraft((d) => ({ ...d, resPhone: formatPhoneUS(e.target.value) }))}
+                      onChange={(e) => {
+                        clearMissingRequiredField("phone");
+                        setDraft((d) => ({ ...d, resPhone: formatPhoneUS(e.target.value) }));
+                      }}
                     />
                     <Field
-                      label={label("Email", "Correo")}
+                      fieldClassName="pe-company-col-7"
+                      label={requireEmail ? label("Email *", "Correo *") : label("Email", "Correo")}
+                      labelClassName={emailFieldMissing ? "pe-company-field-missing-label" : ""}
+                      controlClassName={emailFieldMissing ? "pe-company-field-missing-input" : ""}
+                      errorText={emailFieldMissing ? label("Email is required by settings.", "El correo es requerido por configuración.") : ""}
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder="name@email.com"
+                      placeholder={label("Example: alex.smith@email.com", "Ejemplo: alex.smith@email.com")}
+                      helperText={hasValidEmailValue(draft.resEmail) ? validHelperText() : ""}
                       value={draft.resEmail}
-                      onChange={(e) => setDraft((d) => ({ ...d, resEmail: e.target.value }))}
+                      onChange={(e) => {
+                        clearMissingRequiredField("email");
+                        setDraft((d) => ({ ...d, resEmail: e.target.value }));
+                      }}
                     />
                   </div>
                 </div>
 
-                <div style={{ ...cardBaseStyle, padding: 12 }}>
-                  <div style={{ fontWeight: 950, marginBottom: 10 }}>{label("Service Address", "Dirección del servicio")}</div>
-                  <div style={twoCol}>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Address", "Dirección")} />
+                  <div className="pe-company-grid-12">
                     <Field
-                      label={label("Street *", "Calle *")}
+                      fieldClassName="pe-company-col-12"
+                      label={label("Address 1 *", "Dirección 1 *")}
                       type="text"
                       autoComplete="street-address"
+                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                       value={draft.resService.street}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, street: e.target.value } }))}
-                      wrapperStyle={fullRow}
                     />
                     <Field
+                      fieldClassName="pe-company-col-5"
                       label={label("City *", "Ciudad *")}
                       type="text"
                       autoComplete="address-level2"
+                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                       value={draft.resService.city}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, city: e.target.value } }))}
                     />
-                    <div className="pe-field">
+                    <div className="pe-field pe-company-col-4">
                       <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
                       <StateSelect value={draft.resService.state} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, state: e.target.value } }))} />
                     </div>
                     <Field
+                      fieldClassName="pe-company-col-3"
                       label={label("ZIP *", "ZIP *")}
                       type="text"
                       inputMode="numeric"
@@ -1073,36 +1279,42 @@ export default function CustomersScreen({
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, zip: formatZipUS(e.target.value) } }))}
                     />
                   </div>
+                </div>
 
-                  <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", marginTop: 10 }}>
-                    <input type="checkbox" checked={Boolean(draft.resBillingSame)} onChange={(e) => setDraft((d) => ({ ...d, resBillingSame: e.target.checked }))} />
-                    <span className="pe-field-helper">{label("Billing same as service", "Facturación igual al servicio")}</span>
-                  </label>
+                <div className="pe-company-form-section">
+                  <CustomerSectionHeader title={label("Billing", "Facturación")} />
+                  <div className="pe-company-grid-12">
+                    <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                      <input type="checkbox" checked={Boolean(draft.resBillingSame)} onChange={(e) => setDraft((d) => ({ ...d, resBillingSame: e.target.checked }))} />
+                      <span className="pe-field-helper">{label("Billing same as service", "Facturación igual al servicio")}</span>
+                    </label>
 
-                  {!draft.resBillingSame ? (
-                    <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                      <div style={{ fontWeight: 900, opacity: 0.85 }}>{label("Billing address", "Dirección de facturación")}</div>
-                      <div style={twoCol}>
+                    {!draft.resBillingSame ? (
+                      <>
                         <Field
-                          label={label("Street", "Calle")}
+                          fieldClassName="pe-company-col-12"
+                          label={label("Address 1", "Dirección 1")}
                           type="text"
                           autoComplete="street-address"
+                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
                           value={draft.resBilling.street}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, street: e.target.value } }))}
-                          wrapperStyle={fullRow}
                         />
                         <Field
+                          fieldClassName="pe-company-col-5"
                           label={label("City", "Ciudad")}
                           type="text"
                           autoComplete="address-level2"
+                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
                           value={draft.resBilling.city}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, city: e.target.value } }))}
                         />
-                        <div className="pe-field">
+                        <div className="pe-field pe-company-col-4">
                           <FieldLabel>{label("State", "Estado")}</FieldLabel>
                           <StateSelect value={draft.resBilling.state} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, state: e.target.value } }))} placeholder={label("State", "Estado")} />
                         </div>
                         <Field
+                          fieldClassName="pe-company-col-3"
                           label={label("ZIP", "ZIP")}
                           type="text"
                           inputMode="numeric"
@@ -1111,15 +1323,18 @@ export default function CustomersScreen({
                           value={draft.resBilling.zip}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, zip: formatZipUS(e.target.value) } }))}
                         />
-                      </div>
-                    </div>
-                  ) : null}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
         </div>
       )}
+      {showToast ? (
+        <div className="pe-toast" role="status" aria-live="polite">{toastMessage}</div>
+      ) : null}
     </section>
   );
 }

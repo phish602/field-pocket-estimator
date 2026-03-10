@@ -3,63 +3,193 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { formatPhoneForDisplay, sanitizePhoneDigits, sanitizeZip } from "../utils/sanitize";
+import {
+  composeAddressFull,
+  DEFAULT_COMPANY_PROFILE,
+  loadCompanyProfile,
+  normalizeCompanyProfile,
+} from "../utils/storage";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
-const PROFILE_KEY_LEGACY = STORAGE_KEYS.COMPANY_PROFILE_LEGACY_1;
-const PROFILE_KEY_LEGACY2 = STORAGE_KEYS.COMPANY_PROFILE_LEGACY_2;
+const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 
-const DEFAULT_PROFILE = {
-  companyName: "",
-  phone: "",
-  email: "",
-  address: "",
-  logoDataUrl: "",
-  roc: "",
-  attn: "",
-  website: "",
-  ein: "",
-  terms: "",
+const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
+const REQUIRED_FIELD_META = {
+  companyName: { label: "Company Name", inputId: "user-profile-company-name" },
+  phone: { label: "Phone", inputId: "user-profile-phone" },
+  addressLine1: { label: "Address Line 1", inputId: "user-profile-address-line-1" },
+  city: { label: "City", inputId: "user-profile-city" },
+  state: { label: "State", inputId: "user-profile-state" },
+  zip: { label: "ZIP", inputId: "user-profile-zip" },
+};
+const REQUIRED_FIELD_ORDER = ["companyName", "phone", "addressLine1", "city", "state", "zip"];
+
+const ESTIMATOR_SECTION_TITLE_STACK_STYLE = {
+  display: "inline-flex",
+  flexDirection: "column",
+  alignItems: "flex-start",
+  gap: 6,
+  width: "fit-content",
+  marginBottom: 8,
 };
 
-function isRequiredComplete(p) {
-  const nameOk = Boolean(p?.companyName && String(p.companyName).trim());
-  const phoneOk = Boolean(p?.phone && String(p?.phone).trim());
-  const emailOk = Boolean(p?.email && String(p?.email).trim());
-  const addrOk = Boolean(p?.address && String(p?.address).trim());
-  return nameOk && phoneOk && emailOk && addrOk;
+const ESTIMATOR_SECTION_TITLE_TEXT_STYLE = {
+  marginBottom: 0,
+  fontSize: 17,
+  fontWeight: 950,
+  letterSpacing: "0.15em",
+  lineHeight: 1.04,
+  textTransform: "uppercase",
+  color: "rgba(236,242,250,0.96)",
+  textShadow: "0 1px 4px rgba(0,0,0,0.32), 0 6px 14px rgba(0,0,0,0.2)",
+};
+
+const ESTIMATOR_SECTION_ACCENT_LINE_STYLE = {
+  width: "100%",
+  height: 3,
+  background: "linear-gradient(90deg, rgba(34,197,94,0.78) 0%, rgba(59,130,246,0.74) 100%)",
+  clipPath: "polygon(2% 0, 100% 0, 98% 100%, 0 100%)",
+  filter: "drop-shadow(0 0 2px rgba(34,197,94,0.16))",
+};
+
+function IconBuilding() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M4 20V5.6A1.6 1.6 0 0 1 5.6 4h7.8A1.6 1.6 0 0 1 15 5.6V8h3.4A1.6 1.6 0 0 1 20 9.6V20" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8 8.2h2M8 11.2h2M8 14.2h2M12 8.2h1.6M12 11.2h1.6M7.6 20v-2.8h3.2V20" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconMapPin() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M12 20.2s6-5.4 6-10.1a6 6 0 1 0-12 0c0 4.7 6 10.1 6 10.1Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="10" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function IconBadge() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="4.5" y="5" width="15" height="14" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M8 9h8M8 12h4.6M8 15h6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="16.6" cy="14.9" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconImage() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="4" y="5" width="16" height="14" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="9" cy="10" r="1.5" fill="currentColor" />
+      <path d="m6.6 16.6 4.1-4.1 2.8 2.8 2.1-2.1 2.4 2.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ValidCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" fill="rgba(34,197,94,0.18)" stroke="rgba(74,222,128,0.75)" strokeWidth="1.5" />
+      <path d="M8.2 12.2 10.8 14.8 15.8 9.8" fill="none" stroke="rgba(134,239,172,0.96)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ProfileSectionHeader({ icon, title }) {
+  return (
+    <div className="pe-company-section-heading">
+      <span className="pe-company-section-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <div style={ESTIMATOR_SECTION_TITLE_STACK_STYLE}>
+        <div className="pe-section-title" style={ESTIMATOR_SECTION_TITLE_TEXT_STYLE}>{title}</div>
+        <div style={ESTIMATOR_SECTION_ACCENT_LINE_STYLE} />
+      </div>
+    </div>
+  );
+}
+
+function stripNonCompanyFields(profile) {
+  const { attn, terms, ...rest } = profile || {};
+  return rest;
+}
+
+function hasValidPhone(phone) {
+  const digits = sanitizePhoneDigits(phone, 11);
+  return digits.length === 10 || digits.length === 11;
+}
+
+function hasValidEmail(email) {
+  const v = String(email || "").trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
+function validHelperText() {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(134,239,172,0.9)" }}>
+      <ValidCheckIcon />
+      Valid
+    </span>
+  );
+}
+
+function serializeProfileState(profile) {
+  const normalized = stripNonCompanyFields(normalizeCompanyProfile(profile || {}));
+  normalized.address = composeAddressFull(normalized);
+  return JSON.stringify(normalized);
+}
+
+function getMissingRequiredFields(profile) {
+  const normalized = stripNonCompanyFields(normalizeCompanyProfile(profile || {}));
+  const missing = [];
+
+  if (!String(normalized.companyName || "").trim()) missing.push("companyName");
+  if (!hasValidPhone(normalized.phone)) missing.push("phone");
+  if (!String(normalized.addressLine1 || "").trim()) missing.push("addressLine1");
+  if (!String(normalized.city || "").trim()) missing.push("city");
+  if (!String(normalized.state || "").trim()) missing.push("state");
+  if (!String(normalized.zip || "").trim()) missing.push("zip");
+
+  return missing;
 }
 
 function loadProfile() {
   try {
-    let raw = localStorage.getItem(PROFILE_KEY);
-    if (!raw) {
-      raw = localStorage.getItem(PROFILE_KEY_LEGACY) || localStorage.getItem(PROFILE_KEY_LEGACY2) || "";
-      if (raw) {
-        try {
-          localStorage.setItem(PROFILE_KEY, raw);
-          localStorage.removeItem(PROFILE_KEY_LEGACY);
-          localStorage.removeItem(PROFILE_KEY_LEGACY2);
-        } catch {}
-      }
-    }
-    if (!raw) return { ...DEFAULT_PROFILE };
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_PROFILE, ...(parsed || {}) };
+    return stripNonCompanyFields(loadCompanyProfile());
   } catch {
-    return { ...DEFAULT_PROFILE };
+    return stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });
   }
 }
 
 function saveProfile(p) {
   try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(p || {}));
+    const normalized = stripNonCompanyFields(normalizeCompanyProfile(p || {}));
+    normalized.address = composeAddressFull(normalized);
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(normalized));
     try {
       // notify shell listeners
-      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: JSON.stringify(p || {}) } }));
+      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: JSON.stringify(normalized) } }));
     } catch {}
     return true;
   } catch {
     return false;
+  }
+}
+
+function readProfileReturnTarget() {
+  try {
+    const raw = localStorage.getItem(PROFILE_RETURN_TARGET_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -77,35 +207,183 @@ function fileToDataUrl(file) {
 }
 
 export default function CompanyProfileScreen() {
-  const [profile, setProfile] = useState(() => loadProfile());
+  const initialProfileRef = useRef(null);
+  if (initialProfileRef.current === null) {
+    initialProfileRef.current = loadProfile();
+  }
+
+  const [profile, setProfile] = useState(() => initialProfileRef.current);
   const [lastSaveOk, setLastSaveOk] = useState(true);
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [saveFlash, setSaveFlash] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [logoFileName, setLogoFileName] = useState("");
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
+  const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
+  const fileInputRef = useRef(null);
+  const brandingCardRef = useRef(null);
+  const brandingUploadButtonRef = useRef(null);
+  const brandingFocusTimerRef = useRef(null);
+  const saveFlashTimerRef = useRef(null);
+  const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
+  const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
+  const missingRequiredSet = useMemo(
+    () => new Set(showMissingRequiredPrompt ? missingRequiredFields : []),
+    [showMissingRequiredPrompt, missingRequiredFields],
+  );
 
-  const requiredComplete = useMemo(() => isRequiredComplete(profile), [profile]);
-  const existingSavedRef = useRef(null);
-
-  useEffect(() => {
-    try {
-      existingSavedRef.current = localStorage.getItem(PROFILE_KEY) || null;
-    } catch {
-      existingSavedRef.current = null;
+  useEffect(() => () => {
+    if (saveFlashTimerRef.current) {
+      clearTimeout(saveFlashTimerRef.current);
+      saveFlashTimerRef.current = null;
+    }
+    if (brandingFocusTimerRef.current) {
+      clearTimeout(brandingFocusTimerRef.current);
+      brandingFocusTimerRef.current = null;
     }
   }, []);
 
-  // autosave (keeps your prior behavior)
   useEffect(() => {
-    const t = setTimeout(() => {
-      const ok = saveProfile(profile);
-      setLastSaveOk(ok);
+    try {
+      window.dispatchEvent(new CustomEvent("estipaid:user-profile-dirty", { detail: { dirty: isDirty } }));
+    } catch {}
+  }, [isDirty]);
+
+  useEffect(
+    () => () => {
       try {
-        setSavedAt(Date.now());
+        window.dispatchEvent(new CustomEvent("estipaid:user-profile-dirty", { detail: { dirty: false } }));
       } catch {}
-    }, 250);
-    return () => clearTimeout(t);
-  }, [profile]);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isDirty) return undefined;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
+  useEffect(() => {
+    if (!showMissingRequiredPrompt) return;
+    if (missingRequiredFields.length === 0) setShowMissingRequiredPrompt(false);
+  }, [showMissingRequiredPrompt, missingRequiredFields]);
+
+  useEffect(() => {
+    if (!showToast) return undefined;
+    const timer = window.setTimeout(() => setShowToast(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [showToast]);
+
+  const focusRequiredField = (fieldKey) => {
+    const inputId = REQUIRED_FIELD_META[fieldKey]?.inputId;
+    if (!inputId) return;
+    const node = document.getElementById(inputId);
+    if (!node) return;
+    try {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {}
+    try {
+      node.focus({ preventScroll: true });
+    } catch {
+      try {
+        node.focus();
+      } catch {}
+    }
+  };
+
+  const isFieldMissing = (fieldKey) => missingRequiredSet.has(fieldKey);
+  const fieldLabelClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-label" : "");
+  const fieldControlClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-input" : "");
+  const fieldRequiredError = (fieldKey) => (isFieldMissing(fieldKey) ? "This field is required." : "");
+  const openLogoPicker = () => {
+    if (!fileInputRef.current) return;
+    try {
+      fileInputRef.current.click();
+    } catch {}
+  };
+  const focusUploadButton = () => {
+    if (!brandingUploadButtonRef.current) return;
+    try {
+      brandingUploadButtonRef.current.focus({ preventScroll: true });
+    } catch {
+      try {
+        brandingUploadButtonRef.current.focus();
+      } catch {}
+    }
+  };
+  const handleLogoInputChange = async (e) => {
+    const f = e?.target?.files && e.target.files[0];
+    if (!f) return;
+    const dataUrl = await fileToDataUrl(f);
+    setProfile((p) => ({ ...p, logoDataUrl: dataUrl || "" }));
+    setLogoFileName(String(f.name || ""));
+    try {
+      e.target.value = "";
+    } catch {}
+  };
+  const removeLogo = () => {
+    setProfile((p) => ({ ...p, logoDataUrl: "" }));
+    setLogoFileName("");
+    try {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch {}
+  };
+
+  useEffect(() => {
+    const onFocusBranding = (event) => {
+      const openPicker = event?.detail?.openPicker !== false;
+      const brandingNode = brandingCardRef.current;
+      if (!brandingNode) return;
+      const viewportHeight = Math.max(
+        Number(window?.innerHeight) || 0,
+        Number(document?.documentElement?.clientHeight) || 0,
+      );
+      const rect = brandingNode.getBoundingClientRect();
+      const isVisible = rect.top >= 0 && rect.bottom <= viewportHeight;
+      if (isVisible) {
+        if (openPicker) {
+          openLogoPicker();
+        } else {
+          focusUploadButton();
+        }
+        return;
+      }
+      try {
+        brandingNode.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch {}
+      if (brandingFocusTimerRef.current) {
+        clearTimeout(brandingFocusTimerRef.current);
+      }
+      brandingFocusTimerRef.current = setTimeout(() => {
+        focusUploadButton();
+        brandingFocusTimerRef.current = null;
+      }, 300);
+    };
+    window.addEventListener("estipaid:company-logo-focus", onFocusBranding);
+    return () => window.removeEventListener("estipaid:company-logo-focus", onFocusBranding);
+  }, []);
 
   const doExplicitSave = () => {
+    const missing = getMissingRequiredFields(profile);
+    if (missing.length) {
+      setSaveFlash(false);
+      setShowMissingRequiredPrompt(true);
+      const firstMissing = REQUIRED_FIELD_ORDER.find((fieldKey) => missing.includes(fieldKey)) || missing[0];
+      window.requestAnimationFrame(() => {
+        focusRequiredField(firstMissing);
+      });
+      return;
+    }
+
+    setShowMissingRequiredPrompt(false);
     let existingRaw = null;
     try {
       existingRaw = localStorage.getItem(PROFILE_KEY);
@@ -116,14 +394,14 @@ export default function CompanyProfileScreen() {
     if (existingRaw) {
       let same = false;
       try {
-        const normalizedExisting = JSON.stringify({ ...DEFAULT_PROFILE, ...(JSON.parse(existingRaw || "{}") || {}) });
-        const normalizedCurrent = JSON.stringify({ ...DEFAULT_PROFILE, ...(profile || {}) });
+        const normalizedExisting = JSON.stringify(stripNonCompanyFields(normalizeCompanyProfile((JSON.parse(existingRaw || "{}") || {}))));
+        const normalizedCurrent = JSON.stringify(stripNonCompanyFields(normalizeCompanyProfile(profile || {})));
         same = normalizedExisting === normalizedCurrent;
       } catch {
         same = false;
       }
       if (!same) {
-        const ok = window.confirm("Overwrite saved company profile?");
+        const ok = window.confirm("Overwrite saved User Profile?");
         if (!ok) return;
       }
     }
@@ -133,80 +411,44 @@ export default function CompanyProfileScreen() {
     try {
       setSavedAt(Date.now());
     } catch {}
+    if (ok) {
+      setLastSavedSnapshot(serializeProfileState(profile));
+      setSaveFlash(true);
+      setToastMessage("Profile updated");
+      setShowToast(true);
+      if (saveFlashTimerRef.current) clearTimeout(saveFlashTimerRef.current);
+      saveFlashTimerRef.current = setTimeout(() => {
+        setSaveFlash(false);
+        saveFlashTimerRef.current = null;
+      }, 1500);
+
+      const returnTarget = readProfileReturnTarget();
+      if (returnTarget) {
+        try {
+          window.dispatchEvent(new CustomEvent("estipaid:profile-save-return"));
+        } catch {}
+      }
+    }
   };
 
   const doClearProfile = () => {
     try {
       localStorage.removeItem(PROFILE_KEY);
     } catch {}
-    try {
-      localStorage.removeItem(PROFILE_KEY_LEGACY);
-    } catch {}
-    try {
-      localStorage.removeItem(PROFILE_KEY_LEGACY2);
-    } catch {}
 
-    setProfile({ ...DEFAULT_PROFILE });
+    const cleared = stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });
+    setProfile(cleared);
     setLastSaveOk(true);
     setSavedAt(null);
+    setSaveFlash(false);
+    setShowMissingRequiredPrompt(false);
+    setLogoFileName("");
+    setLastSavedSnapshot(serializeProfileState(cleared));
     setShowClearConfirm(false);
 
     try {
       window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: "" } }));
     } catch {}
-  };
-
-  const pill = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 12px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: requiredComplete ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)",
-    fontSize: 12,
-    fontWeight: 900,
-    letterSpacing: "0.4px",
-    whiteSpace: "nowrap",
-  };
-
-  const dot = {
-    width: 9,
-    height: 9,
-    borderRadius: 999,
-    background: requiredComplete ? "rgba(34,197,94,0.95)" : "rgba(239,68,68,0.95)",
-    boxShadow: requiredComplete ? "0 0 0 3px rgba(34,197,94,0.15)" : "0 0 0 3px rgba(239,68,68,0.15)",
-  };
-
-  const actions = {
-    display: "flex",
-    gap: 10,
-    alignItems: "center",
-    flexWrap: "wrap",
-    justifyContent: "flex-end",
-  };
-
-  const btn = {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.06)",
-    color: "rgba(255,255,255,0.92)",
-    fontWeight: 900,
-    letterSpacing: "0.4px",
-    cursor: "pointer",
-  };
-
-  const btnPrimary = {
-    ...btn,
-    background: "rgba(34,197,94,0.12)",
-    border: "1px solid rgba(34,197,94,0.30)",
-  };
-
-  const btnDanger = {
-    ...btn,
-    background: "rgba(239,68,68,0.12)",
-    border: "1px solid rgba(239,68,68,0.30)",
   };
 
   const modalOverlay = {
@@ -258,141 +500,285 @@ export default function CompanyProfileScreen() {
       {showClearConfirm ? (
         <div style={modalOverlay} role="dialog" aria-modal="true">
           <div style={modalCard}>
-            <div style={modalTitle}>Clear company profile?</div>
-            <div style={modalText}>
-              This will erase your saved company info and logo from this device. This cannot be undone.
-            </div>
+            <div style={modalTitle}>Clear all User Profile fields?</div>
+            <div style={modalText}>Unsaved changes will be lost.</div>
             <div style={modalActions}>
-              <button type="button" style={btn} onClick={() => setShowClearConfirm(false)}>
+              <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(false)}>
                 Cancel
               </button>
-              <button type="button" style={btnDanger} onClick={doClearProfile}>
-                Erase
+              <button type="button" className="pe-btn" onClick={doClearProfile}>
+                Clear
               </button>
             </div>
           </div>
         </div>
       ) : null}
 
-      <div
-        className="pe-section-title"
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
-      >
-        <div>Company Profile</div>
-
-        <div style={actions}>
-          <button type="button" style={btnPrimary} onClick={doExplicitSave}>
-            Save
-          </button>
-          <button type="button" style={btnDanger} onClick={() => setShowClearConfirm(true)}>
-            Clear
-          </button>
-          <div style={pill} title={requiredComplete ? "Required fields complete" : "Fill required fields to complete"}>
-            <span aria-hidden="true" style={dot} />
-            {requiredComplete ? "Company info complete" : "Company info incomplete"}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gap: 12 }}>
-        <Field
-          label="Company name *"
-          value={profile.companyName}
-          onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
-        />
-
-        <Field
-          label="Phone *"
-          value={profile.phone}
-          onChange={(e) => setProfile((p) => ({ ...p, phone: e.target.value }))}
-        />
-
-        <Field
-          label="Email *"
-          value={profile.email}
-          onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
-        />
-
-        <Field
-          label="Address *"
-          value={profile.address}
-          onChange={(e) => setProfile((p) => ({ ...p, address: e.target.value }))}
-        />
-
-        <div className="pe-field">
-          <div className="pe-field-label">Logo</div>
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              className="pe-input"
-              type="file"
-              accept="image/*"
-              onChange={async (e) => {
-                const f = e.target.files && e.target.files[0];
-                if (!f) return;
-                const dataUrl = await fileToDataUrl(f);
-                setProfile((p) => ({ ...p, logoDataUrl: dataUrl || "" }));
-              }}
+      <div className="pe-card pe-company-shell">
+        <div className="pe-company-profile-header pe-company-profile-header-profile">
+          <div className="pe-company-header-title">
+            <img
+              src="/logo/estipaid.svg"
+              alt="EstiPaid"
+              className="pe-company-header-logo esti-spin"
+              draggable={false}
             />
-            {profile.logoDataUrl ? (
-              <img
-                src={profile.logoDataUrl}
-                alt="Company logo"
-                style={{ width: 64, height: 64, borderRadius: 14, objectFit: "contain", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)", padding: 6 }}
-              />
-            ) : (
-              <div className="pe-field-helper">No logo uploaded</div>
-            )}
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="User Profile">User Profile</h1>
+          </div>
+
+          <div className="pe-company-header-controls pe-company-header-controls-profile">
+            <button type="button" className="pe-btn" onClick={doExplicitSave}>
+              Save
+            </button>
+            <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(true)}>
+              Clear
+            </button>
+            <div className={`pe-company-save-indicator ${saveFlash ? "is-visible" : ""}`} aria-live="polite">
+              Saved
+            </div>
           </div>
         </div>
 
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <Field
-            label="ROC"
-            value={profile.roc}
-            onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))}
-          />
-          <Field
-            label="ATTN"
-            value={profile.attn}
-            onChange={(e) => setProfile((p) => ({ ...p, attn: e.target.value }))}
-          />
-        </div>
+        {showMissingRequiredPrompt && missingRequiredFields.length ? (
+          <div className="pe-company-missing-banner" role="alert" aria-live="assertive">
+            <div className="pe-company-missing-banner-title">Missing required information</div>
+            <div className="pe-company-missing-banner-body">
+              Please complete the highlighted fields to save your User Profile.
+            </div>
+            <ul className="pe-company-missing-list">
+              {missingRequiredFields.map((fieldKey) => (
+                <li key={fieldKey}>{REQUIRED_FIELD_META[fieldKey]?.label || fieldKey}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-          <Field
-            label="Website"
-            value={profile.website}
-            onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
-          />
-          <Field
-            label="EIN"
-            value={profile.ein}
-            onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
-          />
-        </div>
+        <div className="pe-company-form-inner ep-section-gap-sm">
+          <div className="pe-company-top-layout">
+            <div className="pe-company-form-section pe-company-top-main">
+              <ProfileSectionHeader icon={<IconBuilding />} title="COMPANY" />
+              <div className="pe-company-grid-12">
+                <Field
+                  fieldClassName="pe-company-col-12"
+                  labelClassName={fieldLabelClassName("companyName")}
+                  controlClassName={fieldControlClassName("companyName")}
+                  label="Company name *"
+                  id={REQUIRED_FIELD_META.companyName.inputId}
+                  errorText={fieldRequiredError("companyName")}
+                  value={profile.companyName}
+                  placeholder="Example: Desert Ridge HOA"
+                  onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
+                />
 
-        <Field
-          as="textarea"
-          label="Payment terms / notes"
-          value={profile.terms}
-          onChange={(e) => setProfile((p) => ({ ...p, terms: e.target.value }))}
-          style={{ minHeight: 110, resize: "vertical" }}
-        />
+                <Field
+                  fieldClassName="pe-company-col-5"
+                  labelClassName={fieldLabelClassName("phone")}
+                  controlClassName={fieldControlClassName("phone")}
+                  label="Phone *"
+                  id={REQUIRED_FIELD_META.phone.inputId}
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  errorText={fieldRequiredError("phone")}
+                  helperText={hasValidPhone(profile.phone) ? validHelperText() : ""}
+                  value={formatPhoneForDisplay(profile.phone)}
+                  placeholder="Example: 602-555-0147"
+                  onChange={(e) => setProfile((p) => ({ ...p, phone: sanitizePhoneDigits(e.target.value, 11) }))}
+                />
 
-        <div className="pe-field-helper">
-          Storage key: <span style={{ opacity: 0.95, fontWeight: 800 }}>{PROFILE_KEY}</span>
-          {savedAt ? (
-            <span style={{ display: "block", marginTop: 6, opacity: 0.82 }}>
-              Saved {new Date(savedAt).toLocaleString()}
-            </span>
-          ) : null}
-          {!lastSaveOk ? (
-            <span style={{ display: "block", marginTop: 6, color: "rgba(239,68,68,0.92)", fontWeight: 900 }}>
-              Save failed (storage unavailable)
-            </span>
-          ) : null}
+                <Field
+                  fieldClassName="pe-company-col-7"
+                  label="Email"
+                  type="email"
+                  autoComplete="email"
+                  helperText={hasValidEmail(profile.email) ? validHelperText() : ""}
+                  value={profile.email}
+                  placeholder="Example: office@desertridgehoa.com"
+                  onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
+                />
+
+                <Field
+                  fieldClassName="pe-company-col-12"
+                  label="Website"
+                  value={profile.website}
+                  placeholder="Example: www.desertridgehoa.com"
+                  onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div id="company-profile-branding" ref={brandingCardRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover pe-company-top-branding-col pe-company-branding-card pe-branding-tile">
+              <ProfileSectionHeader icon={<IconImage />} title="BRANDING" />
+              <input
+                ref={fileInputRef}
+                className="pe-company-hidden-file"
+                type="file"
+                accept="image/*"
+                onChange={handleLogoInputChange}
+              />
+              <div className="pe-company-branding-preview-wrap">
+                <div className="pe-company-branding-preview">
+                  {profile.logoDataUrl ? (
+                    <img
+                      src={profile.logoDataUrl}
+                      alt="Company logo preview"
+                      className="pe-company-branding-preview-img"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="pe-company-branding-placeholder">
+                      <span className="pe-company-branding-placeholder-icon" aria-hidden="true"><IconImage /></span>
+                      <span>No logo uploaded</span>
+                    </div>
+                  )}
+                </div>
+                <div className="pe-field-helper pe-company-branding-helper">Used on PDFs/exports</div>
+                {!profile.logoDataUrl ? (
+                  <>
+                    <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 6 }}>
+                      No logo uploaded yet - your PDF will use a branded initials badge until you add one.
+                    </div>
+                    <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 2, opacity: 0.78 }}>
+                      Upload a logo anytime to replace it.
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div className="pe-company-upload-row">
+                <button
+                  ref={brandingUploadButtonRef}
+                  type="button"
+                  className="pe-btn pe-company-upload-btn"
+                  onClick={openLogoPicker}
+                >
+                  Upload Logo
+                </button>
+                {profile.logoDataUrl ? (
+                  <button type="button" className="pe-btn pe-btn-ghost" onClick={removeLogo}>
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+              <div className="pe-company-upload-name">
+                {logoFileName || (profile.logoDataUrl ? "Logo on file" : "No file selected")}
+              </div>
+            </div>
+          </div>
+
+          <div className="pe-company-form-section">
+            <div className="pe-company-section-divider" aria-hidden="true" />
+            <ProfileSectionHeader icon={<IconMapPin />} title="BUSINESS ADDRESS" />
+            <div className="pe-company-grid-12">
+              <Field
+                fieldClassName="pe-company-col-12"
+                labelClassName={fieldLabelClassName("addressLine1")}
+                controlClassName={fieldControlClassName("addressLine1")}
+                label="Address line 1 *"
+                id={REQUIRED_FIELD_META.addressLine1.inputId}
+                autoComplete="address-line1"
+                errorText={fieldRequiredError("addressLine1")}
+                value={profile.addressLine1}
+                placeholder="Example: 1234 E Camelback Rd, Phoenix AZ"
+                onChange={(e) => setProfile((p) => ({ ...p, addressLine1: e.target.value }))}
+              />
+
+              <Field
+                fieldClassName="pe-company-col-12"
+                label="Address line 2"
+                autoComplete="address-line2"
+                value={profile.addressLine2}
+                placeholder="Example: Suite 200"
+                onChange={(e) => setProfile((p) => ({ ...p, addressLine2: e.target.value }))}
+              />
+
+              <Field
+                fieldClassName="pe-company-col-5"
+                labelClassName={fieldLabelClassName("city")}
+                controlClassName={fieldControlClassName("city")}
+                label="City *"
+                id={REQUIRED_FIELD_META.city.inputId}
+                autoComplete="address-level2"
+                errorText={fieldRequiredError("city")}
+                value={profile.city}
+                placeholder="Example: Phoenix"
+                onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value }))}
+              />
+
+              <Field
+                as="select"
+                fieldClassName="pe-company-col-4"
+                labelClassName={fieldLabelClassName("state")}
+                controlClassName={fieldControlClassName("state")}
+                label="State *"
+                id={REQUIRED_FIELD_META.state.inputId}
+                autoComplete="address-level1"
+                errorText={fieldRequiredError("state")}
+                value={profile.state}
+                onChange={(e) => setProfile((p) => ({ ...p, state: e.target.value }))}
+              >
+                <option value="">Select State</option>
+                {US_STATES.map((stateCode) => (
+                  <option key={stateCode} value={stateCode}>
+                    {stateCode}
+                  </option>
+                ))}
+              </Field>
+
+              <Field
+                fieldClassName="pe-company-col-3"
+                labelClassName={fieldLabelClassName("zip")}
+                controlClassName={fieldControlClassName("zip")}
+                label="ZIP *"
+                id={REQUIRED_FIELD_META.zip.inputId}
+                autoComplete="postal-code"
+                inputMode="numeric"
+                errorText={fieldRequiredError("zip")}
+                value={profile.zip}
+                placeholder="85016"
+                onChange={(e) => setProfile((p) => ({ ...p, zip: sanitizeZip(e.target.value, 10) }))}
+              />
+            </div>
+          </div>
+
+          <div className="pe-company-form-section">
+            <div className="pe-company-section-divider" aria-hidden="true" />
+            <ProfileSectionHeader icon={<IconBadge />} title="LICENSING &amp; TAX" />
+            <div className="pe-company-grid-12">
+              <Field
+                fieldClassName="pe-company-col-6"
+                label="ROC"
+                value={profile.roc}
+                placeholder="ROC 123456"
+                onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))}
+              />
+              <Field
+                fieldClassName="pe-company-col-6"
+                label="EIN"
+                value={profile.ein}
+                placeholder="12-3456789"
+                onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <div className="pe-field-helper pe-company-meta">
+            Storage key: <span style={{ opacity: 0.8, fontWeight: 700 }}>{PROFILE_KEY}</span>
+            {savedAt ? (
+              <span style={{ display: "block", marginTop: 4, opacity: 0.8 }}>
+                Saved {new Date(savedAt).toLocaleString()}
+              </span>
+            ) : null}
+            {!lastSaveOk ? (
+              <span className="pe-company-save-fail" style={{ display: "block", marginTop: 6 }}>
+                Save failed (storage unavailable)
+              </span>
+            ) : null}
+          </div>
         </div>
       </div>
+      {showToast ? (
+        <div className="pe-toast" role="status" aria-live="polite">{toastMessage}</div>
+      ) : null}
     </section>
   );
 }

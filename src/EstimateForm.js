@@ -9,6 +9,7 @@ import { BUILD_TAG, STORAGE_KEY } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
+import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
 import { exportPdf } from "./pdf";
@@ -17,13 +18,14 @@ import {
   formatDateMMDDYYYY,
   normalizeHoursInput,
   normalizeMoneyInput,
-  normalizeMultiplierInput,
   normalizePercentInput,
 } from "./utils/format";
-import { sanitizePdfToken } from "./utils/sanitize";
-import { isCompanyProfileComplete } from "./utils/guards";
+import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
+import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
+import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
@@ -46,9 +48,13 @@ const I18N = {
     materialsModeItemized: "Itemized",
     materialsCost: "Materials cost",
     markupPct: "Markup %",
+    materialsBlanketDescriptionLabel: "Materials Description (prints on PDF)",
+    materialsBlanketDescriptionPlaceholder: "Example: Include primer, caulk, fasteners, sundries, and disposal.",
     addMaterialItem: "+ Add Item",
     materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
     materialDesc: "Description",
+    materialNote: "Line note (optional)",
+    materialNotePlaceholder: "Prints under this item in the PDF",
     materialQty: "Qty",
     materialCostInternal: "Cost (internal)",
     materialCharge: "Price (each)",
@@ -72,9 +78,13 @@ const I18N = {
     materialsModeItemized: "Detallado",
     materialsCost: "Costo de materiales",
     markupPct: "Margen %",
+    materialsBlanketDescriptionLabel: "Descripción de materiales (se imprime en PDF)",
+    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye primer, sellador, fijaciones, insumos y disposición.",
     addMaterialItem: "+ Agregar Partida",
     materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
     materialDesc: "Descripción",
+    materialNote: "Nota de línea (opcional)",
+    materialNotePlaceholder: "Se imprime debajo de esta partida en el PDF",
     materialQty: "Cant.",
     materialCostInternal: "Costo (interno)",
     materialCharge: "Precio (c/u)",
@@ -85,9 +95,17 @@ const I18N = {
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
 const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
+const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
+const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
+const SAVE_PROMPT_TIMEOUT_MS = 2200;
 function readSavedCustomers() {
   try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
 }
@@ -123,6 +141,39 @@ function flattenCustomerForEstimator(c) {
   return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
 }
 
+function buildSelectedCustomerProfileFromDraft(customerState, customerId = "", customerList = []) {
+  const sid = String(customerId || customerState?.id || "").trim();
+  if (!sid) return null;
+
+  const matchedCustomer = Array.isArray(customerList)
+    ? customerList.find((item) => String(item?.id || "").trim() === sid)
+    : null;
+
+  if (matchedCustomer) {
+    return {
+      ...matchedCustomer,
+      ...flattenCustomerForEstimator(matchedCustomer),
+      id: sid,
+    };
+  }
+
+  const name = String(customerState?.name || "").trim();
+  return {
+    id: sid,
+    name,
+    fullName: name,
+    attn: String(customerState?.attn || "").trim(),
+    phone: String(customerState?.phone || "").trim(),
+    email: String(customerState?.email || "").trim(),
+    netTermsType: String(customerState?.netTermsType || "").trim(),
+    netTermsDays: customerState?.netTermsDays === null || customerState?.netTermsDays === undefined
+      ? ""
+      : String(customerState?.netTermsDays),
+    address: String(customerState?.address || "").trim(),
+    billingAddress: String(customerState?.billingAddress || "").trim(),
+  };
+}
+
 function formatAddressObject(a) {
   const street = String(a?.street || "").trim();
   const city = String(a?.city || "").trim();
@@ -143,6 +194,123 @@ function triggerHaptic() {
       navigator.vibrate(10);
     }
   } catch {}
+}
+
+function readSavedDocList(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function toDocTimestamp(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getMostRecentSavedTimestamp(doc) {
+  const savedAt = toDocTimestamp(doc?.savedAt ?? doc?.meta?.savedAt ?? doc?.meta?.lastSavedAt);
+  if (savedAt > 0) return savedAt;
+  const updatedAt = toDocTimestamp(doc?.updatedAt);
+  if (updatedAt > 0) return updatedAt;
+  const dateVal = toDocTimestamp(doc?.date);
+  if (dateVal > 0) return dateVal;
+  return 0;
+}
+
+function formatSavedTimestamp(ts) {
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const yyyy = String(d.getFullYear());
+    const hh = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    return `${mm}/${dd}/${yyyy} ${hh}:${min}`;
+  } catch {
+    return "";
+  }
+}
+
+function createSavedDocId() {
+  return `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function writeProfileReturnTarget(value) {
+  try {
+    const route = String(value?.route || "").trim();
+    if (!route) {
+      localStorage.removeItem(PROFILE_RETURN_TARGET_KEY);
+      return null;
+    }
+    const next = { route };
+    if (route === ROUTES.CREATE) {
+      next.intent = value?.intent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE;
+      const editType = value?.editContext?.type === "invoice" ? "invoice" : (value?.editContext?.type === "estimate" ? "estimate" : "");
+      const editId = String(value?.editContext?.id || "").trim();
+      if (editType && editId) {
+        next.editContext = { type: editType, id: editId };
+      }
+    }
+    localStorage.setItem(PROFILE_RETURN_TARGET_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+function readPendingEditTarget() {
+  try {
+    const invoiceId = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
+    if (invoiceId) {
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return { type: "invoice", id: invoiceId };
+    }
+    const estimateId = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+    if (estimateId) {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return { type: "estimate", id: estimateId };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingEditTarget(type) {
+  try {
+    if (!type || type === "estimate") localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    if (!type || type === "invoice") localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+  } catch {}
+}
+
+function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
+  const arr = Array.isArray(list) ? list.filter(Boolean) : [];
+  const record = nextRecord && typeof nextRecord === "object" ? nextRecord : {};
+  const recordId = String(record?.id || "").trim();
+  const fallbackValue = fallbackNumberKey ? String(record?.[fallbackNumberKey] || "").trim() : "";
+
+  const matchIndex = arr.findIndex((item) => {
+    const sameId = recordId && String(item?.id || "").trim() === recordId;
+    if (sameId) return true;
+    if (!fallbackNumberKey || !fallbackValue) return false;
+    return String(item?.[fallbackNumberKey] || "").trim() === fallbackValue;
+  });
+
+  if (matchIndex < 0) return [record, ...arr];
+  const existing = arr[matchIndex] && typeof arr[matchIndex] === "object" ? arr[matchIndex] : {};
+  const merged = { ...existing, ...record };
+  const next = arr.filter((_, idx) => idx !== matchIndex);
+  return [merged, ...next];
 }
 
 // Labor role presets (value = key, display = label)
@@ -440,32 +608,247 @@ const ADDITIONAL_NOTES_SNIPPETS = [
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 
+function IconCustomer() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="4.2" y="4.8" width="15.6" height="14.4" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="9" cy="10" r="2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M6.8 14.3c.7-1.3 1.5-2 2.2-2s1.5.7 2.2 2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M13.6 9.2h4.2M13.6 12.2h3.4M13.6 15.2h2.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconJobInfo() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="6" y="5" width="12" height="15" rx="2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M9 5.2h6v2H9z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" />
+      <path d="M9 11h6M9 14h6M9 17h4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLabor() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M5.2 7.5 9 11.2M6.6 6.1l3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="m10.3 9.9 3.8-3.8a2.3 2.3 0 1 1 3.3 3.3l-3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m7.7 12.5 3.8 3.8a2.3 2.3 0 0 1-3.3 3.3l-3.8-3.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconSpecialConditions() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <circle cx="9" cy="7" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="15" cy="12" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <circle cx="11" cy="17" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function IconTotals() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+      <rect x="5" y="4.5" width="14" height="15" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      <path d="M8.5 8.4h7M8.5 11.6h7" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M9.2 15.6h2.4M12.5 15.6h2.4M9.2 18.1h5.7" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M4.8 7.2h14.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M9.2 7.2V5.8h5.6v1.4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M7.3 7.2v10.2a1.8 1.8 0 0 0 1.8 1.8h5.8a1.8 1.8 0 0 0 1.8-1.8V7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10.2 10.3v6.1M13.8 10.3v6.1" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
+  return (
+    <div style={styles.sectionTitleWithIcon}>
+      <span style={styles.sectionTitleIcon} aria-hidden="true">{icon}</span>
+      <div style={{ ...styles.sectionTitleStack, ...(stackStyle || {}) }}>
+        <div className="pe-section-title" style={styles.sectionTitleText}>{title}</div>
+        <div style={styles.sectionAccentLine} />
+      </div>
+    </div>
+  );
+}
+
 const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
 const SHELL_DOCK_HEIGHT = 78;
 const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
+const MOBILE_ACTION_BAR_BREAKPOINT = 820;
 const SCOPE_NOTES_MIN_HEIGHT = 170;
-const LABOR_MINUS_HOLD_MS = 550;
 const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
 const TOTAL_PULSE_MS = 140;
+const STEPPED_PERCENT_OPTIONS = Array.from({ length: 51 }, (_, index) => index);
+const MARKUP_PRESET_OPTIONS = Array.from({ length: 101 }, (_, index) => index);
+const CUSTOM_PERCENT_OPTION_VALUE = "__custom__";
+const SPECIAL_CONDITIONS_PENDING_DEFAULT = Object.freeze({ hazard: false, risk: false });
 
-function createBlankMaterialItem(idOverride) {
+function toDirtySnapshot(s) {
+  if (!s || typeof s !== "object") return "";
+  const meta = {
+    ...(s.meta || {}),
+    lastSavedAt: 0,
+  };
+  return JSON.stringify({ ...s, meta });
+}
+
+function resolveDefaultMarkupPct(value) {
+  const normalized = normalizePercentInput(value);
+  return normalized === "" ? "0" : normalized;
+}
+
+function normalizeLaborQtyValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.round(parsed));
+}
+
+function derivePresetSelection(value, options, normalizeValue = normalizePercentInput, fallbackValue = "0") {
+  const normalized = normalizeValue(value);
+  if (normalized === "") return fallbackValue;
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return CUSTOM_PERCENT_OPTION_VALUE;
+  if (Number.isInteger(numeric) && options.includes(numeric)) {
+    return String(numeric);
+  }
+  return CUSTOM_PERCENT_OPTION_VALUE;
+}
+
+function deriveSteppedPercentSelection(value) {
+  return derivePresetSelection(value, STEPPED_PERCENT_OPTIONS, normalizePercentInput, "0");
+}
+
+function deriveMarkupSelection(value) {
+  return derivePresetSelection(value, MARKUP_PRESET_OPTIONS, normalizePercentInput, "0");
+}
+
+function normalizeInlineNumberDraft(value, { min = 0, max = Number.POSITIVE_INFINITY, integer = false } = {}) {
+  const cleaned = integer
+    ? String(value ?? "").replace(/[^\d]/g, "")
+    : String(value ?? "").replace(/[^\d.]/g, "");
+  if (integer) {
+    if (!cleaned) return "";
+    const numeric = Number(cleaned);
+    if (!Number.isFinite(numeric)) return "";
+    let nextValue = numeric;
+    if (Number.isFinite(min)) nextValue = Math.max(min, nextValue);
+    if (Number.isFinite(max)) nextValue = Math.min(max, nextValue);
+    return String(Math.round(nextValue));
+  }
+
+  const dot = cleaned.indexOf(".");
+  const normalized = dot === -1
+    ? cleaned
+    : `${cleaned.slice(0, dot + 1)}${cleaned.slice(dot + 1).replace(/\./g, "")}`;
+  if (!normalized || normalized === ".") return "";
+
+  const hasTrailingDot = normalized.endsWith(".");
+  const numericSource = hasTrailingDot ? normalized.slice(0, -1) : normalized;
+  const numeric = Number(numericSource);
+  if (!Number.isFinite(numeric)) return "";
+
+  let clamped = numeric;
+  if (Number.isFinite(min)) clamped = Math.max(min, clamped);
+  if (Number.isFinite(max)) clamped = Math.min(max, clamped);
+  if (hasTrailingDot && clamped === numeric) return `${clamped}.`;
+  return String(clamped);
+}
+
+function normalizeInlineNumberFinal(
+  value,
+  { min = 0, max = Number.POSITIVE_INFINITY, integer = false, fallback = "0" } = {}
+) {
+  const normalized = normalizeInlineNumberDraft(value, { min, max, integer });
+  if (normalized === "") return fallback;
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return fallback;
+  let nextValue = numeric;
+  if (Number.isFinite(min)) nextValue = Math.max(min, nextValue);
+  if (Number.isFinite(max)) nextValue = Math.min(max, nextValue);
+  if (integer) nextValue = Math.round(nextValue);
+  return String(nextValue);
+}
+
+function normalizeCustomPercentDraft(value) {
+  return normalizeInlineNumberDraft(value, { min: 0, max: 50 });
+}
+
+function normalizeCustomPercentFinal(value) {
+  return normalizeInlineNumberFinal(value, { min: 0, max: 50, fallback: "0" });
+}
+
+function normalizeCustomMarkupDraft(value, max = 200) {
+  return normalizeInlineNumberDraft(value, { min: 0, max });
+}
+
+function normalizeCustomMarkupFinal(value, max = 200) {
+  return normalizeInlineNumberFinal(value, { min: 0, max, fallback: "0" });
+}
+
+function hasUsableCustomPercentValue(value) {
+  const normalized = normalizeCustomPercentDraft(value);
+  if (normalized === "") return false;
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric);
+}
+
+function isSteppedPercentValueComplete(selection, value) {
+  if (selection !== CUSTOM_PERCENT_OPTION_VALUE) return true;
+  return hasUsableCustomPercentValue(value);
+}
+
+function isSpecialConditionsSectionComplete(hazardSelection, hazardValue, riskSelection, riskValue) {
+  return isSteppedPercentValueComplete(hazardSelection, hazardValue)
+    && isSteppedPercentValueComplete(riskSelection, riskValue);
+}
+
+function formatSpecialConditionsSummaryValue(value) {
+  return normalizeCustomPercentFinal(value);
+}
+
+function createBlankMaterialItem(idOverride, markupPct) {
   return {
     id: idOverride || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     desc: "",
+    note: "",
     qty: 1,
     cost: "",
     unitCostInternal: "",
     costInternal: "",
     charge: "",
     priceEach: "",
+    markupPct: resolveDefaultMarkupPct(markupPct),
   };
 }
 
 export default function EstimateForm(props) {
-  const { embeddedInShell = false } = props || {};
+  const {
+    embeddedInShell = false,
+    mobileBottomChromeVisible = true,
+  } = props || {};
+  const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
+  const editingRecordId = String(editTarget?.id || "").trim();
+  const editingTargetType = editTarget?.type === "invoice" ? "invoice" : (editTarget?.type === "estimate" ? "estimate" : "");
+  const isEditMode = Boolean(editingRecordId);
+  const isInvoiceEditMode = isEditMode && editingTargetType === "invoice";
+  const isEditModeRef = useRef(isEditMode);
+  const openedEditIdRef = useRef(editingRecordId);
+  const openedDocNumberRef = useRef("");
   const lang = useMemo(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
@@ -478,14 +861,12 @@ export default function EstimateForm(props) {
     () => (key) => I18N[lang]?.[key] || I18N.en?.[key] || key,
     [lang]
   );
-
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
   const scopeNotesRef = useRef(null);
+  const additionalNotesRef = useRef(null);
   const actionBarRef = useRef(null);
   const didNormalizeLaborRef = useRef(false);
-  const laborHoldTimerRef = useRef(null);
-  const laborHoldFiredRef = useRef(null);
   const rowEnterTimerRef = useRef([]);
   const totalPulseTimerRef = useRef({ labor: null, materials: null, estimate: null });
   const previousTotalsRef = useRef(null);
@@ -500,16 +881,107 @@ export default function EstimateForm(props) {
     updateLaborLine,
     clearAll,
     saveNow,
-  } = hook();
+    replaceState,
+  } = hook({ persistDraft: !isEditMode });
   const scopeNotes = String(state?.scopeNotes || "");
+  const additionalNotes = String(state?.additionalNotes || "");
+  const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
+  const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
+  const globalDefaultMarkupPct = resolveDefaultMarkupPct(pricingSettings?.defaultMarkupPct);
+  const globalDefaultMarkupPctNumber = Number(globalDefaultMarkupPct) || 0;
+  const lockMarkupToGlobal = !!pricingSettings?.lockMarkupToGlobal;
+  const internalSettings = settingsSnapshot?.internal || DEFAULT_SETTINGS.internal;
+  const showInternalCostFields = internalSettings?.showInternalCostFields !== false;
+  const lockInternalCostFields = !!internalSettings?.lockInternalCostFields;
 
-  const [searchCustomerText, setSearchCustomerText] = useState("");
-  const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(null);
+  useEffect(() => {
+    isEditModeRef.current = isEditMode;
+  }, [isEditMode]);
+
+  useEffect(() => {
+    if (!isEditMode) {
+      openedEditIdRef.current = "";
+      openedDocNumberRef.current = "";
+      return;
+    }
+    if (!openedEditIdRef.current) {
+      openedEditIdRef.current = editingRecordId;
+    }
+  }, [editingRecordId, isEditMode]);
+
+  useEffect(() => {
+    try {
+      if (!isEditMode || !editingRecordId || !editingTargetType) {
+        localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        return undefined;
+      }
+
+      localStorage.setItem(
+        ACTIVE_EDIT_CONTEXT_KEY,
+        JSON.stringify({ type: editingTargetType, id: editingRecordId })
+      );
+    } catch {}
+
+    return () => {
+      try {
+        const raw = localStorage.getItem(ACTIVE_EDIT_CONTEXT_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (
+          String(parsed?.id || "").trim() === editingRecordId
+          && String(parsed?.type || "").trim() === editingTargetType
+        ) {
+          localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        }
+      } catch {}
+    };
+  }, [editingRecordId, editingTargetType, isEditMode]);
+
+  useEffect(() => {
+    return () => {
+      if (!isEditModeRef.current) return;
+      clearPendingEditTarget();
+    };
+  }, []);
+
+  useEffect(() => {
+    const refresh = (e) => {
+      if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
+      setSettingsSnapshot(loadSettings());
+    };
+    window.addEventListener("estipaid:settings-changed", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("estipaid:settings-changed", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+
+  const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
+  const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
+  const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(() => (
+    buildSelectedCustomerProfileFromDraft(
+      state?.customer,
+      state?.customer?.id,
+      readSavedCustomers()
+    )
+  ));
   const [dropdownHoverKey, setDropdownHoverKey] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
   const [actionBarHeight, setActionBarHeight] = useState(ACTION_BAR_MIN_HEIGHT);
+  const [specialConditionsOpen, setSpecialConditionsOpen] = useState(() => !isSpecialConditionsSectionComplete(
+    deriveSteppedPercentSelection(state?.labor?.hazardPct),
+    state?.labor?.hazardPct,
+    deriveSteppedPercentSelection(state?.labor?.riskPct),
+    state?.labor?.riskPct
+  ));
+  const [activeSpecialConditionsCustomField, setActiveSpecialConditionsCustomField] = useState("");
+  const [specialConditionsPendingCommitByField, setSpecialConditionsPendingCommitByField] = useState(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+  const [isMobileActionBarViewport, setIsMobileActionBarViewport] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
+  });
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
   const [newLaborLineIds, setNewLaborLineIds] = useState({});
   const [newMaterialItemIds, setNewMaterialItemIds] = useState({});
@@ -520,11 +992,15 @@ export default function EstimateForm(props) {
   const [materialsOpen, setMaterialsOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(true);
   const [pdfPromptOpen, setPdfPromptOpen] = useState(false);
-  const [multiplierMode, setMultiplierMode] = useState(() => {
-    const m = Number(state?.labor?.multiplier);
-    if (m === 1 || m === 1.1 || m === 1.2 || m === 1.25) return "preset";
-    return "custom";
-  });
+  const [savePrompt, setSavePrompt] = useState(null);
+  const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
+  const [savePulse, setSavePulse] = useState(false);
+  const saveBaselineRef = useRef("");
+  const hasSaveBaselineRef = useRef(false);
+  const lastSavedAtSeenRef = useRef(0);
+  const wasDirtyRef = useRef(false);
+  const savePulseTimerRef = useRef(null);
+  const pendingSpecialConditionsAutoCollapseRef = useRef(false);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -540,17 +1016,158 @@ export default function EstimateForm(props) {
   }, []);
 
   useEffect(() => {
-    try {
-      console.log("Loaded EstimateForm BUILD:", BUILD_TAG);
-    } catch {}
+    if (!savePrompt) return undefined;
+    const timer = setTimeout(() => setSavePrompt(null), SAVE_PROMPT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [savePrompt]);
+
+  useEffect(() => {
+    const snapshot = toDirtySnapshot(state);
+    if (!hasSaveBaselineRef.current) {
+      saveBaselineRef.current = snapshot;
+      hasSaveBaselineRef.current = true;
+      lastSavedAtSeenRef.current = Number(state?.meta?.lastSavedAt || 0);
+      setSaveNeedsAttention(false);
+      return;
+    }
+
+    const currentSavedAt = Number(state?.meta?.lastSavedAt || 0);
+    if (currentSavedAt > 0 && currentSavedAt !== lastSavedAtSeenRef.current) {
+      saveBaselineRef.current = snapshot;
+      lastSavedAtSeenRef.current = currentSavedAt;
+      setSaveNeedsAttention(false);
+      wasDirtyRef.current = false;
+      return;
+    }
+
+    const dirty = snapshot !== saveBaselineRef.current;
+    setSaveNeedsAttention(dirty);
+
+    if (dirty && !wasDirtyRef.current) {
+      setSavePulse(true);
+      if (savePulseTimerRef.current) clearTimeout(savePulseTimerRef.current);
+      savePulseTimerRef.current = setTimeout(() => {
+        setSavePulse(false);
+        savePulseTimerRef.current = null;
+      }, 240);
+    }
+
+    if (!dirty) {
+      setSavePulse(false);
+      if (savePulseTimerRef.current) {
+        clearTimeout(savePulseTimerRef.current);
+        savePulseTimerRef.current = null;
+      }
+    }
+
+    wasDirtyRef.current = dirty;
+  }, [state]);
+
+  useEffect(() => () => {
+    if (savePulseTimerRef.current) {
+      clearTimeout(savePulseTimerRef.current);
+      savePulseTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
+    if (!isEditMode || !editingRecordId) return;
+    const sourceKey = isInvoiceEditMode ? INVOICES_KEY : ESTIMATES_KEY;
+    const list = readSavedDocList(sourceKey);
+    const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
+    if (!match || typeof replaceState !== "function") {
+      setSavePrompt({
+        tone: "error",
+        message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Switched to new mode.`,
+      });
+      openedEditIdRef.current = "";
+      openedDocNumberRef.current = "";
+      setEditTarget(null);
+      return;
+    }
+    openedEditIdRef.current = String(editingRecordId || match?.id || "").trim();
+    openedDocNumberRef.current = String(
+      match?.estimateNumber
+      || match?.invoiceNumber
+      || match?.job?.docNumber
+      || match?.customer?.projectNumber
+      || ""
+    ).trim();
+    const createdAt = Number(match?.createdAt || Date.now()) || Date.now();
+    const hydrated = {
+      ...match,
+      ui: {
+        ...(match?.ui || {}),
+        docType: isInvoiceEditMode ? "invoice" : "estimate",
+      },
+      meta: {
+        ...(match?.meta || {}),
+        savedDocId: String(match?.id || editingRecordId),
+        savedDocCreatedAt: createdAt,
+      },
+    };
+    replaceState(hydrated, { persistNow: false, persistDraft: false });
+    const hydratedHazardSelection = deriveSteppedPercentSelection(hydrated?.labor?.hazardPct);
+    const hydratedRiskSelection = deriveSteppedPercentSelection(hydrated?.labor?.riskPct);
+    setSpecialConditionsOpen(!isSpecialConditionsSectionComplete(
+      hydratedHazardSelection,
+      hydrated?.labor?.hazardPct,
+      hydratedRiskSelection,
+      hydrated?.labor?.riskPct
+    ));
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+
+    const loadedCustomerId = String(match?.customerId || match?.customer?.id || "").trim();
+    setSelectedCustomerId(loadedCustomerId);
+    setSelectedCustomerProfile(match?.customer && typeof match.customer === "object" ? match.customer : null);
+
+    const displayName = String(
+      match?.customerName
+      || match?.customer?.displayName
+      || match?.customer?.name
+      || match?.customer?.company
+      || ""
+    ).trim();
+    if (displayName) setSearchCustomerText(displayName);
+  }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
+
+  useEffect(() => {
+    if (isEditMode) return;
+    const draftCustomerId = String(state?.customer?.id || "").trim();
+
+    if (!draftCustomerId) {
+      if (selectedCustomerId) setSelectedCustomerId("");
+      if (selectedCustomerProfile) setSelectedCustomerProfile(null);
+      return;
+    }
+
+    if (String(selectedCustomerId || "") === draftCustomerId && selectedCustomerProfile) {
+      return;
+    }
+
+    const nextProfile = buildSelectedCustomerProfileFromDraft(state?.customer, draftCustomerId, allCustomers);
+    if (!nextProfile) return;
+
+    setSelectedCustomerId(draftCustomerId);
+    setSelectedCustomerProfile(nextProfile);
+
+    if (!String(searchCustomerText || "").trim()) {
+      const displayName = customerDisplayName(nextProfile) || String(nextProfile?.name || "").trim();
+      if (displayName) setSearchCustomerText(displayName);
+    }
+  }, [
+    allCustomers,
+    isEditMode,
+    searchCustomerText,
+    selectedCustomerId,
+    selectedCustomerProfile,
+    state?.customer,
+  ]);
+
+  useEffect(() => {
     return () => {
-      if (laborHoldTimerRef.current) {
-        clearTimeout(laborHoldTimerRef.current);
-        laborHoldTimerRef.current = null;
-      }
       const rowTimers = Array.isArray(rowEnterTimerRef.current) ? rowEnterTimerRef.current : [];
       rowTimers.forEach((t) => t && clearTimeout(t));
       rowEnterTimerRef.current = [];
@@ -577,6 +1194,7 @@ export default function EstimateForm(props) {
         setSelectedCustomerProfile(c);
         const display = customerDisplayName(c) || String(c.name || "").trim();
         if (display) setSearchCustomerText(display);
+        patch("customer.id", sid);
         if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
         if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
         if (String(c.phone || "").trim()) patch("customer.phone", String(c.phone || "").trim());
@@ -651,6 +1269,23 @@ export default function EstimateForm(props) {
     return () => window.removeEventListener("resize", updateActionBarHeight);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+
+    const mobileQuery = window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`);
+    const syncViewportMode = () => {
+      setIsMobileActionBarViewport(mobileQuery.matches);
+    };
+
+    syncViewportMode();
+    mobileQuery.addEventListener("change", syncViewportMode);
+    return () => mobileQuery.removeEventListener("change", syncViewportMode);
+  }, []);
+
+  const shouldSyncActionBarWithBottomChrome =
+    embeddedInShell
+    && isMobileActionBarViewport;
+
   function autoResizeScopeNotes(el) {
     if (!el) return;
     el.style.boxSizing = "border-box";
@@ -674,6 +1309,18 @@ export default function EstimateForm(props) {
       }
     };
   }, [notesOpen, scopeNotes]);
+
+  useLayoutEffect(() => {
+    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(() => autoResizeScopeNotes(additionalNotesRef.current))
+      : null;
+    if (raf === null) autoResizeScopeNotes(additionalNotesRef.current);
+    return () => {
+      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [additionalNotes]);
 
   function handleClearScopeNotes() {
     if (!scopeNotes.trim()) return;
@@ -718,9 +1365,17 @@ export default function EstimateForm(props) {
     const showProjectAddress = !!projectAddress && projectAddress !== billingAddress;
     const netTermsLabel = getNetTermsLabel(c);
     const netTermsDays = getNetTermsDays(c);
-    return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays };
+    const poRequired = !!c?.poRequired;
+    return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
   const hasSelectedNetTerms = useMemo(() => getNetTermsDays(selectedCustomerProfile) !== null, [selectedCustomerProfile]);
+  const isCommercialJob = selectedProfile?.customerType === "commercial";
+  const effectivePoRequired = !!selectedProfile?.poRequired;
+  const jobInfoTopGridClassName = isCommercialJob && effectivePoRequired
+    ? "pe-jobinfo-top-grid pe-jobinfo-top-grid-com-po"
+    : (!isCommercialJob && !effectivePoRequired)
+      ? "pe-jobinfo-top-grid pe-jobinfo-top-grid-res-no-po"
+      : "pe-jobinfo-top-grid";
   const projectLocationSame = state?.customer?.projectSameAsCustomer !== false;
   const manualProjectStreet = String(state?.customer?.projectAddress || "").trim();
   const manualProjectLine2 = String(state?.job?.location || "").trim();
@@ -748,6 +1403,23 @@ export default function EstimateForm(props) {
     if (typeof state?.customer?.projectSameAsCustomer === "boolean") return;
     patch("customer.projectSameAsCustomer", true);
   }, [patch, state?.customer?.projectSameAsCustomer]);
+
+  useEffect(() => {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    if (!lines.length) return;
+    let changed = false;
+    const normalized = lines.map((ln) => {
+      const nextQty = normalizeLaborQtyValue(ln?.qty);
+      if (String(ln?.qty ?? "") !== String(nextQty)) {
+        changed = true;
+        return { ...ln, qty: String(nextQty) };
+      }
+      return ln;
+    });
+    if (changed) {
+      patch("labor.lines", normalized);
+    }
+  }, [patch, state?.labor?.lines]);
 
   // One-time labor normalization:
   // - ensure a single default line when empty
@@ -788,6 +1460,7 @@ export default function EstimateForm(props) {
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
+      patch("customer.id", "");
       patch("customer.name", "");
       patch("customer.attn", "");
       patch("customer.phone", "");
@@ -809,6 +1482,7 @@ export default function EstimateForm(props) {
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
+      patch("customer.id", "");
       patch("customer.netTermsType", "");
       patch("customer.netTermsDays", "");
       try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
@@ -822,6 +1496,7 @@ export default function EstimateForm(props) {
     const payloadCustomer = { ...c, ...flat };
     setSelectedCustomerProfile(payloadCustomer);
     setDropdownOpen(false);
+    patch("customer.id", id);
     try {
       const payload = { id, customer: payloadCustomer, ts: Date.now() };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
@@ -830,20 +1505,11 @@ export default function EstimateForm(props) {
     } catch {}
   }
 
-  function handleMultiplierSelect(value) {
-    if (value === "custom") {
-      setMultiplierMode("custom");
-      return;
-    }
-    setMultiplierMode("preset");
-    patch("labor.multiplier", value);
-  }
-
   function decrementLaborQty(id) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines.find((x) => String(x?.id) === String(id));
-    const current = Number(ln?.qty);
-    const next = Math.max(1, Number.isFinite(current) && current > 0 ? current - 1 : 1);
+    const current = normalizeLaborQtyValue(ln?.qty);
+    const next = Math.max(1, current - 1);
     updateLaborLine(id, { qty: String(next) });
   }
 
@@ -860,6 +1526,7 @@ export default function EstimateForm(props) {
       trueRateInternal: "",
       internalRate: "",
       qty: 1,
+      markupPct: globalDefaultMarkupPct,
     });
     patch("labor.lines", lines);
     markRowEnter("labor", newId);
@@ -907,7 +1574,7 @@ export default function EstimateForm(props) {
       return;
     }
     if (key === "qty") {
-      patchLineByIndex(i, { qty: String(Math.max(1, Number(value) || 1)) });
+      patchLineByIndex(i, { qty: String(normalizeLaborQtyValue(value)) });
       return;
     }
     patchLineByIndex(i, { [key]: value });
@@ -930,42 +1597,57 @@ export default function EstimateForm(props) {
   }
 
   function removeLaborLineAt(i) {
+    if (isStaticLaborRow(i)) {
+      clearLaborLineAt(i);
+      return;
+    }
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines[i];
     if (!ln) return;
     removeLaborLine(ln.id);
   }
 
-  function clearLaborMinusHoldTimer() {
-    if (!laborHoldTimerRef.current) return;
-    clearTimeout(laborHoldTimerRef.current);
-    laborHoldTimerRef.current = null;
+  function isStaticLaborRow(i) {
+    return i === 0;
   }
 
-  function startLaborMinusHold(i) {
-    clearLaborMinusHoldTimer();
-    laborHoldFiredRef.current = null;
-    const holdKey = String(laborLines?.[i]?.id ?? i);
-    laborHoldTimerRef.current = setTimeout(() => {
-      laborHoldFiredRef.current = holdKey;
-      removeLaborLineAt(i);
-      laborHoldTimerRef.current = null;
-    }, LABOR_MINUS_HOLD_MS);
+  function clearLaborLineAt(i) {
+    if (!laborLines?.[i]) return;
+    patchLineByIndex(i, {
+      role: "",
+      label: "",
+      hours: "",
+      rate: "",
+      trueRateInternal: "",
+      internalRate: "",
+      qty: "1",
+      markupPct: globalDefaultMarkupPct,
+    });
   }
 
   function handleLaborMinus(i) {
-    const holdKey = String(laborLines?.[i]?.id ?? i);
-    const firedKey = laborHoldFiredRef.current;
-    if (firedKey) {
-      laborHoldFiredRef.current = null;
-      if (firedKey === holdKey) return;
-    }
     if (!laborLines?.[i]) {
       return;
     }
-    const q = Math.max(1, Number(laborLines?.[i]?.qty) || 1);
-    if (q > 1) {
-      updateLaborLineAt(i, "qty", String(q - 1));
+    const currentQty = normalizeLaborQtyValue(laborLines?.[i]?.qty);
+
+    if (isStaticLaborRow(i)) {
+      if (currentQty <= 1) return;
+      patchLineByIndex(i, { qty: String(currentQty - 1) });
+      return;
+    }
+
+    if (currentQty > 1) {
+      patchLineByIndex(i, { qty: String(currentQty - 1) });
+      return;
+    }
+    removeLaborLineAt(i);
+  }
+
+  function handleLaborTrash(i) {
+    if (!laborLines?.[i]) return;
+    if (isStaticLaborRow(i)) {
+      clearLaborLineAt(i);
       return;
     }
     removeLaborLineAt(i);
@@ -1022,7 +1704,7 @@ export default function EstimateForm(props) {
 
   function addMaterialItem() {
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
-    const newItem = createBlankMaterialItem();
+    const newItem = createBlankMaterialItem(undefined, globalDefaultMarkupPct);
     items.push(newItem);
     patch("materials.items", items);
     markRowEnter("materials", newItem.id);
@@ -1034,6 +1716,8 @@ export default function EstimateForm(props) {
     const curr = { ...(items[i] || {}) };
     if (key === "qty") {
       curr.qty = Math.max(1, Number(value) || 1);
+    } else if (key === "note") {
+      curr.note = String(value ?? "");
     } else if (key === "cost") {
       curr.cost = value;
       curr.unitCostInternal = value;
@@ -1041,6 +1725,9 @@ export default function EstimateForm(props) {
     } else if (key === "charge") {
       curr.charge = value;
       curr.priceEach = value;
+    } else if (key === "markupPct") {
+      if (lockMarkupToGlobal) return;
+      curr.markupPct = value;
     } else {
       curr[key] = value;
     }
@@ -1051,20 +1738,30 @@ export default function EstimateForm(props) {
   function removeMaterialItem(i) {
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     if (i < 0 || i >= items.length) return;
-    if (items.length <= 1) {
-      patch("materials.items", [createBlankMaterialItem(items[0]?.id)]);
+    if (i === 0) {
+      items[0] = createBlankMaterialItem(items[0]?.id, globalDefaultMarkupPct);
+      patch("materials.items", items);
       return;
     }
     patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
-  const computed = useMemo(() => computeTotals(state), [state]);
+  const computed = useMemo(() => computeTotals(state, { settings: settingsSnapshot }), [settingsSnapshot, state]);
 
   const laborTotalsById = useMemo(() => {
     const map = new Map();
     try {
       const arr = computed?.labor?.normalized || [];
       for (const ln of arr) map.set(String(ln?.id), Number(ln?.total || 0));
+    } catch {}
+    return map;
+  }, [computed]);
+
+  const materialLineTotalsById = useMemo(() => {
+    const map = new Map();
+    try {
+      const arr = computed?.materials?.normalized || [];
+      for (const it of arr) map.set(String(it?.id), Number(it?.charge || 0));
     } catch {}
     return map;
   }, [computed]);
@@ -1087,44 +1784,270 @@ export default function EstimateForm(props) {
   const onClearAll = () => {
     if (!window.confirm("Clear everything and start fresh?")) return;
     clearAll();
-    setMultiplierMode("preset");
+    setSpecialConditionsOpen(false);
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+  };
+
+  const onCancelEdit = () => {
+    if (!isEditMode) return;
+    const ok = window.confirm(`Discard changes to this ${isInvoiceEditMode ? "invoice" : "estimate"}?`);
+    if (!ok) return;
+    clearPendingEditTarget(editingTargetType);
+    openedEditIdRef.current = "";
+    openedDocNumberRef.current = "";
+    setEditTarget(null);
+    try {
+      window.dispatchEvent(new Event(isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
+    } catch {}
+  };
+
+  const setSpecialConditionsFieldPendingCommit = (fieldKey, nextIsPending) => {
+    setSpecialConditionsPendingCommitByField((current) => {
+      if (current?.[fieldKey] === nextIsPending) return current;
+      return {
+        ...current,
+        [fieldKey]: nextIsPending,
+      };
+    });
+  };
+
+  const handleSpecialConditionsModeChange = (fieldKey, detail = null) => {
+    const source = String(detail?.source || "");
+    setSpecialConditionsOpen(true);
+    if (source === "select-custom") {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+      setActiveSpecialConditionsCustomField(fieldKey);
+      return;
+    }
+    if (source === "custom-to-select") {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+      setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+      return;
+    }
+    if (source === "select-preset") {
+      pendingSpecialConditionsAutoCollapseRef.current = true;
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+      setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+    }
+  };
+
+  const handleSpecialConditionsEditingChange = (fieldKey, isEditing, detail = null) => {
+    setSpecialConditionsOpen(true);
+    if (isEditing) {
+      pendingSpecialConditionsAutoCollapseRef.current = false;
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+      setActiveSpecialConditionsCustomField(fieldKey);
+      return;
+    }
+    if (detail?.isCommitted === true) {
+      setSpecialConditionsFieldPendingCommit(fieldKey, false);
+    } else if (detail?.source === "blur") {
+      setSpecialConditionsFieldPendingCommit(fieldKey, true);
+    }
+    setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+  };
+
+  const handleSpecialConditionsCommit = (path, nextValue, fieldKey, detail = null) => {
+    patch(path, nextValue);
+    setActiveSpecialConditionsCustomField((current) => (current === fieldKey ? "" : current));
+    const hasValidCommit = detail?.isValid === true && detail?.isCommitted !== false;
+    setSpecialConditionsFieldPendingCommit(fieldKey, !hasValidCommit);
+    pendingSpecialConditionsAutoCollapseRef.current = hasValidCommit;
   };
 
   const onSaveNow = () => {
-    const prevSavedAt = Number(state?.meta?.lastSavedAt || 0);
     try {
-      saveNow?.();
+      triggerHaptic();
+      const customerName = String(state?.customer?.name || selectedProfile?.displayName || "").trim();
+      const missing = [];
+      if (!customerName) missing.push("customer");
+      if (!String(state?.job?.date || "").trim()) missing.push("date");
+
+      if (missing.length > 0) {
+        const missingLabel = missing.map((it) => (it === "customer" ? "Customer" : "Date")).join(", ");
+        setSavePrompt({
+          tone: "warn",
+          message: `Cannot save yet. Missing: ${missingLabel}.`,
+        });
+        return;
+      }
+
+      const now = Date.now();
+      const docNumber = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
+      const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
+      const openedEditId = String(openedEditIdRef.current || "").trim();
+      const currentMetaSavedDocId = String(state?.meta?.savedDocId || "").trim();
+      if (
+        isEditMode
+        && openedEditId
+        && (
+          (forcedEditId && forcedEditId !== openedEditId)
+          || (currentMetaSavedDocId && currentMetaSavedDocId !== openedEditId)
+        )
+      ) {
+        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
+        return;
+      }
+      const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
+      const existingEstimates = readSavedDocList(ESTIMATES_KEY);
+      const existingInvoices = readSavedDocList(INVOICES_KEY);
+
+      const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
+      const existingById = savedDocId
+        ? (
+          isInvoiceEditMode
+            ? findById(existingInvoices)
+            : (findById(existingEstimates) || findById(existingInvoices))
+        )
+        : null;
+
+      const matchedByNumber = !savedDocId && docNumber
+        ? (
+          uiDocType === "invoice"
+            ? (
+              existingInvoices.find((x) => String(x?.invoiceNumber || "").trim() === docNumber)
+              || existingEstimates.find((x) => String(x?.invoiceNumber || "").trim() === docNumber)
+            )
+            : existingEstimates.find((x) => String(x?.estimateNumber || "").trim() === docNumber)
+        )
+        : null;
+
+      if (isEditMode && !existingById) {
+        setSavePrompt({ tone: "error", message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Unable to update.` });
+        return;
+      }
+
+      const existingMatch = existingById || matchedByNumber;
+      const recordId = savedDocId || String(existingMatch?.id || "").trim() || createSavedDocId();
+      if (isEditMode && openedEditId && recordId !== openedEditId) {
+        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
+        return;
+      }
+      const createdAt = savedDocCreatedAt > 0
+        ? savedDocCreatedAt
+        : Number(existingMatch?.createdAt || now) || now;
+
+      const persistedDraft = saveNow?.(
+        { savedDocId: recordId, savedDocCreatedAt: createdAt },
+        { persistDraft: !isEditMode }
+      ) || null;
+      let persistedState = persistedDraft;
+      if ((!persistedState || typeof persistedState !== "object") && !isEditMode) {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        persistedState = raw ? JSON.parse(raw) : null;
+      }
+      if (!persistedState || typeof persistedState !== "object") {
+        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+        return;
+      }
+
+      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      const updatedAt = Date.now();
+      const estimateNumber = saveDocType === "estimate"
+        ? docNumber
+        : String(existingMatch?.estimateNumber || "").trim();
+      const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
+      const projectName = String(state?.customer?.projectName || "").trim();
+      const projectNumber = String(state?.customer?.projectNumber || "").trim();
+      const savedRecord = {
+        ...persistedState,
+        id: recordId,
+        docType: saveDocType,
+        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+        customerName,
+        projectName,
+        projectNumber,
+        estimateNumber,
+        invoiceNumber,
+        date: String(state?.job?.date || "").trim(),
+        dueDate: String(state?.job?.due || "").trim(),
+        poNumber: String(state?.job?.poNumber || "").trim(),
+        total: Number(totalRevenue || 0),
+        savedAt: updatedAt,
+        ts: updatedAt,
+        createdAt,
+        updatedAt,
+      };
+
+      const nextEstimates = upsertSavedDoc(
+        existingEstimates,
+        savedRecord,
+        saveDocType === "invoice" ? "invoiceNumber" : "estimateNumber"
+      );
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+
+      if (saveDocType === "invoice") {
+        const nextInvoices = upsertSavedDoc(existingInvoices, savedRecord, "invoiceNumber");
+        localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+      } else {
+        const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
+        if (filteredInvoices.length !== existingInvoices.length) {
+          localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
+        }
+      }
+
+      const savedLabel = docNumber
+        ? `${saveDocType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`
+        : (projectName || customerName);
+      setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
+
+      if (isEditMode) {
+        clearPendingEditTarget(editingTargetType);
+        openedEditIdRef.current = "";
+        openedDocNumberRef.current = "";
+        setEditTarget(null);
+      }
+
+      setTimeout(() => {
+        try {
+          const navEvent = isEditMode
+            ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
+            : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
+          window.dispatchEvent(new Event(navEvent));
+        } catch {}
+      }, 180);
     } catch {
-      return;
+      setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
     }
-    let persistedSavedAt = prevSavedAt;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
-      persistedSavedAt = Number(parsed?.meta?.lastSavedAt || 0);
-    } catch {}
-    if (persistedSavedAt <= prevSavedAt) return;
-    try {
-      window.dispatchEvent(new Event(uiDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates"));
-    } catch {}
   };
 
   const exportPDF = async (mode = "download") => {
     triggerHaptic();
 
-    const companyProfile = loadCompanyProfile();
-    if (!isCompanyProfileComplete(companyProfile)) {
-      const goProfile = window.confirm("Company profile is incomplete. Open Company Profile?");
-      if (goProfile) {
+    const companyGate = requireCompanyProfile({
+      profile: loadCompanyProfile(),
+      message: "User Profile required. Open User Profile?",
+      onRequireProfile: () => {
+        writeProfileReturnTarget({
+          route: ROUTES.CREATE,
+          intent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+          editContext: isEditMode && editingRecordId && editingTargetType
+            ? { type: editingTargetType, id: editingRecordId }
+            : null,
+        });
+        try {
+          window.dispatchEvent(new Event("estipaid:navigate-user-profile"));
+        } catch {}
         try {
           window.dispatchEvent(new Event("estipaid:navigate-company-profile"));
         } catch {}
         try {
+          window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "openUserProfile" } }));
+        } catch {}
+        try {
           window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "openCompanyProfile" } }));
         } catch {}
-      }
+      },
+    });
+    if (!companyGate?.allowed) {
       return;
     }
+    const companyProfile = companyGate.profile || loadCompanyProfile();
 
     try {
       const docNoRaw = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
@@ -1142,30 +2065,59 @@ export default function EstimateForm(props) {
       const projectNumber = String(state?.customer?.projectNumber || "").trim();
       const poNumber = String(state?.job?.poNumber || "").trim();
       const docDate = String(state?.job?.date || "").trim();
+      const includeNotes = uiDocType === "estimate";
+      const additionalNotesText = String(state?.additionalNotes || "").trim();
+      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
       const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
-      const tradeRawForPdf = tradeBlocks.join("\n\n");
-      const scopeWithoutTrade = stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks);
+      const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
+      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks) : "";
+      const companyAddressLine1 = String(companyProfile?.addressLine1 || "").trim();
+      const companyAddressLine2 = String(companyProfile?.addressLine2 || "").trim();
+      const companyCity = String(companyProfile?.city || "").trim();
+      const companyState = String(companyProfile?.state || "").trim();
+      const companyZip = String(companyProfile?.zip || "").trim();
+      const companyCityState = [companyCity, companyState].filter(Boolean).join(", ");
+      const companyCityStateZip = [companyCityState, companyZip].filter(Boolean).join(" ");
+      const companyAddressLines = [companyAddressLine1, companyAddressLine2, companyCityStateZip].filter(Boolean);
+      const companyAddressText = companyAddressLines.length
+        ? companyAddressLines.join("\n")
+        : String(companyProfile?.address || "").trim();
 
       const laborRows = (computed?.labor?.normalized || []).map((ln) => {
         const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
         const label = String(ln?.label || roleLabel || "").trim() || "-";
         const qty = Math.max(1, Number(ln?.qty) || 1);
         const hours = Number(ln?.hours) || 0;
-        const rate = Number(ln?.rate) || 0;
-        const lineTotal = Number(ln?.total || qty * hours * rate);
-        return [label, String(qty), String(hours || 0), money.format(rate), money.format(lineTotal)];
+        const effectiveRate = Number(ln?.effectiveRate ?? ln?.rate) || 0;
+        const lineTotal = Number(ln?.total || qty * hours * effectiveRate);
+        return [label, String(qty), String(hours || 0), money.format(effectiveRate), money.format(lineTotal)];
       });
 
       const materialsRows = (() => {
         if (materialsMode === "itemized") {
-          const rows = (materialItems || []).map((it) => {
-            const desc = String(it?.desc || "").trim() || "-";
-            const qty = Math.max(1, Number(it?.qty) || 1);
-            const each = Number(it?.charge ?? it?.priceEach) || 0;
-            const lineTotal = qty * each;
-            return [desc, String(qty), money.format(each), money.format(lineTotal)];
-          });
-          return rows.length ? rows : [["Materials", "1", money.format(0), money.format(0)]];
+          const materialNotesById = new Map(
+            (Array.isArray(state?.materials?.items) ? state.materials.items : []).map((item, index) => [
+              String(item?.id || `idx_${index}`),
+              String(item?.note || "").trim(),
+            ])
+          );
+          const rows = (computed?.materials?.normalized || [])
+            .filter((it) => String(it?.desc || "").trim())
+            .map((it) => {
+              const desc = String(it?.desc || "").trim();
+              const note = materialNotesById.get(String(it?.id || "")) || "";
+              const qty = Math.max(1, Number(it?.qty) || 1);
+              const each = Number(it?.effectivePriceEach ?? it?.priceEach ?? 0);
+              const lineTotal = Number(it?.charge || qty * each);
+              return {
+                desc,
+                note,
+                qty: String(qty),
+                each: money.format(each),
+                total: money.format(lineTotal),
+              };
+            });
+          return rows;
         }
         return [[
           "Blanket Materials",
@@ -1188,12 +2140,23 @@ export default function EstimateForm(props) {
         docType: uiDocType,
         filename,
         documentNumber,
-        company: companyProfile,
+        company: {
+          ...companyProfile,
+          phone: formatPhoneForDisplay(companyProfile?.phone),
+          address: companyAddressText,
+          addressLines: companyAddressLines,
+        },
         customer: {
           name: customerName,
           attn: customerAttn,
           address: customerAddress,
           billingAddress,
+          netTermsType: String(state?.customer?.netTermsType || "").trim(),
+          netTermsDays:
+            state?.customer?.netTermsDays === null || state?.customer?.netTermsDays === undefined
+              ? ""
+              : String(state?.customer?.netTermsDays),
+          netTermsLabel: String(selectedProfile?.netTermsLabel || "").trim(),
         },
         job: {
           date: docDate,
@@ -1214,9 +2177,11 @@ export default function EstimateForm(props) {
         tradeInsertText: tradeRawForPdf,
         laborRows,
         materialRows: materialsRows,
+        materialsMode,
+        materialsBlanketDescription: materialsMode === "blanket" ? materialsBlanketDescription : "",
         summaryRows,
-        scopeNotes: scopeWithoutTrade,
-        additionalNotes: String(state?.additionalNotes || "").trim(),
+        scopeNotes: includeNotes ? scopeWithoutTrade : "",
+        additionalNotes: additionalNotesText,
       }, mode);
     } catch (err) {
       try { console.error(err); } catch {}
@@ -1230,6 +2195,27 @@ export default function EstimateForm(props) {
   };
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const editPrimaryTitle = isInvoiceEditMode ? "EDIT INVOICE" : "EDIT ESTIMATE";
+  const editDocNumberRaw = String(
+    state?.estimateNumber
+    || state?.invoiceNumber
+    || state?.docNumber
+    || state?.documentNumber
+    || state?.number
+    || state?.job?.docNumber
+    || state?.document?.number
+    || state?.doc?.number
+    || ""
+  ).trim();
+  const editSecondaryTitle = `#${editDocNumberRaw || "(no number)"}`;
+  const editUpdatedTs = getMostRecentSavedTimestamp(state);
+  const editUpdatedLabel = editUpdatedTs > 0 ? `Last updated ${formatSavedTimestamp(editUpdatedTs)}` : "";
+  const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
+  const setDocType = (nextDocType) => {
+    const next = nextDocType === "invoice" ? "invoice" : "estimate";
+    patch("ui.docType", next);
+  };
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
     const nextMode = mode === "itemized" ? "itemized" : "blanket";
@@ -1237,7 +2223,7 @@ export default function EstimateForm(props) {
     if (nextMode === "itemized") {
       const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
       if (items.length === 0) {
-        patch("materials.items", [createBlankMaterialItem()]);
+        patch("materials.items", [createBlankMaterialItem(undefined, globalDefaultMarkupPct)]);
       }
     }
   };
@@ -1245,21 +2231,25 @@ export default function EstimateForm(props) {
   const setMaterialsCost = (v) => patch("materials.blanketCost", v);
   const materialsMarkupPct = String(state?.materials?.markupPct ?? "");
   const setMaterialsMarkupPct = (v) => patch("materials.markupPct", v);
+  const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "");
+  const setMaterialsBlanketDescription = (v) => patch("materials.materialsBlanketDescription", v);
   const materialItems = useMemo(() => {
     const arr = Array.isArray(state?.materials?.items) ? state.materials.items : [];
     return arr.map((it) => ({
       ...it,
+      note: String(it?.note || ""),
       qty: Math.max(1, Number(it?.qty) || 1),
       cost: it?.cost ?? it?.unitCostInternal ?? it?.costInternal ?? "",
       charge: it?.charge ?? it?.priceEach ?? "",
+      markupPct: it?.markupPct ?? "",
     }));
   }, [state?.materials?.items]);
   useEffect(() => {
     if (materialsMode !== "itemized") return;
     const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
     if (items.length > 0) return;
-    patch("materials.items", [createBlankMaterialItem()]);
-  }, [materialsMode, patch, state?.materials?.items]);
+    patch("materials.items", [createBlankMaterialItem(undefined, globalDefaultMarkupPct)]);
+  }, [globalDefaultMarkupPct, materialsMode, patch, state?.materials?.items]);
   const laborLines = useMemo(() => {
     const arr = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     return arr.map((ln) => {
@@ -1277,13 +2267,7 @@ export default function EstimateForm(props) {
         return sum + (Number.isFinite(n) && n > 0 ? n : 1);
       }, 0)
     : 0;
-  const itemizedMaterialsTotal = useMemo(() => {
-    return (materialItems || []).reduce((sum, it) => {
-      const qtyVal = Math.max(1, Number(it?.qty) || 1);
-      const eachVal = Number(it?.charge) || 0;
-      return sum + (qtyVal * eachVal);
-    }, 0);
-  }, [materialItems]);
+  const itemizedMaterialsTotal = Number(computed?.materials?.totalCharge || 0);
   const itemizedMaterialsCount = useMemo(() => (materialItems || []).length, [materialItems]);
   const normalizedMarkupPct = Number(normalizePercentInput(materialsMarkupPct));
   const materialsBilled = materialsMode === "itemized"
@@ -1306,6 +2290,16 @@ export default function EstimateForm(props) {
   const laborBase = Number(computed?.labor?.subtotal || 0);
   const currentMultiplier = Number(computed?.multiplier ?? state?.labor?.multiplier);
   const laborMultiplier = Number.isFinite(currentMultiplier) && currentMultiplier > 0 ? currentMultiplier : 1;
+  const hazardPctSelection = deriveSteppedPercentSelection(state?.labor?.hazardPct);
+  const riskPctSelection = deriveSteppedPercentSelection(state?.labor?.riskPct);
+  const hazardPctComplete = isSteppedPercentValueComplete(hazardPctSelection, state?.labor?.hazardPct);
+  const riskPctComplete = isSteppedPercentValueComplete(riskPctSelection, state?.labor?.riskPct);
+  const specialConditionsComplete = hazardPctComplete && riskPctComplete;
+  const specialConditionsHasPendingCommit = !!(
+    specialConditionsPendingCommitByField?.hazard
+    || specialConditionsPendingCommitByField?.risk
+  );
+  const specialConditionsSummary = `Hazard: ${formatSpecialConditionsSummaryValue(state?.labor?.hazardPct)}% • Risk: ${formatSpecialConditionsSummaryValue(state?.labor?.riskPct)}%`;
   const hazardPctNormalized = Number(normalizePercentInput(computed?.hazardPct ?? state?.labor?.hazardPct));
   const riskPctNormalized = Number(normalizePercentInput(computed?.riskPct ?? state?.labor?.riskPct));
   const hazardEnabled = Number.isFinite(hazardPctNormalized) && hazardPctNormalized > 0;
@@ -1319,15 +2313,6 @@ export default function EstimateForm(props) {
   const itemizedCollapsedSummary = `${
     itemizedMaterialsCount === 1 ? "1 item" : `${itemizedMaterialsCount} items`
   } • Total ${money.format(itemizedMaterialsTotal)}`;
-  const multiplierSelectValue = multiplierMode === "custom"
-    ? "custom"
-    : (laborMultiplier === 1.1
-      ? "1.1"
-      : laborMultiplier === 1.2
-        ? "1.2"
-        : laborMultiplier === 1.25
-          ? "1.25"
-          : "1");
   const totalTallyLine = `${laborLineCount} ${t("laborLines")}`
     + (totalLaborers !== laborLineCount ? ` • ${totalLaborers} ${t("laborers")}` : "")
     + (laborMultiplier !== 1 ? ` • ${laborMultiplier}${t("complexity")}` : "")
@@ -1358,46 +2343,128 @@ export default function EstimateForm(props) {
     };
   }, [displayedMaterialsTotal, laborBase, totalRevenue]);
 
+  useEffect(() => {
+    if (!pendingSpecialConditionsAutoCollapseRef.current) return;
+    if (!specialConditionsComplete) return;
+    if (activeSpecialConditionsCustomField) return;
+    if (specialConditionsHasPendingCommit) return;
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+    setSpecialConditionsOpen(false);
+  }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
+
   const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
+  const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
+  const saveToastToneStyle = savePrompt?.tone === "error"
+    ? styles.saveToastError
+    : (savePrompt?.tone === "warn" ? styles.saveToastWarn : styles.saveToastSuccess);
+  const actionButtonsStyle = isEditMode ? styles.estimatorActionButtonsEdit : styles.estimatorActionButtons;
+  const actionBarHiddenTransform = `translateY(calc(100% + ${dockHeight}px + env(safe-area-inset-bottom, 0px) + 24px))`;
+  const actionBarStyle = shouldSyncActionBarWithBottomChrome
+    ? {
+        ...styles.estimatorActionBar,
+        bottom: actionBarBottom,
+        paddingLeft: "max(10px, env(safe-area-inset-left, 0px))",
+        paddingRight: "max(10px, env(safe-area-inset-right, 0px))",
+        transform: mobileBottomChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
+        opacity: mobileBottomChromeVisible ? 1 : 0,
+        transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
+        willChange: "transform, opacity",
+      }
+    : { ...styles.estimatorActionBar, bottom: actionBarBottom };
+  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !mobileBottomChromeVisible
+    ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
+    : styles.estimatorActionBarInner;
+  const actionBarNode = (
+    <div style={actionBarStyle}>
+      <div ref={actionBarRef} style={actionBarInnerStyle}>
+        <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
+          <button
+            className="pe-btn pe-shortcut-tip"
+            data-shortcut="Ctrl + S"
+            type="button"
+            onClick={onSaveNow}
+            style={{
+              ...styles.estimatorActionButton,
+              transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
+              ...(saveNeedsAttention
+                ? {
+                    borderColor: "rgba(74,222,128,0.5)",
+                    boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
+                  }
+                : null),
+              ...(savePulse ? { transform: "scale(1.02)" } : null),
+            }}
+          >
+            {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
+          </button>
+          {isEditMode ? (
+            <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
+              Cancel Edit
+            </button>
+          ) : null}
+          {!isEditMode ? (
+            <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+              Clear
+            </button>
+          ) : null}
+          <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+            Export PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
       {/* Builder bar */}
-      <div style={styles.builderHeroWrap}>
-        <div className="pe-builder-bar">
-          <div className="pe-title pe-builder-title">
-            {uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder"}
+      <div className="estimatorPageContainer">
+        <div className="tileWidthWrapper">
+          <div className="pe-builder-bar estimatorHeaderRow">
+            {isEditMode ? (
+              <>
+                <div style={styles.editHeaderStack}>
+                  <h1 className="pe-title pe-builder-title screenTitle" style={styles.editHeaderPrimary}>
+                    {editPrimaryTitle}
+                  </h1>
+                  <div style={styles.editHeaderSecondary}>{editSecondaryTitle}</div>
+                  {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
+                </div>
+                <div style={styles.editModeBadge}>EDIT MODE</div>
+              </>
+            ) : (
+              <>
+                <h1 className="pe-title pe-builder-title screenTitle">
+                  <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+                </h1>
+                <div className="pe-builder-mode" style={styles.builderModeSegmented}>
+                  <button
+                    type="button"
+                    className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                    onClick={() => setDocType("estimate")}
+                    style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                  >
+                    Estimate
+                  </button>
+                  <button
+                    type="button"
+                    className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                    onClick={() => setDocType("invoice")}
+                    style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                  >
+                    Invoice
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-          <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-            <button
-              type="button"
-              className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-              onClick={() => patch("ui.docType", "estimate")}
-              style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-            >
-              Estimate
-            </button>
-            <button
-              type="button"
-              className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-              onClick={() => patch("ui.docType", "invoice")}
-              style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-            >
-              Invoice
-            </button>
-          </div>
-        </div>
-      </div>
 
-      <div ref={customerTopRef} className="pe-estimator-shell">
+          <div ref={customerTopRef} className="pe-card pe-estimator-shell">
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Customer</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
+        <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1455,7 +2522,7 @@ export default function EstimateForm(props) {
             disabled={!selectedCustomerId}
             onClick={() => {
               try {
-                localStorage.setItem("estipaid-customer-edit-target-v1", JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
                 window.dispatchEvent(new Event("estipaid:navigate-customers"));
               } catch {}
             }}
@@ -1499,12 +2566,14 @@ export default function EstimateForm(props) {
                   <div style={styles.customerProfileValue}>{selectedProfile.email}</div>
                 </div>
               ) : null}
-              {selectedProfile.netTermsLabel ? (
-                <div style={styles.customerProfileItem}>
-                  <div style={styles.customerProfileLabel}>Net terms</div>
-                  <div style={styles.customerProfileValue}>{selectedProfile.netTermsLabel}</div>
-                </div>
-              ) : null}
+              <div style={styles.customerProfileItem}>
+                <div style={styles.customerProfileLabel}>Customer type</div>
+                <div style={styles.customerProfileValue}>{selectedProfile.customerType === "commercial" ? "Commercial" : "Residential"}</div>
+              </div>
+              <div style={styles.customerProfileItem}>
+                <div style={styles.customerProfileLabel}>Net terms</div>
+                <div style={styles.customerProfileValue}>{selectedProfile.netTermsLabel || "—"}</div>
+              </div>
               {selectedProfile.billingAddress ? (
                 <div style={{ ...styles.customerProfileItem, ...styles.customerProfileItemFull }}>
                   <div style={styles.customerProfileLabel}>Billing address</div>
@@ -1530,31 +2599,31 @@ export default function EstimateForm(props) {
 
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Job Info</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
+        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} />
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
-            <div className="pe-jobinfo-top-grid">
+            <div className={jobInfoTopGridClassName}>
               <div>
-                <label style={styles.label}>Project #</label>
-                <input className="pe-input" value={state.customer.projectNumber || ""} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project # (optional)" />
+                <label style={styles.label}>Project name</label>
+                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
               </div>
-              <div>
-                <label style={styles.label}>PO number</label>
-                <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
-              </div>
+              {isCommercialJob ? (
+                <div>
+                  <label style={styles.label}>Project #</label>
+                  <input className="pe-input" value={state.customer.projectNumber || ""} onChange={(e) => patch("customer.projectNumber", e.target.value)} placeholder="Project # (optional)" />
+                </div>
+              ) : null}
+              {effectivePoRequired ? (
+                <div>
+                  <label style={styles.label}>PO number</label>
+                  <input className="pe-input" value={state.job.poNumber} onChange={(e) => patch("job.poNumber", e.target.value)} placeholder="PO # (optional)" />
+                </div>
+              ) : null}
               <div>
                 <label style={styles.label}>Date</label>
                 <input className="pe-input" type="date" value={state.job.date} onChange={(e) => patch("job.date", e.target.value)} />
               </div>
-            </div>
-
-            <div style={{ marginTop: 10 }}>
-              <label style={styles.label}>Project name</label>
-              <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
             </div>
 
             <div style={{ ...styles.projectLocationToggleRow, marginTop: 10 }}>
@@ -1635,13 +2704,11 @@ export default function EstimateForm(props) {
         </div>
         </section>
 
+        {uiDocType === "estimate" ? (
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
-          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-            <div className="pe-section-title" style={styles.sectionTitleText}>Scope / Notes</div>
-            <div style={styles.sectionAccentLine} />
-          </div>
+          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope / Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
@@ -1747,15 +2814,13 @@ export default function EstimateForm(props) {
           )}
         </div>
         </section>
+        ) : null}
 
       {/* LABOR */}
       <section className="pe-section">
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionHeaderRow}>
-          <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-            <div className="pe-section-title" style={styles.sectionTitleText}>{t("labor")}</div>
-            <div style={styles.sectionAccentLine} />
-          </div>
+          <SectionTitleWithIcon icon={<IconLabor />} title={t("labor")} styles={styles} stackStyle={{ marginBottom: 0 }} />
 
           {!laborOpen && (
             <div className="pe-muted" style={styles.laborCollapsedMeta}>
@@ -1842,27 +2907,54 @@ export default function EstimateForm(props) {
                   </div>
 
                   <div style={styles.fieldStack}>
-                    <div style={styles.label}>
-                      {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
-                      <span
-                        className="pe-muted"
-                        style={styles.laborLineOptional}
-                        title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
-                      >
-                        {lang === "es" ? "(opcional)" : "(optional)"}
-                      </span>
-                    </div>
-                    <input
-                      className="pe-input"
-                      placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
-                      value={l.internalRate || l.trueRateInternal || ""}
-                      onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
-                      onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
+                    <div style={styles.label}>{t("markupPct")}</div>
+                    <InlineCustomNumberField
+                      value={lockMarkupToGlobal ? String(globalDefaultMarkupPctNumber) : String(l.markupPct ?? "")}
+                      options={MARKUP_PRESET_OPTIONS}
+                      customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                      deriveSelection={deriveMarkupSelection}
+                      optionToValue={(selection) => String(Number(selection))}
+                      formatOptionLabel={(value) => `${value}%`}
+                      normalizeDraft={(value) => normalizeCustomMarkupDraft(value, 200)}
+                      normalizeFinal={(value) => normalizeCustomMarkupFinal(value, 200)}
+                      onValueChange={(nextValue) => updateLaborLineAt(i, "markupPct", nextValue)}
+                      onValueCommit={(nextValue) => updateLaborLineAt(i, "markupPct", nextValue)}
                       inputMode="decimal"
-                      title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
-                      style={{ width: "100%" }}
+                      placeholder={t("markupPct")}
+                      disabled={lockMarkupToGlobal}
+                      selectTitle={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      inputTitle={lockMarkupToGlobal ? "Locked to global default markup" : "Line markup"}
+                      suffix="%"
+                      requireExplicitCommit={isMobileActionBarViewport}
+                      style={{ width: "100%", opacity: lockMarkupToGlobal ? 0.72 : 1 }}
                     />
                   </div>
+
+                  {showInternalCostFields ? (
+                    <div style={styles.fieldStack}>
+                      <div style={styles.label}>
+                        {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
+                        <span
+                          className="pe-muted"
+                          style={styles.laborLineOptional}
+                          title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
+                        >
+                          {lang === "es" ? "(opcional)" : "(optional)"}
+                        </span>
+                      </div>
+                      <input
+                        className="pe-input"
+                        placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
+                        value={l.internalRate || l.trueRateInternal || ""}
+                        onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
+                        onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
+                        inputMode="decimal"
+                        title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
+                        disabled={lockInternalCostFields}
+                        style={{ width: "100%", opacity: lockInternalCostFields ? 0.72 : 1 }}
+                      />
+                    </div>
+                  ) : null}
                 </div>
 
                   <div style={styles.laborLineActions}>
@@ -1871,41 +2963,42 @@ export default function EstimateForm(props) {
                     title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
                     style={styles.laborQtyLabel}
                   >
-                    x{Number(l.qty) || 1}
+                    x{normalizeLaborQtyValue(l?.qty)}
                   </div>
-
-                  <button
-                    className="pe-btn pe-btn-ghost"
-                    type="button"
-                    onClick={() => duplicateLaborLine(i)}
-                    title={
-                      lang === "es"
-                        ? "Duplicar trabajador en esta línea (no agrega fila)"
-                        : "Duplicate laborer on this SAME line (does not add a new row)"
-                    }
-                  >
-                    {t("duplicate")}
-                  </button>
 
                   <div style={styles.laborLineTotalWrap}>
                     <span style={styles.laborLineTotalLabel}>Line total</span>
                     <span style={styles.laborLineTotalValue}>{money.format(laborTotalsById.get(String(l.id)) || 0)}</span>
                   </div>
 
+                  <div style={styles.laborLineActionButtons}>
+                    <button
+                      className="pe-btn pe-btn-ghost"
+                      type="button"
+                      onClick={() => handleLaborMinus(i)}
+                      title={lang === "es" ? "Disminuir cantidad" : "Decrease quantity"}
+                      style={styles.lineDeleteBtn}
+                    >
+                      −
+                    </button>
+                    <button
+                      className="pe-btn pe-btn-ghost pe-labor-add-circle"
+                      type="button"
+                      onClick={() => duplicateLaborLine(i)}
+                      title={lang === "es" ? "Duplicar trabajador en esta línea" : "Duplicate laborer on this line"}
+                      style={styles.lineAddBtn}
+                    >
+                      +
+                    </button>
+                  </div>
                   <button
-                    className="pe-btn pe-btn-ghost"
+                    className="pe-btn pe-btn-ghost pe-labor-trash-btn"
                     type="button"
-                    onClick={() => handleLaborMinus(i)}
-                    onMouseDown={() => startLaborMinusHold(i)}
-                    onMouseUp={clearLaborMinusHoldTimer}
-                    onMouseLeave={clearLaborMinusHoldTimer}
-                    onTouchStart={() => startLaborMinusHold(i)}
-                    onTouchEnd={clearLaborMinusHoldTimer}
-                    onTouchCancel={clearLaborMinusHoldTimer}
-                    title={lang === "es" ? "Disminuir / Quitar (mantener para quitar línea)" : "Decrease / Remove (hold to remove line)"}
-                    style={styles.lineDeleteBtn}
+                    onClick={() => handleLaborTrash(i)}
+                    title={lang === "es" ? "Eliminar línea" : "Delete line"}
+                    style={styles.lineTrashBtn}
                   >
-                    −
+                    <IconTrash />
                   </button>
                   </div>
                 </div>
@@ -1929,128 +3022,156 @@ export default function EstimateForm(props) {
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro" onClick={handleLaborPrimary} type="button">
+            <button className="pe-btn pe-btn-micro pe-shortcut-tip" data-shortcut="+" onClick={handleLaborPrimary} type="button">
               {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
           </div>
         )}
       </section>
 
-      <div
-        className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
-        style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
-      >
-        <section className="pe-card" style={styles.sectionBlock}>
-              <div className="pe-divider" style={styles.sectionHeaderDivider} />
-              <div style={styles.sectionHeaderRow}>
-                <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-                  <div className="pe-section-title" style={styles.sectionTitleText}>Special Conditions</div>
-                  <div style={styles.sectionAccentLine} />
+      <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <div style={styles.sectionHeaderRow}>
+          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          {!specialConditionsOpen ? (
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              style={styles.scopeCollapseBtn}
+              onClick={() => setSpecialConditionsOpen(true)}
+              title="Expand special conditions"
+            >
+              Expand ▾
+            </button>
+          ) : null}
+        </div>
+
+        <div
+          className={`pe-collapse ${specialConditionsOpen ? "pe-open" : ""}`}
+          style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div style={styles.specialConditionsCardShell}>
+            <div className="pe-special-conditions-grid" style={styles.specialConditionsGrid}>
+              <div style={styles.fieldStack}>
+                <div style={styles.label}>Hazard / Site Conditions</div>
+                <div className="pe-muted" style={styles.specialConditionsHelper}>
+                  Physical/site constraints & safety burden.
                 </div>
+                <InlineCustomNumberField
+                  value={String(state?.labor?.hazardPct ?? "")}
+                  options={STEPPED_PERCENT_OPTIONS}
+                  customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                  deriveSelection={deriveSteppedPercentSelection}
+                  optionToValue={(selection) => String(Number(selection))}
+                  formatOptionLabel={(value) => `${value}%`}
+                  normalizeDraft={normalizeCustomPercentDraft}
+                  normalizeFinal={normalizeCustomPercentFinal}
+                  onValueChange={(nextValue) => {
+                    setSpecialConditionsOpen(true);
+                    pendingSpecialConditionsAutoCollapseRef.current = false;
+                    patch("labor.hazardPct", nextValue);
+                  }}
+                  onValueCommit={(nextValue, detail) => handleSpecialConditionsCommit("labor.hazardPct", nextValue, "hazard", detail)}
+                  onModeChange={(detail) => handleSpecialConditionsModeChange("hazard", detail)}
+                  onEditingChange={(isEditing, detail) => handleSpecialConditionsEditingChange("hazard", isEditing, detail)}
+                  inputMode="decimal"
+                  selectTitle="Percent of adjusted labor only"
+                  inputTitle="Custom percent of adjusted labor only"
+                  className="pe-input pe-special-conditions-input"
+                  wrapperStyle={styles.specialConditionsPercentWrap}
+                  style={styles.specialConditionsCompactInput}
+                  suffix="%"
+                  suffixStyle={styles.specialConditionsPercentSuffix}
+                  enterKeyHint="done"
+                  requireExplicitCommit={isMobileActionBarViewport}
+                />
               </div>
 
-              <div style={styles.specialConditionsCardShell}>
-                <div className="pe-special-conditions-grid">
-                  <div style={styles.fieldStack}>
-                    <div style={styles.label}>Hazard / Site Conditions</div>
-                    <div className="pe-muted" style={styles.specialConditionsHelper}>
-                      Physical/site constraints & safety burden.
-                    </div>
-                    <div style={styles.specialConditionsPercentWrap}>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.hazardPct ?? 0)}
-                        onChange={(e) => patch("labor.hazardPct", e.target.value)}
-                        onBlur={(e) => patch("labor.hazardPct", normalizePercentInput(e.target.value))}
-                        inputMode="decimal"
-                        pattern="[0-9]*"
-                        title="Percent of adjusted labor only"
-                        style={styles.specialConditionsCompactInput}
-                      />
-                      <span style={styles.specialConditionsPercentSuffix}>%</span>
-                    </div>
-                  </div>
-
-                  <div style={styles.fieldStack}>
-                    <div style={styles.label}>Risk / Uncertainty Buffer</div>
-                    <div className="pe-muted" style={styles.specialConditionsHelper}>
-                      Unknowns & contingency for scope/schedule.
-                    </div>
-                    <div style={styles.specialConditionsPercentWrap}>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.riskPct ?? 0)}
-                        onChange={(e) => patch("labor.riskPct", e.target.value)}
-                        onBlur={(e) => patch("labor.riskPct", normalizePercentInput(e.target.value))}
-                        inputMode="decimal"
-                        pattern="[0-9]*"
-                        style={styles.specialConditionsCompactInput}
-                      />
-                      <span style={styles.specialConditionsPercentSuffix}>%</span>
-                    </div>
-                  </div>
-
-                  <div style={styles.fieldStack} className="pe-special-conditions-main-field">
-                    <div style={styles.label}>Condition</div>
-                    <select
-                      className="pe-input"
-                      value={multiplierSelectValue}
-                      onChange={(e) => handleMultiplierSelect(e.target.value)}
-                      style={{ width: "100%" }}
-                    >
-                      <option value="1">{t("standard")}</option>
-                      <option value="1.1">{t("difficultAccess")}</option>
-                      <option value="1.2">{t("highRisk")}</option>
-                      <option value="1.25">{t("offHours")}</option>
-                      <option value="custom">{t("customEllipsis")}</option>
-                    </select>
-                  </div>
+              <div style={styles.fieldStack}>
+                <div style={styles.label}>Risk / Uncertainty Buffer</div>
+                <div className="pe-muted" style={styles.specialConditionsHelper}>
+                  Unknowns & contingency for scope/schedule.
                 </div>
-
-                {multiplierMode === "custom" && (
-                  <div className="pe-special-conditions-grid" style={{ marginTop: 8 }}>
-                    <div style={styles.fieldStack} className="pe-special-conditions-main-field">
-                      <div style={styles.label}>Custom multiplier</div>
-                      <input
-                        className="pe-input"
-                        value={String(state?.labor?.multiplier ?? "")}
-                        onChange={(e) => patch("labor.multiplier", e.target.value)}
-                        onBlur={(e) => patch("labor.multiplier", normalizeMultiplierInput(e.target.value))}
-                        placeholder="Custom labor multiplier (ex: 1.18)"
-                        inputMode="decimal"
-                        style={{ width: "100%" }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div className="pe-row pe-row-slim">
-                  <div className="pe-muted">Adjusted labor</div>
-                  <div className="pe-value">{money.format(adjustedLabor)}</div>
-                </div>
-
-                {hazardEnabled && (
-                  <div className="pe-row pe-row-slim">
-                    <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
-                    <div className="pe-value">{money.format(hazardFee)}</div>
-                  </div>
-                )}
-
-                {riskEnabled && (
-                  <div className="pe-row pe-row-slim">
-                    <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
-                    <div className="pe-value">{money.format(riskFee)}</div>
-                  </div>
-                )}
+                <InlineCustomNumberField
+                  value={String(state?.labor?.riskPct ?? "")}
+                  options={STEPPED_PERCENT_OPTIONS}
+                  customOptionValue={CUSTOM_PERCENT_OPTION_VALUE}
+                  deriveSelection={deriveSteppedPercentSelection}
+                  optionToValue={(selection) => String(Number(selection))}
+                  formatOptionLabel={(value) => `${value}%`}
+                  normalizeDraft={normalizeCustomPercentDraft}
+                  normalizeFinal={normalizeCustomPercentFinal}
+                  onValueChange={(nextValue) => {
+                    setSpecialConditionsOpen(true);
+                    pendingSpecialConditionsAutoCollapseRef.current = false;
+                    patch("labor.riskPct", nextValue);
+                  }}
+                  onValueCommit={(nextValue, detail) => handleSpecialConditionsCommit("labor.riskPct", nextValue, "risk", detail)}
+                  onModeChange={(detail) => handleSpecialConditionsModeChange("risk", detail)}
+                  onEditingChange={(isEditing, detail) => handleSpecialConditionsEditingChange("risk", isEditing, detail)}
+                  inputMode="decimal"
+                  selectTitle="Percent of adjusted labor only"
+                  inputTitle="Custom percent of adjusted labor only"
+                  className="pe-input pe-special-conditions-input"
+                  wrapperStyle={styles.specialConditionsPercentWrap}
+                  style={styles.specialConditionsCompactInput}
+                  suffix="%"
+                  suffixStyle={styles.specialConditionsPercentSuffix}
+                  enterKeyHint="done"
+                  requireExplicitCommit={isMobileActionBarViewport}
+                />
               </div>
-        </section>
-      </div>
+            </div>
+
+            <div className="pe-row pe-row-slim">
+              <div className="pe-muted">Adjusted labor</div>
+              <div className="pe-value">{money.format(adjustedLabor)}</div>
+            </div>
+
+            {hazardEnabled && (
+              <div className="pe-row pe-row-slim">
+                <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
+                <div className="pe-value">{money.format(hazardFee)}</div>
+              </div>
+            )}
+
+            {riskEnabled && (
+              <div className="pe-row pe-row-slim">
+                <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
+                <div className="pe-value">{money.format(riskFee)}</div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div
+          className={`pe-collapse ${specialConditionsOpen ? "" : "pe-open"}`}
+          style={{ ...styles.notesCollapsedPreviewWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
+        >
+          <div className="pe-muted" style={styles.specialConditionsCollapsedSummary}>
+            {specialConditionsSummary}
+          </div>
+        </div>
+        {specialConditionsOpen ? (
+          <div style={styles.scopeCollapseRow}>
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              style={styles.scopeCollapseBtn}
+              onClick={() => setSpecialConditionsOpen(false)}
+              title="Collapse special conditions"
+            >
+              Collapse ▴
+            </button>
+          </div>
+        ) : null}
+      </section>
 
       {/* MATERIALS */}
       <SectionMaterials
         t={t}
         lang={lang}
         styles={styles}
+        headerIcon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M12 4.8 5.8 8.1 12 11.4l6.2-3.3L12 4.8Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /><path d="M5.8 12 12 15.3l6.2-3.3M5.8 15.9 12 19.2l6.2-3.3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /></svg>}
         money={money}
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
@@ -2064,16 +3185,25 @@ export default function EstimateForm(props) {
         normalizeMoneyInput={normalizeMoneyInput}
         materialsMarkupPct={materialsMarkupPct}
         setMaterialsMarkupPct={setMaterialsMarkupPct}
+        materialsBlanketDescription={materialsBlanketDescription}
+        setMaterialsBlanketDescription={setMaterialsBlanketDescription}
         normalizePercentInput={normalizePercentInput}
         normalizedMarkupPct={normalizedMarkupPct}
+        lockMarkupToGlobal={lockMarkupToGlobal}
+        globalMarkupPct={globalDefaultMarkupPctNumber}
         animateMaterialsTotal={animateMaterialsTotal}
         materialsBilled={materialsBilled}
         materialItems={materialItems}
+        materialLineTotalsById={materialLineTotalsById}
         updateMaterialItem={updateMaterialItem}
         removeMaterialItem={removeMaterialItem}
+        showInternalCostFields={showInternalCostFields}
+        lockInternalCostFields={lockInternalCostFields}
         newMaterialItemIds={newMaterialItemIds}
         itemizedMaterialsTotal={itemizedMaterialsTotal}
         addMaterialItem={addMaterialItem}
+        trashIcon={<IconTrash />}
+        requireExplicitPickerCommit={isMobileActionBarViewport}
       />
 
       {/* TOTAL */}
@@ -2081,7 +3211,10 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div className="pe-total">
           <div>
-            <div className="pe-total-label">{t("estimateTotal")}</div>
+            <div className="pe-total-label" style={styles.totalLabelWithIcon}>
+              <span style={styles.sectionTitleIcon} aria-hidden="true"><IconTotals /></span>
+              <span>{totalLabel}</span>
+            </div>
             <div className="pe-total-meta">
               {lastSavedLabel ? `${totalTallyLine} • ${lastSavedLabel}` : totalTallyLine}
             </div>
@@ -2095,11 +3228,8 @@ export default function EstimateForm(props) {
       {/* Additional Notes */}
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionTitleStack}>
-          <div className="pe-section-title" style={styles.sectionTitleText}>Additional Notes</div>
-          <div style={styles.sectionAccentLine} />
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Additional Notes" styles={styles} />
+        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
@@ -2123,31 +3253,31 @@ export default function EstimateForm(props) {
           </button>
         </div>
         <textarea
+          ref={additionalNotesRef}
           className="pe-input pe-textarea"
-          value={state.additionalNotes || ""}
-          onChange={(e) => patch("additionalNotes", e.target.value)}
+          value={additionalNotes}
+          onChange={(e) => {
+            patch("additionalNotes", e.target.value);
+            autoResizeScopeNotes(e.target);
+          }}
           placeholder="Additional notes, terms, exclusions…"
-          style={{ minHeight: 120 }}
+          style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
       </section>
 
       </div>
-
-      <div style={{ ...styles.estimatorActionBar, bottom: actionBarBottom }}>
-        <div ref={actionBarRef} style={styles.estimatorActionBarInner}>
-          <div style={styles.estimatorActionButtons}>
-            <button className="pe-btn" type="button" onClick={onSaveNow} style={styles.estimatorActionButton}>
-              Save
-            </button>
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
-              Clear
-            </button>
-            <button className="pe-btn" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
-              Export PDF
-            </button>
-          </div>
         </div>
       </div>
+
+      {savePrompt ? (
+        <div style={{ ...styles.saveToastWrap, bottom: saveToastBottom }}>
+          <div role="status" aria-live="polite" style={{ ...styles.saveToast, ...saveToastToneStyle }}>
+            {String(savePrompt?.message || "Saved")}
+          </div>
+        </div>
+      ) : null}
+
+      {actionBarNode}
 
       <PdfPromptModal
         open={pdfPromptOpen}
@@ -2179,10 +3309,6 @@ export default function EstimateForm(props) {
 }
 
 const styles = {
-  builderHeroWrap: {
-    maxWidth: 720,
-    margin: "0 auto 12px",
-  },
   builderModeSegmented: {
     display: "inline-flex",
     alignItems: "center",
@@ -2192,6 +3318,7 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.12)",
     background: "rgba(255,255,255,0.04)",
     boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.06)",
+    flexShrink: 0,
   },
   builderModeSegment: {
     minWidth: 118,
@@ -2206,6 +3333,46 @@ const styles = {
     boxShadow: "0 0 0 1px rgba(34,197,94,0.16), 0 6px 16px rgba(0,0,0,0.25)",
     transform: "translateZ(0)",
     transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+  },
+  editHeaderStack: {
+    minWidth: 0,
+    flex: "1 1 auto",
+    display: "grid",
+    gap: 2,
+  },
+  editHeaderPrimary: {
+    margin: 0,
+    fontSize: "clamp(18px, 3.5vw, 27px)",
+    letterSpacing: "0.09em",
+    textTransform: "uppercase",
+    lineHeight: 1.04,
+  },
+  editHeaderSecondary: {
+    fontSize: 16,
+    fontWeight: 900,
+    letterSpacing: "0.03em",
+    color: "rgba(226,236,244,0.94)",
+  },
+  editHeaderMeta: {
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: "0.02em",
+    color: "rgba(196,212,224,0.78)",
+  },
+  editModeBadge: {
+    flexShrink: 0,
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.08)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.10)",
+    padding: "6px 10px",
+    fontSize: 11,
+    fontWeight: 900,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.92)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
   },
   sectionBlock: {},
   totalsBlockWrap: { maxWidth: 720, margin: "14px auto 0" },
@@ -2228,6 +3395,9 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.10)",
     background: "rgba(0,0,0,0.12)",
     marginTop: 6,
+  },
+  specialConditionsGrid: {
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
   },
   specialConditionsField: { display: "grid", gap: 4 },
   specialConditionsCompactInput: {
@@ -2255,6 +3425,14 @@ const styles = {
     fontWeight: 700,
     lineHeight: 1.2,
     marginBottom: 2,
+  },
+  specialConditionsCollapsedSummary: {
+    marginTop: 2,
+    marginBottom: 4,
+    fontSize: 13,
+    lineHeight: 1.35,
+    opacity: 0.9,
+    fontWeight: 700,
   },
   laborCollapsedRow: { maxWidth: 720, margin: "0 auto", padding: "2px 4px 0" },
   laborCollapsedHeader: { display: "grid", gridTemplateColumns: "auto auto 1fr auto", alignItems: "center", gap: 12, marginBottom: 10 },
@@ -2310,14 +3488,43 @@ const styles = {
   laborLineTotalWrap: { marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" },
   laborLineTotalLabel: { color: "var(--muted)", fontSize: 13, fontWeight: 800 },
   laborLineTotalValue: { color: "var(--text)", fontSize: 14, fontWeight: 900 },
+  laborLineActionButtons: { display: "inline-flex", gap: 8, alignItems: "center" },
   lineDeleteBtn: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
     borderRadius: 999,
     display: "grid",
     placeItems: "center",
     padding: 0,
     fontSize: 22,
+    lineHeight: 1,
+    alignSelf: "end",
+  },
+  lineAddBtn: {
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 24,
+    lineHeight: 1,
+    alignSelf: "end",
+  },
+  lineTrashBtn: {
+    width: 36,
+    height: 36,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: 999,
+    display: "grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 14,
     lineHeight: 1,
     alignSelf: "end",
   },
@@ -2357,6 +3564,18 @@ const styles = {
     gap: 6,
     width: "fit-content",
     marginBottom: 8,
+  },
+  sectionTitleWithIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  sectionTitleIcon: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: 0.68,
+    transform: "translateY(1px)",
   },
   sectionHeaderDivider: {
     margin: "0 0 8px",
@@ -2398,6 +3617,7 @@ const styles = {
   projectLocationToggleRow: { marginTop: 2 },
   projectLocationToggleLabel: { display: "inline-flex", gap: 10, alignItems: "center", fontSize: 13.5, color: "rgba(229,238,245,0.90)", cursor: "pointer" },
   totalCardHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
+  totalLabelWithIcon: { display: "inline-flex", alignItems: "center", gap: 8 },
   totalCardTally: { fontSize: 13.5, fontWeight: 800, color: "rgba(203,213,225,0.92)" },
   totalBreakdown: { display: "grid", gap: 8 },
   totalBreakdownRow: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" },
@@ -2468,6 +3688,45 @@ const styles = {
     fontWeight: 600,
     lineHeight: 1.2,
   },
+  saveToastWrap: {
+    position: "fixed",
+    left: 0,
+    right: 0,
+    zIndex: 1000,
+    pointerEvents: "none",
+    display: "flex",
+    justifyContent: "center",
+    padding: "0 14px",
+  },
+  saveToast: {
+    width: "100%",
+    maxWidth: 980,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(16, 24, 40, 0.88)",
+    color: "rgba(241,245,249,0.98)",
+    boxShadow: "0 14px 30px rgba(0,0,0,0.32)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    padding: "10px 12px",
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: 900,
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+  },
+  saveToastSuccess: {
+    borderColor: "rgba(34,197,94,0.42)",
+    background: "linear-gradient(180deg, rgba(22,101,52,0.5), rgba(16,24,40,0.9))",
+  },
+  saveToastWarn: {
+    borderColor: "rgba(245,158,11,0.5)",
+    background: "linear-gradient(180deg, rgba(133,77,14,0.54), rgba(16,24,40,0.9))",
+  },
+  saveToastError: {
+    borderColor: "rgba(239,68,68,0.54)",
+    background: "linear-gradient(180deg, rgba(127,29,29,0.6), rgba(16,24,40,0.92))",
+  },
   estimatorActionBar: {
     position: "fixed",
     left: 0,
@@ -2495,7 +3754,14 @@ const styles = {
     padding: 10,
   },
   estimatorActionButtons: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
+  estimatorActionButtonsEdit: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
   estimatorActionButton: { width: "100%" },
+  estimatorActionButtonCompact: {
+    fontSize: 13,
+    paddingLeft: 10,
+    paddingRight: 10,
+    whiteSpace: "nowrap",
+  },
   dueHint: { marginTop: 6, fontSize: 12, color: "rgba(156,163,175,0.9)" },
   selectedCustomerText: { marginTop: 8, fontSize: 13, color: "rgba(233,241,248,0.86)" },
   customerProfilePanel: {
@@ -2508,9 +3774,9 @@ const styles = {
     fontFamily: "inherit",
   },
   customerProfileTitle: { fontSize: 12, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.84, marginBottom: 10 },
-  customerProfileGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 },
-  customerProfileItem: { display: "grid", gap: 3 },
+  customerProfileGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 },
+  customerProfileItem: { display: "grid", gap: 3, minWidth: 0 },
   customerProfileItemFull: { gridColumn: "1 / -1" },
   customerProfileLabel: { fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", opacity: 0.66 },
-  customerProfileValue: { fontSize: 13.5, lineHeight: 1.35, color: "rgba(245,250,255,0.94)", whiteSpace: "pre-line" },
+  customerProfileValue: { fontSize: 13.5, lineHeight: 1.35, color: "rgba(245,250,255,0.94)", whiteSpace: "pre-line", minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" },
 };

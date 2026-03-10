@@ -1,4 +1,5 @@
 // src/estimate.js
+import { computeTotals } from "./estimator/engine";
 
 const toNum = (x) => {
   const v = Number(x);
@@ -19,23 +20,36 @@ export function calculateEstimateWithLaborLines(
 ) {
   const lines = Array.isArray(laborLines) ? laborLines : [];
 
-  const laborBase = lines.reduce((sum, l) => {
-    const qty = toQty(l?.qty);
-    const hours = toNum(l?.hours);
-    const rate = toNum(l?.rate);
-    return sum + qty * hours * rate;
-  }, 0);
-
-  const mult = toNum(laborMultiplier) || 1;
-  const laborAdjusted = laborBase * mult;
-
   const markupPctRaw = toNum(materialsMarkupPct);
   const markupPct = Number.isFinite(markupPctRaw) ? markupPctRaw : 20;
 
-  const matCost = toNum(materialsCost);
-  const materialsBilled = matCost * (1 + markupPct / 100);
-
   const riskFeeNum = toNum(hazardFee);
+  const computed = computeTotals({
+    ui: { materialsMode: "blanket" },
+    labor: {
+      multiplier: toNum(laborMultiplier) || 1,
+      hazardPct: 0,
+      riskPct: 0,
+      lines: lines.map((l, idx) => ({
+        id: String(l?.id ?? `legacy_l_${idx}`),
+        qty: toQty(l?.qty),
+        hours: toNum(l?.hours),
+        rate: toNum(l?.rate),
+        markupPct: 0,
+        trueRateInternal: 0,
+      })),
+    },
+    materials: {
+      blanketCost: toNum(materialsCost),
+      blanketInternalCost: 0,
+      markupPct,
+      items: [],
+    },
+  });
+
+  const laborBase = toNum(computed?.labor?.subtotal);
+  const laborAdjusted = toNum(computed?.laborAfterMultiplier);
+  const materialsBilled = toNum(computed?.materials?.totalRevenue);
   const total = laborAdjusted + materialsBilled + riskFeeNum;
 
   return {

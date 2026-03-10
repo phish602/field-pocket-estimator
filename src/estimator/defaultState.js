@@ -1,8 +1,10 @@
 // @ts-nocheck
 /* eslint-disable */
 
+import { STORAGE_KEYS } from "../constants/storageKeys";
+
 export const BUILD_TAG = "ESTIPAID_ESTIMATOR_V1_SPLIT";
-export const STORAGE_KEY = "estipaid-estimator-v1";
+export const STORAGE_KEY = STORAGE_KEYS.ESTIMATOR_STATE;
 
 function todayISO() {
   const d = new Date();
@@ -15,10 +17,11 @@ function todayISO() {
 export const DEFAULT_STATE = {
   ui: {
     docType: "estimate",
-    materialsMode: "blanket",
+    materialsMode: "itemized",
   },
 
   customer: {
+    id: "",
     name: "",
     attn: "",
     phone: "",
@@ -56,6 +59,7 @@ export const DEFAULT_STATE = {
   materials: {
     blanketCost: "",
     blanketInternalCost: "",
+    materialsBlanketDescription: "",
     markupPct: 0,
     items: [{ id: "m1", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" }],
   },

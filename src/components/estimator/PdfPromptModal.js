@@ -18,7 +18,7 @@ export default function PdfPromptModal(props) {
 
   return createPortal(
     <div style={styles.backdrop} onClick={onClose}>
-      <div style={styles.card} onClick={(e) => e.stopPropagation()}>
+      <div className="pe-card pe-card-content" style={styles.card} onClick={(e) => e.stopPropagation()}>
         <div style={styles.title}>Export PDF</div>
         <div style={styles.text}>
           Choose an action for this {docType === "invoice" ? "invoice" : "estimate"} PDF.
