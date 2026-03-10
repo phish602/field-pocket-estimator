@@ -379,6 +379,13 @@ function IconCreate({ size = 28 }) {
    ========================= */
 const HEADER_H = 60;
 const FOOTER_H = 78;
+const HEADER_SAFE_GAP = 8;
+const FOOTER_FLOAT_GAP = 16;
+const FOOTER_CONTENT_BREATHING = "clamp(36px, 5svh, 56px)";
+const CHROME_TOP_REVEAL_THRESHOLD = 24;
+const CHROME_DIRECTION_EPSILON = 1;
+const CHROME_HIDE_DISTANCE = 28;
+const CHROME_SHOW_DISTANCE = 14;
 
 /* =========================
    Top bar + bottom nav + drawer
@@ -393,6 +400,7 @@ function TopBar({
   onHeaderSpinLongPress,
   isScrolled,
   glassOnScroll,
+  chromeVisible,
   routeEnterKey,
 }) {
   const src = topRightLogoSrc || DEFAULT_LOGO;
@@ -417,7 +425,13 @@ function TopBar({
   }, []);
 
   return (
-    <div style={{ ...styles.topbar, ...(glassOnScroll && isScrolled ? styles.topbarScrolled : null) }}>
+    <div
+      style={{
+        ...styles.topbar,
+        ...(glassOnScroll && isScrolled ? styles.topbarScrolled : null),
+        ...(!chromeVisible ? styles.topbarHidden : null),
+      }}
+    >
       <button
         className="pe-btn pe-btn-ghost"
         style={{ ...styles.headerIconBtn, ...styles.headerMenuIcon }}
@@ -497,7 +511,7 @@ function TopBar({
   );
 }
 
-function BottomNav({ active, setActive, disabled, onQuickOpen }) {
+function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible }) {
   const tabs = useMemo(
     () => [
       { key: ROUTES.HOME, label: "Home", Icon: IconHome },
@@ -555,7 +569,14 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
   }, [active, createBump]);
 
   return (
-    <div style={styles.bottomnav} role="navigation" aria-label="Primary">
+    <div
+      style={{
+        ...styles.bottomnav,
+        ...(!chromeVisible ? styles.bottomnavHidden : null),
+      }}
+      role="navigation"
+      aria-label="Primary"
+    >
       {tabs.map((t) => {
         const isActive = active === t.key;
         const isCenter = !!t.center;
@@ -567,6 +588,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen }) {
           opacity: isDisabled ? 0.35 : isActive ? 1 : 0.75,
           marginTop: isCenter ? -10 : 0,
           pointerEvents: isDisabled ? "none" : "auto",
+          ...(isActive ? styles.navBtnActive : null),
         };
 
         const iconWrapStyle = isCenter
@@ -747,8 +769,8 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
 
   return (
     <div className="pe-main" style={{ paddingTop: 0 }}>
-      <div style={{ width: "min(860px, calc(100% - 28px))", margin: "0 auto" }}>
-      <div className="pe-card" style={{ marginTop: 10, textAlign: "center" }}>
+      <div style={{ width: "min(860px, calc(100% - 28px))", margin: "0 auto", display: "grid", gap: "clamp(10px, 1.8vh, 16px)" }}>
+      <div className="pe-card" style={{ marginTop: 0, textAlign: "center" }}>
         <div
           style={{
             fontSize: 16,
@@ -830,7 +852,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card" style={{ marginTop: 0 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>Quick Actions</div>
         <div className="pe-muted" style={{ marginBottom: 10 }}>
           Jump back in or start fresh.
@@ -897,7 +919,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 10 }}>
+      <div className="pe-card" style={{ marginTop: 0 }}>
         <div style={{ fontWeight: 900, marginBottom: 8 }}>Updates</div>
         <div className="pe-muted">• Beta calculator update (coming soon)</div>
         <div className="pe-muted">• Chat estimate build (beta) (coming soon)</div>
@@ -912,33 +934,51 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
    Styles (transparent overlays + legibility)
    ========================= */
 const styles = {
-  shell: { height: "100vh", position: "relative", overflow: "hidden" },
+  shell: {
+    minHeight: "100%",
+    height: "auto",
+    width: "100%",
+    position: "relative",
+    overflow: "visible",
+    background: "var(--pe-app-bg)",
+    backgroundColor: "var(--pe-app-bg-solid)",
+  },
 
   // overlay header
   topbar: {
-    height: HEADER_H,
+    height: `calc(${HEADER_H}px + env(safe-area-inset-top, 0px) + ${HEADER_SAFE_GAP}px)`,
     position: "fixed",
     top: 0,
     left: "50%",
     transform: "translateX(-50%)",
-    width: "min(1100px, calc(100% - 24px))",
+    width: "min(1100px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
     maxWidth: "100%",
     zIndex: 50,
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "0 14px",
+    paddingTop: `calc(env(safe-area-inset-top, 0px) + ${HEADER_SAFE_GAP}px)`,
+    paddingRight: 14,
+    paddingBottom: 0,
+    paddingLeft: 14,
     boxSizing: "border-box",
     background: "transparent",
-    backdropFilter: "blur(8px)",
-    WebkitBackdropFilter: "blur(8px)",
     minWidth: 0,
+    opacity: 1,
+    pointerEvents: "auto",
+    transition: "transform 220ms ease, opacity 180ms ease",
+    willChange: "transform, opacity",
   },
   
 
   topbarScrolled: {
-    background: "rgba(10, 18, 28, 0.35)",
-    borderBottom: "1px solid rgba(255,255,255,0.12)",
+    background: "transparent",
+    borderBottom: "none",
+  },
+  topbarHidden: {
+    transform: "translate(-50%, calc(-100% - env(safe-area-inset-top, 0px) - 10px))",
+    opacity: 0,
+    pointerEvents: "none",
   },
 
   headerSpinBtn: {
@@ -976,10 +1016,10 @@ const styles = {
   },
   quickMenu: {
     position: "fixed",
-    top: 74,
+    top: `calc(env(safe-area-inset-top, 0px) + ${HEADER_H + HEADER_SAFE_GAP + 18}px)`,
     left: "50%",
     transform: "translateX(-50%)",
-    width: "min(520px, calc(100% - 24px))",
+    width: "min(520px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
     zIndex: 85,
     padding: 14,
     borderRadius: 18,
@@ -1021,6 +1061,11 @@ const styles = {
     display: "grid",
     placeItems: "center",
     borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
+    boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
   },
   headerMenuIcon: {
     fontSize: 24,
@@ -1112,41 +1157,55 @@ const styles = {
 
   // full-height scroll under overlays
   content: {
-    position: "absolute",
-    inset: 0,
-    overflowY: "auto",
-    WebkitOverflowScrolling: "touch",
-    paddingTop: HEADER_H,
-    paddingBottom: FOOTER_H + 10,
-    background: "transparent",
+    position: "relative",
+    width: "100%",
+    paddingTop: `calc(${HEADER_H}px + env(safe-area-inset-top, 0px) + ${HEADER_SAFE_GAP}px + clamp(10px, 2.2vh, 18px))`,
+    paddingBottom: `calc(${FOOTER_H}px + env(safe-area-inset-bottom, 0px) + ${FOOTER_FLOAT_GAP}px + ${FOOTER_CONTENT_BREATHING})`,
+    scrollPaddingTop: `calc(${HEADER_H}px + env(safe-area-inset-top, 0px) + ${HEADER_SAFE_GAP}px + 18px)`,
+    scrollPaddingBottom: `calc(${FOOTER_H}px + env(safe-area-inset-bottom, 0px) + ${FOOTER_FLOAT_GAP}px + ${FOOTER_CONTENT_BREATHING})`,
+    background: "var(--pe-app-bg)",
+    backgroundColor: "var(--pe-app-bg-solid)",
+    boxSizing: "border-box",
   },
 
   // overlay footer
   bottomnav: {
-    height: FOOTER_H,
+    minHeight: FOOTER_H,
+    height: "auto",
     position: "fixed",
     left: "50%",
     transform: "translateX(-50%)",
-    width: "min(1100px, calc(100% - 24px))",
+    width: "min(1100px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
     maxWidth: "100%",
-    bottom: 0,
+    bottom: FOOTER_FLOAT_GAP,
     zIndex: 50,
     display: "flex",
     justifyContent: "space-around",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: 4,
     boxSizing: "border-box",
-    paddingBottom: "env(safe-area-inset-bottom, 0px)",
+    paddingTop: 0,
+    paddingRight: 2,
+    paddingBottom: 0,
+    paddingLeft: 2,
     background: "transparent",
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
+    opacity: 1,
+    pointerEvents: "auto",
+    transition: "transform 220ms ease, opacity 180ms ease",
+    willChange: "transform, opacity",
+  },
+  bottomnavHidden: {
+    transform: "translate(-50%, calc(100% + env(safe-area-inset-bottom, 0px) + 24px))",
+    opacity: 0,
+    pointerEvents: "none",
   },
   navBtn: {
     flex: 1,
-    background: "transparent",
-    border: "none",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
+    border: "1px solid rgba(255,255,255,0.12)",
     color: "inherit",
-    padding: "10px 6px 12px",
+    minHeight: 68,
+    padding: "8px 6px 10px",
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
@@ -1156,6 +1215,14 @@ const styles = {
     cursor: "pointer",
     transition: "opacity 140ms ease, transform 90ms ease",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
+    boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
+    backdropFilter: "blur(10px)",
+    WebkitBackdropFilter: "blur(10px)",
+  },
+  navBtnActive: {
+    background: "linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.05))",
+    border: "1px solid rgba(255,255,255,0.2)",
+    boxShadow: "0 12px 24px rgba(0,0,0,0.22)",
   },
   navIconWrap: { display: "flex", alignItems: "center", justifyContent: "center" },
   createIconWrap: {
@@ -1180,9 +1247,10 @@ const styles = {
     top: 0,
     left: 0,
     width: 260,
-    height: "100%",
+    height: "100dvh",
+    minHeight: "100vh",
     zIndex: 65,
-    padding: 14,
+    padding: "calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 18px)",
     background: "transparent",
     backdropFilter: "blur(12px)",
     WebkitBackdropFilter: "blur(12px)",
@@ -1592,15 +1660,31 @@ const [spinTick, setSpinTick] = useState(0);
 
 
   
-  const contentRef = useRef(null);
   const [isScrolled, setIsScrolled] = useState(false);
+  const isScrolledRef = useRef(false);
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const chromeVisibleRef = useRef(true);
+  const chromeScrollStateRef = useRef({ lastTop: 0, anchorTop: 0, direction: "none" });
   const [quickOpen, setQuickOpen] = useState(false);
+  const setShellScrolled = useCallback((nextScrolled) => {
+    if (isScrolledRef.current === nextScrolled) return;
+    isScrolledRef.current = nextScrolled;
+    setIsScrolled(nextScrolled);
+  }, []);
+  const setChromeVisibility = useCallback((nextVisible) => {
+    if (chromeVisibleRef.current === nextVisible) return;
+    chromeVisibleRef.current = nextVisible;
+    setChromeVisible(nextVisible);
+  }, []);
 useEffect(() => {
     setSpinTick((v) => v + 1);
-    try { if (contentRef.current) contentRef.current.scrollTop = 0; } catch {}
+    try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch {}
+    isScrolledRef.current = false;
     setIsScrolled(false);
+    chromeScrollStateRef.current = { lastTop: 0, anchorTop: 0, direction: "none" };
+    setChromeVisibility(true);
     setQuickOpen(false);
-  }, [activeTab]);
+  }, [activeTab, setChromeVisibility]);
 
   useEffect(() => {
     if (activeTab === ROUTES.COMPANY_PROFILE) return;
@@ -1748,6 +1832,57 @@ const gated = false;
     ? "home"
     : `${activeTab}:${createIntent || ""}:${routeEnterSeq}`;
   const glassOnScroll = activeTab !== ROUTES.HOME && activeTab !== ROUTES.CREATE;
+  const handleWindowScroll = useCallback(() => {
+    const st = Math.max(
+      0,
+      Number(
+        window.scrollY
+        || window.pageYOffset
+        || document.documentElement?.scrollTop
+        || document.body?.scrollTop
+        || 0
+      )
+    );
+    const nextScrolled = st > 6;
+    setShellScrolled(nextScrolled);
+
+    const nextState = chromeScrollStateRef.current;
+
+    if (st <= CHROME_TOP_REVEAL_THRESHOLD) {
+      nextState.lastTop = st;
+      nextState.anchorTop = st;
+      nextState.direction = "up";
+      setChromeVisibility(true);
+      return;
+    }
+
+    const delta = st - nextState.lastTop;
+    if (Math.abs(delta) < CHROME_DIRECTION_EPSILON) return;
+
+    const direction = delta > 0 ? "down" : "up";
+    if (direction !== nextState.direction) {
+      nextState.direction = direction;
+      nextState.anchorTop = nextState.lastTop;
+    }
+
+    const travel = Math.abs(st - nextState.anchorTop);
+
+    if (direction === "down") {
+      if (chromeVisibleRef.current && travel >= CHROME_HIDE_DISTANCE) {
+        setChromeVisibility(false);
+        nextState.anchorTop = st;
+      }
+    } else if (!chromeVisibleRef.current && travel >= CHROME_SHOW_DISTANCE) {
+      setChromeVisibility(true);
+      nextState.anchorTop = st;
+    }
+
+    nextState.lastTop = st;
+  }, [setChromeVisibility, setShellScrolled]);
+  useEffect(() => {
+    window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleWindowScroll);
+  }, [handleWindowScroll]);
   const unsavedModalOverlay = {
     position: "fixed",
     inset: 0,
@@ -1828,6 +1963,7 @@ const gated = false;
         routeEnterKey={routeEnterKey}
         glassOnScroll={glassOnScroll}
         isScrolled={isScrolled}
+        chromeVisible={chromeVisible}
         onHeaderSpinTap={() => {
           setQuickOpen(false);
           navigateTo(ROUTES.HOME);
@@ -1940,21 +2076,16 @@ const gated = false;
           </div>
         </div>
       ) : null}
-<div
-        ref={contentRef}
+      <div
         className={`pe-content${activeTab === ROUTES.CREATE ? " pe-content-estimator" : ""}`}
         style={styles.content}
-        onScroll={(e) => {
-          const st = e.currentTarget ? e.currentTarget.scrollTop : 0;
-          const next = st > 6;
-          if (next !== isScrolled) setIsScrolled(next);
-        }}
       >
         {renderScreen()}
       </div>
 
       <BottomNav
         active={activeTab}
+        chromeVisible={chromeVisible}
         setActive={(key) => {
           if (key === ROUTES.CREATE) {
             onCreateButtonRoute();
