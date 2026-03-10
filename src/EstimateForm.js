@@ -689,10 +689,6 @@ const SHELL_DOCK_HEIGHT = 78;
 const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
 const MOBILE_ACTION_BAR_BREAKPOINT = 820;
-const MOBILE_ACTION_BAR_HIDE_DELTA = 14;
-const MOBILE_ACTION_BAR_SHOW_DELTA = 10;
-const MOBILE_ACTION_BAR_REST_DELAY = 180;
-const MOBILE_ACTION_BAR_PEEK = 14;
 const SCOPE_NOTES_MIN_HEIGHT = 170;
 const COLLAPSE_MS = 200;
 const ROW_ENTER_MS = 220;
@@ -734,7 +730,10 @@ function createBlankMaterialItem(idOverride, markupPct) {
 }
 
 export default function EstimateForm(props) {
-  const { embeddedInShell = false } = props || {};
+  const {
+    embeddedInShell = false,
+    mobileBottomChromeVisible = true,
+  } = props || {};
   const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
   const editingRecordId = String(editTarget?.id || "").trim();
   const editingTargetType = editTarget?.type === "invoice" ? "invoice" : (editTarget?.type === "estimate" ? "estimate" : "");
@@ -864,9 +863,10 @@ export default function EstimateForm(props) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
   const [actionBarHeight, setActionBarHeight] = useState(ACTION_BAR_MIN_HEIGHT);
-  const [mobileActionBarActive, setMobileActionBarActive] = useState(false);
-  const [mobileActionBarHidden, setMobileActionBarHidden] = useState(false);
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [isMobileActionBarViewport, setIsMobileActionBarViewport] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
+  });
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
   const [newLaborLineIds, setNewLaborLineIds] = useState({});
   const [newMaterialItemIds, setNewMaterialItemIds] = useState({});
@@ -885,9 +885,6 @@ export default function EstimateForm(props) {
   const lastSavedAtSeenRef = useRef(0);
   const wasDirtyRef = useRef(false);
   const savePulseTimerRef = useRef(null);
-  const actionBarScrollTopRef = useRef(0);
-  const actionBarRestTimerRef = useRef(null);
-  const actionBarFrameRef = useRef(null);
   const [multiplierMode, setMultiplierMode] = useState(() => {
     const m = Number(state?.labor?.multiplier);
     if (m === 1 || m === 1.1 || m === 1.2 || m === 1.25) return "preset";
@@ -1158,122 +1155,21 @@ export default function EstimateForm(props) {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return undefined;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
 
     const mobileQuery = window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`);
-    const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const scrollHost = customerTopRef.current?.closest?.(".pe-content") || window;
-    const scrollTarget = scrollHost === window ? window : scrollHost;
-
-    const isEditableTarget = (node) => (
-      node instanceof HTMLElement
-      && (node.matches("input, textarea, select") || node.isContentEditable)
-    );
-
-    const getScrollTop = () => {
-      if (scrollHost === window) {
-        return Math.max(
-          window.scrollY || 0,
-          window.pageYOffset || 0,
-          document.documentElement?.scrollTop || 0
-        );
-      }
-      return scrollHost.scrollTop || 0;
-    };
-
-    const clearRestTimer = () => {
-      if (actionBarRestTimerRef.current) {
-        window.clearTimeout(actionBarRestTimerRef.current);
-        actionBarRestTimerRef.current = null;
-      }
-    };
-
-    const scheduleReveal = () => {
-      clearRestTimer();
-      actionBarRestTimerRef.current = window.setTimeout(() => {
-        setMobileActionBarHidden(false);
-      }, MOBILE_ACTION_BAR_REST_DELAY);
-    };
-
     const syncViewportMode = () => {
-      const isMobile = mobileQuery.matches;
-      setMobileActionBarActive(isMobile);
-      setPrefersReducedMotion(reducedMotionQuery.matches);
-      if (!isMobile) {
-        setMobileActionBarHidden(false);
-      }
-      actionBarScrollTopRef.current = getScrollTop();
-    };
-
-    const onScroll = () => {
-      if (!mobileQuery.matches) return;
-      if (actionBarFrameRef.current) return;
-
-      actionBarFrameRef.current = window.requestAnimationFrame(() => {
-        actionBarFrameRef.current = null;
-        const nextTop = getScrollTop();
-        const delta = nextTop - actionBarScrollTopRef.current;
-        actionBarScrollTopRef.current = nextTop;
-
-        if (nextTop <= 24) {
-          setMobileActionBarHidden(false);
-          clearRestTimer();
-          return;
-        }
-
-        if (delta >= MOBILE_ACTION_BAR_HIDE_DELTA) {
-          setMobileActionBarHidden(true);
-          scheduleReveal();
-          return;
-        }
-
-        if (delta <= -MOBILE_ACTION_BAR_SHOW_DELTA) {
-          setMobileActionBarHidden(false);
-          clearRestTimer();
-          return;
-        }
-
-        scheduleReveal();
-      });
-    };
-
-    const onFocusIn = (event) => {
-      if (!mobileQuery.matches) return;
-      if (isEditableTarget(event.target)) {
-        setMobileActionBarHidden(true);
-        clearRestTimer();
-      }
-    };
-
-    const onFocusOut = () => {
-      if (!mobileQuery.matches) return;
-      window.setTimeout(() => {
-        if (!isEditableTarget(document.activeElement)) {
-          setMobileActionBarHidden(false);
-        }
-      }, reducedMotionQuery.matches ? 0 : 120);
+      setIsMobileActionBarViewport(mobileQuery.matches);
     };
 
     syncViewportMode();
-    scrollTarget.addEventListener("scroll", onScroll, { passive: true });
     mobileQuery.addEventListener("change", syncViewportMode);
-    reducedMotionQuery.addEventListener("change", syncViewportMode);
-    window.addEventListener("focusin", onFocusIn);
-    window.addEventListener("focusout", onFocusOut);
-
-    return () => {
-      clearRestTimer();
-      if (actionBarFrameRef.current) {
-        window.cancelAnimationFrame(actionBarFrameRef.current);
-        actionBarFrameRef.current = null;
-      }
-      scrollTarget.removeEventListener("scroll", onScroll);
-      mobileQuery.removeEventListener("change", syncViewportMode);
-      reducedMotionQuery.removeEventListener("change", syncViewportMode);
-      window.removeEventListener("focusin", onFocusIn);
-      window.removeEventListener("focusout", onFocusOut);
-    };
+    return () => mobileQuery.removeEventListener("change", syncViewportMode);
   }, []);
+
+  const shouldSyncActionBarWithBottomChrome =
+    embeddedInShell
+    && isMobileActionBarViewport;
 
   function autoResizeScopeNotes(el) {
     if (!el) return;
@@ -2289,20 +2185,23 @@ export default function EstimateForm(props) {
     ? styles.saveToastError
     : (savePrompt?.tone === "warn" ? styles.saveToastWarn : styles.saveToastSuccess);
   const actionButtonsStyle = isEditMode ? styles.estimatorActionButtonsEdit : styles.estimatorActionButtons;
-  const actionBarStyle = mobileActionBarActive
+  const actionBarHiddenTransform = `translateY(calc(100% + ${dockHeight}px + env(safe-area-inset-bottom, 0px) + 24px))`;
+  const actionBarStyle = shouldSyncActionBarWithBottomChrome
     ? {
         ...styles.estimatorActionBar,
         bottom: actionBarBottom,
-        transform: mobileActionBarHidden ? `translateY(calc(100% - ${MOBILE_ACTION_BAR_PEEK}px))` : "translateY(0)",
-        opacity: mobileActionBarHidden ? 0.96 : 1,
-        transition: prefersReducedMotion ? "none" : "transform 240ms cubic-bezier(0.22, 0.8, 0.24, 1), opacity 180ms ease",
-        willChange: "transform",
+        transform: mobileBottomChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
+        opacity: mobileBottomChromeVisible ? 1 : 0,
+        transition: "transform 220ms ease, opacity 180ms ease",
+        willChange: "transform, opacity",
       }
     : { ...styles.estimatorActionBar, bottom: actionBarBottom };
-  const actionBarPortalTarget = mobileActionBarActive && typeof document !== "undefined" ? document.body : null;
+  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !mobileBottomChromeVisible
+    ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
+    : styles.estimatorActionBarInner;
   const actionBarNode = (
     <div style={actionBarStyle}>
-      <div ref={actionBarRef} style={styles.estimatorActionBarInner}>
+      <div ref={actionBarRef} style={actionBarInnerStyle}>
         <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
           <button
             className="pe-btn pe-shortcut-tip"
@@ -3161,7 +3060,7 @@ export default function EstimateForm(props) {
         </div>
       ) : null}
 
-      {actionBarPortalTarget ? createPortal(actionBarNode, actionBarPortalTarget) : actionBarNode}
+      {actionBarNode}
 
       <PdfPromptModal
         open={pdfPromptOpen}

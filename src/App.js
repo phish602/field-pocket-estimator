@@ -732,10 +732,16 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick, resetSeq }) {
+function CreateFlow({ gated, intent, spinTick, resetSeq, mobileBottomChromeVisible }) {
   return (
     <div>
-      <EstimateForm key={`estimate:${resetSeq}`} embeddedInShell forceProfileOnMount={false} spinTick={spinTick} />
+      <EstimateForm
+        key={`estimate:${resetSeq}`}
+        embeddedInShell
+        forceProfileOnMount={false}
+        spinTick={spinTick}
+        mobileBottomChromeVisible={mobileBottomChromeVisible}
+      />
     </div>
   );
 }
@@ -1676,7 +1682,7 @@ const [spinTick, setSpinTick] = useState(0);
     chromeVisibleRef.current = nextVisible;
     setChromeVisible(nextVisible);
   }, []);
-useEffect(() => {
+  useEffect(() => {
     setSpinTick((v) => v + 1);
     try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch {}
     isScrolledRef.current = false;
@@ -1786,7 +1792,17 @@ const gated = false;
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === ROUTES.CREATE) return <CreateFlow gated={gated} intent={createIntent} spinTick={spinTick} resetSeq={createResetSeq} />;
+    if (activeTab === ROUTES.CREATE) {
+      return (
+        <CreateFlow
+          gated={gated}
+          intent={createIntent}
+          spinTick={spinTick}
+          resetSeq={createResetSeq}
+          mobileBottomChromeVisible={chromeVisible}
+        />
+      );
+    }
     return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
   };
 
