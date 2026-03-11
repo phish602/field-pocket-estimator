@@ -434,6 +434,7 @@ function TopBar({
     >
       <button
         className="pe-btn pe-btn-ghost"
+        type="button"
         style={{ ...styles.headerIconBtn, ...styles.headerMenuIcon }}
         onClick={onMenu}
         aria-label="Open Menu"
@@ -491,6 +492,7 @@ function TopBar({
 <button
         key={`header-user-wrap-${routeEnterKey || "default"}`}
         className="pe-btn pe-btn-ghost"
+        type="button"
         style={styles.headerIconBtn}
         onClick={onProfile}
   aria-label="Open User Profile"
@@ -568,12 +570,15 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
     if (active !== ROUTES.CREATE && createBump) setCreateBump(false);
   }, [active, createBump]);
 
+  const navInteractionLocked = mobileCreateChromeMotion;
+
   return (
     <div
       style={{
         ...styles.bottomnav,
         ...(mobileCreateChromeMotion ? styles.bottomnavCreateMotion : null),
         ...(!chromeVisible ? styles.bottomnavHidden : null),
+        ...(navInteractionLocked ? { pointerEvents: "none" } : null),
       }}
       role="navigation"
       aria-label="Primary"
@@ -588,7 +593,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
           ...styles.navBtn,
           opacity: isDisabled ? 0.35 : isActive ? 1 : 0.75,
           marginTop: isCenter ? -10 : 0,
-          pointerEvents: isDisabled ? "none" : "auto",
+          pointerEvents: isDisabled || navInteractionLocked ? "none" : "auto",
           ...(isActive ? styles.navBtnActive : null),
         };
 
@@ -601,9 +606,11 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
         return (
           <button
             key={t.key}
+            type="button"
             style={btnStyle}
             onClick={() => onTab(t)}
             aria-label={t.label}
+            tabIndex={isDisabled || navInteractionLocked ? -1 : 0}
           >
             <span style={iconWrapStyle} className={createWrapClass}>
               <Icon size={isCenter ? 28 : 24} />
@@ -682,6 +689,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
           <div style={styles.drawerTitle}>Menu</div>
           <button
             className="pe-btn pe-btn-ghost"
+            type="button"
             style={styles.drawerClose}
             onClick={onClose}
             aria-label="Close Menu"
@@ -693,6 +701,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
         <div style={styles.drawerList}>
           <button
             className="pe-btn pe-btn-ghost"
+            type="button"
             style={styles.drawerItem}
             onClick={() => onSelect("company")}
             disabled={disabled}
@@ -702,6 +711,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 
           <button
             className="pe-btn pe-btn-ghost"
+            type="button"
             style={styles.drawerItem}
             onClick={() => onSelect(ROUTES.SNAPSHOT)}
           >
@@ -710,6 +720,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 
           <button
             className="pe-btn pe-btn-ghost"
+            type="button"
             style={styles.drawerItem}
             onClick={() => onSelect("templates")}
             disabled={disabled}
@@ -719,6 +730,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 
           <button
             className="pe-btn pe-btn-ghost"
+            type="button"
             style={styles.drawerItem}
             onClick={() => onSelect(ROUTES.ADVANCED)}
           >

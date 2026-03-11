@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import {
+  buildEstimateInvoiceSummary,
+  INVOICE_TYPES,
+  createInvoiceDraftFromEstimate,
+  readStoredInvoices,
+  roundCurrency,
+  writeStoredInvoices,
+} from "../utils/invoices";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -10,6 +18,11 @@ const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_LOST = "lost";
+const TOUCH_DRAG_HOLD_MS = 350;
+const TOUCH_DRAG_MOVE_THRESHOLD_PX = 10;
+const INVOICE_AMOUNT_MODE_AMOUNT = "amount";
+const INVOICE_AMOUNT_MODE_PERCENT = "percent";
+const INVOICE_COMPOSER_EPSILON = 0.005;
 
 function normalizeEstimateStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
@@ -28,6 +41,7 @@ function sortEstimatesByDateDesc(a, b) {
 function normalizeEstimateList(records) {
   const arr = Array.isArray(records) ? records.filter(Boolean) : [];
   return arr
+    .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
     .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
     .sort(sortEstimatesByDateDesc);
 }
@@ -40,7 +54,9 @@ function readSavedEstimatesList() {
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(Boolean).filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
   } catch {
     return [];
   }
@@ -186,6 +202,131 @@ function safeDiv(a, b) {
   const B = toNum(b);
   if (!B) return 0;
   return A / B;
+}
+
+function formatComposerNumber(value) {
+  const n = roundCurrency(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d*[1-9])0$/, "$1");
+}
+
+function getComposerAmountDefaults(invoiceType, summary) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+
+  if (invoiceType === INVOICE_TYPES.DEPOSIT) {
+    const maxPercent = approvedTotal > 0 ? roundCurrency((remainingToInvoice / approvedTotal) * 100) : 0;
+    const preferredPercent = maxPercent >= 25 ? 25 : maxPercent;
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_PERCENT,
+      amountValue: preferredPercent > 0 ? formatComposerNumber(preferredPercent) : "",
+    };
+  }
+
+  if (invoiceType === INVOICE_TYPES.PROGRESS) {
+    const suggestedAmount = remainingToInvoice > 0 ? roundCurrency(Math.max(remainingToInvoice / 2, 0)) : 0;
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+      amountValue: suggestedAmount > 0 ? formatComposerNumber(suggestedAmount) : "",
+    };
+  }
+
+  if (invoiceType === INVOICE_TYPES.FINAL) {
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+      amountValue: remainingToInvoice > 0 ? formatComposerNumber(remainingToInvoice) : "",
+    };
+  }
+
+  return {
+    amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+    amountValue: "",
+  };
+}
+
+function createInvoiceComposerForm(estimate, summary, invoiceType = INVOICE_TYPES.FINAL) {
+  const defaults = getComposerAmountDefaults(invoiceType, summary);
+  return {
+    invoiceType,
+    amountMode: defaults.amountMode,
+    amountValue: defaults.amountValue,
+    dueDate: String(estimate?.job?.due || estimate?.dueDate || "").trim(),
+    note: "",
+  };
+}
+
+function buildComposerRequestedValue(form) {
+  const raw = String(form?.amountValue || "").trim();
+  if (!raw) return "";
+  return String(form?.amountMode) === INVOICE_AMOUNT_MODE_PERCENT ? `${raw}%` : raw;
+}
+
+function resolveComposerInvoiceAmount(form, summary) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+  const raw = String(form?.amountValue || "").trim();
+  const invoiceType = String(form?.invoiceType || "");
+  const amountMode = String(form?.amountMode || INVOICE_AMOUNT_MODE_AMOUNT);
+
+  if (invoiceType === INVOICE_TYPES.FINAL && !raw) {
+    return remainingToInvoice;
+  }
+
+  if (!raw) return 0;
+
+  if (amountMode === INVOICE_AMOUNT_MODE_PERCENT) {
+    return roundCurrency((approvedTotal * toNum(raw)) / 100);
+  }
+
+  return roundCurrency(toNum(raw));
+}
+
+function resolveComposerValidationMessage(form, summary, lang) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+  const raw = String(form?.amountValue || "").trim();
+  const invoiceType = String(form?.invoiceType || "");
+  const amountMode = String(form?.amountMode || INVOICE_AMOUNT_MODE_AMOUNT);
+  const invoiceAmount = resolveComposerInvoiceAmount(form, summary);
+
+  if (invoiceType === INVOICE_TYPES.FINAL && !raw) {
+    if (remainingToInvoice <= 0) {
+      return lang === "es"
+        ? "No queda saldo por facturar para esta estimación."
+        : "Nothing remains to invoice for this estimate.";
+    }
+    return "";
+  }
+
+  if (!raw) return "";
+
+  if (amountMode === INVOICE_AMOUNT_MODE_PERCENT) {
+    const percentValue = roundCurrency(toNum(raw));
+    if (!Number.isFinite(percentValue) || percentValue <= 0) {
+      return lang === "es"
+        ? "El porcentaje debe ser mayor que 0%."
+        : "Invoice percent must be greater than 0%.";
+    }
+    if (approvedTotal <= 0) {
+      return lang === "es"
+        ? "Esta estimación no tiene total aprobado disponible."
+        : "This estimate has no approved total available.";
+    }
+  }
+
+  if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
+    return lang === "es"
+      ? "El monto de la factura debe ser mayor que $0.00."
+      : "Invoice amount must be greater than $0.00.";
+  }
+
+  if (remainingToInvoice > 0 && invoiceAmount > remainingToInvoice + INVOICE_COMPOSER_EPSILON) {
+    return lang === "es"
+      ? `La factura excede el saldo restante por facturar (${money(remainingToInvoice)}).`
+      : `Invoice exceeds the remaining amount to invoice (${money(remainingToInvoice)}).`;
+  }
+
+  return "";
 }
 
 function toTimestamp(v) {
@@ -384,11 +525,17 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const [touchDraggingId, setTouchDraggingId] = useState(null);
   const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
   const touchStartTimer = useRef(null);
+  const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [invoicePromptTarget, setInvoicePromptTarget] = useState(null);
+  const [invoiceComposerTarget, setInvoiceComposerTarget] = useState(null);
+  const [invoiceComposerForm, setInvoiceComposerForm] = useState(() => createInvoiceComposerForm(null, null));
+  const [invoiceComposerError, setInvoiceComposerError] = useState("");
+  const [invoiceComposerShowMore, setInvoiceComposerShowMore] = useState(false);
+  const [invoices, setInvoices] = useState(() => readStoredInvoices());
   const [revenueValuePulse, setRevenueValuePulse] = useState({
     pending: false,
     approved: false,
@@ -399,6 +546,21 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   useEffect(() => {
     setEstimates(normalizeEstimateList(history));
   }, [history]);
+
+  useEffect(() => {
+    const refresh = () => setInvoices(readStoredInvoices());
+    refresh();
+    const onStorage = (event) => {
+      if (!event?.key || event.key === STORAGE_KEYS.INVOICES) refresh();
+    };
+    const onInvoicesChanged = () => refresh();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -423,6 +585,29 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     },
     []
   );
+
+  const clearTouchStartTimer = () => {
+    if (!touchStartTimer.current) return;
+    clearTimeout(touchStartTimer.current);
+    touchStartTimer.current = null;
+  };
+
+  const resetTouchGesture = () => {
+    touchGestureRef.current = {
+      estimateId: "",
+      startX: 0,
+      startY: 0,
+    };
+  };
+
+  const isTouchDragBlockedTarget = (target) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        "button, input, select, textarea, a, [role='button'], [data-estimate-details-panel='true']"
+      )
+    );
+  };
 
   const pendingEstimates =
     (estimates || []).filter((e) => e?.status === "pending");
@@ -744,11 +929,69 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     setInvoicePromptTarget(null);
   };
 
-  const handleInvoicePromptYes = () => {
+  const closeInvoiceComposer = () => {
+    setInvoiceComposerTarget(null);
+    setInvoiceComposerForm(createInvoiceComposerForm(null, null));
+    setInvoiceComposerError("");
+    setInvoiceComposerShowMore(false);
+  };
+
+  const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
+    if (!estimate || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
+      return false;
+    }
+
+    const currentInvoices = readStoredInvoices();
+    const summary = buildEstimateInvoiceSummary(estimate, currentInvoices);
+    if (summary.remainingToInvoice <= 0) {
+      return false;
+    }
+
+    setInvoiceComposerTarget(estimate);
+    setInvoiceComposerForm(createInvoiceComposerForm(estimate, summary, invoiceType));
+    setInvoiceComposerError("");
+    setInvoiceComposerShowMore(false);
+    return true;
+  };
+
+  const submitInvoiceComposer = () => {
+    if (!invoiceComposerTarget) return false;
+
+    const currentInvoices = readStoredInvoices();
+    const created = createInvoiceDraftFromEstimate(invoiceComposerTarget, currentInvoices, {
+      invoiceType: invoiceComposerForm.invoiceType,
+      requestedValue: buildComposerRequestedValue(invoiceComposerForm),
+      dueDate: invoiceComposerForm.dueDate,
+      note: invoiceComposerForm.note,
+    });
+
+    if (!created.ok || !created.draft) {
+      setInvoiceComposerError(
+        created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
+      );
+      return false;
+    }
+
+    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+    setInvoices(nextInvoices);
+    closeInvoiceComposer();
+    try {
+      localStorage.setItem("estipaid-edit-invoice-target-v1", String(created.draft.id || ""));
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
     try {
       window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
     } catch {}
+    return true;
+  };
+
+  const handleInvoicePromptYes = () => {
+    const target = invoicePromptTarget;
     setInvoicePromptTarget(null);
+    if (!target) return;
+    openInvoiceComposer(target);
   };
 
   const onConfirmDelete = () => {
@@ -889,6 +1132,313 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const onRevenueTileClick = (statusKey) => {
     const normalized = normalizeEstimateStatus(statusKey);
     setStatusFilter((prev) => (normalizeEstimateStatus(prev) === normalized ? "all" : normalized));
+  };
+
+  const invoiceComposerSummary = invoiceComposerTarget
+    ? buildEstimateInvoiceSummary(invoiceComposerTarget, invoices)
+    : null;
+  const invoiceComposerThisInvoice = resolveComposerInvoiceAmount(invoiceComposerForm, invoiceComposerSummary);
+  const invoiceComposerPreviewError = resolveComposerValidationMessage(
+    invoiceComposerForm,
+    invoiceComposerSummary,
+    lang
+  );
+  const invoiceComposerMessage = invoiceComposerError || invoiceComposerPreviewError;
+  const invoiceComposerAvailablePercent = roundCurrency(
+    invoiceComposerSummary?.approvedTotal > 0
+      ? (roundCurrency(invoiceComposerSummary?.remainingToInvoice || 0) / roundCurrency(invoiceComposerSummary?.approvedTotal || 0)) * 100
+      : 0
+  );
+  const invoiceComposerEstimateLabel = String(invoiceComposerTarget?.projectName || "").trim()
+    || (lang === "es" ? "Estimación aprobada" : "Approved estimate");
+  const invoiceComposerContextItems = [
+    invoiceComposerTarget?.customerName
+      ? {
+          key: "customer",
+          label: invoiceComposerTarget.customerName,
+        }
+      : null,
+    invoiceComposerTarget?.estimateNumber
+      ? {
+          key: "estimate-number",
+          label: `#${invoiceComposerTarget.estimateNumber}`,
+        }
+      : null,
+  ].filter(Boolean);
+  const invoiceComposerTypeOptions = [
+    { value: INVOICE_TYPES.DEPOSIT, label: lang === "es" ? "Depósito" : "Deposit" },
+    { value: INVOICE_TYPES.PROGRESS, label: lang === "es" ? "Progreso" : "Progress" },
+    { value: INVOICE_TYPES.FINAL, label: lang === "es" ? "Final" : "Final" },
+    { value: INVOICE_TYPES.CUSTOM, label: lang === "es" ? "Personalizada" : "Custom" },
+  ];
+  const invoiceComposerSummaryItems = [
+    {
+      key: "contract-total",
+      label: lang === "es" ? "Total contrato" : "Contract total",
+      value: money(invoiceComposerSummary?.approvedTotal),
+    },
+    {
+      key: "already-invoiced",
+      label: lang === "es" ? "Ya facturado" : "Already invoiced",
+      value: money(invoiceComposerSummary?.invoicedTotal),
+    },
+    {
+      key: "remaining",
+      label: lang === "es" ? "Restante" : "Remaining",
+      value: money(invoiceComposerSummary?.remainingToInvoice),
+      tone: "remaining",
+    },
+    {
+      key: "this-invoice",
+      label: lang === "es" ? "Esta factura" : "This invoice",
+      value: money(invoiceComposerThisInvoice),
+      tone: "primary",
+    },
+  ];
+  const invoiceComposerOverlayStyle = {
+    position: "fixed",
+    inset: 0,
+    zIndex: 2050,
+    background: "rgba(4,8,14,0.68)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "clamp(12px, 3vw, 24px)",
+  };
+  const invoiceComposerCardStyle = {
+    width: "min(560px, 100%)",
+    maxHeight: "min(760px, calc(100dvh - 24px))",
+    overflowY: "auto",
+    borderRadius: 22,
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "linear-gradient(180deg, rgba(19,28,43,0.97) 0%, rgba(10,15,24,0.96) 100%)",
+    boxShadow: "0 28px 72px rgba(0,0,0,0.48)",
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
+    padding: "clamp(16px, 3vw, 22px)",
+    color: "rgba(245,248,252,0.98)",
+    display: "grid",
+    gap: 16,
+  };
+  const invoiceComposerSectionLabelStyle = {
+    fontSize: 11.5,
+    fontWeight: 900,
+    letterSpacing: "0.12em",
+    opacity: 0.68,
+    textTransform: "uppercase",
+  };
+  const invoiceComposerToneLabelStyle = {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "rgba(191,219,254,0.76)",
+  };
+  const invoiceComposerSegmentWrapStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))",
+    gap: 8,
+    padding: 4,
+    borderRadius: 18,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+  };
+  const invoiceComposerSegmentBtnStyle = {
+    minHeight: 40,
+    width: "100%",
+    borderRadius: 14,
+    fontWeight: 800,
+    fontSize: 13,
+    padding: "9px 12px",
+    boxShadow: "none",
+  };
+  const invoiceComposerSegmentBtnActiveStyle = {
+    borderColor: "rgba(96,165,250,0.34)",
+    background: "linear-gradient(180deg, rgba(59,130,246,0.20), rgba(30,64,175,0.16))",
+    boxShadow: "0 0 0 1px rgba(96,165,250,0.16), inset 0 1px 0 rgba(255,255,255,0.06)",
+    color: "rgba(248,250,252,0.98)",
+  };
+  const invoiceComposerSegmentBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.02)",
+    color: "rgba(226,232,240,0.92)",
+  };
+  const invoiceComposerFieldBlockStyle = {
+    display: "grid",
+    gap: 8,
+    padding: 12,
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+  };
+  const invoiceComposerFieldGridStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 12,
+    alignItems: "start",
+  };
+  const invoiceComposerAmountRowStyle = {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gap: 10,
+    alignItems: "stretch",
+  };
+  const invoiceComposerAmountModeWrapStyle = {
+    display: "inline-grid",
+    gridTemplateColumns: "repeat(2, minmax(44px, 1fr))",
+    gap: 6,
+    padding: 4,
+    borderRadius: 14,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(8,12,18,0.46)",
+    alignSelf: "stretch",
+  };
+  const invoiceComposerModeBtnStyle = {
+    minWidth: 44,
+    minHeight: 44,
+    padding: 0,
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 900,
+    boxShadow: "none",
+  };
+  const invoiceComposerModeBtnActiveStyle = {
+    borderColor: "rgba(34,197,94,0.34)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.20), rgba(21,128,61,0.16))",
+    boxShadow: "0 0 0 1px rgba(34,197,94,0.16), inset 0 1px 0 rgba(255,255,255,0.06)",
+  };
+  const invoiceComposerModeBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.02)",
+  };
+  const invoiceComposerPresetWrapStyle = {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+  };
+  const invoiceComposerPresetBtnStyle = {
+    minHeight: 34,
+    padding: "7px 12px",
+    borderRadius: 999,
+    fontSize: 12.5,
+    fontWeight: 800,
+    boxShadow: "none",
+  };
+  const invoiceComposerPresetBtnActiveStyle = {
+    borderColor: "rgba(125,211,252,0.38)",
+    background: "rgba(14,116,144,0.24)",
+    color: "rgba(240,249,255,0.98)",
+  };
+  const invoiceComposerPresetBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    color: "rgba(226,232,240,0.88)",
+  };
+  const invoiceComposerMoreBtnStyle = {
+    justifySelf: "start",
+    minHeight: 30,
+    padding: "0 2px",
+    border: 0,
+    background: "transparent",
+    color: "rgba(191,219,254,0.84)",
+    fontSize: 12.5,
+    fontWeight: 800,
+    letterSpacing: "0.03em",
+    boxShadow: "none",
+  };
+  const invoiceComposerSummaryCardStyle = {
+    borderRadius: 18,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.025))",
+    padding: 14,
+    display: "grid",
+    gap: 10,
+  };
+  const invoiceComposerSummaryGridStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))",
+    gap: 10,
+  };
+  const invoiceComposerSummaryItemStyle = {
+    display: "grid",
+    gap: 6,
+    borderRadius: 14,
+    padding: "10px 11px",
+    border: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(255,255,255,0.025)",
+    minWidth: 0,
+  };
+  const invoiceComposerSummaryItemPrimaryStyle = {
+    borderColor: "rgba(34,197,94,0.18)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.12), rgba(20,83,45,0.12))",
+  };
+  const invoiceComposerSummaryItemRemainingStyle = {
+    borderColor: "rgba(96,165,250,0.18)",
+    background: "linear-gradient(180deg, rgba(59,130,246,0.10), rgba(30,64,175,0.10))",
+  };
+  const invoiceComposerSummaryValueStyle = {
+    fontWeight: 900,
+    fontSize: 16,
+    lineHeight: 1.15,
+    color: "rgba(248,250,252,0.98)",
+    wordBreak: "break-word",
+  };
+  const invoiceComposerFooterStyle = {
+    display: "flex",
+    gap: 8,
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    alignItems: "center",
+    paddingTop: 14,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  };
+  const invoiceComposerFooterBtnStyle = {
+    minHeight: 40,
+    borderRadius: 12,
+    padding: "9px 14px",
+  };
+  const invoiceComposerPrimaryBtnStyle = {
+    ...invoiceComposerFooterBtnStyle,
+    borderColor: "rgba(34,197,94,0.42)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.30), rgba(21,128,61,0.22))",
+    color: "#fff",
+    boxShadow: "0 8px 18px rgba(21,128,61,0.22)",
+  };
+
+  const handleInvoiceComposerTypeChange = (nextType) => {
+    setInvoiceComposerForm((prev) => {
+      const defaults = getComposerAmountDefaults(nextType, invoiceComposerSummary);
+      return {
+        ...prev,
+        invoiceType: nextType,
+        amountMode: defaults.amountMode,
+        amountValue: defaults.amountValue,
+      };
+    });
+    setInvoiceComposerError("");
+  };
+
+  const handleInvoiceComposerAmountModeChange = (nextMode) => {
+    setInvoiceComposerForm((prev) => {
+      if (prev.amountMode === nextMode) return prev;
+      const nextAmount = resolveComposerInvoiceAmount(prev, invoiceComposerSummary);
+      const nextValue = nextMode === INVOICE_AMOUNT_MODE_PERCENT
+        ? (
+          roundCurrency(invoiceComposerSummary?.approvedTotal || 0) > 0 && nextAmount > 0
+            ? formatComposerNumber((nextAmount / roundCurrency(invoiceComposerSummary?.approvedTotal || 0)) * 100)
+            : ""
+        )
+        : (nextAmount > 0 ? formatComposerNumber(nextAmount) : "");
+      return {
+        ...prev,
+        amountMode: nextMode,
+        amountValue: nextValue,
+      };
+    });
+    setInvoiceComposerError("");
   };
 
   return (
@@ -1240,6 +1790,9 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                       const isOpen = Boolean(expanded[id]);
                       const status = normalizeEstimateStatus(e?.status);
                       const bd = calcBreakdown(e);
+                      const invoiceSummary = status === STATUS_APPROVED
+                        ? buildEstimateInvoiceSummary(e, invoices)
+                        : null;
                       const isActiveCard = isOpen;
 
               const card = {
@@ -1394,24 +1947,50 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     const touch = e.touches?.[0];
                     if (!touch) return;
 
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
+                    clearTouchStartTimer();
+
+                    if (isTouchDragBlockedTarget(e.target)) {
+                      resetTouchGesture();
+                      return;
                     }
 
+                    touchGestureRef.current = {
+                      estimateId: id,
+                      startX: touch.clientX,
+                      startY: touch.clientY,
+                    };
+
                     touchStartTimer.current = setTimeout(() => {
+                      if (touchGestureRef.current.estimateId !== id) return;
                       setTouchDraggingId(id);
                       setTouchDragPos({
                         x: touch.clientX,
                         y: touch.clientY,
                       });
                       setDraggingEstimateId(id);
-                    }, 350);
+                    }, TOUCH_DRAG_HOLD_MS);
                   }}
                   onTouchMove={(e) => {
-                    if (!touchDraggingId) return;
-
                     const touch = e.touches?.[0];
                     if (!touch) return;
+
+                    if (!touchDraggingId) {
+                      const gesture = touchGestureRef.current;
+                      if (gesture.estimateId !== id) return;
+
+                      const movedX = Math.abs(touch.clientX - gesture.startX);
+                      const movedY = Math.abs(touch.clientY - gesture.startY);
+                      if (
+                        movedX > TOUCH_DRAG_MOVE_THRESHOLD_PX
+                        || movedY > TOUCH_DRAG_MOVE_THRESHOLD_PX
+                      ) {
+                        clearTouchStartTimer();
+                        resetTouchGesture();
+                      }
+                      return;
+                    }
+
+                    if (touchDraggingId !== id) return;
                     e.preventDefault();
 
                     setTouchDragPos({
@@ -1420,12 +1999,10 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     });
                   }}
                   onTouchEnd={(e) => {
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
-                    }
-                    touchStartTimer.current = null;
+                    clearTouchStartTimer();
+                    resetTouchGesture();
 
-                    if (!touchDraggingId) return;
+                    if (!touchDraggingId || touchDraggingId !== id) return;
 
                     const touch = e.changedTouches?.[0];
                     const clientX = touch?.clientX ?? touchDragPos.x;
@@ -1442,10 +2019,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     setDraggingEstimateId(null);
                   }}
                   onTouchCancel={() => {
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
-                    }
-                    touchStartTimer.current = null;
+                    clearTouchStartTimer();
+                    resetTouchGesture();
                     setTouchDraggingId(null);
                     setDraggingEstimateId(null);
                   }}
@@ -1570,7 +2145,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     </div>
                   </div>
 
-                  <div style={panel} aria-hidden={!isOpen}>
+                  <div style={panel} aria-hidden={!isOpen} data-estimate-details-panel="true">
                     <div className="pe-card pe-card-content" style={subCard}>
                       <div style={sectionTitle}>{lang === "es" ? "Estado" : "Status"}</div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1609,8 +2184,40 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                           <CopyIcon />
                           Duplicate
                         </button>
+                        {status === STATUS_APPROVED ? (
+                          <button
+                            className="pe-btn"
+                            type="button"
+                            onClick={() => openInvoiceComposer(e)}
+                            disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
+                          >
+                            {lang === "es" ? "Crear factura" : "Create Invoice"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
+
+                    {status === STATUS_APPROVED ? (
+                      <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
+                        <div style={sectionTitle}>{lang === "es" ? "Facturación" : "Invoicing"}</div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Total aprobado" : "Approved total"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.approvedTotal)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Total facturado" : "Invoiced total"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.invoicedTotal)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Restante por facturar" : "Remaining to invoice"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.remainingToInvoice)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Facturas vinculadas" : "Linked invoices"}</div>
+                          <div style={{ fontWeight: 900 }}>{Number(invoiceSummary?.linkedInvoiceCount || 0)}</div>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
@@ -1879,6 +2486,288 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 }}
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {invoiceComposerTarget ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={lang === "es" ? "Crear factura" : "Create invoice"}
+          onClick={closeInvoiceComposer}
+          style={invoiceComposerOverlayStyle}
+        >
+          <div
+            className="pe-card pe-card-content"
+            onClick={(evt) => evt.stopPropagation()}
+            style={invoiceComposerCardStyle}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+              <div style={{ display: "grid", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
+                <div style={invoiceComposerToneLabelStyle}>
+                  {lang === "es" ? "Compositor rápido" : "Quick Composer"}
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "0.01em", lineHeight: 1.06 }}>
+                  {lang === "es" ? "Crear factura" : "Create Invoice"}
+                </div>
+                <div style={{ fontSize: 13.5, opacity: 0.86, lineHeight: 1.35 }}>{invoiceComposerEstimateLabel}</div>
+                {invoiceComposerContextItems.length ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {invoiceComposerContextItems.map((item) => (
+                      <div
+                        key={item.key}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          minHeight: 28,
+                          padding: "5px 10px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "rgba(226,232,240,0.88)",
+                          fontSize: 12.5,
+                          fontWeight: 700,
+                          maxWidth: "100%",
+                        }}
+                      >
+                        {item.label}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={closeInvoiceComposer}
+                style={{ ...invoiceComposerFooterBtnStyle, minHeight: 36, padding: "7px 12px", flexShrink: 0 }}
+              >
+                {lang === "es" ? "Cerrar" : "Close"}
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={invoiceComposerSectionLabelStyle}>
+                {lang === "es" ? "Tipo de factura" : "Invoice Type"}
+              </div>
+              <div style={invoiceComposerSegmentWrapStyle}>
+                {invoiceComposerTypeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={() => handleInvoiceComposerTypeChange(option.value)}
+                    style={{
+                      ...invoiceComposerSegmentBtnStyle,
+                      ...(invoiceComposerForm.invoiceType === option.value
+                        ? invoiceComposerSegmentBtnActiveStyle
+                        : invoiceComposerSegmentBtnIdleStyle),
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={invoiceComposerFieldGridStyle}>
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Monto de factura" : "Invoice Amount"}
+                </div>
+                <div style={invoiceComposerAmountRowStyle}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="pe-input"
+                    value={invoiceComposerForm.amountValue}
+                    placeholder={
+                      invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
+                        ? (lang === "es" ? "Dejar vacío para usar el saldo restante" : "Leave blank to use remaining balance")
+                        : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")
+                    }
+                    onChange={(evt) => {
+                      setInvoiceComposerForm((prev) => ({ ...prev, amountValue: evt.target.value }));
+                      setInvoiceComposerError("");
+                    }}
+                    style={{ width: "100%" }}
+                  />
+                  <div style={invoiceComposerAmountModeWrapStyle}>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_AMOUNT)}
+                      style={{
+                        ...invoiceComposerModeBtnStyle,
+                        ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_AMOUNT
+                          ? invoiceComposerModeBtnActiveStyle
+                          : invoiceComposerModeBtnIdleStyle),
+                      }}
+                    >
+                      $
+                    </button>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_PERCENT)}
+                      style={{
+                        ...invoiceComposerModeBtnStyle,
+                        ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT
+                          ? invoiceComposerModeBtnActiveStyle
+                          : invoiceComposerModeBtnIdleStyle),
+                      }}
+                    >
+                      %
+                    </button>
+                  </div>
+                </div>
+
+                {invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT ? (
+                  <div style={invoiceComposerPresetWrapStyle}>
+                  {[10, 25, 50].map((percent) => {
+                    const disabled = invoiceComposerAvailablePercent > 0 && percent > invoiceComposerAvailablePercent + INVOICE_COMPOSER_EPSILON;
+                    const isActive = invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT
+                      && roundCurrency(toNum(invoiceComposerForm.amountValue)) === percent;
+                    return (
+                      <button
+                        key={`deposit-${percent}`}
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        disabled={disabled}
+                        onClick={() => {
+                          setInvoiceComposerForm((prev) => ({
+                            ...prev,
+                            amountMode: INVOICE_AMOUNT_MODE_PERCENT,
+                            amountValue: String(percent),
+                          }));
+                          setInvoiceComposerError("");
+                        }}
+                        style={{
+                          ...invoiceComposerPresetBtnStyle,
+                          ...(isActive ? invoiceComposerPresetBtnActiveStyle : invoiceComposerPresetBtnIdleStyle),
+                        }}
+                      >
+                        {percent}%
+                      </button>
+                    );
+                  })}
+                  </div>
+                ) : null}
+
+                <div style={{ fontSize: 12.5, opacity: 0.72, lineHeight: 1.4 }}>
+                  {invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
+                    ? (lang === "es"
+                      ? "Final usa el saldo restante por defecto si dejas el monto vacío."
+                      : "Final defaults to the remaining balance if you leave the amount blank.")
+                    : invoiceComposerForm.invoiceType === INVOICE_TYPES.PROGRESS
+                      ? (lang === "es"
+                        ? "Progreso sugiere una parte del saldo restante; puedes ajustarlo."
+                        : "Progress suggests part of the remaining balance; you can override it.")
+                      : invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT
+                        ? (lang === "es"
+                          ? "Depósito ofrece atajos rápidos de porcentaje; puedes ajustarlo."
+                          : "Deposit includes quick percent presets; you can override them.")
+                        : (lang === "es"
+                          ? "Ingresa un monto o porcentaje personalizado."
+                          : "Enter a custom amount or percentage.")}
+                </div>
+              </div>
+
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Fecha de vencimiento" : "Due Date"}
+                </div>
+                <input
+                  type="date"
+                  className="pe-input"
+                  value={invoiceComposerForm.dueDate}
+                  onChange={(evt) => {
+                    setInvoiceComposerForm((prev) => ({ ...prev, dueDate: evt.target.value }));
+                    setInvoiceComposerError("");
+                  }}
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setInvoiceComposerShowMore((prev) => !prev)}
+              style={invoiceComposerMoreBtnStyle}
+            >
+              {invoiceComposerShowMore
+                ? (lang === "es" ? "Ocultar más" : "Hide More")
+                : (lang === "es" ? "Más" : "More")}
+            </button>
+
+            {invoiceComposerShowMore ? (
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Nota" : "Note"}
+                </div>
+                <textarea
+                  className="pe-input pe-textarea"
+                  value={invoiceComposerForm.note}
+                  onChange={(evt) => {
+                    setInvoiceComposerForm((prev) => ({ ...prev, note: evt.target.value }));
+                    setInvoiceComposerError("");
+                  }}
+                  rows={3}
+                  placeholder={lang === "es" ? "Nota opcional para esta factura" : "Optional note for this invoice"}
+                  style={{ minHeight: 88, resize: "vertical" }}
+                />
+              </div>
+            ) : null}
+
+            <div style={invoiceComposerSummaryCardStyle}>
+              <div style={invoiceComposerSectionLabelStyle}>
+                {lang === "es" ? "Resumen de facturación" : "Billing Summary"}
+              </div>
+              <div style={invoiceComposerSummaryGridStyle}>
+                {invoiceComposerSummaryItems.map((item) => (
+                  <div
+                    key={item.key}
+                    style={{
+                      ...invoiceComposerSummaryItemStyle,
+                      ...(item.tone === "primary"
+                        ? invoiceComposerSummaryItemPrimaryStyle
+                        : item.tone === "remaining"
+                          ? invoiceComposerSummaryItemRemainingStyle
+                          : null),
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, opacity: 0.72, lineHeight: 1.25 }}>{item.label}</div>
+                    <div style={invoiceComposerSummaryValueStyle}>{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {invoiceComposerMessage ? (
+              <div
+                role="alert"
+                style={{
+                  fontSize: 13,
+                  color: "rgba(254, 202, 202, 0.95)",
+                  border: "1px solid rgba(248,113,113,0.36)",
+                  background: "rgba(127,29,29,0.18)",
+                  borderRadius: 12,
+                  padding: "10px 12px",
+                  lineHeight: 1.4,
+                }}
+              >
+                {invoiceComposerMessage}
+              </div>
+            ) : null}
+
+            <div style={invoiceComposerFooterStyle}>
+              <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>
+                {lang === "es" ? "Cancelar" : "Cancel"}
+              </button>
+              <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
+                {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
               </button>
             </div>
           </div>

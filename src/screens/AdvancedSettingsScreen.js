@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
+import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const NOTES_TEXTAREA_MIN_HEIGHT = 170;
@@ -147,6 +148,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
   const importInputRef = useRef(null);
   const defaultInternalNotesRef = useRef(null);
   const defaultInternalNotes = String(settings?.docDefaults?.defaultInternalNotesEstimate || "");
+  const isDevBuild = process.env.NODE_ENV !== "production";
 
   const autoResizeNotesField = (el) => {
     if (!el) return;
@@ -250,6 +252,37 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       setSettings(loadSettings());
     } catch {
       window.alert("Clear failed.");
+    }
+  };
+
+  const loadDevSampleData = () => {
+    if (!isDevBuild) return;
+    try {
+      setBusyLabel("Loading sample data...");
+      const result = seedDevSampleData();
+      window.alert(
+        `Loaded sample data: ${Number(result?.customers || 0)} customers, ${Number(result?.estimates || 0)} estimates, ${Number(result?.invoices || 0)} invoices.`
+      );
+    } catch (error) {
+      window.alert(error?.message || "Sample data load failed.");
+    } finally {
+      setBusyLabel("");
+    }
+  };
+
+  const clearOnlyDevSampleData = () => {
+    if (!isDevBuild) return;
+    if (!window.confirm("Remove seeded sample customers, estimates, and invoices only?")) return;
+    try {
+      setBusyLabel("Clearing sample data...");
+      const result = clearDevSampleData();
+      window.alert(
+        `Removed sample data: ${Number(result?.clearedCustomers || 0)} customers, ${Number(result?.clearedEstimates || 0)} estimates, ${Number(result?.clearedInvoices || 0)} invoices.`
+      );
+    } catch (error) {
+      window.alert(error?.message || "Sample data clear failed.");
+    } finally {
+      setBusyLabel("");
     }
   };
 
@@ -552,6 +585,23 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             <div className="pe-field-helper">
               These actions affect local device data only.
             </div>
+
+            {isDevBuild ? (
+              <div style={{ display: "grid", gap: 8 }}>
+                <div className="pe-field-label" style={{ marginBottom: 0 }}>Development Sample Data</div>
+                <div className="pe-field-helper">
+                  Loads deterministic customers, estimates, and invoice records into the normal EstiPaid storage keys for local testing only.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button type="button" className="pe-btn" onClick={loadDevSampleData}>
+                    Load Sample Data
+                  </button>
+                  <button type="button" className="pe-btn pe-btn-ghost" onClick={clearOnlyDevSampleData}>
+                    Clear Sample Data
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button type="button" className="pe-btn" onClick={exportData}>

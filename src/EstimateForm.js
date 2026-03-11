@@ -24,6 +24,11 @@ import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
 import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
 import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
+import {
+  generateNextInvoiceNumber,
+  normalizeInvoiceRecord,
+  validateInvoiceAgainstEstimate,
+} from "./utils/invoices";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 
@@ -1515,6 +1520,7 @@ export default function EstimateForm(props) {
 
   function handleAddLaborLine(e) {
     e?.preventDefault?.();
+    e?.stopPropagation?.();
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines.slice() : [];
     const newId = `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     lines.push({
@@ -1535,6 +1541,7 @@ export default function EstimateForm(props) {
 
   function handleLaborPrimary(e) {
     e?.preventDefault?.();
+    e?.stopPropagation?.();
     if (!laborOpen) {
       setLaborOpen(true);
       return;
@@ -1702,7 +1709,9 @@ export default function EstimateForm(props) {
     totalPulseTimerRef.current = { ...timers };
   }
 
-  function addMaterialItem() {
+  function addMaterialItem(e) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     const newItem = createBlankMaterialItem(undefined, globalDefaultMarkupPct);
     items.push(newItem);
@@ -1794,6 +1803,25 @@ export default function EstimateForm(props) {
     if (!isEditMode) return;
     const ok = window.confirm(`Discard changes to this ${isInvoiceEditMode ? "invoice" : "estimate"}?`);
     if (!ok) return;
+    if (isInvoiceEditMode && state?.meta?.ephemeralDraft) {
+      try {
+        const existingInvoices = readSavedDocList(INVOICES_KEY);
+        const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
+        if (nextInvoices.length !== existingInvoices.length) {
+          localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+          try {
+            window.dispatchEvent(new Event("estipaid:invoices-changed"));
+          } catch {}
+        }
+      } catch {}
+      try {
+        const existingEstimates = readSavedDocList(ESTIMATES_KEY);
+        const nextEstimates = existingEstimates.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
+        if (nextEstimates.length !== existingEstimates.length) {
+          localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+        }
+      } catch {}
+    }
     clearPendingEditTarget(editingTargetType);
     openedEditIdRef.current = "";
     openedDocNumberRef.current = "";
@@ -1877,7 +1905,7 @@ export default function EstimateForm(props) {
       }
 
       const now = Date.now();
-      const docNumber = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
       const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
       const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
       const openedEditId = String(openedEditIdRef.current || "").trim();
@@ -1896,6 +1924,16 @@ export default function EstimateForm(props) {
       const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
       const existingEstimates = readSavedDocList(ESTIMATES_KEY);
       const existingInvoices = readSavedDocList(INVOICES_KEY);
+      const docNumberRaw = String(
+        state?.job?.docNumber
+        || state?.invoiceNumber
+        || state?.estimateNumber
+        || state?.customer?.projectNumber
+        || ""
+      ).trim();
+      const docNumber = saveDocType === "invoice"
+        ? (docNumberRaw || generateNextInvoiceNumber(existingInvoices))
+        : docNumberRaw;
 
       const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
       const existingById = savedDocId
@@ -1946,15 +1984,24 @@ export default function EstimateForm(props) {
         return;
       }
 
-      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      if (saveDocType === "invoice" && Number(totalRevenue || 0) <= 0) {
+        setSavePrompt({ tone: "warn", message: "Cannot save invoice yet. Invoice total must be greater than $0.00." });
+        return;
+      }
+
       const updatedAt = Date.now();
       const estimateNumber = saveDocType === "estimate"
         ? docNumber
-        : String(existingMatch?.estimateNumber || "").trim();
+        : String(
+          persistedState?.estimateNumber
+          || existingMatch?.estimateNumber
+          || persistedState?.sourceEstimateSnapshot?.estimateNumber
+          || ""
+        ).trim();
       const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
       const projectName = String(state?.customer?.projectName || "").trim();
       const projectNumber = String(state?.customer?.projectNumber || "").trim();
-      const savedRecord = {
+      const baseRecord = {
         ...persistedState,
         id: recordId,
         docType: saveDocType,
@@ -1972,19 +2019,78 @@ export default function EstimateForm(props) {
         ts: updatedAt,
         createdAt,
         updatedAt,
+        customer: {
+          ...(persistedState?.customer || {}),
+          ...(state?.customer || {}),
+          id: String(selectedCustomerId || state?.customer?.id || "").trim(),
+          name: customerName,
+          projectName,
+          projectNumber,
+        },
+        job: {
+          ...(persistedState?.job || {}),
+          ...(state?.job || {}),
+          date: String(state?.job?.date || "").trim(),
+          due: String(state?.job?.due || "").trim(),
+          poNumber: String(state?.job?.poNumber || "").trim(),
+          docNumber,
+        },
+        meta: {
+          ...(persistedState?.meta || {}),
+          savedDocId: recordId,
+          savedDocCreatedAt: createdAt,
+          lastSavedAt: updatedAt,
+          ephemeralDraft: false,
+        },
       };
 
-      const nextEstimates = upsertSavedDoc(
-        existingEstimates,
-        savedRecord,
-        saveDocType === "invoice" ? "invoiceNumber" : "estimateNumber"
-      );
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
-
       if (saveDocType === "invoice") {
-        const nextInvoices = upsertSavedDoc(existingInvoices, savedRecord, "invoiceNumber");
+        const savedInvoice = normalizeInvoiceRecord({
+          ...baseRecord,
+          invoiceNumber,
+          estimateNumber,
+          invoiceTotal: Number(totalRevenue || 0),
+          total: Number(totalRevenue || 0),
+          dueDate: String(state?.job?.due || "").trim(),
+          date: String(state?.job?.date || "").trim(),
+        });
+        const linkedEstimate = savedInvoice.sourceEstimateId
+          ? existingEstimates.find((entry) => String(entry?.id || "").trim() === savedInvoice.sourceEstimateId)
+          : null;
+        const invoiceValidation = validateInvoiceAgainstEstimate({
+          invoice: savedInvoice,
+          estimate: linkedEstimate,
+          invoices: existingInvoices,
+          ignoreInvoiceId: recordId,
+        });
+        if (!invoiceValidation.ok) {
+          setSavePrompt({ tone: "error", message: invoiceValidation.message || "Invoice exceeds the remaining amount to invoice." });
+          return;
+        }
+
+        const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
         localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+        try {
+          window.dispatchEvent(new Event("estipaid:invoices-changed"));
+        } catch {}
+
+        const filteredEstimates = existingEstimates.filter((entry) => {
+          if (String(entry?.id || "").trim() === recordId) return false;
+          if (!invoiceNumber) return true;
+          return String(entry?.invoiceNumber || "").trim() !== invoiceNumber;
+        });
+        if (filteredEstimates.length !== existingEstimates.length) {
+          localStorage.setItem(ESTIMATES_KEY, JSON.stringify(filteredEstimates));
+        }
       } else {
+        const savedEstimate = {
+          ...baseRecord,
+          estimateNumber,
+          invoiceNumber: "",
+        };
+        const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
+        localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
           localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
@@ -2376,6 +2482,7 @@ export default function EstimateForm(props) {
   const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !mobileBottomChromeVisible
     ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
     : styles.estimatorActionBarInner;
+  const sectionBottomActionsStyle = styles.sectionFooterActions;
   const actionBarNode = (
     <div style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
@@ -2780,13 +2887,13 @@ export default function EstimateForm(props) {
               : "No notes"}
           </div>
         </div>
-        <div style={styles.scopeCollapseRow}>
+        <div style={styles.sectionFooterActions}>
           {notesOpen ? (
             <>
               <button
                 className="pe-btn pe-btn-ghost"
                 type="button"
-                style={styles.scopeCollapseBtn}
+                style={styles.sectionFooterBtn}
                 onClick={() => setNotesOpen(false)}
                 title="Collapse notes"
               >
@@ -2795,7 +2902,7 @@ export default function EstimateForm(props) {
               <button
                 className="pe-btn pe-btn-ghost"
                 type="button"
-                style={styles.scopeClearBtn}
+                style={styles.sectionFooterBtn}
                 onClick={handleClearScopeNotes}
               >
                 Clear Notes
@@ -3012,17 +3119,23 @@ export default function EstimateForm(props) {
         </div>
 
         {laborOpen && (
-          <div style={styles.laborBottomActions}>
+          <div style={sectionBottomActionsStyle}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
               onClick={() => setLaborOpen(false)}
               title={lang === "es" ? "Colapsar" : "Collapse"}
-              style={{ padding: "6px 10px" }}
+              style={styles.sectionFooterBtn}
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro pe-shortcut-tip" data-shortcut="+" onClick={handleLaborPrimary} type="button">
+            <button
+              className="pe-btn pe-btn-micro pe-shortcut-tip"
+              data-shortcut="+"
+              onClick={handleLaborPrimary}
+              type="button"
+              style={styles.sectionFooterBtn}
+            >
               {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
           </div>
@@ -3152,11 +3265,11 @@ export default function EstimateForm(props) {
           </div>
         </div>
         {specialConditionsOpen ? (
-          <div style={styles.scopeCollapseRow}>
+          <div style={styles.sectionFooterActions}>
             <button
               className="pe-btn pe-btn-ghost"
               type="button"
-              style={styles.scopeCollapseBtn}
+              style={styles.sectionFooterBtn}
               onClick={() => setSpecialConditionsOpen(false)}
               title="Collapse special conditions"
             >
@@ -3171,6 +3284,7 @@ export default function EstimateForm(props) {
         t={t}
         lang={lang}
         styles={styles}
+        bottomActionsStyle={sectionBottomActionsStyle}
         headerIcon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M12 4.8 5.8 8.1 12 11.4l6.2-3.3L12 4.8Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /><path d="M5.8 12 12 15.3l6.2-3.3M5.8 15.9 12 19.2l6.2-3.3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /></svg>}
         money={money}
         collapseMs={COLLAPSE_MS}
@@ -3530,17 +3644,26 @@ const styles = {
   },
   laborBaseRow: { marginTop: 10 },
   laborBottomActions: {
-    position: "sticky",
-    bottom: 0,
     display: "flex",
     justifyContent: "flex-end",
     gap: 8,
     marginTop: 10,
     paddingTop: 10,
-    background: "linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,0.46) 45%, rgba(11,15,20,0.72) 100%)",
-    backdropFilter: "blur(4px)",
-    WebkitBackdropFilter: "blur(4px)",
+    alignItems: "center",
+    flexWrap: "wrap",
   },
+  sectionFooterActions: {
+    position: "static",
+    display: "flex",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
+  sectionFooterBtn: { padding: "8px 12px", minHeight: 36, borderRadius: 12 },
   laborHeaderToggleBtn: { width: 36, minWidth: 36, height: 36, padding: 0, display: "grid", placeItems: "center", lineHeight: 1, fontSize: 14 },
   laborCornerWrap: { display: "flex", justifyContent: "flex-end", marginTop: 8 },
   laborCornerToggle: {

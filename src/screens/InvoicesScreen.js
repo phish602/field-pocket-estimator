@@ -3,17 +3,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import {
+  INVOICE_STATUSES,
+  PAYMENT_STATUSES,
+  createManualInvoiceDraft,
+  deriveInvoiceStatus,
+  duplicateInvoiceDraft,
+  readStoredInvoices,
+  roundCurrency,
+  updateInvoiceLifecycleStatus,
+  writeStoredInvoices,
+} from "../utils/invoices";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 
-function loadSavedInvoices() {
+function loadSavedEstimates() {
   try {
-    const raw = localStorage.getItem(INVOICES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(Boolean);
+    return parsed.filter(Boolean).filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice");
   } catch {
     return [];
   }
@@ -45,9 +56,59 @@ const stickyListHeaderStyle = {
   borderBottom: "1px solid rgba(255,255,255,0.08)",
 };
 
-export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
+function formatStatusLabel(status, lang) {
+  const raw = String(status || "").toLowerCase();
+  if (raw === INVOICE_STATUSES.SENT) return lang === "es" ? "Enviada" : "Sent";
+  if (raw === INVOICE_STATUSES.PAID) return lang === "es" ? "Pagada" : "Paid";
+  if (raw === INVOICE_STATUSES.OVERDUE) return lang === "es" ? "Vencida" : "Overdue";
+  if (raw === INVOICE_STATUSES.VOID) return lang === "es" ? "Anulada" : "Void";
+  return lang === "es" ? "Borrador" : "Draft";
+}
+
+function formatPaymentStatus(paymentStatus, lang) {
+  const raw = String(paymentStatus || "").toLowerCase();
+  if (raw === PAYMENT_STATUSES.PAID) return lang === "es" ? "Pagado" : "Paid";
+  if (raw === PAYMENT_STATUSES.PARTIAL) return lang === "es" ? "Parcial" : "Partial";
+  if (raw === PAYMENT_STATUSES.VOID) return lang === "es" ? "Anulado" : "Void";
+  return lang === "es" ? "Pendiente" : "Unpaid";
+}
+
+function moneyUSD(value) {
+  const amount = roundCurrency(value);
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
+
+function formatDateTime(value) {
+  const raw = Number(value || 0) || Date.parse(String(value || ""));
+  if (!raw) return "";
+  try {
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString();
+  } catch {
+    return "";
+  }
+}
+
+function formatDateOnly(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [yyyy, mm, dd] = raw.split("-");
+    return `${mm}/${dd}/${yyyy}`;
+  }
+  return raw;
+}
+
+export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
   const [q, setQ] = useState("");
-  const [list, setList] = useState(() => loadSavedInvoices());
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [list, setList] = useState(() => readStoredInvoices());
+  const [expanded, setExpanded] = useState(() => ({}));
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
@@ -55,13 +116,18 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
   const hasMeasuredListRef = useRef(false);
 
   useEffect(() => {
-    const refresh = () => setList(loadSavedInvoices());
+    const refresh = () => setList(readStoredInvoices());
     refresh();
-    const onStorage = (e) => {
-      if (!e || e.key === INVOICES_KEY) refresh();
+    const onStorage = (event) => {
+      if (!event?.key || event.key === INVOICES_KEY) refresh();
     };
+    const onInvoicesChanged = () => refresh();
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -73,12 +139,12 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
     const prevCount = Number(prevListCountRef.current || 0);
     const nextCount = Number(list?.length || 0);
     if (hasMeasuredListRef.current && nextCount > prevCount) {
-      setToastMessage("Invoice created");
+      setToastMessage(lang === "es" ? "Factura creada" : "Invoice created");
       setShowToast(true);
     }
     prevListCountRef.current = nextCount;
     hasMeasuredListRef.current = true;
-  }, [list]);
+  }, [lang, list]);
 
   useEffect(() => {
     if (!showToast) return undefined;
@@ -87,43 +153,30 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
   }, [showToast]);
 
   const filtered = useMemo(() => {
-    const s = String(q || "").trim().toLowerCase();
-    if (!s) return list;
-    return list.filter((x) => {
-      const inv = String(x?.invoiceNumber || "").toLowerCase();
-      const cn = String(x?.customerName || "").toLowerCase();
-      const pn = String(x?.projectName || "").toLowerCase();
-      const en = String(x?.estimateNumber || "").toLowerCase();
-      return inv.includes(s) || cn.includes(s) || pn.includes(s) || en.includes(s);
+    const search = String(q || "").trim().toLowerCase();
+    const filterStatus = String(statusFilter || "all").trim().toLowerCase();
+    return (Array.isArray(list) ? list : []).filter((invoice) => {
+      const derivedStatus = deriveInvoiceStatus(invoice);
+      const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
+      const customerName = String(invoice?.customerName || "").toLowerCase();
+      const projectName = String(invoice?.projectName || "").toLowerCase();
+      const estimateNumber = String(invoice?.estimateNumber || "").toLowerCase();
+      const searchMatch = !search
+        || invoiceNumber.includes(search)
+        || customerName.includes(search)
+        || projectName.includes(search)
+        || estimateNumber.includes(search);
+      const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
+      return searchMatch && statusMatch;
     });
-  }, [list, q]);
+  }, [list, q, statusFilter]);
 
-  const fmtMoney = (n) => {
-    try {
-      return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(n) || 0);
-    } catch {
-      return String(n || "");
-    }
-  };
-
-  const fmtDate = (ts) => {
-    try {
-      const d = new Date(Number(ts));
-      if (Number.isNaN(d.getTime())) return "";
-      return d.toLocaleString();
-    } catch {
-      return "";
-    }
-  };
-
-  const remove = (invoiceNumber) => {
-    const ok = window.confirm(lang === "es" ? "¿Eliminar esta factura del historial?" : "Delete this invoice from history?");
-    if (!ok) return;
-    const next = list.filter((x) => String(x?.invoiceNumber || "") !== String(invoiceNumber || ""));
-    setList(next);
-    try {
-      localStorage.setItem(INVOICES_KEY, JSON.stringify(next));
-    } catch {}
+  const toggleDetails = (invoiceId) => {
+    setExpanded((prev) => {
+      const next = {};
+      if (!prev[invoiceId]) next[invoiceId] = true;
+      return next;
+    });
   };
 
   const openInvoice = (invoice) => {
@@ -137,12 +190,89 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
     } catch {}
   };
 
+  const persistInvoices = (nextInvoices, nextToast = "") => {
+    const normalized = writeStoredInvoices(nextInvoices);
+    setList(normalized);
+    if (nextToast) {
+      setToastMessage(nextToast);
+      setShowToast(true);
+    }
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
+    return normalized;
+  };
+
+  const createManualInvoice = () => {
+    const currentInvoices = readStoredInvoices();
+    const draft = createManualInvoiceDraft(currentInvoices);
+    const nextInvoices = persistInvoices(
+      [draft, ...currentInvoices],
+      lang === "es" ? "Borrador de factura creado" : "Invoice draft created"
+    );
+    try {
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(draft.id || ""));
+    } catch {}
+    setExpanded({});
+    setList(nextInvoices);
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+  };
+
+  const removeInvoice = (invoice) => {
+    const ok = window.confirm(lang === "es" ? "¿Eliminar esta factura del historial?" : "Delete this invoice from history?");
+    if (!ok) return;
+    const invoiceId = String(invoice?.id || "").trim();
+    const next = list.filter((entry) => String(entry?.id || "").trim() !== invoiceId);
+    persistInvoices(next);
+    setExpanded((prev) => {
+      if (!prev[invoiceId]) return prev;
+      const nextExpanded = { ...prev };
+      delete nextExpanded[invoiceId];
+      return nextExpanded;
+    });
+  };
+
+  const duplicateInvoice = (invoice) => {
+    const currentInvoices = readStoredInvoices();
+    const currentEstimates = loadSavedEstimates();
+    const duplicated = duplicateInvoiceDraft(invoice, currentInvoices, { estimates: currentEstimates });
+    if (!duplicated.ok || !duplicated.draft) {
+      window.alert(duplicated?.message || (lang === "es" ? "No se pudo duplicar la factura." : "Unable to duplicate invoice."));
+      return;
+    }
+    persistInvoices(
+      [duplicated.draft, ...currentInvoices],
+      lang === "es" ? "Factura duplicada" : "Invoice duplicated"
+    );
+    try {
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(duplicated.draft.id || ""));
+    } catch {}
+    setExpanded({});
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+  };
+
+  const updateInvoiceStatus = (invoice, nextStatus) => {
+    const currentInvoices = readStoredInvoices();
+    const invoiceId = String(invoice?.id || "").trim();
+    const nextInvoices = currentInvoices.map((entry) => {
+      if (String(entry?.id || "").trim() !== invoiceId) return entry;
+      return updateInvoiceLifecycleStatus(entry, nextStatus);
+    });
+    persistInvoices(nextInvoices);
+  };
+
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
         <div className="pe-company-profile-header" style={{ ...stickyListHeaderStyle, position: "sticky", minHeight: 56 }}>
           <div className="pe-company-header-title">
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={lang === "es" ? "Facturas" : "Invoices"}>{lang === "es" ? "Facturas" : "Invoices"}</h1>
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={lang === "es" ? "Facturas" : "Invoices"}>
+              {lang === "es" ? "Facturas" : "Invoices"}
+            </h1>
           </div>
           <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", pointerEvents: "none" }}>
             <img
@@ -154,8 +284,11 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
               draggable={false}
             />
           </div>
-          <div className="pe-company-header-controls">
-            <button className="pe-btn" onClick={onDone}>
+          <div className="pe-company-header-controls" style={{ display: "flex", gap: 8 }}>
+            <button className="pe-btn pe-btn-ghost" type="button" onClick={createManualInvoice}>
+              {lang === "es" ? "Nueva factura" : "New Invoice"}
+            </button>
+            <button className="pe-btn" type="button" onClick={onDone}>
               {lang === "es" ? "Volver" : "Back"}
             </button>
           </div>
@@ -165,8 +298,30 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
           <Field
             placeholder={lang === "es" ? "Buscar…" : "Search…"}
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(event) => setQ(event.target.value)}
           />
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="all">{lang === "es" ? "Todos los estados" : "All Statuses"}</option>
+              <option value={INVOICE_STATUSES.DRAFT}>{formatStatusLabel(INVOICE_STATUSES.DRAFT, lang)}</option>
+              <option value={INVOICE_STATUSES.SENT}>{formatStatusLabel(INVOICE_STATUSES.SENT, lang)}</option>
+              <option value={INVOICE_STATUSES.PAID}>{formatStatusLabel(INVOICE_STATUSES.PAID, lang)}</option>
+              <option value={INVOICE_STATUSES.OVERDUE}>{formatStatusLabel(INVOICE_STATUSES.OVERDUE, lang)}</option>
+              <option value={INVOICE_STATUSES.VOID}>{formatStatusLabel(INVOICE_STATUSES.VOID, lang)}</option>
+            </select>
+
+            <button
+              className="pe-btn pe-btn-ghost"
+              type="button"
+              onClick={() => {
+                setQ("");
+                setStatusFilter("all");
+              }}
+            >
+              {lang === "es" ? "Limpiar" : "Clear"}
+            </button>
+          </div>
 
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
             {showListSkeleton ? (
@@ -181,6 +336,7 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
                       </div>
                       <div className="pe-skeleton-actions">
                         <div className="pe-skeleton-button" />
+                        <div className="pe-skeleton-button" />
                       </div>
                     </div>
                   </div>
@@ -191,51 +347,175 @@ export default function InvoicesScreen({lang, t, onDone, spinTick = 0 }) {
                 <div style={{ opacity: 0.68 }}>
                   <EmptyInvoiceIcon />
                 </div>
-                <div>No invoices yet. Convert an estimate to generate an invoice.</div>
+                <div>{lang === "es" ? "Aún no hay facturas. Crea una factura manual o desde una estimación aprobada." : "No invoices yet. Create a manual invoice or create one from an approved estimate."}</div>
+              </div>
+            ) : filtered.length === 0 ? (
+              <div style={{ opacity: 0.75, textAlign: "center" }}>
+                {lang === "es" ? "No hay facturas que coincidan." : "No matching invoices."}
               </div>
             ) : (
-              filtered.map((x) => (
-                <div
-                  className="pe-card pe-card-content ep-glass-tile"
-                  key={String(x?.id || x?.invoiceNumber || Math.random())}
-                  style={{
-                    padding: 12,
-                    display: "grid",
-                    gap: 8,
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openInvoice(x)}
-                  onKeyDown={(evt) => {
-                    if (evt.key === "Enter" || evt.key === " ") {
-                      evt.preventDefault();
-                      openInvoice(x);
-                    }
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                    <div style={{ display: "grid", gap: 2 }}>
-                      <div style={{ fontWeight: 800 }}>
-                        {t("invoiceNumLabel")} {x?.invoiceNumber || ""}
-                        {x?.estimateNumber ? ` • ${t("estimateNumLabel")} ${x.estimateNumber}` : ""}
+              filtered.map((invoice) => {
+                const invoiceId = String(invoice?.id || "");
+                const isOpen = !!expanded[invoiceId];
+                const derivedStatus = deriveInvoiceStatus(invoice);
+                const statusTone = derivedStatus === INVOICE_STATUSES.PAID
+                  ? "rgba(34,197,94,0.14)"
+                  : derivedStatus === INVOICE_STATUSES.OVERDUE
+                    ? "rgba(248,113,113,0.14)"
+                    : derivedStatus === INVOICE_STATUSES.VOID
+                      ? "rgba(148,163,184,0.14)"
+                      : "rgba(255,255,255,0.08)";
+
+                return (
+                  <div
+                    className="pe-card pe-card-content ep-glass-tile"
+                    key={invoiceId || invoice?.invoiceNumber || Math.random()}
+                    style={{
+                      padding: 12,
+                      display: "grid",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                        <div style={{ fontWeight: 800, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <span>{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
+                          {invoice?.estimateNumber ? (
+                            <span style={{ opacity: 0.7 }}>
+                              • {t("estimateNumLabel")} {invoice.estimateNumber}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div style={{ fontSize: 13, opacity: 0.85 }}>
+                          {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
+                          {invoice?.projectName ? ` • ${invoice.projectName}` : ""}
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>
+                          {formatDateTime(invoice?.updatedAt || invoice?.createdAt)} • {moneyUSD(invoice?.invoiceTotal)}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 13, opacity: 0.85 }}>
-                        {x?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
-                        {x?.projectName ? ` • ${x.projectName}` : ""}
-                      </div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        {fmtDate(x?.updatedAt || x?.createdAt)} • {fmtMoney(x?.total)}
+
+                      <div
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: statusTone,
+                          fontSize: 12,
+                          fontWeight: 800,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {formatStatusLabel(derivedStatus, lang)}
                       </div>
                     </div>
 
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <button className="pe-btn pe-btn-ghost" onClick={(evt) => { evt.stopPropagation(); remove(x?.invoiceNumber); }}>
-                        {lang === "es" ? "Eliminar" : "Delete"}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button className="pe-btn" type="button" onClick={() => openInvoice(invoice)}>
+                        {lang === "es" ? "Abrir" : "Open"}
+                      </button>
+                      <button className="pe-btn pe-btn-ghost" type="button" onClick={() => toggleDetails(invoiceId)}>
+                        {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
                       </button>
                     </div>
+
+                    <div
+                      style={{
+                        overflow: "hidden",
+                        maxHeight: isOpen ? 1200 : 0,
+                        opacity: isOpen ? 1 : 0,
+                        transform: isOpen ? "translateY(0px)" : "translateY(-4px)",
+                        transition: "max-height 320ms ease, opacity 220ms ease, transform 220ms ease",
+                        borderTop: "1px solid rgba(255,255,255,0.10)",
+                        paddingTop: isOpen ? 10 : 0,
+                      }}
+                      aria-hidden={!isOpen}
+                    >
+                      <div style={{ display: "grid", gap: 10 }}>
+                        <div
+                          style={{
+                            borderRadius: 12,
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            background: "rgba(255,255,255,0.04)",
+                            padding: 10,
+                            display: "grid",
+                            gap: 8,
+                          }}
+                        >
+                          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
+                            {lang === "es" ? "Resumen" : "Summary"}
+                          </div>
+                          <div style={{ display: "grid", gap: 6 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Tipo" : "Type"}</div>
+                              <div style={{ fontWeight: 800 }}>{String(invoice?.invoiceType || "").toUpperCase() || "MANUAL"}</div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Total" : "Invoice total"}</div>
+                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.invoiceTotal)}</div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Pagado" : "Amount paid"}</div>
+                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.amountPaid)}</div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Saldo" : "Balance remaining"}</div>
+                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.balanceRemaining)}</div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Pago" : "Payment status"}</div>
+                              <div style={{ fontWeight: 800 }}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Vence" : "Due date"}</div>
+                              <div style={{ fontWeight: 800 }}>{formatDateOnly(invoice?.dueDate) || "—"}</div>
+                            </div>
+                            {invoice?.sourceEstimateId ? (
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                                <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Estimación padre" : "Parent estimate"}</div>
+                                <div style={{ fontWeight: 800 }}>{invoice?.estimateNumber || invoice?.sourceEstimateId}</div>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.SENT)}
+                            disabled={derivedStatus === INVOICE_STATUSES.SENT || derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
+                          >
+                            {lang === "es" ? "Marcar enviada" : "Mark Sent"}
+                          </button>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.PAID)}
+                            disabled={derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
+                          >
+                            {lang === "es" ? "Marcar pagada" : "Mark Paid"}
+                          </button>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.VOID)}
+                            disabled={derivedStatus === INVOICE_STATUSES.VOID}
+                          >
+                            {lang === "es" ? "Anular" : "Void"}
+                          </button>
+                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateInvoice(invoice)}>
+                            {lang === "es" ? "Duplicar" : "Duplicate"}
+                          </button>
+                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeInvoice(invoice)}>
+                            {lang === "es" ? "Eliminar" : "Delete"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

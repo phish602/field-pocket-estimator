@@ -14,6 +14,7 @@ const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 
 // ===== Customer KPI (live-compute) =====
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -36,9 +37,23 @@ function moneyUSD(v) {
 
 function readSavedDocs() {
   try {
-    const raw = localStorage.getItem(ESTIMATES_KEY);
-    const arr = raw ? safeParse(raw, []) : [];
-    return (Array.isArray(arr) ? arr : []).filter(Boolean);
+    const estimateRaw = localStorage.getItem(ESTIMATES_KEY);
+    const invoiceRaw = localStorage.getItem(INVOICES_KEY);
+    const estimates = estimateRaw ? safeParse(estimateRaw, []) : [];
+    const invoices = invoiceRaw ? safeParse(invoiceRaw, []) : [];
+    const merged = [
+      ...(Array.isArray(estimates) ? estimates : []),
+      ...(Array.isArray(invoices) ? invoices : []),
+    ].filter(Boolean);
+    const deduped = [];
+    const seen = new Set();
+    merged.forEach((entry) => {
+      const key = String(entry?.id || entry?.invoiceNumber || entry?.estimateNumber || "").trim();
+      if (key && seen.has(key)) return;
+      if (key) seen.add(key);
+      deduped.push(entry);
+    });
+    return deduped;
   } catch {
     return [];
   }

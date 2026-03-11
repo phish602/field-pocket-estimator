@@ -111,6 +111,7 @@ export default function SectionMaterials(props) {
     t,
     lang,
     styles,
+    bottomActionsStyle,
     headerIcon,
     money,
     collapseMs,
@@ -149,6 +150,7 @@ export default function SectionMaterials(props) {
   const noteInputRefs = useRef({});
   const [noteOpenById, setNoteOpenById] = useState({});
   const blanketDescriptionValue = String(materialsBlanketDescription || "");
+  const materialsBottomActionsStyle = bottomActionsStyle || styles.sectionFooterActions;
 
   useEffect(() => {
     setNoteOpenById((prev) => {
@@ -564,17 +566,17 @@ export default function SectionMaterials(props) {
             <div className="pe-muted">{t("materialsItemizedTotal")}</div>
             <div className={`pe-value ${animateMaterialsTotal ? "value-pulse" : ""}`}>{money.format(itemizedMaterialsTotal)}</div>
           </div>
-          <div style={styles.laborBottomActions}>
+          <div style={materialsBottomActionsStyle}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
               onClick={() => setMaterialsOpen(false)}
               title={lang === "es" ? "Colapsar" : "Collapse"}
-              style={{ padding: "6px 10px" }}
+              style={styles.sectionFooterBtn}
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro" type="button" onClick={addMaterialItem}>
+            <button className="pe-btn pe-btn-micro" type="button" onClick={(e) => addMaterialItem?.(e)} style={styles.sectionFooterBtn}>
               {t("addMaterialItem")}
             </button>
           </div>
