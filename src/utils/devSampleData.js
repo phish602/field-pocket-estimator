@@ -237,6 +237,212 @@ function createBlankLine(idPrefix, suffix, defaults = {}) {
   };
 }
 
+function buildFinancialSummary({
+  approvedTotal = null,
+  totalRevenue = 0,
+  totalCost = 0,
+  laborRevenue = 0,
+  laborCost = 0,
+  materialsRevenue = 0,
+  materialsCost = 0,
+}) {
+  const revenue = roundCurrency(totalRevenue);
+  const cost = roundCurrency(totalCost);
+  const grossProfit = roundCurrency(revenue - cost);
+  const marginRatio = revenue > 0 ? roundCurrency(grossProfit / revenue) : 0;
+  const marginPercent = roundCurrency(marginRatio * 100);
+  const approved = approvedTotal === null || approvedTotal === undefined || approvedTotal === ""
+    ? revenue
+    : roundCurrency(approvedTotal);
+  const normalizedLaborRevenue = roundCurrency(laborRevenue);
+  const normalizedLaborCost = roundCurrency(laborCost);
+  const normalizedMaterialsRevenue = roundCurrency(materialsRevenue);
+  const normalizedMaterialsCost = roundCurrency(materialsCost);
+
+  return {
+    approvedTotal: approved,
+    totalRevenue: revenue,
+    grandTotal: revenue,
+    total: revenue,
+    totalCost: cost,
+    internalCost: cost,
+    grossProfit,
+    grossMargin: marginRatio,
+    grossMarginPct: marginRatio,
+    grossProfitMargin: marginRatio,
+    margin: marginRatio,
+    marginPct: marginPercent,
+    marginPercent,
+    laborRevenue: normalizedLaborRevenue,
+    laborCost: normalizedLaborCost,
+    materialsRevenue: normalizedMaterialsRevenue,
+    materialsCost: normalizedMaterialsCost,
+    financials: {
+      approvedTotal: approved,
+      totalRevenue: revenue,
+      grandTotal: revenue,
+      totalCost: cost,
+      internalCost: cost,
+      grossProfit,
+      grossMargin: marginRatio,
+      grossMarginPct: marginRatio,
+      grossProfitMargin: marginRatio,
+      margin: marginRatio,
+      marginPct: marginPercent,
+      marginPercent,
+      laborRevenue: normalizedLaborRevenue,
+      laborCost: normalizedLaborCost,
+      materialsRevenue: normalizedMaterialsRevenue,
+      materialsCost: normalizedMaterialsCost,
+    },
+    totals: {
+      approvedTotal: approved,
+      totalRevenue: revenue,
+      grandTotal: revenue,
+      totalCost: cost,
+      internalCost: cost,
+      grossProfit,
+      grossMargin: marginRatio,
+      grossMarginPct: marginRatio,
+      grossProfitMargin: marginRatio,
+      margin: marginRatio,
+      marginPct: marginPercent,
+      marginPercent,
+      laborRevenue: normalizedLaborRevenue,
+      laborCost: normalizedLaborCost,
+      materialsRevenue: normalizedMaterialsRevenue,
+      materialsCost: normalizedMaterialsCost,
+    },
+  };
+}
+
+function buildFinancialSummaryFromComputed(computed, approvedTotal = null) {
+  const laborRevenue = roundCurrency(
+    computed?.labor?.totalRevenue
+    ?? computed?.laborAfterAdjustments
+    ?? computed?.laborAfterMultiplier
+    ?? computed?.labor?.subtotal
+    ?? 0
+  );
+  const laborCost = roundCurrency(
+    computed?.labor?.totalCost
+    ?? computed?.labor?.internalCost
+    ?? computed?.labor?.cost
+    ?? 0
+  );
+  const materialsRevenue = roundCurrency(
+    computed?.materials?.totalRevenue
+    ?? computed?.materials?.totalCharge
+    ?? 0
+  );
+  const materialsCost = roundCurrency(computed?.materials?.totalCost ?? 0);
+  const totalRevenue = roundCurrency(
+    computed?.totalRevenue
+    ?? computed?.grandTotal
+    ?? (laborRevenue + materialsRevenue)
+  );
+  const totalCost = roundCurrency(
+    computed?.totalCost
+    ?? (laborCost + materialsCost)
+  );
+
+  return buildFinancialSummary({
+    approvedTotal: approvedTotal === null || approvedTotal === undefined ? totalRevenue : approvedTotal,
+    totalRevenue,
+    totalCost,
+    laborRevenue,
+    laborCost,
+    materialsRevenue,
+    materialsCost,
+  });
+}
+
+function buildEstimateSnapshotWithFinancials(estimate) {
+  const source = estimate && typeof estimate === "object" ? estimate : {};
+  const approvedTotal = roundCurrency(
+    source?.approvedTotal
+    ?? source?.financials?.approvedTotal
+    ?? source?.totalRevenue
+    ?? source?.grandTotal
+    ?? source?.total
+    ?? 0
+  );
+  const totalRevenue = roundCurrency(
+    source?.financials?.totalRevenue
+    ?? source?.totals?.totalRevenue
+    ?? source?.totalRevenue
+    ?? source?.grandTotal
+    ?? source?.total
+    ?? approvedTotal
+  );
+  const totalCost = roundCurrency(
+    source?.financials?.totalCost
+    ?? source?.totals?.totalCost
+    ?? source?.totalCost
+    ?? source?.internalCost
+    ?? 0
+  );
+  const laborRevenue = roundCurrency(
+    source?.financials?.laborRevenue
+    ?? source?.totals?.laborRevenue
+    ?? source?.laborRevenue
+    ?? 0
+  );
+  const laborCost = roundCurrency(
+    source?.financials?.laborCost
+    ?? source?.totals?.laborCost
+    ?? source?.laborCost
+    ?? 0
+  );
+  const materialsRevenue = roundCurrency(
+    source?.financials?.materialsRevenue
+    ?? source?.totals?.materialsRevenue
+    ?? source?.materialsRevenue
+    ?? 0
+  );
+  const materialsCost = roundCurrency(
+    source?.financials?.materialsCost
+    ?? source?.totals?.materialsCost
+    ?? source?.materialsCost
+    ?? 0
+  );
+  const financialSummary = buildFinancialSummary({
+    approvedTotal,
+    totalRevenue,
+    totalCost,
+    laborRevenue,
+    laborCost,
+    materialsRevenue,
+    materialsCost,
+  });
+
+  return {
+    estimateId: String(source?.id || "").trim(),
+    estimateNumber: String(source?.estimateNumber || source?.job?.docNumber || "").trim(),
+    estimateStatus: String(source?.status || "approved").trim(),
+    status: String(source?.status || "approved").trim(),
+    customerId: String(source?.customerId || source?.customer?.id || "").trim(),
+    customerName: String(source?.customerName || source?.customer?.name || "").trim(),
+    projectName: String(source?.projectName || source?.customer?.projectName || "").trim(),
+    projectNumber: String(source?.projectNumber || source?.customer?.projectNumber || "").trim(),
+    poNumber: String(source?.poNumber || source?.job?.poNumber || "").trim(),
+    estimateDate: String(source?.date || source?.job?.date || "").trim(),
+    dueDate: String(source?.dueDate || source?.job?.due || "").trim(),
+    customer: deepClone(source?.customer || {}),
+    job: deepClone(source?.job || {}),
+    ...financialSummary,
+    summary: {
+      total: financialSummary.totalRevenue,
+      totalRevenue: financialSummary.totalRevenue,
+      totalCost: financialSummary.totalCost,
+      grossProfit: financialSummary.grossProfit,
+      marginPct: financialSummary.marginPct,
+      savedAt: Number(source?.savedAt || 0) || 0,
+      updatedAt: Number(source?.updatedAt || 0) || 0,
+    },
+  };
+}
+
 function buildEstimateRecord(config) {
   const customer = config.customer;
   const flat = toEstimatorFlat(customer);
@@ -325,6 +531,7 @@ function buildEstimateRecord(config) {
 
   const computed = computeTotals(state);
   const total = roundCurrency(computed?.totalRevenue || 0);
+  const financialSummary = buildFinancialSummaryFromComputed(computed, total);
 
   return {
     ...state,
@@ -342,6 +549,7 @@ function buildEstimateRecord(config) {
     dueDate: String(config.dueDate || ""),
     poNumber: String(config.poNumber || ""),
     total,
+    ...financialSummary,
     createdAt,
     updatedAt: savedAt,
     savedAt,
@@ -381,6 +589,15 @@ function createLinkedInvoice(config, estimate, existingInvoices) {
     : 0.62;
   const invoiceTotal = roundCurrency(draftResult?.draft?.invoiceTotal || draftResult?.draft?.total || 0);
   const invoiceInternalCost = roundCurrency(invoiceTotal * parentInternalRatio);
+  const invoiceFinancialSummary = buildFinancialSummary({
+    approvedTotal: invoiceTotal,
+    totalRevenue: invoiceTotal,
+    totalCost: invoiceInternalCost,
+    laborRevenue: 0,
+    laborCost: 0,
+    materialsRevenue: invoiceTotal,
+    materialsCost: invoiceInternalCost,
+  });
 
   const payments = Array.isArray(config?.payments) ? config.payments.map((payment, index) => ({
     id: String(payment?.id || `${config.id}_payment_${index + 1}`),
@@ -401,6 +618,8 @@ function createLinkedInvoice(config, estimate, existingInvoices) {
     additionalNotes: String(config.note || draftResult.draft.additionalNotes || ""),
     amountPaid: payments.reduce((sum, payment) => sum + roundCurrency(payment?.amount), 0),
     payments,
+    ...invoiceFinancialSummary,
+    sourceEstimateSnapshot: buildEstimateSnapshotWithFinancials(estimate),
     materials: {
       ...(draftResult.draft.materials || {}),
       blanketCost: String(invoiceTotal),
@@ -445,6 +664,16 @@ function createManualInvoice(config) {
     )
   );
   const invoiceTotal = roundCurrency(config.invoiceTotal);
+  const invoiceInternalCost = roundCurrency(config?.internalCost ?? (invoiceTotal * 0.66));
+  const invoiceFinancialSummary = buildFinancialSummary({
+    approvedTotal: invoiceTotal,
+    totalRevenue: invoiceTotal,
+    totalCost: invoiceInternalCost,
+    laborRevenue: 0,
+    laborCost: 0,
+    materialsRevenue: invoiceTotal,
+    materialsCost: invoiceInternalCost,
+  });
 
   return normalizeInvoiceRecord({
     ...draft,
@@ -460,6 +689,7 @@ function createManualInvoice(config) {
     total: invoiceTotal,
     amountPaid,
     paymentStatus,
+    ...invoiceFinancialSummary,
     payments: (Array.isArray(config?.payments) ? config.payments : []).map((payment, index) => ({
       id: String(payment?.id || `${config.id}_payment_${index + 1}`),
       amount: roundCurrency(payment?.amount || 0),
@@ -507,7 +737,7 @@ function createManualInvoice(config) {
     materials: {
       ...(draft.materials || {}),
       blanketCost: String(invoiceTotal),
-      blanketInternalCost: String(roundCurrency(invoiceTotal * 0.66)),
+      blanketInternalCost: String(invoiceInternalCost),
       materialsBlanketDescription: String(config.materialsDescription || config.note || ""),
       markupPct: 0,
       items: [createBlankLine(config.id, "material_blank", { desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" })],

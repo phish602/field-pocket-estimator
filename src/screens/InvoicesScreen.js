@@ -1,7 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
 import { useEffect, useMemo, useRef, useState } from "react";
-import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   INVOICE_STATUSES,
@@ -50,10 +49,213 @@ const stickyListHeaderStyle = {
   zIndex: 12,
   paddingTop: 6,
   paddingBottom: 8,
-  background: "linear-gradient(180deg, rgba(8,18,28,0.9), rgba(8,18,28,0.62))",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  background: "transparent",
+  backdropFilter: "none",
+  WebkitBackdropFilter: "none",
+  borderBottom: "0",
+};
+
+const filterPanelStyle = {
+  width: "100%",
+  marginBottom: "18px",
+};
+
+const statusSelectStyle = {
+};
+
+const valueSelectStyle = {
+};
+
+const clearButtonStyle = {
+};
+
+const searchFieldStyle = {
+  width: "100%",
+  display: "block",
+  padding: "10px 14px",
+  borderRadius: "10px",
+  paddingRight: 42,
+};
+
+const filtersRowStyle = {
+  display: "flex",
+  gap: "10px",
+  justifyContent: "center",
+  marginTop: "12px",
+  marginBottom: "20px",
+};
+
+const invoiceCardStyle = {
+  padding: 16,
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.04)",
+  boxSizing: "border-box",
+  overflow: "hidden",
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+  width: "100%",
+  maxWidth: "100%",
+  minWidth: 0,
+};
+
+const invoiceCardTopStyle = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: 10,
+  alignItems: "start",
+};
+
+const invoicePrimaryLineStyle = {
+  display: "grid",
+  gap: 3,
+  minWidth: 0,
+};
+
+const invoiceTitleStyle = {
+  fontSize: 15.5,
+  lineHeight: 1.28,
+  fontWeight: 700,
+  minWidth: 0,
+  display: "block",
+  whiteSpace: "normal",
+  overflow: "visible",
+  textOverflow: "clip",
+  WebkitLineClamp: "unset",
+  WebkitBoxOrient: "initial",
+};
+
+const invoiceEstimateNumberStyle = {
+  fontSize: 12,
+  lineHeight: 1.3,
+  fontWeight: 600,
+  opacity: 0.75,
+  color: "rgba(226,232,240,0.92)",
+  display: "block",
+  whiteSpace: "normal",
+  overflow: "visible",
+  textOverflow: "clip",
+};
+
+const invoiceSecondaryLineStyle = {
+  fontSize: 13,
+  lineHeight: 1.32,
+  fontWeight: 500,
+  color: "rgba(226,232,240,0.78)",
+  minWidth: 0,
+  whiteSpace: "normal",
+  overflow: "visible",
+  textOverflow: "clip",
+};
+
+const invoiceProjectLineStyle = {
+  fontSize: 12.5,
+  lineHeight: 1.32,
+  fontWeight: 500,
+  color: "rgba(226,232,240,0.72)",
+  minWidth: 0,
+  whiteSpace: "normal",
+  overflow: "visible",
+  textOverflow: "clip",
+};
+
+const invoiceMetaLineStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  alignItems: "baseline",
+  fontSize: 11.5,
+  lineHeight: 1.35,
+  color: "rgba(226,232,240,0.68)",
+  minWidth: 0,
+};
+
+const invoiceDateStyle = {
+  minWidth: 0,
+  flex: "1 1 auto",
+  whiteSpace: "normal",
+};
+
+const invoiceMetricsWrapStyle = {
+  display: "flex",
+  justifyContent: "flex-end",
+  minWidth: 0,
+};
+
+const invoiceMetricRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  flexWrap: "nowrap",
+  columnGap: 12,
+  gap: "8px",
+  minWidth: 0,
+};
+
+const invoiceMetricLabelStyle = {
+  fontSize: 10.5,
+  fontWeight: 900,
+  opacity: 0.82,
+  letterSpacing: "1px",
+  textTransform: "uppercase",
+  textAlign: "center",
+  lineHeight: 1.1,
+};
+
+const invoiceMetricColumnStyle = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 4,
+};
+
+const invoiceMetricPillStyle = (highlight) => ({
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: highlight ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
+  boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
+  fontSize: 12,
+  fontWeight: 800,
+  letterSpacing: "0.3px",
+  flexShrink: 0,
+  whiteSpace: "nowrap",
+  color: "rgba(245,248,252,0.96)",
+});
+
+const invoiceHeaderInfoStyle = {
+  display: "grid",
+  gap: 6,
+  minWidth: 0,
+  flex: "1 1 0",
+};
+
+const invoiceCustomerProjectWrapStyle = {
+  display: "grid",
+  gap: 2,
+  minWidth: 0,
+};
+
+const invoiceStatusPillBaseStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: 24,
+  padding: "4px 9px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.16)",
+  fontSize: 10.5,
+  lineHeight: 1,
+  fontWeight: 900,
+  letterSpacing: "0.2px",
+  whiteSpace: "nowrap",
+};
+
+const invoiceDetailsWrapStyle = {
+  overflow: "hidden",
+  transition: "max-height 320ms ease, opacity 220ms ease, transform 220ms ease, padding-top 220ms ease",
+  borderTop: "1px solid rgba(255,255,255,0.10)",
 };
 
 function formatStatusLabel(status, lang) {
@@ -94,6 +296,32 @@ function formatDateTime(value) {
   }
 }
 
+function getExistingInvoiceMarginValue(invoice) {
+  const candidates = [
+    invoice?.margin,
+    invoice?.marginPct,
+    invoice?.marginPercent,
+    invoice?.grossMargin,
+    invoice?.grossMarginPct,
+    invoice?.grossProfitMargin,
+    invoice?.sourceEstimateSnapshot?.margin,
+    invoice?.sourceEstimateSnapshot?.marginPct,
+    invoice?.sourceEstimateSnapshot?.marginPercent,
+    invoice?.sourceEstimateSnapshot?.grossMargin,
+    invoice?.sourceEstimateSnapshot?.grossMarginPct,
+    invoice?.sourceEstimateSnapshot?.grossProfitMargin,
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = Number(candidate);
+    if (!Number.isFinite(numeric)) continue;
+    if (numeric >= 0 && numeric <= 1) return numeric * 100;
+    if (numeric >= 0 && numeric <= 100) return numeric;
+  }
+
+  return null;
+}
+
 function formatDateOnly(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -104,7 +332,41 @@ function formatDateOnly(value) {
   return raw;
 }
 
-export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
+function getStatusConfirmationContent(nextStatus, lang) {
+  if (nextStatus === INVOICE_STATUSES.SENT) {
+    return {
+      title: lang === "es" ? "¿Marcar factura como enviada?" : "Mark invoice as sent?",
+      body: lang === "es"
+        ? "Esto actualizará el estado de la factura a Enviada."
+        : "This will update the invoice status to Sent.",
+      confirmLabel: lang === "es" ? "Marcar enviada" : "Mark Sent",
+    };
+  }
+
+  if (nextStatus === INVOICE_STATUSES.PAID) {
+    return {
+      title: lang === "es" ? "¿Marcar factura como pagada?" : "Mark invoice as paid?",
+      body: lang === "es"
+        ? "Esto actualizará el estado de la factura a Pagada."
+        : "This will update the invoice status to Paid.",
+      confirmLabel: lang === "es" ? "Marcar pagada" : "Mark Paid",
+    };
+  }
+
+  if (nextStatus === INVOICE_STATUSES.VOID) {
+    return {
+      title: lang === "es" ? "¿Anular esta factura?" : "Void this invoice?",
+      body: lang === "es"
+        ? "Esto marcará la factura como Anulada. Debe tratarse como una acción protegida."
+        : "This will mark the invoice status to Void. This should be treated as a guarded action.",
+      confirmLabel: lang === "es" ? "Anular factura" : "Void Invoice",
+    };
+  }
+
+  return null;
+}
+
+export default function InvoicesScreen({ lang, t, spinTick = 0 }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [list, setList] = useState(() => readStoredInvoices());
@@ -112,8 +374,15 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
+  const [statusConfirmState, setStatusConfirmState] = useState(null);
+  const [statusConfirmBusy, setStatusConfirmBusy] = useState(false);
   const prevListCountRef = useRef(0);
   const hasMeasuredListRef = useRef(false);
+  const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
+  const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
+  const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
+  const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
+  const labelMargin = lang === "es" ? "Margen" : "Margin";
 
   useEffect(() => {
     const refresh = () => setList(readStoredInvoices());
@@ -170,6 +439,66 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
       return searchMatch && statusMatch;
     });
   }, [list, q, statusFilter]);
+
+  const clearCardActionIntent = () => {
+    cardActionIntentRef.current = {
+      invoiceId: "",
+      action: "",
+      setAt: 0,
+    };
+  };
+
+  const setCardActionIntent = (invoiceId, action) => {
+    cardActionIntentRef.current = {
+      invoiceId: String(invoiceId || "").trim(),
+      action: String(action || "").trim(),
+      setAt: Date.now(),
+    };
+  };
+
+  const getCardActionIntent = () => {
+    const current = cardActionIntentRef.current;
+    if (!current?.action) return { invoiceId: "", action: "", setAt: 0 };
+    if (Date.now() - Number(current.setAt || 0) > 1200) {
+      clearCardActionIntent();
+      return { invoiceId: "", action: "", setAt: 0 };
+    }
+    return current;
+  };
+
+  const consumeInvoiceActionEvent = (event, invoiceId, action, { preventDefault = false } = {}) => {
+    if (preventDefault && event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+    if (action) {
+      setCardActionIntent(invoiceId, action);
+    }
+  };
+
+  const runInvoiceCardAction = (event, invoiceId, action, handler) => {
+    consumeInvoiceActionEvent(event, invoiceId, action, { preventDefault: true });
+    const currentIntent = getCardActionIntent();
+    const normalizedInvoiceId = String(invoiceId || "").trim();
+    if (
+      currentIntent.invoiceId === normalizedInvoiceId
+      && currentIntent.action
+      && currentIntent.action !== action
+    ) {
+      return;
+    }
+    handler();
+    window.setTimeout(() => {
+      const latestIntent = getCardActionIntent();
+      if (
+        latestIntent.invoiceId === normalizedInvoiceId
+        && latestIntent.action === action
+      ) {
+        clearCardActionIntent();
+      }
+    }, 0);
+  };
 
   const toggleDetails = (invoiceId) => {
     setExpanded((prev) => {
@@ -265,10 +594,48 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
     persistInvoices(nextInvoices);
   };
 
+  const requestInvoiceStatusChange = (invoice, nextStatus) => {
+    const content = getStatusConfirmationContent(nextStatus, lang);
+    if (!invoice || !content) return;
+    setStatusConfirmState({
+      invoiceId: String(invoice?.id || "").trim(),
+      nextStatus,
+      title: content.title,
+      body: content.body,
+      confirmLabel: content.confirmLabel,
+    });
+  };
+
+  const closeStatusConfirm = () => {
+    if (statusConfirmBusy) return;
+    setStatusConfirmState(null);
+  };
+
+  const confirmInvoiceStatusChange = () => {
+    if (statusConfirmBusy || !statusConfirmState?.invoiceId || !statusConfirmState?.nextStatus) return;
+    setStatusConfirmBusy(true);
+    try {
+      const currentInvoices = readStoredInvoices();
+      const targetInvoice = currentInvoices.find(
+        (entry) => String(entry?.id || "").trim() === String(statusConfirmState.invoiceId || "").trim()
+      );
+      if (!targetInvoice) {
+        setStatusConfirmState(null);
+        return;
+      }
+      updateInvoiceStatus(targetInvoice, statusConfirmState.nextStatus);
+      setStatusConfirmState(null);
+    } finally {
+      setStatusConfirmBusy(false);
+    }
+  };
+
+  const valueFilter = "all";
+
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
-        <div className="pe-company-profile-header" style={{ ...stickyListHeaderStyle, position: "sticky", minHeight: 56 }}>
+        <div className="pe-company-profile-header pe-utility-panel-header" style={{ ...stickyListHeaderStyle, position: "sticky", minHeight: 56 }}>
           <div className="pe-company-header-title">
             <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={lang === "es" ? "Facturas" : "Invoices"}>
               {lang === "es" ? "Facturas" : "Invoices"}
@@ -288,39 +655,85 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
             <button className="pe-btn pe-btn-ghost" type="button" onClick={createManualInvoice}>
               {lang === "es" ? "Nueva factura" : "New Invoice"}
             </button>
-            <button className="pe-btn" type="button" onClick={onDone}>
-              {lang === "es" ? "Volver" : "Back"}
-            </button>
           </div>
         </div>
 
-        <div className="pe-grid" style={{ gap: 10 }}>
-          <Field
-            placeholder={lang === "es" ? "Buscar…" : "Search…"}
-            value={q}
-            onChange={(event) => setQ(event.target.value)}
-          />
+        <div className="pe-grid" style={{ gap: 12 }}>
+          <div className="pe-estimates-search" style={filterPanelStyle}>
+            <div className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
+              <input
+                type="text"
+                className="pe-input pe-estimates-search-input"
+                placeholder={lang === "es" ? "Buscar…" : "Search..."}
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                onKeyDown={(evt) => {
+                  if (evt.key === "Escape") {
+                    evt.preventDefault();
+                    setQ("");
+                  }
+                }}
+                style={searchFieldStyle}
+              />
+              {q ? (
+                <button
+                  type="button"
+                  className="pe-btn pe-btn-ghost"
+                  aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
+                  onClick={() => setQ("")}
+                  style={{
+                    position: "absolute",
+                    right: 6,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    width: 30,
+                    height: 30,
+                    minWidth: 30,
+                    minHeight: 30,
+                    borderRadius: 999,
+                    padding: 0,
+                    lineHeight: 1,
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="all">{lang === "es" ? "Todos los estados" : "All Statuses"}</option>
-              <option value={INVOICE_STATUSES.DRAFT}>{formatStatusLabel(INVOICE_STATUSES.DRAFT, lang)}</option>
-              <option value={INVOICE_STATUSES.SENT}>{formatStatusLabel(INVOICE_STATUSES.SENT, lang)}</option>
-              <option value={INVOICE_STATUSES.PAID}>{formatStatusLabel(INVOICE_STATUSES.PAID, lang)}</option>
-              <option value={INVOICE_STATUSES.OVERDUE}>{formatStatusLabel(INVOICE_STATUSES.OVERDUE, lang)}</option>
-              <option value={INVOICE_STATUSES.VOID}>{formatStatusLabel(INVOICE_STATUSES.VOID, lang)}</option>
-            </select>
+            <div className="pe-estimate-filters" style={filtersRowStyle}>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                style={statusSelectStyle}
+              >
+                <option value="all">{lang === "es" ? "Todos los estados" : "All Statuses"}</option>
+                <option value={INVOICE_STATUSES.DRAFT}>{formatStatusLabel(INVOICE_STATUSES.DRAFT, lang)}</option>
+                <option value={INVOICE_STATUSES.SENT}>{formatStatusLabel(INVOICE_STATUSES.SENT, lang)}</option>
+                <option value={INVOICE_STATUSES.PAID}>{formatStatusLabel(INVOICE_STATUSES.PAID, lang)}</option>
+                <option value={INVOICE_STATUSES.OVERDUE}>{formatStatusLabel(INVOICE_STATUSES.OVERDUE, lang)}</option>
+                <option value={INVOICE_STATUSES.VOID}>{formatStatusLabel(INVOICE_STATUSES.VOID, lang)}</option>
+              </select>
 
-            <button
-              className="pe-btn pe-btn-ghost"
-              type="button"
-              onClick={() => {
-                setQ("");
-                setStatusFilter("all");
-              }}
-            >
-              {lang === "es" ? "Limpiar" : "Clear"}
-            </button>
+              <select value={valueFilter} onChange={() => {}} style={valueSelectStyle}>
+                <option value="all">{lang === "es" ? "Todos los valores" : "All Values"}</option>
+                <option value="small">{lang === "es" ? "Menos de $1k" : "Under $1k"}</option>
+                <option value="medium">{lang === "es" ? "$1k-$10k" : "$1k-$10k"}</option>
+                <option value="large">{lang === "es" ? "$10k+" : "$10k+"}</option>
+              </select>
+
+              <button
+                type="button"
+                style={clearButtonStyle}
+                onClick={() => {
+                  setQ("");
+                  setStatusFilter("all");
+                }}
+              >
+                {lang === "es" ? "Limpiar" : "Clear"}
+              </button>
+            </div>
           </div>
 
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
@@ -358,75 +771,135 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
                 const invoiceId = String(invoice?.id || "");
                 const isOpen = !!expanded[invoiceId];
                 const derivedStatus = deriveInvoiceStatus(invoice);
+                const invoiceMarginValue = getExistingInvoiceMarginValue(invoice);
                 const statusTone = derivedStatus === INVOICE_STATUSES.PAID
                   ? "rgba(34,197,94,0.14)"
                   : derivedStatus === INVOICE_STATUSES.OVERDUE
                     ? "rgba(248,113,113,0.14)"
                     : derivedStatus === INVOICE_STATUSES.VOID
                       ? "rgba(148,163,184,0.14)"
-                      : "rgba(255,255,255,0.08)";
+                      : "rgba(255,255,255,0.06)";
 
                 return (
                   <div
-                    className="pe-card pe-card-content ep-glass-tile"
+                    className="pe-card pe-card-content ep-glass-tile pe-saved-estimate-card pe-estimate-card"
                     key={invoiceId || invoice?.invoiceNumber || Math.random()}
                     style={{
-                      padding: 12,
-                      display: "grid",
-                      gap: 10,
+                      ...invoiceCardStyle,
+                      cursor: "default",
+                      ...(isOpen
+                        ? {
+                            border: "1px solid rgba(34,197,94,0.42)",
+                            background: "rgba(255,255,255,0.07)",
+                            boxShadow: "0 0 0 1px rgba(34,197,94,0.18), 0 10px 22px rgba(0,0,0,0.28)",
+                          }
+                        : null),
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                      <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-                        <div style={{ fontWeight: 800, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          <span>{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
-                          {invoice?.estimateNumber ? (
-                            <span style={{ opacity: 0.7 }}>
-                              • {t("estimateNumLabel")} {invoice.estimateNumber}
-                            </span>
+                    <div className="pe-estimate-card-mainrow" style={{ display: "grid", gridTemplateRows: "auto auto auto", rowGap: "8px", width: "100%" }}>
+                      <div className="pe-estimate-card-header" style={invoiceCardTopStyle}>
+                        <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
+                          <div style={invoicePrimaryLineStyle}>
+                            <span className="pe-estimate-card-title" style={invoiceTitleStyle}>{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
+                            {invoice?.estimateNumber ? (
+                              <span className="pe-estimate-card-number" style={invoiceEstimateNumberStyle}>
+                                {t("estimateNumLabel")} {invoice.estimateNumber}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
+                            <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
+                              {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
+                            </div>
+                            {invoice?.projectName ? (
+                              <div style={invoiceProjectLineStyle}>{invoice.projectName}</div>
+                            ) : null}
+                          </div>
+                          <div className="pe-estimate-card-updated" style={invoiceMetaLineStyle}>
+                            <span style={invoiceDateStyle}>{formatDateTime(invoice?.updatedAt || invoice?.createdAt)}</span>
+                          </div>
+                        </div>
+
+                        <div
+                          className="pe-estimate-status pe-estimate-card-status"
+                          style={{
+                            ...invoiceStatusPillBaseStyle,
+                            background: statusTone,
+                            color: derivedStatus === INVOICE_STATUSES.PAID
+                              ? "rgba(187, 247, 208, 0.98)"
+                              : derivedStatus === INVOICE_STATUSES.OVERDUE
+                                ? "rgba(254, 202, 202, 0.98)"
+                                : derivedStatus === INVOICE_STATUSES.VOID
+                                  ? "rgba(226, 232, 240, 0.82)"
+                                  : "rgba(241, 245, 249, 0.92)",
+                            borderColor: derivedStatus === INVOICE_STATUSES.PAID
+                              ? "rgba(34, 197, 94, 0.42)"
+                              : derivedStatus === INVOICE_STATUSES.OVERDUE
+                                ? "rgba(239, 68, 68, 0.42)"
+                                : derivedStatus === INVOICE_STATUSES.VOID
+                                  ? "rgba(255,255,255,0.16)"
+                                  : "rgba(255,255,255,0.16)",
+                            flexShrink: 0,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {formatStatusLabel(derivedStatus, lang)}
+                        </div>
+                      </div>
+                      <div className="pe-estimate-card-metrics-wrap" style={invoiceMetricsWrapStyle}>
+                        <div className="pe-estimate-card-metrics" style={invoiceMetricRowStyle}>
+                          <div style={invoiceMetricColumnStyle}>
+                            <div style={invoiceMetricLabelStyle}>{labelTotalMetric}</div>
+                            <div style={invoiceMetricPillStyle(true)} title={labelRevenue}>
+                              {moneyUSD(invoice?.invoiceTotal)}
+                            </div>
+                          </div>
+                          {invoiceMarginValue !== null ? (
+                            <div style={invoiceMetricColumnStyle}>
+                              <div style={invoiceMetricLabelStyle}>{labelMarginMetric}</div>
+                              <div style={invoiceMetricPillStyle(false)} title={labelMargin}>
+                                {invoiceMarginValue.toFixed(1)}%
+                              </div>
+                            </div>
                           ) : null}
                         </div>
-                        <div style={{ fontSize: 13, opacity: 0.85 }}>
-                          {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
-                          {invoice?.projectName ? ` • ${invoice.projectName}` : ""}
-                        </div>
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>
-                          {formatDateTime(invoice?.updatedAt || invoice?.createdAt)} • {moneyUSD(invoice?.invoiceTotal)}
+                      </div>
+                      <div className="pe-estimate-actions">
+                        <div
+                          className="actions-right pe-estimate-actions-row"
+                          style={{ display: "flex", gap: 10, marginTop: 8, position: "relative", zIndex: 2 }}
+                          onClick={(evt) => {
+                            if (evt?.stopPropagation) evt.stopPropagation();
+                          }}
+                        >
+                          <button
+                            className="pe-btn"
+                            type="button"
+                            onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
+                            onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
+                            onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "open", () => openInvoice(invoice))}
+                          >
+                            {lang === "es" ? "Abrir" : "Open"}
+                          </button>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "details")}
+                            onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "details")}
+                            onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "details", () => toggleDetails(invoiceId))}
+                          >
+                            {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
+                          </button>
                         </div>
                       </div>
-
-                      <div
-                        style={{
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: statusTone,
-                          fontSize: 12,
-                          fontWeight: 800,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {formatStatusLabel(derivedStatus, lang)}
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button className="pe-btn" type="button" onClick={() => openInvoice(invoice)}>
-                        {lang === "es" ? "Abrir" : "Open"}
-                      </button>
-                      <button className="pe-btn pe-btn-ghost" type="button" onClick={() => toggleDetails(invoiceId)}>
-                        {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
-                      </button>
                     </div>
 
                     <div
                       style={{
-                        overflow: "hidden",
+                        ...invoiceDetailsWrapStyle,
                         maxHeight: isOpen ? 1200 : 0,
                         opacity: isOpen ? 1 : 0,
                         transform: isOpen ? "translateY(0px)" : "translateY(-4px)",
-                        transition: "max-height 320ms ease, opacity 220ms ease, transform 220ms ease",
-                        borderTop: "1px solid rgba(255,255,255,0.10)",
                         paddingTop: isOpen ? 10 : 0,
                       }}
                       aria-hidden={!isOpen}
@@ -483,7 +956,7 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
-                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.SENT)}
+                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.SENT)}
                             disabled={derivedStatus === INVOICE_STATUSES.SENT || derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
                           >
                             {lang === "es" ? "Marcar enviada" : "Mark Sent"}
@@ -491,7 +964,7 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
-                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.PAID)}
+                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.PAID)}
                             disabled={derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
                           >
                             {lang === "es" ? "Marcar pagada" : "Mark Paid"}
@@ -499,7 +972,7 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
-                            onClick={() => updateInvoiceStatus(invoice, INVOICE_STATUSES.VOID)}
+                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.VOID)}
                             disabled={derivedStatus === INVOICE_STATUSES.VOID}
                           >
                             {lang === "es" ? "Anular" : "Void"}
@@ -520,6 +993,71 @@ export default function InvoicesScreen({ lang, t, onDone, spinTick = 0 }) {
           </div>
         </div>
       </div>
+      {statusConfirmState ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={statusConfirmState.title}
+          onClick={closeStatusConfirm}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 2100,
+            background: "rgba(4,8,14,0.58)",
+            backdropFilter: "blur(3px)",
+            WebkitBackdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 12,
+          }}
+        >
+          <div
+            className="pe-card pe-card-content"
+            onClick={(evt) => evt.stopPropagation()}
+            style={{
+              width: "min(520px, 96vw)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "linear-gradient(180deg, rgba(20,28,42,0.94), rgba(7,11,18,0.92))",
+              boxShadow: "0 20px 54px rgba(0,0,0,0.45)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+              padding: 16,
+              color: "rgba(245,248,252,0.98)",
+              display: "grid",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "0.2px" }}>
+              {statusConfirmState.title}
+            </div>
+            <div style={{ fontSize: 14, opacity: 0.9 }}>
+              {statusConfirmState.body}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 4 }}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={closeStatusConfirm}
+                disabled={statusConfirmBusy}
+              >
+                {lang === "es" ? "Cancelar" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={confirmInvoiceStatusChange}
+                disabled={statusConfirmBusy}
+              >
+                {statusConfirmBusy
+                  ? (lang === "es" ? "Actualizando..." : "Updating...")
+                  : statusConfirmState.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {showToast ? (
         <div className="pe-toast" role="status" aria-live="polite">{toastMessage}</div>
       ) : null}

@@ -311,10 +311,10 @@ const stickyListHeaderStyle = {
   zIndex: 12,
   paddingTop: 6,
   paddingBottom: 8,
-  background: "linear-gradient(180deg, rgba(8,18,28,0.9), rgba(8,18,28,0.62))",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  background: "transparent",
+  backdropFilter: "none",
+  WebkitBackdropFilter: "none",
+  borderBottom: "0",
 };
 
 const NET_TERMS_OPTIONS = [
@@ -804,7 +804,7 @@ export default function CustomersScreen({
       )}
       {mode === "list" ? (
         <div className="pe-card">
-          <div className="pe-company-profile-header" style={stickyListHeaderStyle}>
+          <div className="pe-company-profile-header pe-utility-panel-header" style={stickyListHeaderStyle}>
             <div className="pe-company-header-title">
               <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
             </div>

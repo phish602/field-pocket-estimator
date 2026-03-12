@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import InlineCustomNumberField from "./InlineCustomNumberField";
 
 const BLANKET_DESCRIPTION_MIN_HEIGHT = 100;
@@ -151,16 +151,26 @@ export default function SectionMaterials(props) {
   const [noteOpenById, setNoteOpenById] = useState({});
   const blanketDescriptionValue = String(materialsBlanketDescription || "");
   const materialsBottomActionsStyle = bottomActionsStyle || styles.sectionFooterActions;
+  const materialNoteSeed = useMemo(() => {
+    const entries = (Array.isArray(materialItems) ? materialItems : []).map((item, index) => ({
+      id: String(item?.id ?? index),
+      hasNote: !!String(item?.note || "").trim(),
+    }));
+    return {
+      entries,
+      signature: entries.map((entry) => `${entry.id}:${entry.hasNote ? "1" : "0"}`).join("|"),
+    };
+  }, [materialItems]);
 
   useEffect(() => {
     setNoteOpenById((prev) => {
       const next = {};
-      for (let i = 0; i < materialItems.length; i += 1) {
-        const item = materialItems[i];
-        const id = String(item?.id ?? i);
+      for (let i = 0; i < materialNoteSeed.entries.length; i += 1) {
+        const entry = materialNoteSeed.entries[i];
+        const id = entry.id;
         next[id] = Object.prototype.hasOwnProperty.call(prev, id)
           ? prev[id]
-          : !!String(item?.note || "").trim();
+          : entry.hasNote;
       }
 
       const prevKeys = Object.keys(prev);
@@ -171,7 +181,7 @@ export default function SectionMaterials(props) {
       }
       return prev;
     });
-  }, [materialItems]);
+  }, [materialNoteSeed.signature]);
 
   function openMaterialNote(materialNoteId) {
     setNoteOpenById((prev) => ({ ...prev, [materialNoteId]: true }));

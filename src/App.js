@@ -343,11 +343,13 @@ function IconInvoices({ size = 24 }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <path d="M8 6.5h8" />
-        <path d="M8 9.8h7" opacity="0.85" />
-        <path d="M8 13.1h8" opacity="0.7" />
-        <path d="M6.8 6.2h10.4v13.2l-1.7-.9-1.7.9-1.7-.9-1.7.9-1.7-.9-1.7.9V6.2Z" opacity="0.95" />
-        <path d="M14.6 15.3l1 1 2-2" opacity="0.85" />
+        <path d="M7.2 6.2h9.2l1.4 1.5v10.6l-1.5-.8-1.5.8-1.5-.8-1.5.8-1.5-.8-1.5.8-1.6-.8V7.2c0-.55.45-1 1-1Z" opacity="0.95" />
+        <path d="M15.8 6.3v2.3h2.1" opacity="0.72" />
+        <path d="M9 10h5.6" opacity="0.82" />
+        <path d="M9 12.9h4.4" opacity="0.66" />
+        <circle cx="15.9" cy="15.3" r="2.35" opacity="0.88" />
+        <path d="M15.9 13.95v2.7" opacity="0.88" />
+        <path d="M16.75 14.5c-.2-.34-.56-.55-.96-.55-.58 0-1.05.39-1.05.88 0 .48.36.72 1.05.88.68.16 1.04.4 1.04.88 0 .49-.46.88-1.04.88-.47 0-.85-.18-1.08-.57" opacity="0.88" />
       </g>
     </IconBase>
   );
@@ -378,7 +380,7 @@ function IconCreate({ size = 28 }) {
    Overlay dimensions
    ========================= */
 const HEADER_H = 60;
-const FOOTER_H = 78;
+const FOOTER_H = 82;
 const HEADER_SAFE_GAP = 8;
 const FOOTER_FLOAT_GAP = 16;
 const FOOTER_CONTENT_BREATHING = "clamp(36px, 5svh, 56px)";
@@ -386,6 +388,58 @@ const CHROME_TOP_REVEAL_THRESHOLD = 24;
 const CHROME_DIRECTION_EPSILON = 1;
 const CHROME_HIDE_DISTANCE = 28;
 const CHROME_SHOW_DISTANCE = 14;
+const MENU_EDGE_SWIPE_ZONE_PX = 24;
+const MENU_EDGE_SWIPE_OPEN_PX = 72;
+const MENU_EDGE_SWIPE_VERTICAL_CANCEL_PX = 40;
+const MENU_EDGE_SWIPE_HORIZONTAL_RATIO = 1.35;
+
+function hasHorizontalScrollableAncestor(target) {
+  if (!(target instanceof Element) || typeof window === "undefined") return false;
+  let node = target;
+  while (node && node !== document.body) {
+    try {
+      const style = window.getComputedStyle(node);
+      const overflowX = String(style?.overflowX || "");
+      if ((overflowX === "auto" || overflowX === "scroll") && node.scrollWidth > node.clientWidth + 12) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function isMenuEdgeSwipeBlockedTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (hasHorizontalScrollableAncestor(target)) return true;
+  return Boolean(
+    target.closest(
+      [
+        "button",
+        "input",
+        "select",
+        "textarea",
+        "label",
+        "a",
+        "summary",
+        "[contenteditable='true']",
+        "[draggable='true']",
+        "[role='button']",
+        "[role='link']",
+        "[role='switch']",
+        "[role='slider']",
+        "[role='tab']",
+        "[role='menuitem']",
+        "[role='dialog']",
+        "[aria-modal='true']",
+        "[data-estimate-details-panel='true']",
+        "[data-no-menu-edge-swipe='true']",
+      ].join(", ")
+    )
+  );
+}
 
 /* =========================
    Top bar + bottom nav + drawer
@@ -592,7 +646,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
         const btnStyle = {
           ...styles.navBtn,
           opacity: isDisabled ? 0.35 : isActive ? 1 : 0.75,
-          marginTop: isCenter ? -10 : 0,
+          marginTop: isCenter ? -11 : 0,
           pointerEvents: isDisabled || navInteractionLocked ? "none" : "auto",
           ...(isActive ? styles.navBtnActive : null),
         };
@@ -613,7 +667,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
             tabIndex={isDisabled || navInteractionLocked ? -1 : 0}
           >
             <span style={iconWrapStyle} className={createWrapClass}>
-              <Icon size={isCenter ? 28 : 24} />
+              <Icon size={isCenter ? 30 : 25} />
             </span>
             <span style={styles.navLabel}>{t.label}</span>
           </button>
@@ -1200,19 +1254,19 @@ const styles = {
     position: "fixed",
     left: "50%",
     transform: "translateX(-50%)",
-    width: "min(1100px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
+    width: "min(1100px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 18px))",
     maxWidth: "100%",
     bottom: FOOTER_FLOAT_GAP,
     zIndex: 50,
     display: "flex",
     justifyContent: "space-around",
     alignItems: "center",
-    gap: 4,
+    gap: 6,
     boxSizing: "border-box",
     paddingTop: 0,
-    paddingRight: 2,
+    paddingRight: 4,
     paddingBottom: 0,
-    paddingLeft: 2,
+    paddingLeft: 4,
     background: "transparent",
     opacity: 1,
     pointerEvents: "auto",
@@ -1232,14 +1286,14 @@ const styles = {
     background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
     border: "1px solid rgba(255,255,255,0.12)",
     color: "inherit",
-    minHeight: 68,
-    padding: "8px 6px 10px",
+    minHeight: 72,
+    padding: "9px 6px 11px",
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
-    borderRadius: 16,
+    gap: 6,
+    borderRadius: 18,
     cursor: "pointer",
     transition: "opacity 140ms ease, transform 90ms ease",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
@@ -1250,18 +1304,18 @@ const styles = {
   navBtnActive: {
     background: "linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.05))",
     border: "1px solid rgba(255,255,255,0.2)",
-    boxShadow: "0 12px 24px rgba(0,0,0,0.22)",
+    boxShadow: "0 14px 26px rgba(0,0,0,0.22)",
   },
   navIconWrap: { display: "flex", alignItems: "center", justifyContent: "center" },
   createIconWrap: {
-    width: 52,
-    height: 52,
+    width: 56,
+    height: 56,
     borderRadius: 999,
     border: "1px solid rgba(255,255,255,0.18)",
     background: "rgba(255,255,255,0.06)",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
   },
-  navLabel: { fontSize: 11, lineHeight: 1, letterSpacing: "0.2px" },
+  navLabel: { fontSize: 11.5, lineHeight: 1.05, letterSpacing: "0.2px", fontWeight: 700 },
 
   // drawer overlay
   drawerOverlay: {
@@ -1698,6 +1752,7 @@ const [spinTick, setSpinTick] = useState(0);
   const chromeVisibleRef = useRef(true);
   const chromeScrollStateRef = useRef({ lastTop: 0, anchorTop: 0, direction: "none" });
   const [quickOpen, setQuickOpen] = useState(false);
+  const quickOpenRef = useRef(false);
   const setShellScrolled = useCallback((nextScrolled) => {
     if (isScrolledRef.current === nextScrolled) return;
     isScrolledRef.current = nextScrolled;
@@ -1735,6 +1790,132 @@ const [spinTick, setSpinTick] = useState(0);
     clearProfileReturnTarget();
   }, [activeTab]);
 const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerOpenRef = useRef(false);
+  const edgeSwipeRef = useRef({
+    tracking: false,
+    triggered: false,
+    startX: 0,
+    startY: 0,
+    touchId: null,
+  });
+
+  useEffect(() => {
+    drawerOpenRef.current = drawerOpen;
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    quickOpenRef.current = quickOpen;
+  }, [quickOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return undefined;
+    const supportsTouch = typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : ("ontouchstart" in window);
+    if (!supportsTouch) return undefined;
+
+    const findTouchById = (touches, touchId) => {
+      if (!touches || touchId === null || touchId === undefined) return null;
+      for (let i = 0; i < touches.length; i += 1) {
+        if (touches[i]?.identifier === touchId) return touches[i];
+      }
+      return null;
+    };
+
+    const resetGesture = () => {
+      edgeSwipeRef.current = {
+        tracking: false,
+        triggered: false,
+        startX: 0,
+        startY: 0,
+        touchId: null,
+      };
+    };
+
+    const onTouchStart = (event) => {
+      if (drawerOpenRef.current || quickOpenRef.current) {
+        resetGesture();
+        return;
+      }
+      if (event.defaultPrevented) {
+        resetGesture();
+        return;
+      }
+      if ((event.touches?.length || 0) !== 1) {
+        resetGesture();
+        return;
+      }
+      const touch = event.touches[0];
+      if (!touch || touch.clientX > MENU_EDGE_SWIPE_ZONE_PX) {
+        resetGesture();
+        return;
+      }
+      if (isMenuEdgeSwipeBlockedTarget(event.target)) {
+        resetGesture();
+        return;
+      }
+
+      edgeSwipeRef.current = {
+        tracking: true,
+        triggered: false,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        touchId: touch.identifier,
+      };
+    };
+
+    const onTouchMove = (event) => {
+      const gesture = edgeSwipeRef.current;
+      if (!gesture.tracking || gesture.triggered) return;
+
+      const touch = findTouchById(event.touches, gesture.touchId);
+      if (!touch) {
+        resetGesture();
+        return;
+      }
+
+      const dx = touch.clientX - gesture.startX;
+      const dy = touch.clientY - gesture.startY;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDy >= MENU_EDGE_SWIPE_VERTICAL_CANCEL_PX && absDy > absDx) {
+        resetGesture();
+        return;
+      }
+
+      if (dx <= 0) return;
+      if (dx < MENU_EDGE_SWIPE_OPEN_PX) return;
+      if (absDx <= absDy * MENU_EDGE_SWIPE_HORIZONTAL_RATIO) return;
+      if (drawerOpenRef.current || quickOpenRef.current) {
+        resetGesture();
+        return;
+      }
+
+      edgeSwipeRef.current = {
+        ...gesture,
+        tracking: false,
+        triggered: true,
+      };
+      setDrawerOpen(true);
+    };
+
+    const onTouchEnd = () => {
+      resetGesture();
+    };
+
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: true });
+    document.addEventListener("touchend", onTouchEnd, { passive: true });
+    document.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+    return () => {
+      document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, []);
 
   // Keep a tiny global flag so nested screens can hard-lock into profile when requested
   useEffect(() => {

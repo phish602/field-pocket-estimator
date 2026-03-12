@@ -25,6 +25,8 @@ import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
 import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import {
+  allocateFinancialSummaryFromSource,
+  buildFinancialSummaryFromComputed,
   generateNextInvoiceNumber,
   normalizeInvoiceRecord,
   validateInvoiceAgainstEstimate,
@@ -209,6 +211,27 @@ function readSavedDocList(key) {
   } catch {
     return [];
   }
+}
+
+function hasExplicitInternalCostInputs(doc) {
+  const blanketInternalCost = String(
+    doc?.materials?.blanketInternalCost
+    ?? doc?.blanketInternalCost
+    ?? ""
+  ).trim();
+  if (blanketInternalCost) return true;
+
+  const materialItems = Array.isArray(doc?.materials?.items)
+    ? doc.materials.items
+    : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  if (materialItems.some((item) => String(item?.unitCostInternal ?? item?.costInternal ?? "").trim() !== "")) {
+    return true;
+  }
+
+  const laborLines = Array.isArray(doc?.labor?.lines)
+    ? doc.labor.lines
+    : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  return laborLines.some((line) => String(line?.trueRateInternal ?? line?.internalRate ?? line?.rateInternal ?? "").trim() !== "");
 }
 
 function toDocTimestamp(value) {
@@ -1510,6 +1533,37 @@ export default function EstimateForm(props) {
     } catch {}
   }
 
+  function handleCustomerDropdownOptionInteraction(event, id) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+    handleSelectCustomer(id);
+  }
+
+  function handleCustomerDropdownPointerDown(event, id) {
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function handleCustomerDropdownTouchStart(event, id) {
+    if (typeof window !== "undefined" && "PointerEvent" in window) return;
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function handleCustomerDropdownMouseDown(event, id) {
+    if (typeof window !== "undefined" && "PointerEvent" in window) return;
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function consumeCustomerDropdownOptionClick(event) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+  }
+
   function decrementLaborQty(id) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines.find((x) => String(x?.id) === String(id));
@@ -2001,8 +2055,47 @@ export default function EstimateForm(props) {
       const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
       const projectName = String(state?.customer?.projectName || "").trim();
       const projectNumber = String(state?.customer?.projectNumber || "").trim();
+      const linkedEstimateSnapshot = saveDocType === "invoice"
+        ? (
+          persistedState?.sourceEstimateSnapshot
+          || existingMatch?.sourceEstimateSnapshot
+          || null
+        )
+        : null;
+      const linkedEstimateId = saveDocType === "invoice"
+        ? String(
+          persistedState?.sourceEstimateId
+          || existingMatch?.sourceEstimateId
+          || linkedEstimateSnapshot?.estimateId
+          || ""
+        ).trim()
+        : "";
+      const invoiceApprovedTotal = saveDocType === "invoice"
+        ? Number(
+          persistedState?.invoiceMeta?.approvedTotalAtCreation
+          || existingMatch?.invoiceMeta?.approvedTotalAtCreation
+          || linkedEstimateSnapshot?.approvedTotal
+          || totalRevenue
+        ) || Number(totalRevenue || 0)
+        : Number(totalRevenue || 0);
+      const shouldUseLinkedInvoiceFinancials = (
+        saveDocType === "invoice"
+        && !!linkedEstimateId
+        && !hasExplicitInternalCostInputs(persistedState)
+      );
+      const financialSummary = shouldUseLinkedInvoiceFinancials
+        ? allocateFinancialSummaryFromSource(
+          linkedEstimateSnapshot,
+          Number(totalRevenue || 0),
+          invoiceApprovedTotal
+        )
+        : buildFinancialSummaryFromComputed(
+          computed,
+          saveDocType === "invoice" ? invoiceApprovedTotal : Number(totalRevenue || 0)
+        );
       const baseRecord = {
         ...persistedState,
+        ...financialSummary,
         id: recordId,
         docType: saveDocType,
         customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
@@ -2019,6 +2112,14 @@ export default function EstimateForm(props) {
         ts: updatedAt,
         createdAt,
         updatedAt,
+        financials: {
+          ...(persistedState?.financials || {}),
+          ...(financialSummary?.financials || {}),
+        },
+        totals: {
+          ...(persistedState?.totals || {}),
+          ...(financialSummary?.totals || {}),
+        },
         customer: {
           ...(persistedState?.customer || {}),
           ...(state?.customer || {}),
@@ -2595,7 +2696,10 @@ export default function EstimateForm(props) {
                     ...styles.dropdownCreateOption,
                     ...(dropdownHoverKey === CREATE_NEW_CUSTOMER_VALUE ? styles.dropdownOptionHover : null),
                   }}
-                  onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(CREATE_NEW_CUSTOMER_VALUE); }}
+                  onPointerDown={(e) => handleCustomerDropdownPointerDown(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onTouchStart={(e) => handleCustomerDropdownTouchStart(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onMouseDown={(e) => handleCustomerDropdownMouseDown(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onClick={consumeCustomerDropdownOptionClick}
                   onMouseEnter={() => setDropdownHoverKey(CREATE_NEW_CUSTOMER_VALUE)}
                   onMouseLeave={() => setDropdownHoverKey("")}
                 >
@@ -2609,7 +2713,10 @@ export default function EstimateForm(props) {
                       ...(String(selectedCustomerId || "") === String(c.id) ? styles.dropdownOptionSelected : null),
                       ...(dropdownHoverKey === String(c.id) ? styles.dropdownOptionHover : null),
                     }}
-                    onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(String(c.id)); }}
+                    onPointerDown={(e) => handleCustomerDropdownPointerDown(e, String(c.id))}
+                    onTouchStart={(e) => handleCustomerDropdownTouchStart(e, String(c.id))}
+                    onMouseDown={(e) => handleCustomerDropdownMouseDown(e, String(c.id))}
+                    onClick={consumeCustomerDropdownOptionClick}
                     onMouseEnter={() => setDropdownHoverKey(String(c.id))}
                     onMouseLeave={() => setDropdownHoverKey("")}
                   >

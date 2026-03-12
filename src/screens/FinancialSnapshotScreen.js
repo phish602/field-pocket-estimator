@@ -2,6 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { computeTotals } from "../estimator/engine";
+import {
+  buildEstimateInvoiceSummary,
+  deriveInvoiceStatus,
+  INVOICE_STATUSES,
+  isInvoiceFinanciallyCommitted,
+  isInvoiceReceivable,
+  readStoredInvoices,
+} from "../utils/invoices";
 
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
@@ -83,15 +91,11 @@ function fmtPct(p) {
   return `${n.toFixed(1)}%`;
 }
 
-function isPaidInvoice(inv) {
-  const v =
-    inv?.paid === true ||
-    inv?.isPaid === true ||
-    String(inv?.status || "").toLowerCase() === "paid" ||
-    String(inv?.paymentStatus || "").toLowerCase() === "paid" ||
-    !!inv?.paidDate ||
-    !!inv?.datePaid;
-  return !!v;
+function normalizeEstimateStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  return "pending";
 }
 
 function getDocDate(doc) {
@@ -211,6 +215,22 @@ function calcMarginPct(doc) {
   const revenue = calcRevenue(doc);
   if (revenue <= 0) return 0;
   return (calcGrossProfit(doc) / revenue) * 100;
+}
+
+function getReceivableAmount(invoice) {
+  const balance = asNumber(invoice?.balanceRemaining);
+  if (balance > 0) return balance;
+  return Math.max(calcRevenue(invoice) - asNumber(invoice?.amountPaid), 0);
+}
+
+function readSavedEstimates() {
+  const records = loadArray(ESTIMATES_KEY);
+  return records
+    .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
+    .map((entry) => ({
+      ...entry,
+      status: normalizeEstimateStatus(entry?.status),
+    }));
 }
 
 function getTimeRangeStart(rangeKey) {
@@ -363,10 +383,8 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
 
   useEffect(() => {
     const refresh = () => {
-      const est = loadArray(ESTIMATES_KEY);
-      const inv = loadArray(INVOICES_KEY);
-      setEstimates(est);
-      setInvoices(inv);
+      setEstimates(readSavedEstimates());
+      setInvoices(readStoredInvoices());
     };
     refresh();
 
@@ -374,8 +392,19 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       if (!e) return;
       if (e.key === ESTIMATES_KEY || e.key === INVOICES_KEY) refresh();
     };
+    const onLocalStorage = (event) => {
+      const key = String(event?.detail?.key || "").trim();
+      if (key === ESTIMATES_KEY || key === INVOICES_KEY) refresh();
+    };
+    const onInvoicesChanged = () => refresh();
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    };
   }, []);
 
   const computed = useMemo(() => {
@@ -386,39 +415,26 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     const invAll = (Array.isArray(invoices) ? invoices : []).filter(Boolean);
     const estAll = (Array.isArray(estimates) ? estimates : []).filter(Boolean);
 
-    const estOnly = estAll.filter((x) => String(x?.docType || "").toLowerCase() === "estimate");
-    const invFromEstimates = estAll.filter((x) => String(x?.docType || "").toLowerCase() === "invoice");
-
-    const byKey = new Map();
-    for (const x of invAll) {
-      const k = String(x?.id || x?.invoiceNumber || x?.estimateNumber || Math.random());
-      byKey.set(k, x);
-    }
-    for (const x of invFromEstimates) {
-      const k = String(x?.id || x?.invoiceNumber || x?.estimateNumber || Math.random());
-      if (!byKey.has(k)) byKey.set(k, x);
-    }
-
-    const invMerged = Array.from(byKey.values());
-    const invUse = invMerged.filter((x) => inRange(getDocDate(x), start, end));
-
-    const revenue = invUse.reduce((s, x) => s + calcRevenue(x), 0);
-    const grossProfit = invUse.reduce((s, x) => s + calcGrossProfit(x), 0);
+    const activeInvoices = invAll
+      .filter((invoice) => inRange(getDocDate(invoice), start, end))
+      .filter((invoice) => isInvoiceFinanciallyCommitted(invoice, now.getTime()));
+    const revenue = activeInvoices.reduce((sum, invoice) => sum + calcRevenue(invoice), 0);
+    const grossProfit = activeInvoices.reduce((sum, invoice) => sum + calcGrossProfit(invoice), 0);
     const marginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
 
-    const unpaid = invUse.filter((x) => !isPaidInvoice(x));
-    const arTotal = unpaid.reduce((s, x) => s + calcRevenue(x), 0);
+    const receivables = activeInvoices.filter((invoice) => isInvoiceReceivable(invoice, now.getTime()));
+    const arTotal = receivables.reduce((sum, invoice) => sum + getReceivableAmount(invoice), 0);
 
     const aging = { current: 0, late1_15: 0, late16_30: 0, late30p: 0, delinquentTotal: 0, canCompute: true };
 
-    for (const inv of unpaid) {
+    for (const inv of receivables) {
       const due = getDueDate(inv);
       if (!due) {
         aging.canCompute = false;
         continue;
       }
       const daysLate = Math.floor((startOfDay(now).getTime() - startOfDay(due).getTime()) / 86400000);
-      const amt = calcRevenue(inv);
+      const amt = getReceivableAmount(inv);
       if (daysLate <= 0) aging.current += amt;
       else if (daysLate <= 15) aging.late1_15 += amt;
       else if (daysLate <= 30) aging.late16_30 += amt;
@@ -427,19 +443,59 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       if (daysLate > 0) aging.delinquentTotal += amt;
     }
 
-    const estInRange = estOnly.filter((x) => inRange(getDocDate(x), start, end));
-    const pipelineValue = estInRange.reduce((s, x) => s + calcRevenue(x), 0);
-    const pipelineCount = estInRange.length;
+    const pendingEstimates = estAll.filter((estimate) => normalizeEstimateStatus(estimate?.status) === "pending");
+    const approvedEstimates = estAll.filter((estimate) => normalizeEstimateStatus(estimate?.status) === "approved");
+    const pipelineEstimates = pendingEstimates.filter((estimate) => inRange(getDocDate(estimate), start, end));
+    const approvedInRange = approvedEstimates.filter((estimate) => inRange(getDocDate(estimate), start, end));
+
+    const pipelineValue = pipelineEstimates.reduce((sum, estimate) => sum + calcRevenue(estimate), 0);
+    const pipelineCount = pipelineEstimates.length;
     const avgEstimate = pipelineCount ? pipelineValue / pipelineCount : 0;
 
-    const weekly = buildWeeklySeries(invUse);
+    let approvedReadyValue = 0;
+    let approvedReadyCount = 0;
+    for (const estimate of approvedInRange) {
+      const summary = buildEstimateInvoiceSummary(estimate, invAll);
+      const remaining = Math.max(0, asNumber(summary?.remainingToInvoice));
+      approvedReadyValue += remaining;
+      if (remaining > 0) approvedReadyCount += 1;
+    }
 
-    const withRevenue = invUse.filter((x) => calcRevenue(x) > 0);
+    const weekly = buildWeeklySeries(activeInvoices);
+
+    const withRevenue = activeInvoices.filter((invoice) => calcRevenue(invoice) > 0);
     const sortedByMargin = withRevenue.map((x) => ({ x, m: calcMarginPct(x) })).sort((a, b) => b.m - a.m);
     const best = sortedByMargin.slice(0, 3);
     const worst = sortedByMargin.slice(-3).reverse();
 
-    return { revenue, grossProfit, marginPct, arTotal, delinquentTotal: aging.delinquentTotal, aging, weekly, pipelineValue, pipelineCount, avgEstimate, best, worst, invCount: invUse.length };
+    const statusCounts = activeInvoices.reduce((counts, invoice) => {
+      const status = deriveInvoiceStatus(invoice, now.getTime());
+      counts.total += 1;
+      if (status === INVOICE_STATUSES.PAID) counts.paid += 1;
+      else if (status === INVOICE_STATUSES.OVERDUE) counts.overdue += 1;
+      else if (status === INVOICE_STATUSES.SENT) counts.sent += 1;
+      else counts.draft += 1;
+      return counts;
+    }, { total: 0, draft: 0, sent: 0, paid: 0, overdue: 0 });
+
+    return {
+      revenue,
+      grossProfit,
+      marginPct,
+      arTotal,
+      delinquentTotal: aging.delinquentTotal,
+      aging,
+      weekly,
+      pipelineValue,
+      pipelineCount,
+      avgEstimate,
+      approvedReadyValue,
+      approvedReadyCount,
+      best,
+      worst,
+      invCount: activeInvoices.length,
+      statusCounts,
+    };
   }, [range, estimates, invoices]);
 
   const donutSegments = useMemo(() => {
@@ -467,6 +523,19 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       parts.push((lang === "es" ? "Margen promedio: " : "Average margin: ") + fmtPct(computed.marginPct));
       if (computed.arTotal > 0) parts.push((lang === "es" ? "Cuentas por cobrar: " : "Receivables: ") + fmtMoney(computed.arTotal));
       if (computed.delinquentTotal > 0) parts.push((lang === "es" ? "Delincuencia: " : "Delinquent: ") + fmtMoney(computed.delinquentTotal));
+      if (computed.statusCounts.sent > 0 || computed.statusCounts.overdue > 0 || computed.statusCounts.paid > 0) {
+        parts.push(
+          lang === "es"
+            ? `Facturas activas: ${computed.statusCounts.sent} enviadas, ${computed.statusCounts.overdue} vencidas, ${computed.statusCounts.paid} pagadas`
+            : `Active invoices: ${computed.statusCounts.sent} sent, ${computed.statusCounts.overdue} overdue, ${computed.statusCounts.paid} paid`
+        );
+      }
+    }
+    if (computed.approvedReadyValue > 0) {
+      parts.push(
+        (lang === "es" ? "Aprobadas por facturar: " : "Approved ready to invoice: ")
+        + fmtMoney(computed.approvedReadyValue)
+      );
     }
     return parts.join(" • ");
   }, [computed, lang]);
@@ -593,9 +662,14 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pipeline de estimados" : "Estimate Pipeline"}</div>
         <div style={{ display: "grid", gap: 10 }}>
-          <KPI label={lang === "es" ? "Valor total" : "Total value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
-          <KPI label={lang === "es" ? "Cantidad" : "Count"} value={String(computed.pipelineCount)} numericValue={computed.pipelineCount} formatValue={(n) => String(Math.round(asNumber(n)))} tone="ok" />
-          <KPI label={lang === "es" ? "Promedio" : "Average size"} value={fmtMoney(computed.avgEstimate)} numericValue={computed.avgEstimate} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Valor pendiente" : "Pending value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Pendientes" : "Pending count"} value={String(computed.pipelineCount)} numericValue={computed.pipelineCount} formatValue={(n) => String(Math.round(asNumber(n)))} tone="ok" />
+          <KPI label={lang === "es" ? "Promedio pendiente" : "Avg pending"} value={fmtMoney(computed.avgEstimate)} numericValue={computed.avgEstimate} formatValue={fmtMoney} tone="ok" />
+        </div>
+        <div className="pe-muted" style={{ marginTop: 8 }}>
+          {lang === "es"
+            ? `Aprobadas por facturar: ${fmtMoney(computed.approvedReadyValue)} (${computed.approvedReadyCount})`
+            : `Approved ready to invoice: ${fmtMoney(computed.approvedReadyValue)} (${computed.approvedReadyCount})`}
         </div>
       </div>
 

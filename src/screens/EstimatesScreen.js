@@ -514,7 +514,7 @@ function calcBreakdown(e) {
   };
 }
 
-export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDone, spinTick = 0 }) {
+export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spinTick = 0 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -526,6 +526,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
   const touchStartTimer = useRef(null);
   const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
+  const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
@@ -590,6 +591,66 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     if (!touchStartTimer.current) return;
     clearTimeout(touchStartTimer.current);
     touchStartTimer.current = null;
+  };
+
+  const clearCardActionIntent = () => {
+    cardActionIntentRef.current = {
+      estimateId: "",
+      action: "",
+      setAt: 0,
+    };
+  };
+
+  const setCardActionIntent = (estimateId, action) => {
+    cardActionIntentRef.current = {
+      estimateId: String(estimateId || "").trim(),
+      action: String(action || "").trim(),
+      setAt: Date.now(),
+    };
+  };
+
+  const getCardActionIntent = () => {
+    const current = cardActionIntentRef.current;
+    if (!current?.action) return { estimateId: "", action: "", setAt: 0 };
+    if (Date.now() - Number(current.setAt || 0) > 1200) {
+      clearCardActionIntent();
+      return { estimateId: "", action: "", setAt: 0 };
+    }
+    return current;
+  };
+
+  const consumeEstimateActionEvent = (event, estimateId, action, { preventDefault = false } = {}) => {
+    if (preventDefault && event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+    if (action) {
+      setCardActionIntent(estimateId, action);
+    }
+  };
+
+  const runEstimateCardAction = (event, estimateId, action, handler) => {
+    consumeEstimateActionEvent(event, estimateId, action, { preventDefault: true });
+    const currentIntent = getCardActionIntent();
+    const normalizedEstimateId = String(estimateId || "").trim();
+    if (
+      currentIntent.estimateId === normalizedEstimateId
+      && currentIntent.action
+      && currentIntent.action !== action
+    ) {
+      return;
+    }
+    handler();
+    window.setTimeout(() => {
+      const latestIntent = getCardActionIntent();
+      if (
+        latestIntent.estimateId === normalizedEstimateId
+        && latestIntent.action === action
+      ) {
+        clearCardActionIntent();
+      }
+    }, 0);
   };
 
   const resetTouchGesture = () => {
@@ -1049,8 +1110,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   }, [deleteConfirmOpen]);
 
   const labelSaved = lang === "es" ? "Estimaciones guardadas" : "Saved Estimates";
-  const labelBack = lang === "es" ? "Volver" : "Back";
-
   const labelOpen = lang === "es" ? "Abrir" : "Open";
   const labelDetails = lang === "es" ? "Detalles" : "Details";
   const labelHide = lang === "es" ? "Ocultar" : "Hide";
@@ -1205,20 +1264,35 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "clamp(12px, 3vw, 24px)",
+    overflowY: "auto",
+    overflowX: "hidden",
+    boxSizing: "border-box",
+    paddingTop: "calc(max(14px, env(safe-area-inset-top, 0px)) + 8px)",
+    paddingRight: "calc(max(14px, env(safe-area-inset-right, 0px)) + 6px)",
+    paddingBottom: "calc(max(18px, env(safe-area-inset-bottom, 0px)) + 12px)",
+    paddingLeft: "calc(max(14px, env(safe-area-inset-left, 0px)) + 6px)",
   };
   const invoiceComposerCardStyle = {
     width: "min(560px, 100%)",
-    maxHeight: "min(760px, calc(100dvh - 24px))",
-    overflowY: "auto",
+    maxWidth: "100%",
     borderRadius: 22,
-    border: "1px solid rgba(255,255,255,0.14)",
+    border: "1px solid rgba(255,255,255,0.16)",
     background: "linear-gradient(180deg, rgba(19,28,43,0.97) 0%, rgba(10,15,24,0.96) 100%)",
-    boxShadow: "0 28px 72px rgba(0,0,0,0.48)",
+    boxShadow: "0 28px 72px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.04)",
     backdropFilter: "blur(16px)",
     WebkitBackdropFilter: "blur(16px)",
-    padding: "clamp(16px, 3vw, 22px)",
+    boxSizing: "border-box",
+    overflow: "hidden",
+    position: "relative",
     color: "rgba(245,248,252,0.98)",
+  };
+  const invoiceComposerCardScrollStyle = {
+    maxHeight: "min(760px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 52px))",
+    overflowY: "auto",
+    overflowX: "hidden",
+    WebkitOverflowScrolling: "touch",
+    boxSizing: "border-box",
+    padding: "clamp(16px, 3vw, 22px)",
     display: "grid",
     gap: 16,
   };
@@ -1457,11 +1531,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))" }}
               draggable={false}
             />
-          </div>
-          <div className="pe-company-header-controls">
-            <button className="pe-btn" onClick={onDone}>
-              {labelBack}
-            </button>
           </div>
         </div>
 
@@ -1820,15 +1889,10 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
               const small = { fontSize: 11.5, opacity: 0.68, letterSpacing: "0.2px" };
               const cardBodyLine = {
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
+                minWidth: 0,
               };
               const updatedTextLine = {
                 ...small,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
               };
               const row = {
                 display: "grid",
@@ -1841,19 +1905,19 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 justifyContent: "space-between",
                 alignItems: "flex-start",
                 gap: 8,
+                flexWrap: "wrap",
               };
               const customerEstimateRow = {
                 display: "flex",
-                justifyContent: "space-between",
                 gap: "8px",
                 minWidth: 0,
+                flexWrap: "wrap",
               };
               const customerField = {
                 ...cardBodyLine,
                 fontSize: 12.5,
                 opacity: 0.78,
                 lineHeight: 1.2,
-                minWidth: 0,
                 flex: "1 1 auto",
               };
               const estimateField = {
@@ -1861,11 +1925,11 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 fontSize: 12.5,
                 opacity: 0.78,
                 lineHeight: 1.2,
-                minWidth: 0,
                 flex: "0 1 auto",
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "flex-end",
+                gap: 6,
+                flexWrap: "wrap",
               };
               const metricLabel = {
                 fontSize: 10.5,
@@ -2056,51 +2120,50 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     }
                   }}
                 >
-                  <div style={row}>
-                    <div style={headerRow}>
-                      <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                  <div className="pe-estimate-card-mainrow" style={row}>
+                    <div className="pe-estimate-card-header" style={headerRow}>
+                      <div className="pe-estimate-card-info" style={{ display: "grid", gap: 4, minWidth: 0, flex: "1 1 0" }}>
                         <div
+                          className="pe-estimate-card-title"
                           style={{
                             fontWeight: 600,
                             fontSize: "15px",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
+                            lineHeight: 1.25,
                           }}
                         >
                           {e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
                         </div>
-                        <div style={customerEstimateRow}>
-                          <div style={customerField}>
+                        <div className="pe-estimate-card-customer-row" style={customerEstimateRow}>
+                          <div className="pe-estimate-card-customer" style={customerField}>
                             {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
                           </div>
-                          <div style={estimateField}>
+                          <div className="pe-estimate-card-numbers" style={estimateField}>
                             {e?.estimateNumber ? (
                               <>
-                                <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap" }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
+                                <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75 }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
                                 <button
                                   type="button"
                                   className="ep-icon-btn ep-icon-btn--sm ep-icon-btn--glass"
                                   aria-label="Copy estimate number"
                                   title="Copy estimate number"
                                   onClick={(evt) => copyEstimateNumber(e?.estimateNumber, evt)}
-                                  style={{ marginLeft: 6, verticalAlign: "middle" }}
+                                  style={{ verticalAlign: "middle" }}
                                 >
                                   <CopyIcon />
                                 </button>
                               </>
                             ) : null}
                             {e?.invoiceNumber ? (
-                              <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap", marginLeft: e?.estimateNumber ? 6 : 0 }}>
+                              <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75, marginLeft: e?.estimateNumber ? 2 : 0 }}>
                                 {`${e?.estimateNumber ? "• " : ""}${t("invoiceNumLabel")} ${e.invoiceNumber}`}
                               </span>
                             ) : null}
                           </div>
                         </div>
-                        {updatedLine ? <div style={updatedTextLine}>{updatedLine}</div> : null}
+                        {updatedLine ? <div className="pe-estimate-card-updated" style={updatedTextLine}>{updatedLine}</div> : null}
                       </div>
                       <div
-                        className={`pe-estimate-status ${statusClassName}`}
+                        className={`pe-estimate-status pe-estimate-card-status ${statusClassName}`}
                         style={{
                           whiteSpace: "nowrap",
                           flexShrink: 0,
@@ -2109,8 +2172,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                         {statusLabel}
                       </div>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
-                      <div style={metricRow}>
+                    <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
+                      <div className="pe-estimate-card-metrics" style={metricRow}>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                           <div style={metricLabel}>{labelTotalMetric}</div>
                           <div style={pill(true)} title={labelRevenue}>
@@ -2134,12 +2197,29 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                         display: "flex",
                         gap: 10,
                         marginTop: 8,
+                        position: "relative",
+                        zIndex: 2,
+                      }}
+                      onClick={(evt) => {
+                        if (evt?.stopPropagation) evt.stopPropagation();
                       }}
                     >
-                      <button className="pe-btn" type="button" onClick={() => openEstimate(e)}>
+                      <button
+                        className="pe-btn"
+                        type="button"
+                        onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "open")}
+                        onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "open")}
+                        onClick={(evt) => runEstimateCardAction(evt, id, "open", () => openEstimate(e))}
+                      >
                         {labelOpen}
                       </button>
-                      <button className="pe-btn pe-btn-ghost" type="button" onClick={() => toggle(id)}>
+                      <button
+                        className="pe-btn pe-btn-ghost"
+                        type="button"
+                        onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "details")}
+                        onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "details")}
+                        onClick={(evt) => runEstimateCardAction(evt, id, "details", () => toggle(id))}
+                      >
                         {isOpen ? labelHide : labelDetails}
                       </button>
                     </div>
@@ -2504,6 +2584,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
             onClick={(evt) => evt.stopPropagation()}
             style={invoiceComposerCardStyle}
           >
+            <div style={invoiceComposerCardScrollStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
               <div style={{ display: "grid", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
                 <div style={invoiceComposerToneLabelStyle}>
@@ -2769,6 +2850,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
                 {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
               </button>
+            </div>
             </div>
           </div>
         </div>

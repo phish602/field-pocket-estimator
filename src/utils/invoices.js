@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 import { DEFAULT_STATE } from "../estimator/defaultState";
+import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
 export const INVOICE_TYPES = {
@@ -72,6 +73,331 @@ export function todayISO() {
   return todayParts(new Date());
 }
 
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function resolveMaterialsMode(doc) {
+  const explicit = asText(doc?.ui?.materialsMode || doc?.materialsMode).toLowerCase();
+  if (explicit === "itemized" || explicit === "blanket") return explicit;
+  if (Array.isArray(doc?.materials?.items) && doc.materials.items.length > 0) return "itemized";
+  if (Array.isArray(doc?.materialItems) && doc.materialItems.length > 0) return "itemized";
+  return "blanket";
+}
+
+function toEstimatorState(doc) {
+  const laborLines = Array.isArray(doc?.labor?.lines)
+    ? doc.labor.lines
+    : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  const materialItems = Array.isArray(doc?.materials?.items)
+    ? doc.materials.items
+    : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const multiplierMode = asText(doc?.multiplierMode).toLowerCase();
+  const customMultiplier = toCurrencyNumber(doc?.customMultiplier);
+  const presetMultiplier = toCurrencyNumber(doc?.laborMultiplier);
+  const directMultiplier = toCurrencyNumber(doc?.labor?.multiplier);
+  const multiplier = directMultiplier > 0
+    ? directMultiplier
+    : (multiplierMode === "custom" ? (customMultiplier || 1) : (presetMultiplier || 1));
+
+  return {
+    ui: {
+      materialsMode: resolveMaterialsMode(doc),
+    },
+    labor: {
+      hazardPct: toCurrencyNumber(doc?.labor?.hazardPct ?? doc?.hazardPct),
+      riskPct: toCurrencyNumber(doc?.labor?.riskPct ?? doc?.riskPct),
+      multiplier: multiplier > 0 ? multiplier : 1,
+      lines: laborLines.map((line, index) => ({
+        id: asText(line?.id) || `labor_${index}`,
+        role: asText(line?.role),
+        label: asText(line?.label || line?.name),
+        qty: Math.max(1, toCurrencyNumber(line?.qty || 1)),
+        hours: Math.max(0, toCurrencyNumber(line?.hours)),
+        rate: Math.max(0, toCurrencyNumber(line?.rate ?? line?.billRate)),
+        markupPct: toCurrencyNumber(line?.markupPct),
+        trueRateInternal: Math.max(
+          0,
+          toCurrencyNumber(line?.trueRateInternal ?? line?.internalRate ?? line?.rateInternal)
+        ),
+      })),
+    },
+    materials: {
+      blanketCost: Math.max(0, toCurrencyNumber(doc?.materials?.blanketCost ?? doc?.blanketCost ?? doc?.materialsCost)),
+      blanketInternalCost: Math.max(
+        0,
+        toCurrencyNumber(doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost ?? doc?.materialsCost)
+      ),
+      markupPct: toCurrencyNumber(doc?.materials?.markupPct ?? doc?.materialsMarkupPct),
+      items: materialItems.map((item, index) => ({
+        id: asText(item?.id) || `mat_${index}`,
+        desc: asText(item?.desc || item?.name),
+        qty: Math.max(1, toCurrencyNumber(item?.qty || 1)),
+        priceEach: Math.max(
+          0,
+          toCurrencyNumber(item?.priceEach ?? item?.chargeEach ?? item?.charge ?? item?.price ?? item?.unitPrice)
+        ),
+        markupPct: toCurrencyNumber(item?.markupPct),
+        unitCostInternal: Math.max(
+          0,
+          toCurrencyNumber(
+            item?.unitCostInternal
+            ?? item?.costInternal
+            ?? item?.internalCost
+            ?? item?.internalEach
+            ?? item?.internalPrice
+            ?? item?.cost
+          )
+        ),
+      })),
+    },
+  };
+}
+
+function buildFinancialSummary({
+  approvedTotal = null,
+  totalRevenue = 0,
+  totalCost = 0,
+  laborRevenue = 0,
+  laborCost = 0,
+  materialsRevenue = 0,
+  materialsCost = 0,
+}) {
+  const revenue = roundCurrency(totalRevenue);
+  const cost = roundCurrency(totalCost);
+  const grossProfit = roundCurrency(revenue - cost);
+  const marginRatio = revenue > 0 ? roundCurrency(grossProfit / revenue) : 0;
+  const marginPercent = roundCurrency(marginRatio * 100);
+  const approved = approvedTotal === null || approvedTotal === undefined || approvedTotal === ""
+    ? revenue
+    : roundCurrency(approvedTotal);
+  const normalizedLaborRevenue = roundCurrency(laborRevenue);
+  const normalizedLaborCost = roundCurrency(laborCost);
+  const normalizedMaterialsRevenue = roundCurrency(materialsRevenue);
+  const normalizedMaterialsCost = roundCurrency(materialsCost);
+
+  return {
+    approvedTotal: approved,
+    totalRevenue: revenue,
+    grandTotal: revenue,
+    total: revenue,
+    totalCost: cost,
+    internalCost: cost,
+    grossProfit,
+    grossMargin: marginRatio,
+    grossMarginPct: marginRatio,
+    grossProfitMargin: marginRatio,
+    margin: marginRatio,
+    marginPct: marginPercent,
+    marginPercent,
+    laborRevenue: normalizedLaborRevenue,
+    laborCost: normalizedLaborCost,
+    materialsRevenue: normalizedMaterialsRevenue,
+    materialsCost: normalizedMaterialsCost,
+    financials: {
+      approvedTotal: approved,
+      totalRevenue: revenue,
+      grandTotal: revenue,
+      totalCost: cost,
+      internalCost: cost,
+      grossProfit,
+      grossMargin: marginRatio,
+      grossMarginPct: marginRatio,
+      grossProfitMargin: marginRatio,
+      margin: marginRatio,
+      marginPct: marginPercent,
+      marginPercent,
+      laborRevenue: normalizedLaborRevenue,
+      laborCost: normalizedLaborCost,
+      materialsRevenue: normalizedMaterialsRevenue,
+      materialsCost: normalizedMaterialsCost,
+    },
+    totals: {
+      approvedTotal: approved,
+      totalRevenue: revenue,
+      grandTotal: revenue,
+      totalCost: cost,
+      internalCost: cost,
+      grossProfit,
+      grossMargin: marginRatio,
+      grossMarginPct: marginRatio,
+      grossProfitMargin: marginRatio,
+      margin: marginRatio,
+      marginPct: marginPercent,
+      marginPercent,
+      laborRevenue: normalizedLaborRevenue,
+      laborCost: normalizedLaborCost,
+      materialsRevenue: normalizedMaterialsRevenue,
+      materialsCost: normalizedMaterialsCost,
+    },
+  };
+}
+
+export function buildFinancialSummaryFromComputed(computed, approvedTotal = null) {
+  const laborRevenue = roundCurrency(
+    computed?.labor?.totalRevenue
+    ?? computed?.laborAfterAdjustments
+    ?? computed?.laborAfterMultiplier
+    ?? computed?.labor?.subtotal
+    ?? 0
+  );
+  const laborCost = roundCurrency(
+    computed?.labor?.totalCost
+    ?? computed?.labor?.internalCost
+    ?? computed?.labor?.cost
+    ?? 0
+  );
+  const materialsRevenue = roundCurrency(
+    computed?.materials?.totalRevenue
+    ?? computed?.materials?.totalCharge
+    ?? 0
+  );
+  const materialsCost = roundCurrency(
+    computed?.materials?.totalCost
+    ?? computed?.materials?.internalCost
+    ?? 0
+  );
+  const totalRevenue = roundCurrency(
+    computed?.totalRevenue
+    ?? computed?.grandTotal
+    ?? (laborRevenue + materialsRevenue)
+  );
+  const totalCost = roundCurrency(
+    computed?.totalCost
+    ?? (laborCost + materialsCost)
+  );
+
+  return buildFinancialSummary({
+    approvedTotal,
+    totalRevenue,
+    totalCost,
+    laborRevenue,
+    laborCost,
+    materialsRevenue,
+    materialsCost,
+  });
+}
+
+export function allocateFinancialSummaryFromSource(source, invoiceTotal, approvedTotalOverride = null) {
+  const normalizedInvoiceTotal = roundCurrency(invoiceTotal);
+  const base = extractFinancialSummaryFromDoc(source, { approvedTotal: approvedTotalOverride });
+  const approvedTotal = roundCurrency(
+    approvedTotalOverride
+    ?? base?.approvedTotal
+    ?? base?.totalRevenue
+    ?? normalizedInvoiceTotal
+  );
+  const ratioBase = approvedTotal > 0 ? approvedTotal : roundCurrency(base?.totalRevenue);
+  const ratio = ratioBase > 0 ? normalizedInvoiceTotal / ratioBase : 0;
+
+  return buildFinancialSummary({
+    approvedTotal,
+    totalRevenue: normalizedInvoiceTotal,
+    totalCost: roundCurrency((base?.totalCost || 0) * ratio),
+    laborRevenue: roundCurrency((base?.laborRevenue || 0) * ratio),
+    laborCost: roundCurrency((base?.laborCost || 0) * ratio),
+    materialsRevenue: roundCurrency((base?.materialsRevenue || 0) * ratio),
+    materialsCost: roundCurrency((base?.materialsCost || 0) * ratio),
+  });
+}
+
+export function extractFinancialSummaryFromDoc(doc, options = {}) {
+  const source = doc && typeof doc === "object" ? doc : {};
+  const explicitApprovedTotal = firstFiniteNumber(
+    options?.approvedTotal,
+    source?.approvedTotal,
+    source?.financials?.approvedTotal,
+    source?.totals?.approvedTotal,
+    source?.sourceEstimateSnapshot?.approvedTotal
+  );
+  const directRevenue = firstFiniteNumber(
+    source?.financials?.totalRevenue,
+    source?.totals?.totalRevenue,
+    source?.totalRevenue,
+    source?.grandTotal,
+    source?.invoiceTotal,
+    source?.total
+  );
+  const directCost = firstFiniteNumber(
+    source?.financials?.totalCost,
+    source?.totals?.totalCost,
+    source?.totalCost,
+    source?.internalCost
+  );
+  const directGrossProfit = firstFiniteNumber(
+    source?.financials?.grossProfit,
+    source?.totals?.grossProfit,
+    source?.grossProfit
+  );
+  const directLaborRevenue = firstFiniteNumber(
+    source?.financials?.laborRevenue,
+    source?.totals?.laborRevenue,
+    source?.laborRevenue
+  );
+  const directLaborCost = firstFiniteNumber(
+    source?.financials?.laborCost,
+    source?.totals?.laborCost,
+    source?.laborCost
+  );
+  const directMaterialsRevenue = firstFiniteNumber(
+    source?.financials?.materialsRevenue,
+    source?.totals?.materialsRevenue,
+    source?.materialsRevenue
+  );
+  const directMaterialsCost = firstFiniteNumber(
+    source?.financials?.materialsCost,
+    source?.totals?.materialsCost,
+    source?.materialsCost
+  );
+  const snapshot = source?.sourceEstimateSnapshot && typeof source.sourceEstimateSnapshot === "object"
+    ? source.sourceEstimateSnapshot
+    : null;
+
+  if (asText(source?.sourceEstimateId) && snapshot && directCost === null && directRevenue !== null) {
+    return allocateFinancialSummaryFromSource(
+      snapshot,
+      directRevenue,
+      explicitApprovedTotal ?? snapshot?.approvedTotal
+    );
+  }
+
+  if (directRevenue !== null || directCost !== null || directGrossProfit !== null) {
+    const revenue = roundCurrency(directRevenue ?? 0);
+    let cost = directCost;
+    let grossProfit = directGrossProfit;
+    if (cost === null && grossProfit !== null) cost = roundCurrency(revenue - grossProfit);
+    if (grossProfit === null && cost !== null) grossProfit = roundCurrency(revenue - cost);
+    return buildFinancialSummary({
+      approvedTotal: explicitApprovedTotal,
+      totalRevenue: revenue,
+      totalCost: cost ?? 0,
+      laborRevenue: directLaborRevenue ?? 0,
+      laborCost: directLaborCost ?? 0,
+      materialsRevenue: directMaterialsRevenue ?? 0,
+      materialsCost: directMaterialsCost ?? 0,
+    });
+  }
+
+  try {
+    const computed = computeTotals(toEstimatorState(source));
+    return buildFinancialSummaryFromComputed(computed, explicitApprovedTotal);
+  } catch {
+    return buildFinancialSummary({
+      approvedTotal: explicitApprovedTotal,
+      totalRevenue: roundCurrency(directRevenue ?? 0),
+      totalCost: roundCurrency(directCost ?? 0),
+      laborRevenue: roundCurrency(directLaborRevenue ?? 0),
+      laborCost: roundCurrency(directLaborCost ?? 0),
+      materialsRevenue: roundCurrency(directMaterialsRevenue ?? 0),
+      materialsCost: roundCurrency(directMaterialsCost ?? 0),
+    });
+  }
+}
+
 function normalizeIsoDate(value, fallback = "") {
   const raw = asText(value);
   if (!raw) return fallback;
@@ -102,6 +428,7 @@ export function normalizeStoredInvoiceStatus(value) {
   const raw = asText(value).toLowerCase();
   if (raw === INVOICE_STATUSES.VOID) return INVOICE_STATUSES.VOID;
   if (raw === INVOICE_STATUSES.PAID) return INVOICE_STATUSES.PAID;
+  if (raw === INVOICE_STATUSES.OVERDUE) return INVOICE_STATUSES.OVERDUE;
   if (raw === INVOICE_STATUSES.SENT) return INVOICE_STATUSES.SENT;
   return INVOICE_STATUSES.DRAFT;
 }
@@ -137,6 +464,17 @@ export function sortInvoicesByDateDesc(a, b) {
   return asText(b?.invoiceNumber).localeCompare(asText(a?.invoiceNumber));
 }
 
+function dedupeInvoices(records) {
+  const seen = new Set();
+  return records.filter((invoice) => {
+    const key = asText(invoice?.invoiceNumber || invoice?.id);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function generateNextInvoiceNumber(invoices) {
   const arr = Array.isArray(invoices) ? invoices.filter(Boolean) : [];
   let max = 0;
@@ -157,7 +495,20 @@ export function readStoredInvoices() {
   try {
     const raw = localStorage.getItem(INVOICES_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return normalizeInvoiceList(parsed);
+    let merged = Array.isArray(parsed) ? parsed : [];
+
+    try {
+      const legacyRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+      const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : [];
+      const legacyInvoices = Array.isArray(legacyParsed)
+        ? legacyParsed.filter((entry) => asText(entry?.docType).toLowerCase() === "invoice")
+        : [];
+      if (legacyInvoices.length > 0) {
+        merged = [...merged, ...legacyInvoices];
+      }
+    } catch {}
+
+    return normalizeInvoiceList(merged);
   } catch {
     return [];
   }
@@ -171,10 +522,29 @@ export function writeStoredInvoices(invoices) {
 
 export function buildEstimateInvoiceSnapshot(estimate) {
   const source = estimate && typeof estimate === "object" ? estimate : {};
+  const financialSummary = extractFinancialSummaryFromDoc(source, {
+    approvedTotal: source?.approvedTotal ?? source?.total,
+  });
   return {
     estimateId: asText(source?.id),
     estimateNumber: asText(source?.estimateNumber || source?.job?.docNumber),
-    approvedTotal: roundCurrency(source?.total),
+    approvedTotal: financialSummary.approvedTotal,
+    totalRevenue: financialSummary.totalRevenue,
+    grandTotal: financialSummary.grandTotal,
+    total: financialSummary.total,
+    totalCost: financialSummary.totalCost,
+    internalCost: financialSummary.internalCost,
+    grossProfit: financialSummary.grossProfit,
+    grossMargin: financialSummary.grossMargin,
+    grossMarginPct: financialSummary.grossMarginPct,
+    grossProfitMargin: financialSummary.grossProfitMargin,
+    margin: financialSummary.margin,
+    marginPct: financialSummary.marginPct,
+    marginPercent: financialSummary.marginPercent,
+    laborRevenue: financialSummary.laborRevenue,
+    laborCost: financialSummary.laborCost,
+    materialsRevenue: financialSummary.materialsRevenue,
+    materialsCost: financialSummary.materialsCost,
     estimateStatus: asText(source?.status || "approved"),
     customerId: asText(source?.customerId || source?.customer?.id),
     customerName: asText(source?.customerName || source?.customer?.name),
@@ -185,8 +555,18 @@ export function buildEstimateInvoiceSnapshot(estimate) {
     dueDate: invoiceDateLabel(source?.dueDate || source?.job?.due),
     customer: deepClone(source?.customer || {}),
     job: deepClone(source?.job || {}),
+    financials: {
+      ...(source?.financials || {}),
+      ...(financialSummary?.financials || {}),
+    },
+    totals: {
+      ...(source?.totals || {}),
+      ...(financialSummary?.totals || {}),
+    },
     summary: {
-      total: roundCurrency(source?.total),
+      total: financialSummary.totalRevenue,
+      totalCost: financialSummary.totalCost,
+      grossProfit: financialSummary.grossProfit,
       savedAt: Number(source?.savedAt || 0) || 0,
       updatedAt: Number(source?.updatedAt || 0) || 0,
     },
@@ -236,9 +616,19 @@ export function normalizeInvoiceRecord(record) {
   );
   const createdAt = Number(source?.createdAt || source?.savedAt || Date.now()) || Date.now();
   const updatedAt = Number(source?.updatedAt || source?.savedAt || createdAt) || createdAt;
+  const normalizedSnapshot = sourceEstimateId
+    ? {
+        ...(snapshot || {}),
+        ...buildEstimateInvoiceSnapshot(snapshot || {}),
+      }
+    : null;
+  const financialSummary = extractFinancialSummaryFromDoc(source, {
+    approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
+  });
 
   return {
     ...source,
+    ...financialSummary,
     id: asText(source?.id) || createInvoiceId(),
     docType: "invoice",
     ui: {
@@ -260,7 +650,7 @@ export function normalizeInvoiceRecord(record) {
     projectName,
     projectNumber,
     sourceEstimateId,
-    sourceEstimateSnapshot: sourceEstimateId ? snapshot : null,
+    sourceEstimateSnapshot: normalizedSnapshot,
     date: invoiceDate,
     dueDate,
     job: {
@@ -276,6 +666,14 @@ export function normalizeInvoiceRecord(record) {
       projectName,
       projectNumber,
     },
+    financials: {
+      ...(source?.financials || {}),
+      ...(financialSummary?.financials || {}),
+    },
+    totals: {
+      ...(source?.totals || {}),
+      ...(financialSummary?.totals || {}),
+    },
     createdAt,
     savedAt: Number(source?.savedAt || updatedAt) || updatedAt,
     updatedAt,
@@ -287,15 +685,46 @@ export function deriveInvoiceStatus(record, nowTs = Date.now()) {
   const invoice = normalizeInvoiceRecord(record);
   if (invoice.status === INVOICE_STATUSES.VOID) return INVOICE_STATUSES.VOID;
   if (invoice.paymentStatus === PAYMENT_STATUSES.PAID) return INVOICE_STATUSES.PAID;
+  const sentLikeStatus = invoice.status === INVOICE_STATUSES.SENT || invoice.status === INVOICE_STATUSES.OVERDUE;
+  const hasCommittedBalance =
+    roundCurrency(invoice.balanceRemaining) > 0
+    && (
+      sentLikeStatus
+      || invoice.paymentStatus === PAYMENT_STATUSES.PARTIAL
+      || roundCurrency(invoice.amountPaid) > 0
+    );
   const today = todayParts(new Date(nowTs));
-  if (invoice.dueDate && invoice.dueDate < today) return INVOICE_STATUSES.OVERDUE;
+  if (invoice.dueDate && invoice.dueDate < today && hasCommittedBalance) return INVOICE_STATUSES.OVERDUE;
+  if (invoice.status === INVOICE_STATUSES.OVERDUE) return INVOICE_STATUSES.OVERDUE;
   if (invoice.status === INVOICE_STATUSES.SENT) return INVOICE_STATUSES.SENT;
   return INVOICE_STATUSES.DRAFT;
 }
 
 export function normalizeInvoiceList(records) {
   const arr = Array.isArray(records) ? records.filter(Boolean) : [];
-  return arr.map((invoice) => normalizeInvoiceRecord(invoice)).sort(sortInvoicesByDateDesc);
+  const normalized = arr.map((invoice) => normalizeInvoiceRecord(invoice)).sort(sortInvoicesByDateDesc);
+  return dedupeInvoices(normalized);
+}
+
+export function isInvoiceFinanciallyCommitted(record, nowTs = Date.now()) {
+  const invoice = normalizeInvoiceRecord(record);
+  const status = deriveInvoiceStatus(invoice, nowTs);
+  if (status === INVOICE_STATUSES.VOID) return false;
+  if (status !== INVOICE_STATUSES.DRAFT) return true;
+  return (
+    invoice.paymentStatus === PAYMENT_STATUSES.PAID
+    || invoice.paymentStatus === PAYMENT_STATUSES.PARTIAL
+    || roundCurrency(invoice.amountPaid) > 0
+  );
+}
+
+export function isInvoiceReceivable(record, nowTs = Date.now()) {
+  const invoice = normalizeInvoiceRecord(record);
+  const status = deriveInvoiceStatus(invoice, nowTs);
+  if (status === INVOICE_STATUSES.VOID) return false;
+  if (status === INVOICE_STATUSES.PAID || invoice.paymentStatus === PAYMENT_STATUSES.PAID) return false;
+  if (!isInvoiceFinanciallyCommitted(invoice, nowTs)) return false;
+  return roundCurrency(invoice.balanceRemaining) > 0;
 }
 
 export function buildEstimateInvoiceSummary(estimate, invoices, options = {}) {
@@ -474,6 +903,11 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
   const dueDate = normalizeIsoDate(options?.dueDate || estimate?.job?.due);
   const draft = baseInvoiceDraft(now);
+  const allocatedFinancialSummary = allocateFinancialSummaryFromSource(
+    snapshot,
+    amountResolution.amount,
+    summary.approvedTotal
+  );
 
   draft.id = createInvoiceId();
   draft.invoiceType = invoiceType;
@@ -535,6 +969,31 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
     approvedTotalAtCreation: summary.approvedTotal,
     remainingToInvoiceAtCreation: summary.remainingToInvoice,
     createdFromEstimateAt: now,
+    financialSource: "estimate-proportional",
+  };
+  draft.approvedTotal = allocatedFinancialSummary.approvedTotal;
+  draft.totalRevenue = allocatedFinancialSummary.totalRevenue;
+  draft.grandTotal = allocatedFinancialSummary.grandTotal;
+  draft.totalCost = allocatedFinancialSummary.totalCost;
+  draft.internalCost = allocatedFinancialSummary.internalCost;
+  draft.grossProfit = allocatedFinancialSummary.grossProfit;
+  draft.grossMargin = allocatedFinancialSummary.grossMargin;
+  draft.grossMarginPct = allocatedFinancialSummary.grossMarginPct;
+  draft.grossProfitMargin = allocatedFinancialSummary.grossProfitMargin;
+  draft.margin = allocatedFinancialSummary.margin;
+  draft.marginPct = allocatedFinancialSummary.marginPct;
+  draft.marginPercent = allocatedFinancialSummary.marginPercent;
+  draft.laborRevenue = allocatedFinancialSummary.laborRevenue;
+  draft.laborCost = allocatedFinancialSummary.laborCost;
+  draft.materialsRevenue = allocatedFinancialSummary.materialsRevenue;
+  draft.materialsCost = allocatedFinancialSummary.materialsCost;
+  draft.financials = {
+    ...(draft.financials || {}),
+    ...(allocatedFinancialSummary.financials || {}),
+  };
+  draft.totals = {
+    ...(draft.totals || {}),
+    ...(allocatedFinancialSummary.totals || {}),
   };
   draft.meta = {
     ...(draft.meta || {}),
