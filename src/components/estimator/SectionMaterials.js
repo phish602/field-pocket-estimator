@@ -116,6 +116,7 @@ export default function SectionMaterials(props) {
     money,
     collapseMs,
     triggerHaptic,
+    onAiAssistOpen,
     materialsMode,
     setMaterialsMode,
     materialsOpen,
@@ -225,23 +226,37 @@ export default function SectionMaterials(props) {
             <div style={styles.sectionAccentLine} />
           </div>
         </div>
-        {materialsMode === "itemized" && !materialsOpen && (
-          <div className="pe-muted" style={styles.laborCollapsedMeta}>
-            {itemizedCollapsedSummary}
-          </div>
-        )}
-        {materialsMode === "itemized" && !materialsOpen && (
-          <button
-            type="button"
-            className="pe-btn pe-btn-ghost"
-            onClick={() => setMaterialsOpen(true)}
-            title={lang === "es" ? "Expandir" : "Expand"}
-            style={{ ...styles.scopeCollapseBtn, marginLeft: "auto" }}
-          >
-            {lang === "es" ? "Expandir ▾" : "Expand ▾"}
-          </button>
-        )}
+        <div style={styles.sectionHeaderControls}>
+          {typeof onAiAssistOpen === "function" ? (
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              style={styles.aiAssistBtn}
+              onClick={onAiAssistOpen}
+              title="AI Assist — suggest materials for the current mode"
+            >
+              ✦ AI Assist
+            </button>
+          ) : null}
+          {materialsMode === "itemized" && !materialsOpen && (
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setMaterialsOpen(true)}
+              title={lang === "es" ? "Expandir" : "Expand"}
+              style={styles.scopeCollapseBtn}
+            >
+              {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {materialsMode === "itemized" && !materialsOpen && (
+        <div className="pe-muted" style={{ ...styles.laborCollapsedMeta, marginBottom: 8 }}>
+          {itemizedCollapsedSummary}
+        </div>
+      )}
 
       <div style={{ marginTop: 0, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>

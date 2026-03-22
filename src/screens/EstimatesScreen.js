@@ -14,6 +14,7 @@ import {
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
@@ -23,6 +24,7 @@ const TOUCH_DRAG_MOVE_THRESHOLD_PX = 10;
 const INVOICE_AMOUNT_MODE_AMOUNT = "amount";
 const INVOICE_AMOUNT_MODE_PERCENT = "percent";
 const INVOICE_COMPOSER_EPSILON = 0.005;
+const OPEN_ESTIMATE_NAV_GUARD_MS = 800;
 
 function normalizeEstimateStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
@@ -527,6 +529,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spin
   const touchStartTimer = useRef(null);
   const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
   const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
+  const openEstimateNavRef = useRef({ estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
@@ -582,6 +585,12 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spin
     () => () => {
       if (touchStartTimer.current) {
         clearTimeout(touchStartTimer.current);
+      }
+      if (openEstimateNavRef.current?.rafId && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(openEstimateNavRef.current.rafId);
+      }
+      if (openEstimateNavRef.current?.timerId) {
+        clearTimeout(openEstimateNavRef.current.timerId);
       }
     },
     []
@@ -865,11 +874,57 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spin
 
   const openEstimate = (estimate) => {
     const id = String(estimate?.id || "").trim();
+    const previous = openEstimateNavRef.current || {};
+    const now = Date.now();
+    if (previous.estimateId === id && (now - Number(previous.triggeredAt || 0)) < OPEN_ESTIMATE_NAV_GUARD_MS) {
+      return;
+    }
+
+    if (previous.rafId && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(previous.rafId);
+    }
+    if (previous.timerId) {
+      clearTimeout(previous.timerId);
+    }
+
     try {
       if (id) localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, id);
       else localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}
-    if (onOpenEstimate) onOpenEstimate(estimate);
+    try {
+      window.dispatchEvent(new Event("estipaid:estimate-open"));
+    } catch {}
+
+    const finalizeOpen = () => {
+      const timerId = window.setTimeout(() => {
+        openEstimateNavRef.current = { estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 };
+        if (onOpenEstimate) onOpenEstimate(estimate);
+      }, 0);
+      openEstimateNavRef.current = {
+        ...openEstimateNavRef.current,
+        timerId,
+        rafId: 0,
+      };
+    };
+
+    openEstimateNavRef.current = {
+      estimateId: id,
+      triggeredAt: now,
+      rafId: 0,
+      timerId: 0,
+    };
+
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      const rafId = window.requestAnimationFrame(finalizeOpen);
+      openEstimateNavRef.current = {
+        ...openEstimateNavRef.current,
+        rafId,
+      };
+      return;
+    }
+
+    finalizeOpen();
   };
 
   const setEstimateStatus = (estimate, nextStatus) => {

@@ -379,15 +379,16 @@ function IconCreate({ size = 28 }) {
 /* =========================
    Overlay dimensions
    ========================= */
-const HEADER_H = 60;
+const HEADER_H = 56;
 const FOOTER_H = 82;
-const HEADER_SAFE_GAP = 8;
+const HEADER_SAFE_GAP = 6;
 const FOOTER_FLOAT_GAP = 16;
 const FOOTER_CONTENT_BREATHING = "clamp(36px, 5svh, 56px)";
 const CHROME_TOP_REVEAL_THRESHOLD = 24;
 const CHROME_DIRECTION_EPSILON = 1;
 const CHROME_HIDE_DISTANCE = 28;
 const CHROME_SHOW_DISTANCE = 14;
+const ESTIMATE_OPEN_CUSTOMERS_GUARD_MS = 700;
 const MENU_EDGE_SWIPE_ZONE_PX = 24;
 const MENU_EDGE_SWIPE_OPEN_PX = 72;
 const MENU_EDGE_SWIPE_VERTICAL_CANCEL_PX = 40;
@@ -624,15 +625,12 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
     if (active !== ROUTES.CREATE && createBump) setCreateBump(false);
   }, [active, createBump]);
 
-  const navInteractionLocked = mobileCreateChromeMotion;
-
   return (
     <div
       style={{
         ...styles.bottomnav,
         ...(mobileCreateChromeMotion ? styles.bottomnavCreateMotion : null),
         ...(!chromeVisible ? styles.bottomnavHidden : null),
-        ...(navInteractionLocked ? { pointerEvents: "none" } : null),
       }}
       role="navigation"
       aria-label="Primary"
@@ -647,7 +645,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
           ...styles.navBtn,
           opacity: isDisabled ? 0.35 : isActive ? 1 : 0.75,
           marginTop: isCenter ? -11 : 0,
-          pointerEvents: isDisabled || navInteractionLocked ? "none" : "auto",
+          pointerEvents: isDisabled ? "none" : "auto",
           ...(isActive ? styles.navBtnActive : null),
         };
 
@@ -664,7 +662,7 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
             style={btnStyle}
             onClick={() => onTab(t)}
             aria-label={t.label}
-            tabIndex={isDisabled || navInteractionLocked ? -1 : 0}
+            tabIndex={isDisabled ? -1 : 0}
           >
             <span style={iconWrapStyle} className={createWrapClass}>
               <Icon size={isCenter ? 30 : 25} />
@@ -691,10 +689,10 @@ function QuickMenu({ open, onClose, onSelect }) {
 
   return (
     <>
-      <div style={styles.quickOverlay} onClick={onClose} />
-      <div style={styles.quickMenu} role="dialog" aria-modal="true" aria-label="Shortcuts">
-        <div style={styles.quickTitleRow}>
-          <div style={styles.quickTitle}>Shortcuts</div>
+      <div className="pe-quick-overlay" style={styles.quickOverlay} onClick={onClose} />
+      <div className="pe-quick-menu" style={styles.quickMenu} role="dialog" aria-modal="true" aria-label="Shortcuts">
+        <div className="pe-quick-title-row" style={styles.quickTitleRow}>
+          <div className="pe-quick-title" style={styles.quickTitle}>Shortcuts</div>
           <button
             className="pe-btn pe-btn-ghost"
             style={styles.quickClose}
@@ -706,11 +704,11 @@ function QuickMenu({ open, onClose, onSelect }) {
           </button>
         </div>
 
-        <div style={styles.quickGrid}>
+        <div className="pe-quick-grid" style={styles.quickGrid}>
           {items.map((it) => (
             <button
               key={it.key}
-              className="pe-btn"
+              className="pe-btn pe-quick-item"
               type="button"
               style={styles.quickItem}
               onClick={() => onSelect(it.key)}
@@ -728,16 +726,19 @@ function QuickMenu({ open, onClose, onSelect }) {
 function Drawer({ open, onClose, onSelect, disabled }) {
   return (
     <>
-      {open && <div style={styles.drawerOverlay} onClick={onClose} />}
+      {open && <div className="pe-drawer-overlay" style={styles.drawerOverlay} onClick={onClose} />}
 
       <div
+        className="pe-app-drawer"
         style={{
           ...styles.drawer,
           transform: open ? "translateX(0)" : "translateX(-110%)",
+          pointerEvents: open ? "auto" : "none",
         }}
         role="dialog"
         aria-modal="true"
         aria-label="Menu"
+        aria-hidden={open ? undefined : "true"}
       >
         <div style={styles.drawerHeader}>
           <div style={styles.drawerTitle}>Menu</div>
@@ -799,7 +800,15 @@ function Drawer({ open, onClose, onSelect, disabled }) {
 /* =========================
    Create Flow (App owns flow; NO stepper UI)
    ========================= */
-function CreateFlow({ gated, intent, spinTick, resetSeq, mobileBottomChromeVisible }) {
+function CreateFlow({
+  gated,
+  intent,
+  spinTick,
+  resetSeq,
+  mobileBottomChromeVisible,
+  shellOverlayOpen = false,
+  onGuidedOverlayOpenChange,
+}) {
   return (
     <div>
       <EstimateForm
@@ -808,6 +817,8 @@ function CreateFlow({ gated, intent, spinTick, resetSeq, mobileBottomChromeVisib
         forceProfileOnMount={false}
         spinTick={spinTick}
         mobileBottomChromeVisible={mobileBottomChromeVisible}
+        shellOverlayOpen={shellOverlayOpen}
+        onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
       />
     </div>
   );
@@ -841,101 +852,112 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
   };
 
   return (
-    <div className="pe-main" style={{ paddingTop: 0 }}>
-      <div style={{ width: "min(860px, calc(100% - 28px))", margin: "0 auto", display: "grid", gap: "clamp(10px, 1.8vh, 16px)" }}>
-      <div className="pe-card" style={{ marginTop: 0, textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 16,
-            fontWeight: 600,
-            letterSpacing: "2px",
-            textTransform: "uppercase",
-            opacity: 0.75,
-            lineHeight: 1.1,
-            marginBottom: 8,
-            textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
-            display: "inline-flex",
-            alignItems: "baseline",
-            justifyContent: "center",
-          }}
-        >
-          <span>ESTIPAID</span>
-          <span
+    <div className="pe-main pe-home-screen" style={{ paddingTop: 0 }}>
+      <div className="pe-home-shell">
+      <div className="pe-card pe-home-hero">
+        <div className="pe-home-hero-graphics" aria-hidden="true">
+          <span className="pe-home-hero-rail pe-home-hero-rail-left" />
+          <span className="pe-home-hero-rail pe-home-hero-rail-right" />
+          <span className="pe-home-hero-band" />
+        </div>
+        <div className="pe-home-hero-stack">
+          <div
+            className="pe-home-wordmark"
             style={{
-              fontSize: 9,
-              marginLeft: 2,
-              position: "relative",
-              top: -4,
-              letterSpacing: "0px",
-              opacity: 0.9,
+              fontSize: 16,
+              fontWeight: 600,
+              letterSpacing: "2px",
+              textTransform: "uppercase",
+              opacity: 0.75,
+              lineHeight: 1.1,
+              marginBottom: 8,
+              textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
+              display: "inline-flex",
+              alignItems: "baseline",
+              justifyContent: "center",
             }}
           >
-            ™
-          </span>
-        </div>
-
-        <div
-          role="button"
-          tabIndex={0}
-          onMouseDown={startPress}
-          onMouseUp={endPress}
-          onMouseLeave={endPress}
-          onTouchStart={startPress}
-          onTouchEnd={endPress}
-          onTouchCancel={endPress}
-          onClick={onTap}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onTap();
-            }
-          }}
-          style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
-        >
-          <div style={{ transform: "translateX(-15px)" }}>
-            <EstiPaidInlineLogo
-              key={spinTick}
-              className="esti-spin"
+            <span>ESTIPAID</span>
+            <span
               style={{
-                height: 110,
-                width: "auto",
-                display: "block",
-                objectFit: "contain",
-                filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
+                fontSize: 9,
+                marginLeft: 2,
+                position: "relative",
+                top: -4,
+                letterSpacing: "0px",
+                opacity: 0.9,
               }}
-              draggable={false}
-            />
+            >
+              ™
+            </span>
           </div>
-        </div>
-<div
-          style={{
-            marginTop: 10,
-            fontSize: 14,
-            fontWeight: 800,
-            letterSpacing: "2.2px",
-            textTransform: "uppercase",
-            background:
-              "linear-gradient(90deg, rgba(255,255,255,0.96), rgba(200,210,255,0.86))",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            textShadow:
-              "0 1px 0 rgba(255,255,255,0.14), 0 10px 18px rgba(0,0,0,0.34)",
-            opacity: 0.98,
-          }}
-        >
-          Turn Scope into Revenue
+
+          <div
+            className="pe-home-logo-tap"
+            role="button"
+            tabIndex={0}
+            onMouseDown={startPress}
+            onMouseUp={endPress}
+            onMouseLeave={endPress}
+            onTouchStart={startPress}
+            onTouchEnd={endPress}
+            onTouchCancel={endPress}
+            onClick={onTap}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onTap();
+              }
+            }}
+            style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
+          >
+            <div className="pe-home-logo-offset" style={{ transform: "translateX(-15px)" }}>
+              <EstiPaidInlineLogo
+                key={spinTick}
+                className="esti-spin"
+                style={{
+                  height: 110,
+                  width: "auto",
+                  display: "block",
+                  objectFit: "contain",
+                  filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.38))",
+                }}
+                draggable={false}
+              />
+            </div>
+          </div>
+          <div
+            className="pe-home-tagline"
+            style={{
+              marginTop: 10,
+              fontSize: 14,
+              fontWeight: 800,
+              letterSpacing: "2.2px",
+              textTransform: "uppercase",
+              background:
+                "linear-gradient(90deg, rgba(255,255,255,0.96), rgba(200,210,255,0.86))",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              textShadow:
+                "0 1px 0 rgba(255,255,255,0.14), 0 10px 18px rgba(0,0,0,0.34)",
+              opacity: 0.98,
+            }}
+          >
+            Turn Scope into Revenue
+          </div>
         </div>
       </div>
 
-      <div className="pe-card" style={{ marginTop: 0 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>Quick Actions</div>
-        <div className="pe-muted" style={{ marginBottom: 10 }}>
-          Jump back in or start fresh.
-        </div>
+      <div className="pe-card pe-home-command-slab" style={{ marginTop: 0 }}>
+        <div className="pe-home-command-main">
+          <div className="pe-home-command-head">
+            <div className="pe-home-command-title">Quick Actions</div>
+            <div className="pe-muted pe-home-command-copy">Jump back in or start fresh.</div>
+          </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div className="pe-home-actions">
           <button
-            className="pe-btn"
+            className="pe-btn pe-home-action"
             type="button"
             onClick={() => {
               try {
@@ -952,7 +974,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           </button>
 
           <button
-            className="pe-btn"
+            className="pe-btn pe-home-action"
             type="button"
             onClick={() => {
               try {
@@ -976,7 +998,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           </button>
 
           <button
-            className="pe-btn pe-btn-ghost"
+            className="pe-btn pe-btn-ghost pe-home-action"
             type="button"
             onClick={() => {
               try {
@@ -991,13 +1013,8 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           >
             View Estimates
           </button>
+          </div>
         </div>
-      </div>
-
-      <div className="pe-card" style={{ marginTop: 0 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>Updates</div>
-        <div className="pe-muted">• Beta calculator update (coming soon)</div>
-        <div className="pe-muted">• Chat estimate build (beta) (coming soon)</div>
       </div>
       </div>
     </div>
@@ -1033,9 +1050,9 @@ const styles = {
     alignItems: "center",
     justifyContent: "space-between",
     paddingTop: `calc(env(safe-area-inset-top, 0px) + ${HEADER_SAFE_GAP}px)`,
-    paddingRight: 14,
+    paddingRight: 12,
     paddingBottom: 0,
-    paddingLeft: 14,
+    paddingLeft: 12,
     boxSizing: "border-box",
     background: "transparent",
     minWidth: 0,
@@ -1086,7 +1103,9 @@ const styles = {
   quickOverlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.42)",
+    background: "rgba(3, 7, 12, 0.62)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
     zIndex: 80,
   },
   quickMenu: {
@@ -1096,37 +1115,42 @@ const styles = {
     transform: "translateX(-50%)",
     width: "min(520px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
     zIndex: 85,
-    padding: 14,
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.14)",
-    backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+    padding: 18,
+    borderRadius: 24,
+    background: "linear-gradient(180deg, rgba(16, 24, 34, 0.96), rgba(8, 13, 20, 0.94))",
+    border: "1px solid rgba(164, 184, 197, 0.14)",
+    backdropFilter: "blur(18px) saturate(118%)",
+    WebkitBackdropFilter: "blur(18px) saturate(118%)",
+    boxShadow: "0 34px 80px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.05)",
+    overflow: "hidden",
   },
   quickTitleRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 12,
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottom: "1px solid rgba(255,255,255,0.08)",
   },
   quickTitle: {
     fontWeight: 900,
-    letterSpacing: "0.2px",
-    textShadow: "0 1px 8px rgba(0,0,0,0.35)",
+    letterSpacing: "0.14em",
+    fontSize: 11,
+    textTransform: "uppercase",
+    color: "rgba(192, 206, 216, 0.78)",
   },
   quickClose: { width: 44, height: 44, display: "grid", placeItems: "center" },
   quickGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: 10,
+    gap: 12,
   },
   quickItem: {
-    height: 48,
-    borderRadius: 14,
+    height: 54,
+    borderRadius: 16,
     fontWeight: 900,
-    letterSpacing: "0.2px",
+    letterSpacing: "0.06em",
   },
 
   headerIconBtn: {
@@ -1135,12 +1159,12 @@ const styles = {
     height: 44,
     display: "grid",
     placeItems: "center",
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
-    boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
+    borderRadius: 14,
+    border: "1px solid rgba(168, 184, 195, 0.14)",
+    background: "linear-gradient(180deg, rgba(23, 33, 45, 0.94), rgba(10, 15, 23, 0.92))",
+    boxShadow: "0 18px 28px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.05)",
+    backdropFilter: "blur(14px) saturate(118%)",
+    WebkitBackdropFilter: "blur(14px) saturate(118%)",
   },
   headerMenuIcon: {
     fontSize: 24,
@@ -1246,6 +1270,13 @@ const styles = {
     paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
     scrollPaddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
   },
+  contentLocked: {
+    maxHeight: "100dvh",
+    overflow: "hidden",
+    pointerEvents: "none",
+    touchAction: "none",
+    overscrollBehavior: "none",
+  },
 
   // overlay footer
   bottomnav: {
@@ -1283,8 +1314,8 @@ const styles = {
   },
   navBtn: {
     flex: 1,
-    background: "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: "linear-gradient(180deg, rgba(18, 27, 38, 0.92), rgba(8, 12, 19, 0.9))",
+    border: "1px solid rgba(154, 174, 188, 0.12)",
     color: "inherit",
     minHeight: 72,
     padding: "9px 6px 11px",
@@ -1297,22 +1328,23 @@ const styles = {
     cursor: "pointer",
     transition: "opacity 140ms ease, transform 90ms ease",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
-    boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
-    backdropFilter: "blur(10px)",
-    WebkitBackdropFilter: "blur(10px)",
+    boxShadow: "0 16px 26px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+    backdropFilter: "blur(14px) saturate(118%)",
+    WebkitBackdropFilter: "blur(14px) saturate(118%)",
   },
   navBtnActive: {
-    background: "linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.05))",
-    border: "1px solid rgba(255,255,255,0.2)",
-    boxShadow: "0 14px 26px rgba(0,0,0,0.22)",
+    background: "linear-gradient(180deg, rgba(36, 52, 67, 0.94), rgba(13, 21, 31, 0.92))",
+    border: "1px solid rgba(190, 208, 219, 0.18)",
+    boxShadow: "0 18px 30px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.07)",
   },
   navIconWrap: { display: "flex", alignItems: "center", justifyContent: "center" },
   createIconWrap: {
     width: 56,
     height: 56,
     borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(196, 214, 224, 0.2)",
+    background: "linear-gradient(180deg, rgba(44, 61, 75, 0.94), rgba(16, 24, 34, 0.94))",
+    boxShadow: "0 16px 30px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.08)",
     textShadow: "0 1px 8px rgba(0,0,0,0.35)",
   },
   navLabel: { fontSize: 11.5, lineHeight: 1.05, letterSpacing: "0.2px", fontWeight: 700 },
@@ -1321,8 +1353,10 @@ const styles = {
   drawerOverlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.42)",
-    zIndex: 60,
+    background: "rgba(3, 7, 12, 0.6)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    zIndex: 1100,
   },
   drawer: {
     position: "fixed",
@@ -1331,11 +1365,13 @@ const styles = {
     width: 260,
     height: "100dvh",
     minHeight: "100vh",
-    zIndex: 65,
+    zIndex: 1105,
     padding: "calc(env(safe-area-inset-top, 0px) + 14px) 14px calc(env(safe-area-inset-bottom, 0px) + 18px)",
-    background: "transparent",
-    backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
+    background: "linear-gradient(180deg, rgba(14, 22, 31, 0.96), rgba(7, 11, 18, 0.94))",
+    borderRight: "1px solid rgba(168, 184, 195, 0.12)",
+    boxShadow: "20px 0 44px rgba(0,0,0,0.34), inset -1px 0 0 rgba(255,255,255,0.04)",
+    backdropFilter: "blur(18px) saturate(118%)",
+    WebkitBackdropFilter: "blur(18px) saturate(118%)",
     transition: "transform 220ms ease",
   },
   drawerHeader: {
@@ -1346,12 +1382,14 @@ const styles = {
   },
   drawerTitle: {
     fontWeight: 900,
-    letterSpacing: "0.2px",
-    textShadow: "0 1px 8px rgba(0,0,0,0.35)",
+    letterSpacing: "0.14em",
+    fontSize: 11,
+    textTransform: "uppercase",
+    color: "rgba(192, 206, 216, 0.78)",
   },
   drawerClose: { width: 44, height: 44, display: "grid", placeItems: "center" },
-  drawerList: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 },
-  drawerItem: { textAlign: "left", width: "100%" },
+  drawerList: { display: "flex", flexDirection: "column", gap: 10, marginTop: 10 },
+  drawerItem: { textAlign: "left", width: "100%", minHeight: 48, borderRadius: 14 },
 
   // Stepper
   stepperWrap: { padding: "10px 14px 0" },
@@ -1420,6 +1458,7 @@ export default function App() {
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createResetSeq, setCreateResetSeq] = useState(0);
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
+  const [guidedOverlayOpen, setGuidedOverlayOpen] = useState(false);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -1584,6 +1623,7 @@ const [spinTick, setSpinTick] = useState(0);
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
     const onNavCustomers = () => {
+      if (Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)) return;
       try { navigateTo(ROUTES.CUSTOMERS); } catch {}
     };
     window.addEventListener("estipaid:navigate-customers", onNavCustomers);
@@ -1791,6 +1831,7 @@ const [spinTick, setSpinTick] = useState(0);
   }, [activeTab]);
 const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerOpenRef = useRef(false);
+  const estimateOpenCustomersGuardUntilRef = useRef(0);
   const edgeSwipeRef = useRef({
     tracking: false,
     triggered: false,
@@ -1804,8 +1845,44 @@ const [drawerOpen, setDrawerOpen] = useState(false);
   }, [drawerOpen]);
 
   useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root || !body) return undefined;
+
+    const prevRootOverflow = root.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    const prevBodyOverscroll = body.style.overscrollBehavior;
+
+    if (drawerOpen) {
+      root.style.overflow = "hidden";
+      body.style.overflow = "hidden";
+      body.style.overscrollBehavior = "none";
+    }
+
+    return () => {
+      root.style.overflow = prevRootOverflow;
+      body.style.overflow = prevBodyOverflow;
+      body.style.overscrollBehavior = prevBodyOverscroll;
+    };
+  }, [drawerOpen]);
+
+  useEffect(() => {
     quickOpenRef.current = quickOpen;
   }, [quickOpen]);
+
+  useEffect(() => {
+    if (activeTab === ROUTES.CREATE) return;
+    setGuidedOverlayOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    const armEstimateOpenCustomersGuard = () => {
+      estimateOpenCustomersGuardUntilRef.current = Date.now() + ESTIMATE_OPEN_CUSTOMERS_GUARD_MS;
+    };
+    window.addEventListener("estipaid:estimate-open", armEstimateOpenCustomersGuard);
+    return () => window.removeEventListener("estipaid:estimate-open", armEstimateOpenCustomersGuard);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return undefined;
@@ -2015,7 +2092,9 @@ const gated = false;
           intent={createIntent}
           spinTick={spinTick}
           resetSeq={createResetSeq}
-          mobileBottomChromeVisible={chromeVisible}
+          mobileBottomChromeVisible={chromeVisible && !drawerOpen}
+          shellOverlayOpen={drawerOpen}
+          onGuidedOverlayOpenChange={setGuidedOverlayOpen}
         />
       );
     }
@@ -2156,7 +2235,7 @@ const gated = false;
   };
 
   return (
-    <div className="pe-wrap pe-app" style={styles.shell}>
+    <div className="pe-wrap pe-app pe-ledger-app" style={styles.shell}>
       
       {showHeaderSpin ? (
         <style>{`.pe-content img.esti-spin{ display:none !important; }`}</style>
@@ -2310,9 +2389,17 @@ const gated = false;
       ) : null}
       <div
         className={`pe-content${activeTab === ROUTES.CREATE ? " pe-content-estimator" : ""}`}
+        aria-hidden={drawerOpen ? "true" : undefined}
         style={activeTab === ROUTES.CREATE && isMobileChromeViewport
-          ? { ...styles.content, ...styles.contentCreateMobile }
-          : styles.content}
+          ? {
+              ...styles.content,
+              ...styles.contentCreateMobile,
+              ...(drawerOpen ? styles.contentLocked : null),
+            }
+          : {
+              ...styles.content,
+              ...(drawerOpen ? styles.contentLocked : null),
+            }}
       >
         {renderScreen()}
       </div>
@@ -2322,6 +2409,12 @@ const gated = false;
         chromeVisible={chromeVisible}
         mobileCreateChromeMotion={activeTab === ROUTES.CREATE && isMobileChromeViewport}
         setActive={(key) => {
+          if (
+            key === ROUTES.CUSTOMERS
+            && Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)
+          ) {
+            return;
+          }
           if (key === ROUTES.CREATE) {
             onCreateButtonRoute();
             return;
@@ -2329,7 +2422,7 @@ const gated = false;
           navigateTo(key);
         }}
         onQuickOpen={() => setQuickOpen(true)}
-        disabled={gated}
+        disabled={gated || (activeTab === ROUTES.CREATE && guidedOverlayOpen)}
       />
     </div>
   );

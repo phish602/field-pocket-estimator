@@ -317,7 +317,7 @@ function Donut({ segments, size = 180, stroke = 18, centerLabelTop, centerLabelB
 
   let offset = 0;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Donut chart">
+    <svg className="pe-snapshot-donut" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Donut chart">
       <g transform={`rotate(-90 ${c} ${c})`}>
         <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={stroke} />
         {segments.map((s, idx) => {
@@ -360,7 +360,7 @@ function Bars({ data, height = 120, width = 320 }) {
   const barW = (width - pad * (data.length + 1)) / data.length;
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Revenue bars">
+    <svg className="pe-snapshot-bars" width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Revenue bars">
       {data.map((d, i) => {
         const h = (asNumber(d.revenue) / max) * (height - 18);
         const x = pad + i * (barW + pad);
@@ -541,9 +541,9 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
   }, [computed, lang]);
 
   return (
-    <section className="pe-section">
-      <div className="pe-card pe-company-shell">
-        <div className="pe-company-profile-header" style={{ position: "relative", minHeight: 56 }}>
+    <section className="pe-section pe-snapshot-screen">
+      <div className="pe-card pe-company-shell pe-snapshot-shell">
+        <div className="pe-company-profile-header pe-snapshot-header" style={{ position: "relative", minHeight: 56 }}>
           <div className="pe-company-header-title">
             <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={title}>{title}</h1>
           </div>
@@ -570,7 +570,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           </div>
         </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md pe-snapshot-kpi-panel">
         <div style={{ display: "grid", gap: 10 }}>
           <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} numericValue={computed.revenue} formatValue={fmtMoney} tone="ok" />
           <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} numericValue={computed.grossProfit} formatValue={fmtMoney} tone="ok" />
@@ -593,17 +593,17 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-chart-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Tendencia de ingresos" : "Revenue Trend"}</div>
         <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Últimas 12 semanas (facturas en el rango)" : "Last 12 weeks (invoices in range)"}</div>
         <Bars data={computed.weekly} />
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-aging-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Envejecimiento de cuentas por cobrar" : "Receivables Aging"}</div>
         <div className="pe-muted" style={{ marginBottom: 12 }}>{lang === "es" ? "Basado en fecha de vencimiento (Net 30 por defecto)" : "Based on due date (defaults to Net 30)"}</div>
 
-        <div style={{ display: "grid", placeItems: "center" }}>
+        <div className="pe-snapshot-donut-wrap" style={{ display: "grid", placeItems: "center" }}>
           <Donut
             segments={donutSegments.length ? donutSegments : [{ label: "none", value: 1, frac: 1, color: "rgba(255,255,255,0.12)", opacity: 1 }]}
             centerLabelTop={lang === "es" ? "AR" : "AR"}
@@ -613,7 +613,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
 
         <div className="ep-section-gap-sm" style={{ display: "grid", gap: 8 }}>
           {(donutSegments.length ? donutSegments : []).map((s) => (
-            <div key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div className="pe-snapshot-legend-row" key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ width: 10, height: 10, borderRadius: 999, background: s.color, display: "inline-block" }} />
                 <span style={{ fontWeight: 800, opacity: 0.9 }}>{s.label}</span>
@@ -631,7 +631,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-margin-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Salud del margen" : "Margin Health"}</div>
 
         <div style={{ display: "grid", gap: 10 }}>
@@ -659,7 +659,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-pipeline-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pipeline de estimados" : "Estimate Pipeline"}</div>
         <div style={{ display: "grid", gap: 10 }}>
           <KPI label={lang === "es" ? "Valor pendiente" : "Pending value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
@@ -673,7 +673,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-summary-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
         <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.35 }}>{insight}</div>
       </div>
@@ -693,12 +693,12 @@ function KPI({ label, value, tone = "ok", note = "", numericValue, formatValue }
     : value;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12 }}>
-      <div style={{ width: 6, borderRadius: 999, background: stripe }} />
-      <div style={{ display: "grid", gap: 4 }}>
-        <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</div>
-        <div style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{displayValue}</div>
-        {note ? <div style={{ fontSize: 12, opacity: 0.7 }}>{note}</div> : null}
+    <div className={`pe-snapshot-kpi pe-tone-${tone}`} style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12 }}>
+      <div className="pe-snapshot-kpi-stripe" style={{ width: 6, borderRadius: 999, background: stripe }} />
+      <div className="pe-snapshot-kpi-content" style={{ display: "grid", gap: 4 }}>
+        <div className="pe-snapshot-kpi-label" style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</div>
+        <div className="pe-snapshot-kpi-value" style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{displayValue}</div>
+        {note ? <div className="pe-snapshot-kpi-note" style={{ fontSize: 12, opacity: 0.7 }}>{note}</div> : null}
       </div>
     </div>
   );
@@ -708,10 +708,10 @@ function MiniRow({ left, mid, right, tone = "ok" }) {
   const c = tone === "ok" ? "rgba(34,197,94,0.95)" : tone === "warn" ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)";
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px" }}>
-      <div style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</div>
-      <div style={{ fontWeight: 900, opacity: 0.88 }}>{mid}</div>
-      <div style={{ fontWeight: 950, color: c }}>{right}</div>
+    <div className={`pe-snapshot-minirow pe-tone-${tone}`} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px" }}>
+      <div className="pe-snapshot-minirow-left" style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</div>
+      <div className="pe-snapshot-minirow-mid" style={{ fontWeight: 900, opacity: 0.88 }}>{mid}</div>
+      <div className="pe-snapshot-minirow-right" style={{ fontWeight: 950, color: c }}>{right}</div>
     </div>
   );
 }

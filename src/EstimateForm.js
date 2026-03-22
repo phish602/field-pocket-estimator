@@ -12,6 +12,15 @@ import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from ".
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
+import GuidedBuildOverlay from "./estimator/guided/GuidedBuildOverlay";
+import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
+import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
+import { getAssistConfig } from "./estimator/aiAssist/registry";
+import {
+  dedupeProposedMaterialLines,
+  isBlankMaterialItem,
+  resolveMaterialsAssistMode,
+} from "./estimator/aiAssist/adapters/materials";
 import { exportPdf } from "./pdf";
 import {
   createMoneyFormatter,
@@ -33,6 +42,11 @@ import {
 } from "./utils/invoices";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
+import useGuidedBuild, {
+  buildCanonicalBlankDisplayState,
+  hasCoreGuidedDraftState,
+  hasGuidedRuntimeResidue,
+} from "./estimator/guided/useGuidedBuild";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
@@ -56,7 +70,7 @@ const I18N = {
     materialsCost: "Materials cost",
     markupPct: "Markup %",
     materialsBlanketDescriptionLabel: "Materials Description (prints on PDF)",
-    materialsBlanketDescriptionPlaceholder: "Example: Include primer, caulk, fasteners, sundries, and disposal.",
+    materialsBlanketDescriptionPlaceholder: "Example: Include fixtures, fittings, fasteners, consumables, delivery, and disposal.",
     addMaterialItem: "+ Add Item",
     materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
     materialDesc: "Description",
@@ -86,7 +100,7 @@ const I18N = {
     materialsCost: "Costo de materiales",
     markupPct: "Margen %",
     materialsBlanketDescriptionLabel: "Descripción de materiales (se imprime en PDF)",
-    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye primer, sellador, fijaciones, insumos y disposición.",
+    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye accesorios, herrajes, fijaciones, consumibles, entrega y disposición.",
     addMaterialItem: "+ Agregar Partida",
     materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
     materialDesc: "Descripción",
@@ -115,6 +129,36 @@ const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
 function readSavedCustomers() {
   try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
+}
+
+function summarizeGuidedShellText(value, max = 140) {
+  const raw = String(value || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  return raw.length > max ? `${raw.slice(0, max - 1)}...` : raw;
+}
+
+const ESTIPAID_GUIDED_TRACE_KEY = "__ESTIPAID_GUIDED_TRACE__";
+
+function shouldTraceEstiPaidGuidedRuntime() {
+  if (typeof process !== "undefined") {
+    const envEnabled = process?.env?.ESTIPAID_GUIDED_TRACE === "1"
+      || process?.env?.REACT_APP_ESTIPAID_GUIDED_TRACE === "1";
+    if (envEnabled) return true;
+  }
+  if (typeof window === "undefined") return false;
+  try {
+    return window[ESTIPAID_GUIDED_TRACE_KEY] === true
+      || window.localStorage?.getItem(ESTIPAID_GUIDED_TRACE_KEY) === "1";
+  } catch {
+    return window[ESTIPAID_GUIDED_TRACE_KEY] === true;
+  }
+}
+
+function traceEstiPaidGuidedRuntime(source, event, payload = {}) {
+  if (!shouldTraceEstiPaidGuidedRuntime()) return;
+  try {
+    console.info(`[ESTIPAID_GUIDED_TRACE][${source}] ${event}`, payload);
+  } catch {}
 }
 function customerDisplayName(c) {
   if (!c) return "";
@@ -542,6 +586,10 @@ Optional Add-Ons (if needed):
 - Unknown/hidden conditions behind walls/ceilings excluded.`,
   },
 ];
+const TRADE_INSERT_TEXT_BY_KEY = SCOPE_TRADE_INSERTS.reduce((acc, item) => {
+  acc[item.key] = String(item?.text || "");
+  return acc;
+}, {});
 
 function extractTradeInsertBlocksForPdf(scopeText, explicitTradeText) {
   const fromScope = String(scopeText || "");
@@ -864,10 +912,32 @@ function createBlankMaterialItem(idOverride, markupPct) {
   };
 }
 
+function buildMaterialsAssistSuggestedPrompts(mode) {
+  if (mode === "blanket") {
+    return [
+      { label: "One total allowance", prompt: "Suggest one total materials allowance." },
+      { label: "From scope notes", prompt: "Use the current scope notes to suggest a blanket materials allowance." },
+      { label: "Add common supplies", prompt: "Include common supplies and consumables in the allowance." },
+    ];
+  }
+
+  if (mode === "itemized") {
+    return [
+      { label: "Build material list", prompt: "Build a draft itemized material list for this job." },
+      { label: "Add common supplies", prompt: "Add common supplies and consumables for this scope." },
+      { label: "From scope notes", prompt: "Use the current scope notes to draft material lines." },
+    ];
+  }
+
+  return [];
+}
+
 export default function EstimateForm(props) {
   const {
     embeddedInShell = false,
     mobileBottomChromeVisible = true,
+    shellOverlayOpen = false,
+    onGuidedOverlayOpenChange,
   } = props || {};
   const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
   const editingRecordId = String(editTarget?.id || "").trim();
@@ -913,6 +983,17 @@ export default function EstimateForm(props) {
   } = hook({ persistDraft: !isEditMode });
   const scopeNotes = String(state?.scopeNotes || "");
   const additionalNotes = String(state?.additionalNotes || "");
+  const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
+
+  // ── Section AI Assist ──────────────────────────────────────────────────────
+  const scopeAssist = useAiAssist("scope", state);
+  const laborAssist = useAiAssist("labor", state);
+  const materialsAssist = useAiAssist("materials", state);
+  const scopeAssistConfig = getAssistConfig("scope");
+  const laborAssistConfig = getAssistConfig("labor");
+  const materialsAssistConfig = getAssistConfig("materials");
+  // ──────────────────────────────────────────────────────────────────────────
+
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
   const globalDefaultMarkupPct = resolveDefaultMarkupPct(pricingSettings?.defaultMarkupPct);
@@ -1396,6 +1477,39 @@ export default function EstimateForm(props) {
     const poRequired = !!c?.poRequired;
     return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
+  const guidedBuildContext = useMemo(() => ({
+    customers: allCustomers,
+    selectedCustomer: selectedCustomerProfile,
+    globalDefaultMarkupPct: globalDefaultMarkupPctNumber,
+    lockMarkupToGlobal,
+    showInternalCostFields,
+    tradeInsertTextByKey: TRADE_INSERT_TEXT_BY_KEY,
+  }), [
+    allCustomers,
+    globalDefaultMarkupPctNumber,
+    lockMarkupToGlobal,
+    selectedCustomerProfile,
+    showInternalCostFields,
+  ]);
+
+  const {
+    guided,
+    openGuided,
+    closeGuided,
+    submitAnswer: submitGuidedAnswer,
+    selectChoice: selectGuidedChoice,
+    skipCurrent: skipGuidedQuestion,
+    openReview: openGuidedReview,
+    jumpToSection: jumpGuidedSection,
+    confirmPending: confirmGuidedPending,
+    rejectPending: rejectGuidedPending,
+  } = useGuidedBuild({
+    state,
+    patch,
+    mode: guidedDocType,
+    context: guidedBuildContext,
+    onSelectCustomer: handleSelectCustomer,
+  });
   const hasSelectedNetTerms = useMemo(() => getNetTermsDays(selectedCustomerProfile) !== null, [selectedCustomerProfile]);
   const isCommercialJob = selectedProfile?.customerType === "commercial";
   const effectivePoRequired = !!selectedProfile?.poRequired;
@@ -1809,6 +1923,21 @@ export default function EstimateForm(props) {
     patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
+  function applySuggestedMaterialLines(proposedLines) {
+    const existingItems = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
+    const nextDraft = dedupeProposedMaterialLines(proposedLines, existingItems);
+    if (!nextDraft.proposedLines.length) return [];
+
+    const hasMeaningfulExistingItems = existingItems.some((item) => !isBlankMaterialItem(item));
+    const nextItems = hasMeaningfulExistingItems
+      ? [...existingItems, ...nextDraft.proposedLines]
+      : nextDraft.proposedLines;
+
+    patch("materials.items", nextItems);
+    nextDraft.proposedLines.forEach((line) => markRowEnter("materials", line.id));
+    return nextDraft.proposedLines;
+  }
+
   const computed = useMemo(() => computeTotals(state, { settings: settingsSnapshot }), [settingsSnapshot, state]);
 
   const laborTotalsById = useMemo(() => {
@@ -1942,6 +2071,7 @@ export default function EstimateForm(props) {
   };
 
   const onSaveNow = () => {
+    if (guided?.enabled) return;
     try {
       triggerHaptic();
       const customerName = String(state?.customer?.name || selectedProfile?.displayName || "").trim();
@@ -2423,6 +2553,7 @@ export default function EstimateForm(props) {
     const next = nextDocType === "invoice" ? "invoice" : "estimate";
     patch("ui.docType", next);
   };
+  const materialsAssistMode = resolveMaterialsAssistMode(state?.ui?.materialsMode);
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
     const nextMode = mode === "itemized" ? "itemized" : "blanket";
@@ -2529,6 +2660,73 @@ export default function EstimateForm(props) {
     + (materialsMode === "itemized"
       ? ` • ${itemizedMaterialsCount}x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
       : " • Blanket materials");
+  const guidedTradeLabel = useMemo(() => {
+    const tradeKey = String(state?.tradeInsert?.key || "").trim();
+    if (!tradeKey) return "";
+    const match = SCOPE_TRADE_INSERTS.find((item) => item.key === tradeKey);
+    return String(match?.label || tradeKey).replace(/\s+\(Insert\)\s*$/, "").trim();
+  }, [state?.tradeInsert?.key]);
+  const guidedSummary = useMemo(() => {
+    const documentNumber = String(
+      state?.job?.docNumber
+      || state?.document?.number
+      || state?.doc?.number
+      || ""
+    ).trim();
+    const customerName = String(selectedProfile?.displayName || state?.customer?.name || "").trim();
+    const projectAddress = summarizeGuidedShellText(String(resolvedProjectAddress || "").replace(/\n+/g, ", "));
+    const laborSummary = laborLineCount
+      ? `${laborLineCount} ${laborLineCount === 1 ? "line" : "lines"} • ${money.format(laborBase)}`
+      : "No labor lines yet";
+    const materialsSummary = materialsMode === "itemized"
+      ? `${itemizedMaterialsCount} ${itemizedMaterialsCount === 1 ? "item" : "items"} • ${money.format(itemizedMaterialsTotal)}`
+      : `Blanket • ${money.format(displayedMaterialsTotal)}`;
+
+    return {
+      title: totalLabel,
+      value: money.format(totalRevenue),
+      detail: totalRevenue > 0
+        ? `Gross profit ${money.format(totalGrossProfit)} • ${grossMarginLabel} margin`
+        : "Live builder totals will update here as guided answers apply.",
+      items: [
+        { label: guidedDocType === "invoice" ? "Invoice" : "Estimate", value: documentNumber ? `#${documentNumber}` : "Draft" },
+        { label: "Customer", value: customerName || "Customer not selected" },
+        { label: "Project", value: projectAddress || "Project location not set" },
+        { label: "Trade", value: guidedTradeLabel || "Trade not set" },
+        { label: "Labor", value: laborSummary },
+        { label: "Materials", value: materialsSummary },
+      ],
+      highlights: [
+        scopeNotes
+          ? { label: "Scope", value: summarizeGuidedShellText(scopeNotes, 160) }
+          : null,
+        additionalNotes
+          ? { label: "Notes", value: summarizeGuidedShellText(additionalNotes, 160) }
+          : null,
+      ].filter(Boolean),
+    };
+  }, [
+    additionalNotes,
+    displayedMaterialsTotal,
+    grossMarginLabel,
+    guidedDocType,
+    guidedTradeLabel,
+    itemizedMaterialsCount,
+    itemizedMaterialsTotal,
+    laborBase,
+    laborLineCount,
+    materialsMode,
+    resolvedProjectAddress,
+    scopeNotes,
+    selectedProfile?.displayName,
+    state?.customer?.name,
+    state?.doc?.number,
+    state?.document?.number,
+    state?.job?.docNumber,
+    totalGrossProfit,
+    totalLabel,
+    totalRevenue,
+  ]);
 
   useEffect(() => {
     const prev = previousTotalsRef.current;
@@ -2584,6 +2782,116 @@ export default function EstimateForm(props) {
     ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
     : styles.estimatorActionBarInner;
   const sectionBottomActionsStyle = styles.sectionFooterActions;
+  const builderOverlayOpen = shellOverlayOpen || !!guided?.enabled;
+  const estimatorCoreIsBlank = useMemo(() => !hasCoreGuidedDraftState(state), [state]);
+  const canonicalBlankGuidedDisplay = useMemo(() => {
+    if (!estimatorCoreIsBlank) return null;
+    return buildCanonicalBlankDisplayState({
+      mode: guidedDocType,
+      state,
+      context: guidedBuildContext,
+      enabled: true,
+    });
+  }, [estimatorCoreIsBlank, guidedBuildContext, guidedDocType, state]);
+  const shouldForceCanonicalBlankGuidedDisplay = useMemo(() => {
+    if (!guided?.enabled) return false;
+    if (!estimatorCoreIsBlank) return false;
+    if (!canonicalBlankGuidedDisplay) return false;
+    if (guided?.isCanonicalBlankDisplay === true) return false;
+
+    const rawCounts = guided?.completionAudit?.counts || {};
+    const canonicalCounts = canonicalBlankGuidedDisplay?.completionAudit?.counts || {};
+    const rawCovered = Number(rawCounts?.complete || 0)
+      + Number(rawCounts?.inferred || 0)
+      + Number(rawCounts?.needs_confirmation || 0);
+    const canonicalCovered = Number(canonicalCounts?.complete || 0)
+      + Number(canonicalCounts?.inferred || 0)
+      + Number(canonicalCounts?.needs_confirmation || 0);
+    const promptText = String(guided?.assistantMessage || guided?.activeStepPrompt || "").trim();
+    const canonicalPromptText = String(
+      canonicalBlankGuidedDisplay?.assistantMessage || canonicalBlankGuidedDisplay?.activeStepPrompt || ""
+    ).trim();
+    const progressLeaked = rawCovered > canonicalCovered || Number(guided?.reviewReadiness?.score || 0) > Number(canonicalBlankGuidedDisplay?.reviewReadiness?.score || 0);
+    const blockerMismatch = String(guided?.currentSection || "") !== String(canonicalBlankGuidedDisplay?.currentSection || "")
+      || String(guided?.currentQuestion || "") !== String(canonicalBlankGuidedDisplay?.currentQuestion || "")
+      || String(guided?.activeStepId || "") !== String(canonicalBlankGuidedDisplay?.activeStepId || "")
+      || promptText !== canonicalPromptText;
+    const staleResidue = hasGuidedRuntimeResidue(guided)
+      || Object.keys(guided?.plannerState || {}).length > 0
+      || Object.keys(guided?.fieldMeta || {}).length > 0
+      || (Array.isArray(guided?.answeredPrompts) && guided.answeredPrompts.length > 0)
+      || (Array.isArray(guided?.pendingConfirmations) && guided.pendingConfirmations.length > 0)
+      || (Array.isArray(guided?.unresolvedRequiredFields) && guided.unresolvedRequiredFields.some((fieldKey) => !canonicalBlankGuidedDisplay?.unresolvedRequiredFields?.includes(fieldKey)));
+    return blockerMismatch || progressLeaked || staleResidue || guided?.reviewOpen === true;
+  }, [canonicalBlankGuidedDisplay, estimatorCoreIsBlank, guided]);
+  const guidedDisplay = useMemo(() => {
+    if (!shouldForceCanonicalBlankGuidedDisplay || !canonicalBlankGuidedDisplay) return guided;
+    return {
+      ...canonicalBlankGuidedDisplay,
+      enabled: true,
+      isCanonicalBlankDisplay: true,
+      failClosedBlankDisplayGuard: true,
+      headerProgressMode: "canonicalBlank",
+      headerProgressPercent: 0,
+      headerProgressLocked: true,
+    };
+  }, [canonicalBlankGuidedDisplay, guided, shouldForceCanonicalBlankGuidedDisplay]);
+  const guidedOverlayTraceKeyRef = useRef("");
+
+  useEffect(() => {
+    const payload = {
+      fileMarker: "src/EstimateForm.js",
+      activeHookImport: "./estimator/guided/useGuidedBuild",
+      activeOverlayImport: "./estimator/guided/GuidedBuildOverlay",
+      estimatorCoreIsBlank,
+      failClosedBlankDisplayGuard: shouldForceCanonicalBlankGuidedDisplay,
+      rawGuided: {
+        guidedEnabled: guided?.enabled === true,
+        isCanonicalBlankDisplay: guided?.isCanonicalBlankDisplay === true,
+        currentSection: guided?.currentSection || "",
+        currentQuestion: guided?.currentQuestion || "",
+        activeStepId: guided?.activeStepId || "",
+        assistantMessage: guided?.assistantMessage || "",
+        completionAuditCounts: guided?.completionAudit?.counts || null,
+        reviewReadiness: guided?.reviewReadiness || null,
+        unresolvedRequiredFields: Array.isArray(guided?.unresolvedRequiredFields) ? guided.unresolvedRequiredFields : [],
+      },
+      guidedForOverlay: {
+        guidedEnabled: guidedDisplay?.enabled === true,
+        isCanonicalBlankDisplay: guidedDisplay?.isCanonicalBlankDisplay === true,
+        currentSection: guidedDisplay?.currentSection || "",
+        currentQuestion: guidedDisplay?.currentQuestion || "",
+        activeStepId: guidedDisplay?.activeStepId || "",
+        assistantMessage: guidedDisplay?.assistantMessage || "",
+        completionAuditCounts: guidedDisplay?.completionAudit?.counts || null,
+        reviewReadiness: guidedDisplay?.reviewReadiness || null,
+        unresolvedRequiredFields: Array.isArray(guidedDisplay?.unresolvedRequiredFields) ? guidedDisplay.unresolvedRequiredFields : [],
+      },
+      pendingSectionKey: guidedDisplay?.pendingSectionKey || "",
+      pendingStepKey: guidedDisplay?.pendingStepKey || "",
+      guidedSummary: guidedSummary || null,
+      builderOverlayOpen,
+    };
+    const key = JSON.stringify(payload);
+    if (key === guidedOverlayTraceKeyRef.current) return;
+    guidedOverlayTraceKeyRef.current = key;
+    traceEstiPaidGuidedRuntime("EstimateForm.js", "overlay-props", payload);
+  }, [
+    builderOverlayOpen,
+    estimatorCoreIsBlank,
+    guided,
+    guidedDisplay,
+    guidedSummary,
+    shouldForceCanonicalBlankGuidedDisplay,
+  ]);
+
+  useEffect(() => {
+    if (typeof onGuidedOverlayOpenChange !== "function") return undefined;
+    onGuidedOverlayOpenChange(!!guided?.enabled);
+    return () => {
+      onGuidedOverlayOpenChange(false);
+    };
+  }, [guided?.enabled, onGuidedOverlayOpenChange]);
   const actionBarNode = (
     <div style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
@@ -2640,7 +2948,17 @@ export default function EstimateForm(props) {
                   <div style={styles.editHeaderSecondary}>{editSecondaryTitle}</div>
                   {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
                 </div>
-                <div style={styles.editModeBadge}>EDIT MODE</div>
+                <div style={styles.builderHeaderActionGroup}>
+                  <button
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={openGuided}
+                    style={styles.guidedEntryBtn}
+                  >
+                    Guided Build
+                  </button>
+                  <div style={styles.editModeBadge}>EDIT MODE</div>
+                </div>
               </>
             ) : (
               <>
@@ -2665,6 +2983,14 @@ export default function EstimateForm(props) {
                     Invoice
                   </button>
                 </div>
+                <button
+                  type="button"
+                  className="pe-btn pe-btn-ghost"
+                  onClick={openGuided}
+                  style={styles.guidedEntryBtn}
+                >
+                  Guided Build
+                </button>
               </>
             )}
           </div>
@@ -2923,6 +3249,15 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
           <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope / Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <button
+            type="button"
+            className="pe-btn pe-btn-ghost"
+            style={styles.aiAssistBtn}
+            onClick={scopeAssist.open}
+            title="AI Assist — generate scope notes from a description"
+          >
+            ✦ AI Assist
+          </button>
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
@@ -3045,17 +3380,28 @@ export default function EstimateForm(props) {
               {money.format(Number(laborAdjusted) || 0)}
             </div>
           )}
-          {!laborOpen && (
+          <div style={styles.sectionHeaderControls}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
-              onClick={() => setLaborOpen(true)}
-              title={lang === "es" ? "Expandir" : "Expand"}
-              style={{ ...styles.scopeCollapseBtn, marginLeft: "auto" }}
+              style={styles.aiAssistBtn}
+              onClick={laborAssist.open}
+              title="AI Assist — suggest labor lines from scope"
             >
-              {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+              ✦ AI Assist
             </button>
-          )}
+            {!laborOpen && (
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setLaborOpen(true)}
+                title={lang === "es" ? "Expandir" : "Expand"}
+                style={styles.scopeCollapseBtn}
+              >
+                {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+              </button>
+            )}
+          </div>
         </div>
 
         <div
@@ -3396,6 +3742,7 @@ export default function EstimateForm(props) {
         money={money}
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
+        onAiAssistOpen={() => materialsAssist.open({ suggestedPrompts: buildMaterialsAssistSuggestedPrompts(materialsAssistMode) })}
         materialsMode={materialsMode}
         setMaterialsMode={setMaterialsMode}
         materialsOpen={materialsOpen}
@@ -3490,7 +3837,7 @@ export default function EstimateForm(props) {
         </div>
       </div>
 
-      {savePrompt ? (
+      {savePrompt && !builderOverlayOpen ? (
         <div style={{ ...styles.saveToastWrap, bottom: saveToastBottom }}>
           <div role="status" aria-live="polite" style={{ ...styles.saveToast, ...saveToastToneStyle }}>
             {String(savePrompt?.message || "Saved")}
@@ -3498,7 +3845,81 @@ export default function EstimateForm(props) {
         </div>
       ) : null}
 
-      {actionBarNode}
+      {!builderOverlayOpen ? actionBarNode : null}
+
+      {scopeAssist.assistState.phase !== "idle" && scopeAssistConfig && (
+        <SectionAssistPanel
+          config={scopeAssistConfig}
+          assistState={scopeAssist.assistState}
+          onSubmit={scopeAssist.submit}
+          onAccept={(writes) => {
+            patch("scopeNotes", writes.scopeNotes);
+            scopeAssist.close();
+          }}
+          onClose={scopeAssist.close}
+        />
+      )}
+
+      {laborAssist.assistState.phase !== "idle" && laborAssistConfig && (
+        <SectionAssistPanel
+          config={laborAssistConfig}
+          assistState={laborAssist.assistState}
+          onSubmit={laborAssist.submit}
+          onAccept={(writes) => {
+            patch("labor.lines", writes.laborLines);
+            setLaborOpen(true);
+            laborAssist.close();
+          }}
+          onClose={laborAssist.close}
+        />
+      )}
+
+      {materialsAssist.assistState.phase !== "idle" && materialsAssistConfig && (
+        <SectionAssistPanel
+          config={materialsAssistConfig}
+          assistState={materialsAssist.assistState}
+          onSubmit={materialsAssist.submit}
+          onAccept={(writes, action) => {
+            if (action?.type === "switchMode") {
+              setMaterialsMode(action.mode);
+              if (action.mode === "itemized") setMaterialsOpen(true);
+              materialsAssist.close();
+              return;
+            }
+
+            if (writes?.mode === "blanket" && action?.type === "applyBlanketSuggestion") {
+              setMaterialsMode("blanket");
+              setMaterialsCost(normalizeMoneyInput(String(writes?.blanketSuggestion?.suggestedAmount || "")));
+              materialsAssist.close();
+              return;
+            }
+
+            if (writes?.mode === "itemized" && action?.type === "applyItemizedSuggestion") {
+              setMaterialsMode("itemized");
+              setMaterialsOpen(true);
+              applySuggestedMaterialLines(writes?.itemizedSuggestion?.proposedLines || []);
+              materialsAssist.close();
+            }
+          }}
+          onClose={materialsAssist.close}
+        />
+      )}
+
+      <GuidedBuildOverlay
+        guided={guidedDisplay}
+        summary={guidedSummary}
+        isThinking={guidedDisplay?.isThinking}
+        pendingStepKey={guidedDisplay?.pendingStepKey}
+        pendingSectionKey={guidedDisplay?.pendingSectionKey}
+        onClose={closeGuided}
+        onSubmitAnswer={submitGuidedAnswer}
+        onSelectChoice={selectGuidedChoice}
+        onSkip={skipGuidedQuestion}
+        onOpenReview={openGuidedReview}
+        onJumpToSection={jumpGuidedSection}
+        onConfirmPending={confirmGuidedPending}
+        onRejectPending={rejectGuidedPending}
+      />
 
       <PdfPromptModal
         open={pdfPromptOpen}
@@ -3555,6 +3976,18 @@ const styles = {
     transform: "translateZ(0)",
     transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
   },
+  builderHeaderActionGroup: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 10,
+    marginLeft: "auto",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+  },
+  guidedEntryBtn: {
+    minWidth: 118,
+    borderRadius: 999,
+  },
   editHeaderStack: {
     minWidth: 0,
     flex: "1 1 auto",
@@ -3602,6 +4035,7 @@ const styles = {
   jobInfoAddressWrap: { display: "grid", gap: 10, marginTop: 10 },
   sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 },
   sectionHeaderControls: { display: "inline-flex", alignItems: "center", gap: 8, marginLeft: "auto" },
+  aiAssistBtn: { fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", color: "rgba(99,179,237,0.85)", border: "1px solid rgba(99,179,237,0.28)", borderRadius: 7, padding: "4px 10px", background: "rgba(99,179,237,0.07)" },
   sectionDividerWrap: { maxWidth: 720, margin: "0 auto" },
   fieldStack: { display: "grid", gap: 4 },
   cardShell: {
