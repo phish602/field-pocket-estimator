@@ -13,6 +13,23 @@ function normalizeScopeAssistMode(mode) {
   return String(mode || "").trim().toLowerCase() === "refine" ? "refine" : "initial";
 }
 
+function normalizeScopeAssistDebugText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function extractScopeAssistResponseText(rawResponse) {
+  if (typeof rawResponse === "string") return rawResponse;
+  if (!rawResponse || typeof rawResponse !== "object") return "";
+  return String(
+    rawResponse?.scopeNotes
+    || rawResponse?.text
+    || rawResponse?.content
+    || rawResponse?.notes
+    || rawResponse?.result
+    || ""
+  );
+}
+
 function parseJsonSafe(text) {
   const normalized = String(text || "").trim();
   if (!normalized) return null;
@@ -170,13 +187,16 @@ export function buildScopeAssistRequestKey({
   currentScope = "",
   refineInstruction = "",
   formatIntent = "",
+  ignoreCurrentScope = false,
 }) {
   const normalizedSectionKey = normalizeAssistSectionKey(sectionKey);
   if (normalizedSectionKey !== "scope") return "";
 
   const normalizedMode = normalizeScopeAssistMode(mode);
   const normalizedSourcePrompt = String(sourcePrompt || "").trim();
-  const normalizedCurrentScope = String(currentScope || state?.scopeNotes || "").trim();
+  const normalizedCurrentScope = ignoreCurrentScope
+    ? String(currentScope || "").trim()
+    : String(currentScope || state?.scopeNotes || "").trim();
   const normalizedRefineInstruction = String(refineInstruction || "").trim();
   const normalizedFormatIntent = String(formatIntent || "").trim();
   const normalizedUserInput = String(
@@ -193,6 +213,7 @@ export function buildScopeAssistRequestKey({
     currentScope: normalizedCurrentScope,
     refineInstruction: normalizedRefineInstruction,
     formatIntent: normalizedFormatIntent,
+    ignoreCurrentScope: Boolean(ignoreCurrentScope),
   });
 }
 
@@ -205,6 +226,7 @@ export async function requestSectionAssist({
   currentScope = "",
   refineInstruction = "",
   formatIntent = "",
+  ignoreCurrentScope = false,
   _traceId = "", // Pass 19: correlation trace ID — generated per-submit in useAiAssist.js
 }) {
   const normalizedSectionKey = normalizeAssistSectionKey(sectionKey);
@@ -215,7 +237,11 @@ export async function requestSectionAssist({
   const normalizedMode = scopeSection ? normalizeScopeAssistMode(mode) : "initial";
   const normalizedSourcePrompt = scopeSection ? String(sourcePrompt || "").trim() : "";
   const normalizedCurrentScope = scopeSection
-    ? String(currentScope || state?.scopeNotes || "").trim()
+    ? (ignoreCurrentScope
+      ? String(currentScope || "").trim()
+      : normalizedMode === "refine"
+        ? String(currentScope || state?.scopeNotes || "").trim()
+        : String(currentScope || "").trim())
     : "";
   const normalizedRefineInstruction = scopeSection ? String(refineInstruction || "").trim() : "";
   const normalizedFormatIntent = scopeSection ? String(formatIntent || "").trim() : "";
@@ -237,6 +263,7 @@ export async function requestSectionAssist({
       currentScope: normalizedCurrentScope,
       refineInstruction: normalizedRefineInstruction,
       formatIntent: normalizedFormatIntent,
+      ignoreCurrentScope: Boolean(ignoreCurrentScope),
     }
     : { userInput: normalizedUserInput };
   const context = config.contextBuilder(state, contextOptions);
@@ -278,6 +305,7 @@ export async function requestSectionAssist({
             currentScope: normalizedCurrentScope,
             refineInstruction: normalizedRefineInstruction,
             formatIntent: normalizedFormatIntent,
+            ignoreCurrentScope: Boolean(ignoreCurrentScope),
           } : {}),
           context: {
             ...(context || {}),
@@ -384,6 +412,22 @@ export async function requestSectionAssist({
     refineInstruction: normalizedRefineInstruction,
     formatIntent: normalizedFormatIntent,
   });
+  if (process.env.NODE_ENV === "development" && scopeSection) {
+    const _tid = _traceId || "?";
+    const rawScopeNotes = normalizeScopeAssistDebugText(extractScopeAssistResponseText(raw));
+    const finalScopeNotes = normalizeScopeAssistDebugText(writes?.scopeNotes);
+    const differs = rawScopeNotes !== finalScopeNotes;
+    const source = normalizedMode === "refine"
+      ? (differs ? "resolveScopeAssistNotes(refine)" : "raw_passthrough")
+      : (differs ? "unexpected_initial_transform" : "raw_passthrough");
+    console.log(`[ai-assist:${_tid || "?"}] scope_write_mapping`, {
+      mode: normalizedMode,
+      rawScopeNotesExcerpt: rawScopeNotes.slice(0, 240),
+      finalScopeNotesExcerpt: finalScopeNotes.slice(0, 240),
+      differs,
+      source,
+    });
+  }
   const validation = config.validationRules(writes, state);
 
   // Dev diagnostics — adapter/validation outcome

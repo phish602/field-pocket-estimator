@@ -465,7 +465,7 @@ const GLAZING_STOREFRONT_ASSET_REGEX = /\bstorefront glass panels?\b|\bstorefron
 const INTERIOR_BUILTIN_ASSET_REGEX = /\blower cabinet runs?\b|\bcabinet runs?\b|\bcabinet sections?\b|\bcabinet doors?\b|\bwall cabinets?\b|\bbase cabinets?\b|\bupper cabinets?\b|\blower cabinets?\b|\buppers\b|\blowers\b|\bcabinets?\b|\bshelves\b|\bshelf\b|\bshelving\b|\bcasework\b|\bmillwork\b|\bbuilt[-\s]?ins?\b|\bvanit(?:y|ies)\b|\blocker units?\b|\blockers?\b|\bbuilt[-\s]?in benches?\b|\bbenches?\b|\bstorage units?\b|\bwall-mounted storage(?: units?)?\b/i;
 const DOOR_HARDWARE_ASSET_REGEX = /\bdoor closers?\b|\bclosers?\b|\bstorefront hardware\b|\bdoor hardware\b|\bpanic hardware\b|\bexit devices?\b|\b(?:cabinet\s+)?hinge pins?\b|\b(?:cabinet\s+)?hinges?\b|\blatch(?:es)?\b|\blocks?\b|\brekey(?:ed|ing)?\b|\bhandles?\b|\bpulls?\b|\bknobs?\b|\blevers?\b|\bstrikers?\b|\bdoor sweeps?\b|\bsweeps?\b|\bthresholds?\b|\bweather[-\s]?strips?\b|\bweatherstrips?\b|\bgaskets?\b|\brollers?\b|\bguides?\b|\btrack hardware\b|\bdrawer slides?\b/i;
 const SITE_HARDWARE_ASSET_REGEX = /\bsigns?\b|\bmounted signs?\b|\bsign posts?\b|\bfence sections?\b|\bfence gates?\b|\bfencing\b|\bfence\b|\bposts?\b|\bbollards?\b|\bgates?\b|\bguardrail sections?\b|\bguardrails?\b|\brailing sections?\b|\brailings?\b|\bhandrail sections?\b|\bhandrails?\b|\bcanopy panel sections?\b|\bcanop(?:y|ies)\b|\bpost brackets?\b/i;
-const FINISH_SURFACE_ASSET_REGEX = /\bfrp(?:\s+wall\s+panels?)?\b|\bfrp\b|\bceiling tiles?\b|\bacoustic ceiling tiles?\b|\bvct\b|\bvinyl composition tile\b/i;
+const FINISH_SURFACE_ASSET_REGEX = /\bfrp(?:\s+wall\s+panels?)?\b|\bfrp\b|\bceiling tiles?\b|\bacoustic ceiling tiles?\b|\btile(?:s)?\b|\bvct\b|\bvinyl composition tile\b/i;
 const REPAIR_SURFACE_ASSET_REGEX = /\bstucco(?:\s+cracks?)?\b|\bdrywall\b|\bcurbs?\b|\bstorefront frame\b/i;
 const GENERAL_EQUIPMENT_ASSET_REGEX = /\bappliances?\b|\bgate operators?\b|\bmounted equipment\b|\butility-connected equipment\b|\bequipment\b(?!\s+(?:support\s+)?brackets?\b)|\bunits?\b|\bfixtures?\b/i;
 const OPENING_ASSEMBLY_OBJECT_REGEX = /\bwindows?\b|\bskylights?\b|\bwall louvers?\b|\blouvers?\b|\broof hatch(?:es)?\b|\bhatch(?:es)?\b|\bman doors?\b|\baccess doors?\b|\bpanel doors?\b|\bdoors?\b|\bstorefront doors?\b|\bstorefront windows?\b|\bstorefront glass\b|\bstorefront glazing\b|\baccess panels?\b|\bopenings?\b/i;
@@ -545,7 +545,7 @@ const LOCATION_CONTEXT_HINT_PATTERNS = [
 const CONNECTED_EQUIPMENT_FAMILY_REGEX = /\bwater heaters?\b|\btankless water heaters?\b|\btoilet(?:s)?\b|\bsinks?\b|\bfaucets?\b|\bdrinking fountains?\b|\bmop sinks?\b|\bplumbing fixtures?\b|\bexhaust fans?\b|\brestroom fans?\b|\bvent fans?\b|\bvents?\b|\brooftop fans?\b|\brooftop units?\b|\brtu\b|\bcondensers?\b|\bair handlers?\b|\bmini[\s-]?splits?\b|\bdisconnect(?:s)?\b|\bbreakers?\b|\b(?:electrical|distribution|control|switchgear|breaker|existing|new)\s+panels?\b|\bpanelboards?\b|\blight fixtures?\b|\blighting fixtures?\b|\bhigh[-\s]?bay(?:\s+light(?:ing)?)?\s+fixtures?\b|\bappliances?\b|\bgate operators?\b|\bmounted equipment\b|\butility-connected equipment\b|\bequipment\b(?!\s+(?:support\s+)?brackets?\b)|\bunits?\b|\bfixtures?\b/i;
 const NON_CONNECTED_ASSET_FAMILY_REGEX = /\bdoors?\b|\bdoor closers?\b|\bclosers?\b|\bstorefront hardware\b|\bdoor hardware\b|\bpanic hardware\b|\bexit devices?\b|\bhinges?\b|\blatch(?:es)?\b|\bcabinet doors?\b|\bwall cabinets?\b|\bbase cabinets?\b|\buppers?\b|\blowers?\b|\bcabinets?\b|\bshelves\b|\bshelf\b|\bshelving\b|\bcasework\b|\bmillwork\b|\bbuilt[-\s]?ins?\b|\blocker units?\b|\bbenches?\b|\bstorage units?\b|\bsigns?\b|\bmounted signs?\b|\bsign posts?\b|\bfence sections?\b|\bfence gates?\b|\bfence\b|\bposts?\b|\bbollards?\b|\bgates?\b|\bcanop(?:y|ies)\b|\bcover panels?\b/i;
 const STOREFRONT_OPENING_FAMILY_REGEX = /\bstorefront windows?\b|\bstorefront glass\b|\bstorefront frame\b|\bstorefront glazing\b|\bglazing\b|\bstorefront hardware\b/i;
-const FINISH_MATERIAL_FAMILY_REGEX = /\bfrp(?:\s+wall\s+panels?)?\b|\bfrp\b|\bwall panels?\b|\bceiling tiles?\b|\bacoustic ceiling tiles?\b|\bvct\b|\bvinyl composition tile\b|\bflooring\b/i;
+const FINISH_MATERIAL_FAMILY_REGEX = /\bfrp(?:\s+wall\s+panels?)?\b|\bfrp\b|\bwall panels?\b|\bceiling tiles?\b|\bacoustic ceiling tiles?\b|\btile(?:s)?\b|\bvct\b|\bvinyl composition tile\b|\bflooring\b/i;
 const REPAIR_DAMAGE_FAMILY_REGEX = /\bstucco(?:\s+finish|\s+cracks?)?\b|\bdrywall\b|\bcurbs?\b|\bcracks?\b|\bstorefront frame\b/i;
 const SITE_EXTERIOR_CONTEXT_REGEX = /\bsite\b|\bexterior\b|\boutdoor\b|\bbackyard\b|\bparking lot\b|\bhotel\b|\bcanop(?:y|ies)\b|\bbollards?\b|\bfence(?:\s+(?:section|gate))?s?\b|\bmounted signs?\b|\bsign posts?\b|\bpole lights?\b|\blight poles?\b|\brooftop\b|\bskylights?\b|\bawnings?\b|\bguardrails?\b|\bhandrails?\b|\brailings?\b|\bfascia\b|\bflashing\b|\bwall louvers?\b/i;
 const ROOFTOP_ACCESS_IMPLIED_REGEX = /\brooftop\b|\brtu\b|\bpackage unit\b|\brooftop fans?\b|\bskylights?\b|\broof hatch(?:es)?\b/i;
@@ -2923,6 +2923,14 @@ function hasFinishCarpentryScopeSignals(analysis) {
   );
 }
 
+function hasRoofingScopeSignals(analysis = {}) {
+  const normalized = sanitizeScopeAssistText(analysis?.coreScopeText || analysis?.rawScopeText);
+  if (!normalized) return false;
+  if (!/\broof(?:ing)?\b|\bre-?roof\b|\breroof\b|\broofing\s+membrane\b|\broof\s+cover(?:ing|ings?)\b|\bshingles?\b|\bunderlayment\b|\broof\s+deck\b|\broof\s+system\b/i.test(normalized)) return false;
+  if (/\bhatch(?:es)?\b|\bopening(?:s)?\b|\baccess\b|\bskylight(?:s)?\b|\bdoor(?:s)?\b|\bwindow(?:s)?\b/i.test(normalized)) return false;
+  return true;
+}
+
 function resolveFinishCarpentryTargetPhrase(analysis) {
   const preferredObjectPhrase = resolvePreferredObjectPhrase(analysis);
   const partialScopeHints = Array.isArray(analysis?.partialScopeHints) ? analysis.partialScopeHints : [];
@@ -3242,12 +3250,10 @@ function hasStrongNamedFamilyMatch(analysis = {}) {
   if (hasCorpusMatch(analysis, /\bowner[-\s]?supplied\b|\bcustomer[-\s]?supplied\b|\b(?:vanity\s+)?faucet(?:s)?\b|\bsink\b|\bplumbing fixtures?\b/i)) {
     return true;
   }
-  if (["plumbing_fixture", "plumbing_equipment", "mechanical_equipment", "electrical_equipment", "glazing_storefront", "site_hardware"].includes(category)) {
-    return true;
-  }
-  if (category === "interior_builtin") return true;
-  if (category === "door_hardware") return objectType === "hardware_component";
-  if (category === "general_equipment") return false;
+  if (hasRoofingScopeSignals(analysis)) return true;
+  if (hasCorpusMatch(analysis, DOOR_HARDWARE_ASSET_REGEX) && objectType === "hardware_component") return true;
+  if (hasCorpusMatch(analysis, SITE_HARDWARE_ASSET_REGEX) && (analysis?.siteExteriorContext || analysis?.siteEquipmentScope)) return true;
+  if (hasReplaceableAssetScopeSignals(analysis) && (objectType || category)) return true;
 
   return false;
 }
@@ -3324,6 +3330,13 @@ function resolveScopeTradeBucket(analysis = {}) {
   const objectType = analysis?.objectType || resolveObjectType({ ...analysis, scopeAssetCategory: category, scopeAssetFamily: assetFamily });
   const signals = uniqueList(analysis?.technicalSignals || []);
 
+  if (signals.some((signal) => ["disconnect work", "circuit breaker work", "conduit work", "panel work", "site lighting equipment"].includes(signal))) {
+    return "electrical";
+  }
+  if (signals.some((signal) => ["rooftop equipment", "controls"].includes(signal))) return "mechanical";
+  if (signals.some((signal) => ["process tubing", "process lines", "welding", "orbital welding", "instrumentation"].includes(signal))) {
+    return "specialty";
+  }
   if (category === "interior_builtin") return "finish_carpentry";
   if (category === "plumbing_fixture" || category === "plumbing_equipment") return "plumbing";
   if (category === "mechanical_equipment") return "mechanical";
@@ -3336,6 +3349,7 @@ function resolveScopeTradeBucket(analysis = {}) {
   }
   if (category === "door_hardware") return "hardware";
   if (category === "site_hardware" || hasSiteExteriorScopeSignals(analysis)) return "site";
+
   if (assetFamily === "connected_equipment_fixture") return "general";
   if (assetFamily === "interior_builtin_casework") return "finish_carpentry";
   if (assetFamily === "non_connected_hardware_asset") return "hardware";
@@ -3348,20 +3362,13 @@ function resolveScopeTradeBucket(analysis = {}) {
   if (objectType === "trim_accessory_object") return analysis?.siteExteriorContext ? "exterior_finish" : "finish_carpentry";
   if (objectType === "anchored_object" || objectType === "mounted_object" || objectType === "site_exterior_asset") return "site";
 
-  if (signals.some((signal) => ["disconnect work", "circuit breaker work", "conduit work", "panel work", "site lighting equipment"].includes(signal))) {
-    return "electrical";
-  }
-  if (signals.some((signal) => ["rooftop equipment", "controls"].includes(signal))) return "mechanical";
-  if (signals.some((signal) => ["process tubing", "process lines", "welding", "orbital welding", "instrumentation"].includes(signal))) {
-    return "specialty";
-  }
-
   return "";
 }
 
 function resolveScopeWorkBucket(analysis = {}) {
   const actionFamilies = resolveActionFamilies(analysis);
   const category = analysis?.scopeAssetCategory || resolveScopeAssetCategory(analysis);
+  const assetFamily = analysis?.scopeAssetFamily || resolveAssetFamily({ ...analysis, scopeAssetCategory: category });
   const objectType = analysis?.objectType || resolveObjectType({ ...analysis, scopeAssetCategory: category });
   const perimeterScopeHints = Array.isArray(analysis?.perimeterScopeHints) ? analysis.perimeterScopeHints : [];
   const replacementScope = actionFamilies.includes("replace_changeout")
@@ -3390,13 +3397,10 @@ function resolveScopeWorkBucket(analysis = {}) {
 
   if ((repairScope && !replacementScope && !installScope && !finishScope) || repairFinishChain || securementRepairScope) return "repair_patch";
   if (finishScope && !secondaryFinishFollowupScope) return "finish_coating";
-  if (replacementScope && isConnectedAssetCategory(category)) return "replace_connected_equipment";
-  if (replacementScope && (category || hasSiteExteriorScopeSignals(analysis))) return "replace_non_connected_asset";
-  if (replacementScope && objectType) return "replace_non_connected_asset";
-  if (removalScope && (category || hasSiteExteriorScopeSignals(analysis) || analysis?.siteEquipmentScope)) return "demo_remove";
-  if (removalScope && objectType) return "demo_remove";
-  if (installScope && (category || hasSiteExteriorScopeSignals(analysis) || analysis?.siteEquipmentScope)) return "install_new_asset";
-  if (installScope && objectType) return "install_new_asset";
+  if (replacementScope && (isConnectedAssetCategory(category) || assetFamily === "connected_equipment_fixture" || analysis?.siteEquipmentScope)) return "replace_connected_equipment";
+  if (replacementScope && (category || assetFamily || objectType || hasSiteExteriorScopeSignals(analysis))) return "replace_non_connected_asset";
+  if (removalScope && (category || assetFamily || objectType || hasSiteExteriorScopeSignals(analysis) || analysis?.siteEquipmentScope)) return "demo_remove";
+  if (installScope && (category || assetFamily || objectType || hasSiteExteriorScopeSignals(analysis) || analysis?.siteEquipmentScope)) return "install_new_asset";
   if (analysis?.siteEquipmentScope && replacementScope) return "replace_connected_equipment";
   return "";
 }
@@ -4322,6 +4326,23 @@ function hasScopeExpansionSignals(analysis = {}) {
   );
 }
 
+function isShortRoughScopePrompt(scopeText, analysis = {}) {
+  const normalizedInput = sanitizeScopeAssistText(analysis?.coreScopeText || analysis?.rawScopeText || scopeText);
+  if (!normalizedInput) return false;
+  if (hasDevelopedScopeNoteSignals(normalizedInput, analysis)) return false;
+
+  const wordCount = normalizedInput.split(/\s+/).filter(Boolean).length;
+  const tokenCount = toComparableScopeTokens(normalizedInput).length;
+  return Boolean(
+    analysis?.scopeDepthTarget === "fuller_scope_draft"
+    || analysis?.detailLevel === "vague"
+    || analysis?.inputShape?.veryShortInput
+    || analysis?.inputShape?.singleClauseInput
+    || wordCount <= 4
+    || tokenCount <= 5
+  );
+}
+
 function hasDevelopedScopeNoteSignals(scopeText, analysis = {}) {
   const normalized = sanitizeScopeAssistText(scopeText || analysis?.coreScopeText || analysis?.rawScopeText);
   if (!normalized) return false;
@@ -4688,10 +4709,24 @@ function hasTradeMismatchBoilerplate(scopeNotes, analysis = {}) {
   return false;
 }
 
+function hasGenericScopeScaffold(scopeNotes) {
+  const normalized = sanitizeScopeAssistText(scopeNotes);
+  if (!normalized) return false;
+  return (
+    /\bcomplete the described scope\b/i.test(normalized)
+    || /\bcomplete the stated scope\b/i.test(normalized)
+  ) && (
+    /\bclean up the work area\b/i.test(normalized)
+    || /\bconcealed damage\b/i.test(normalized)
+    || /\bsubstrate correction\b/i.test(normalized)
+  );
+}
+
 function isGenericScopeSummary(scopeNotes, { userInput = "", analysis = {} } = {}) {
   const normalizedOutput = sanitizeScopeAssistText(scopeNotes);
   const normalizedInput = sanitizeScopeAssistText(analysis?.coreScopeText || userInput);
   if (!normalizedOutput || !normalizedInput) return false;
+  if (hasGenericScopeScaffold(normalizedOutput)) return true;
   if (!GENERIC_SCOPE_SUMMARY_PREFIX_REGEX.test(normalizedOutput)) return false;
 
   const inputTokens = toComparableScopeTokens(normalizedInput);
@@ -4707,10 +4742,11 @@ function isGenericScopeSummary(scopeNotes, { userInput = "", analysis = {} } = {
 
 function shouldPreferRicherScopeRewrite(scopeNotes, { userInput = "", analysis = {} } = {}) {
   const resolvedAnalysis = analysis && typeof analysis === "object" ? analysis : {};
-  if (!hasScopeExpansionSignals(resolvedAnalysis)) return false;
+  const roughPrompt = isShortRoughScopePrompt(userInput, resolvedAnalysis);
+  if (!hasScopeExpansionSignals(resolvedAnalysis) && !roughPrompt) return false;
 
   const expansionPressure = resolvedAnalysis?.expansionPressure || "";
-  if (!["high", "medium"].includes(expansionPressure)) return false;
+  if (!["high", "medium"].includes(expansionPressure) && !roughPrompt) return false;
 
   const normalizedOutput = sanitizeScopeAssistText(scopeNotes);
   const normalizedInput = sanitizeScopeAssistText(resolvedAnalysis?.coreScopeText || userInput);
@@ -4740,7 +4776,8 @@ function shouldPreferRicherScopeRewrite(scopeNotes, { userInput = "", analysis =
 
 export function isWeakRiskAwareScopeEcho(scopeNotes, { userInput = "", analysis = {} } = {}) {
   const resolvedAnalysis = analysis && typeof analysis === "object" ? analysis : {};
-  if (!hasScopeExpansionSignals(resolvedAnalysis)) return false;
+  const roughPrompt = isShortRoughScopePrompt(userInput, resolvedAnalysis);
+  if (!hasScopeExpansionSignals(resolvedAnalysis) && !roughPrompt) return false;
 
   const normalizedOutput = sanitizeScopeAssistText(scopeNotes);
   const normalizedInput = sanitizeScopeAssistText(resolvedAnalysis?.coreScopeText || userInput);
@@ -5217,7 +5254,7 @@ function resolveUniversalScopePlan(analysis = {}) {
     boundaryRiskHints,
   });
 
-  if (!primaryActionFamily || !objectType || strongNamedMatch) {
+  if (!primaryActionFamily || strongNamedMatch) {
     return { eligible: false, lines: [] };
   }
 
@@ -5275,9 +5312,9 @@ function resolveUniversalScopePlan(analysis = {}) {
     } else {
       directLine = ensureSentence(
         perimeterContextTarget
-          ? `Seal around ${perimeterContextTarget}`
+          ? `${sealantScope ? "Caulk" : "Seal"} around ${perimeterContextTarget}`
           : sealantScope
-            ? "Seal the stated perimeter area"
+            ? "Caulk the stated perimeter area"
             : `Seal around ${target}${directLocationSuffix}`
       );
     }
@@ -5300,7 +5337,7 @@ function resolveUniversalScopePlan(analysis = {}) {
       : (
         flashingMethodScope || hasCorpusMatch(analysis, /\bflash(?:ed|ing)?(?:\s+around)?\b/i)
           ? "prepare adjacent perimeter surfaces as needed, complete perimeter flashing or weatherproofing tie-in within the stated scope, and clean up the work area"
-          : "prepare adjacent perimeter surfaces as needed, complete sealant or weatherproofing tie-in within the stated scope, and clean up the work area"
+          : "prepare adjacent perimeter surfaces and transitions as needed, along with affected areas as needed, complete sealant or weatherproofing tie-in within the stated scope, and clean up the work area"
       );
   } else if (closeUpOpeningScope) {
     processCore = openingClosureHints.includes("framed_closure_support")
@@ -5658,6 +5695,16 @@ function buildGenericScopeLines(analysis) {
     .concat(getSkeletonValues(analysis, "exclusions", "riskyMissing"))
     .map(normalizeScopePhrase);
   const location = Array.isArray(analysis?.locations) ? analysis.locations[0] : "";
+  const roughPrompt = isShortRoughScopePrompt(analysis?.coreScopeText || analysis?.rawScopeText, analysis);
+  const strongSignalFallback = hasRoofingScopeSignals(analysis)
+    || hasRiskAwareScopeSignals(analysis)
+    || hasTechnicalScopeSignals(analysis)
+    || hasFinishCarpentryScopeSignals(analysis)
+    || hasFinishCoatingScopeSignals(analysis)
+    || hasRepairPatchScopeSignals(analysis)
+    || hasReplaceableAssetScopeSignals(analysis)
+    || hasScopeExpansionSignals(analysis)
+    || resolveUniversalScopePlan(analysis).eligible;
 
   const directParts = uniqueList([
     ...certainWork,
@@ -5680,13 +5727,32 @@ function buildGenericScopeLines(analysis) {
       ...prep,
       ...completion,
     ]).slice(0, analysis?.brevityIntent === "concise" ? 2 : 3))))
-    : "";
+    : (roughPrompt && !strongSignalFallback
+      ? ensureSentence(
+        hasRiskAwareScopeSignals(analysis)
+          ? "Complete the described scope, verify fit or operation where applicable, and clean up the work area"
+          : "Complete the described scope and clean up the work area"
+      )
+      : "");
 
   const qualifierLine = exclusions[0]
     ? renderExclusionSentence(exclusions[0])
-    : buildContingencyScopeLine(analysis);
+    : (roughPrompt && !strongSignalFallback
+      ? renderExclusionSentence("concealed damage, substrate correction, and work beyond the direct described scope are not included unless identified and approved")
+      : buildContingencyScopeLine(analysis));
 
   return uniqueList([primaryLine, processLine, qualifierLine]).filter(Boolean);
+}
+
+function buildSignalDrivenFallbackLines(analysis = {}) {
+  if (hasRoofingScopeSignals(analysis)) return buildRoofingScopeLines(analysis);
+
+  const universalLines = buildUniversalScopeLines(analysis);
+  if (universalLines.length) return universalLines;
+
+  if (hasRiskAwareScopeSignals(analysis)) return buildRiskAwareScopeLines(analysis);
+
+  return [];
 }
 
 function buildToiletScopeLines(analysis) {
@@ -5958,6 +6024,10 @@ function buildFinishCarpentryScopeLines(analysis) {
 }
 
 function resolveFinishScopeTargetPhrase(analysis) {
+  if (hasCorpusMatch(analysis, /\bceiling tiles?\b/i)) return "ceiling tile";
+  if (hasCorpusMatch(analysis, /\bvct\b|\bvinyl composition tile\b/i)) return "vinyl composition tile";
+  if (hasCorpusMatch(analysis, /\btile(?:s)?\b/i)) return "tile";
+
   const candidates = uniqueList([
     ...(Array.isArray(analysis?.quantityItemPairs) ? analysis.quantityItemPairs : []),
     ...(Array.isArray(analysis?.items) ? analysis.items : []),
@@ -6894,6 +6964,39 @@ function buildRiskAwareScopeLines(analysis) {
   ]).filter(Boolean);
 }
 
+function buildRoofingScopeLines(analysis) {
+  const actions = Array.isArray(analysis?.actions) ? analysis.actions : [];
+  const replacementScope = actions.includes("replace");
+  const removalScope = (actions.includes("remove") || actions.includes("demo")) && !replacementScope;
+  const installScope = actions.includes("install") && !replacementScope && !removalScope;
+  const roofTarget = "existing roof covering";
+  const accessLine = analysis?.impliedAccessContext === "rooftop_access"
+    ? "Coordinate rooftop access or safe shutdown conditions as required"
+    : "Coordinate roof access and fall protection as required";
+
+  const directLine = replacementScope
+    ? ensureSentence(`Remove and replace the ${roofTarget} within the stated roof area`)
+    : removalScope
+      ? ensureSentence(`Remove the ${roofTarget} within the stated roof area`)
+      : installScope
+        ? ensureSentence(`Install the stated roof covering within the stated roof area`)
+        : ensureSentence(`Perform the stated roofing work within the stated roof area`);
+
+  const processLine = replacementScope
+    ? "Prepare the roof deck and perimeter edges as required, complete flashing, membrane, or weatherproofing tie-in where directly affected, and clean up the work area."
+    : removalScope
+      ? "Protect the exposed roof area as needed, remove incidental debris, and clean up the work area."
+      : installScope
+        ? "Prepare the roof deck as needed, complete flashing or weatherproofing tie-in where directly affected, and clean up the work area."
+        : "Complete the described roofing work, verify perimeter tie-in where directly affected, and clean up the work area.";
+
+  const qualifierLine = renderExclusionSentence(
+    "hidden decking deterioration, structural repairs, and code-driven upgrades beyond the direct roofing scope are not included unless identified and approved"
+  );
+
+  return uniqueList([directLine, accessLine, processLine, qualifierLine]).filter(Boolean);
+}
+
 function resolveScopeProfile(analysis) {
   const workBucket = analysis?.scopeWorkBucket || resolveScopeWorkBucket(analysis);
   const scopeAssetCategory = analysis?.scopeAssetCategory || resolveScopeAssetCategory(analysis);
@@ -6905,6 +7008,7 @@ function resolveScopeProfile(analysis) {
     return "drywall";
   }
   if (hasFinishCarpentryScopeSignals(analysis)) return "finish_carpentry";
+  if (hasRoofingScopeSignals(analysis)) return "roofing";
   if (analysis?.resetIntent && (analysis?.replaceableAssetScope || hasReplaceableAssetScopeSignals(analysis))) return "equipment_asset";
   if (analysis?.resetIntent && resolveUniversalScopePlan(analysis).eligible) return "universal_scope";
   if (workBucket === "repair_patch") return "repair_scope";
@@ -6914,6 +7018,7 @@ function resolveScopeProfile(analysis) {
   if (hasCorpusMatch(analysis, /\bowner[-\s]?supplied\b|\bcustomer[-\s]?supplied\b|\b(?:vanity\s+)?faucet(?:s)?\b|\bvanity\b|\bsink\b|\bplumbing fixtures?\b/i)) {
     return "fixture";
   }
+  if (hasRoofingScopeSignals(analysis)) return "roofing";
   if (
     hasActionFamily(analysis, "replace_changeout")
     && (
@@ -6943,9 +7048,12 @@ function buildScopeEngineLines(analysis) {
   if (profile === "finish_carpentry") return buildFinishCarpentryScopeLines(analysis);
   if (profile === "vanity") return buildVanityScopeLines(analysis);
   if (profile === "fixture") return buildFixtureScopeLines(analysis);
+  if (profile === "roofing") return buildRoofingScopeLines(analysis);
   if (profile === "universal_scope") return buildUniversalScopeLines(analysis);
   if (profile === "equipment_asset") return buildReplaceableAssetScopeLines(analysis);
   if (profile === "risk") return buildRiskAwareScopeLines(analysis);
+  const inferredFallbackLines = buildSignalDrivenFallbackLines(analysis);
+  if (inferredFallbackLines.length) return inferredFallbackLines;
   return buildGenericScopeLines(analysis);
 }
 
@@ -6977,6 +7085,53 @@ export function resolveScopeAssistNotes(rawResponse, { userInput = "", context =
   return formatDefaultContractorScopeNotes(scopeNotes, analysis);
 }
 
+export function summarizeScopeAssistSoftBias(analysis = {}, userInput = "") {
+  const resolvedAnalysis = analysis && typeof analysis === "object" ? analysis : {};
+  const rawPrompt = sanitizeScopeAssistText(
+    resolvedAnalysis?.coreScopeText || resolvedAnalysis?.rawScopeText || userInput
+  );
+  const biasFields = uniqueList([
+    ...(Array.isArray(resolvedAnalysis?.technicalSignals) ? resolvedAnalysis.technicalSignals : []),
+    ...(Array.isArray(resolvedAnalysis?.commercialContextSignals) ? resolvedAnalysis.commercialContextSignals : []),
+    resolvedAnalysis?.scopeProfile || "",
+    resolvedAnalysis?.scopeTradeBucket || "",
+    resolvedAnalysis?.scopeWorkBucket || "",
+    resolvedAnalysis?.scopeAssetCategory || "",
+    resolvedAnalysis?.scopeAssetFamily || "",
+    resolvedAnalysis?.objectType || "",
+    resolvedAnalysis?.connectionModel || "",
+    resolvedAnalysis?.assemblyScale || "",
+  ]);
+  const specialtyProfiles = new Set([
+    "technical",
+    "painting",
+    "finish_scope",
+    "toilet",
+    "drywall",
+    "repair_scope",
+    "finish_carpentry",
+    "vanity",
+    "fixture",
+    "roofing",
+    "equipment_asset",
+    "risk",
+  ]);
+  const generationPath = resolvedAnalysis?.scopeProfile === "universal_scope"
+    ? "universal-biased"
+    : specialtyProfiles.has(String(resolvedAnalysis?.scopeProfile || "").trim())
+      ? "specialty-biased"
+      : biasFields.length
+        ? "universal-biased"
+        : "raw-input-first";
+
+  return {
+    rawPrompt,
+    softTaxonomyBiasFound: biasFields.length > 0,
+    generationPath,
+    biasFields,
+  };
+}
+
 export function sanitizeScopeAssistText(value) {
   const normalized = stripScopeAssistLeadIn(
     stripRedundantScopeLabel(
@@ -7004,6 +7159,116 @@ export function extractScopeAssistText(rawResponse) {
     || rawResponse?.result
     || ""
   );
+}
+
+function toProjectTitleCase(value) {
+  return sanitizeScopeAssistText(value)
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => {
+      if (/^(frp|vct|rtu|hvac)$/i.test(word)) return word.toUpperCase();
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function resolveProjectTitleSubject(analysis = {}, corpus = "") {
+  const normalized = sanitizeScopeAssistText(corpus || analysis?.coreScopeText || analysis?.rawScopeText);
+  const hasBathroomContext = /\bbath(?:room)?\b|\brestroom\b/i.test(normalized);
+  const hasHouseContext = /\bhouse\b|\bhome\b/i.test(normalized);
+
+  if (hasRoofingScopeSignals(analysis) || /\broof(?:ing| cover(?:ing|ings?)?| system| deck)?\b|\bre-?roof\b|\breroof\b/i.test(normalized)) return "Roof";
+  if (/\broof hatch(?:es)?\b|\bhatch(?:es)?\b/i.test(normalized)) return "Roof Hatch";
+  if (/\bwater heater(?:s)?\b|\btankless water heater(?:s)?\b/i.test(normalized)) return "Water Heater";
+  if (/\bceiling tiles?\b|\bacoustic ceiling tiles?\b/i.test(normalized)) return "Ceiling Tile";
+  if (/\btile(?:s)?\b/i.test(normalized)) {
+    if (hasBathroomContext) return "Bathroom Tile";
+    if (/\bfloor\b/i.test(normalized)) return "Floor Tile";
+    return "Tile";
+  }
+  if (/\bpaint(?:ed|ing)?\b|\brepaint\b|\bprime(?:d|ing)?\b/i.test(normalized) || analysis?.scopeProfile === "painting") {
+    if (/\bexterior\b/i.test(normalized) || hasSiteExteriorScopeSignals(analysis)) return "Exterior";
+    if (/\binterior\b/i.test(normalized)) return "Interior";
+    if (hasBathroomContext) return "Bathroom";
+    if (hasHouseContext || analysis?.residentialContext) return "House";
+    return "Painting";
+  }
+  if (/\bvanit(?:y|ies)\b/i.test(normalized)) return hasBathroomContext ? "Bathroom Vanity" : "Vanity";
+  if (/\btoilet(?:s)?\b/i.test(normalized)) return hasBathroomContext ? "Bathroom Toilet" : "Toilet";
+  if (/\bfaucet(?:s)?\b/i.test(normalized)) return "Faucet";
+  if (/\bman door(?:s)?\b/i.test(normalized)) return "Man Door";
+  if (/\bdoor(?:s)?\b/i.test(normalized)) return "Door";
+  if (/\bwindow(?:s)?\b/i.test(normalized)) return "Window";
+  if (/\bstorefront glass\b|\bstorefront\b|\bglazing\b/i.test(normalized)) return "Storefront Glass";
+  if (/\bfence section(?:s)?\b/i.test(normalized)) return "Fence Section";
+  if (/\bfence\b/i.test(normalized)) return "Fence";
+  if (/\bgate(?:s)?\b/i.test(normalized)) return "Gate";
+  if (/\brailing(?:s)?\b|\bhandrail(?:s)?\b/i.test(normalized)) return /\bhandrail(?:s)?\b/i.test(normalized) ? "Handrail" : "Railing";
+  if (/\blight pole(?:s)?\b|\bpole light(?:s)?\b/i.test(normalized)) return "Light Pole";
+  if (/\bcabinet(?:ry|s)?\b|\bcasework\b|\bmillwork\b/i.test(normalized)) return "Cabinet";
+  if (/\bdrywall\b/i.test(normalized)) return "Drywall";
+  if (/\bstucco\b/i.test(normalized)) return "Stucco";
+  if (/\bfrp\b/i.test(normalized)) return "FRP";
+  if (/\bawning(?:s)?\b/i.test(normalized)) return "Awning";
+
+  const preferredObjectPhrase = resolvePreferredObjectPhrase(analysis) || resolvePrimaryScopePhrase(analysis);
+  return toProjectTitleCase(preferredObjectPhrase || normalized);
+}
+
+function resolveProjectTitleActionNoun(analysis = {}, subject = "") {
+  const normalized = sanitizeScopeAssistText(analysis?.coreScopeText || analysis?.rawScopeText || "");
+  const family = analysis?.primaryActionFamily || resolvePrimaryActionFamily(analysis);
+  const subjectLower = String(subject || "").toLowerCase();
+
+  if (subjectLower.includes("tile")) {
+    if (family === "replace_changeout") return "Replacement";
+    if (family === "repair_patch") return "Repair";
+    if (family === "remove_demo") return "Removal";
+    return "Work";
+  }
+
+  if (subjectLower === "roof" || subjectLower === "roof hatch" || subjectLower === "water heater") {
+    if (family === "replace_changeout") return "Replacement";
+    if (family === "install_add_mount") return "Installation";
+    if (family === "repair_patch") return "Repair";
+    if (family === "remove_demo") return "Removal";
+    return "Work";
+  }
+
+  if (subjectLower === "house" || subjectLower === "interior" || subjectLower === "exterior" || subjectLower === "painting") {
+    if (family === "finish_coating" || /\bpaint(?:ed|ing)?\b|\brepaint\b|\bprime(?:d|ing)?\b/i.test(normalized)) return "Repaint";
+    return "Painting";
+  }
+
+  if (family === "replace_changeout") return "Replacement";
+  if (family === "install_add_mount") return "Installation";
+  if (family === "repair_patch") return "Repair";
+  if (family === "remove_demo") return "Removal";
+  if (family === "finish_coating") return "Finish";
+  return "Work";
+}
+
+export function deriveProjectNameFromScopeFlow({ scopeNotes = "", userInput = "", analysis = null } = {}) {
+  const resolvedAnalysis = analysis && typeof analysis === "object"
+    ? analysis
+    : analyzeScopeAssistInput([scopeNotes, userInput].filter(Boolean).join(" "));
+  const corpus = sanitizeScopeAssistText([
+    scopeNotes,
+    userInput,
+    resolvedAnalysis?.coreScopeText,
+    resolvedAnalysis?.rawScopeText,
+    ...(Array.isArray(resolvedAnalysis?.items) ? resolvedAnalysis.items : []),
+    ...(Array.isArray(resolvedAnalysis?.actionItemPhrases) ? resolvedAnalysis.actionItemPhrases : []),
+  ].filter(Boolean).join(" "));
+  if (!corpus) return "";
+
+  const subject = resolveProjectTitleSubject(resolvedAnalysis, corpus);
+  if (!subject) return "";
+
+  const actionNoun = resolveProjectTitleActionNoun(resolvedAnalysis, subject);
+  const title = toProjectTitleCase(`${subject} ${actionNoun}`.trim());
+  return title.length > 44 ? title.slice(0, 44).replace(/\s+\S*$/, "").trim() : title;
 }
 
 // Pass 16/17 — Shared specialty-trade live-path fallback hardening
@@ -7240,11 +7505,17 @@ export const scopeAssistConfig = {
     const mode = normalizeScopeAssistMode(options?.mode);
     const userInput = String(options?.userInput || "").trim();
     const sourceScopePrompt = String(options?.sourcePrompt || "").trim();
-    const currentScopeNotes = String(
-      options?.currentScope
-      || state?.scopeNotes
-      || ""
-    ).trim();
+    const currentScopeNotes = mode === "refine"
+      ? String(
+        options?.ignoreCurrentScope
+          ? options?.currentScope || ""
+          : (
+            options?.currentScope
+            || state?.scopeNotes
+            || ""
+          )
+      ).trim()
+      : "";
     const refineInstruction = String(options?.refineInstruction || userInput).trim();
     const formatIntent = String(options?.formatIntent || "").trim();
 
@@ -7295,6 +7566,14 @@ export const scopeAssistConfig = {
   },
 
   localAdapter(rawResponse, _state, options = {}) {
+    const mode = normalizeScopeAssistMode(options?.mode);
+    const rawScopeNotes = extractScopeAssistText(rawResponse);
+    if (!rawScopeNotes) return null;
+
+    if (mode !== "refine") {
+      return { scopeNotes: rawScopeNotes };
+    }
+
     const scopeNotes = resolveScopeAssistNotes(rawResponse, {
       userInput: options?.userInput,
       context: options?.context,
@@ -7303,8 +7582,11 @@ export const scopeAssistConfig = {
   },
 
   validationRules(writes) {
-    if (!writes?.scopeNotes) return { valid: false, error: "No scope text was generated." };
-    if (writes.scopeNotes.length < 5) return { valid: false, error: "Generated scope is too short." };
+    if (typeof writes?.scopeNotes !== "string") {
+      return { valid: false, error: "No scope text was generated." };
+    }
+    const normalizedScope = sanitizeScopeAssistText(writes.scopeNotes);
+    if (!normalizedScope) return { valid: false, error: "No scope text was generated." };
     return { valid: true };
   },
 };

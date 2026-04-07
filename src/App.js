@@ -10,6 +10,7 @@ import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
 import { requireCompanyProfile } from "./utils/guards";
 import { migrateLegacyStorageNamespace } from "./utils/storage";
+import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -113,6 +114,7 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
 
 const LANG_KEY = STORAGE_KEYS.LANG;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
@@ -235,6 +237,97 @@ function loadSavedEstimates() {
   } catch {
     return [];
   }
+}
+
+function toSavedEstimateTimestamp(record) {
+  const candidates = [
+    record?.savedAt,
+    record?.meta?.savedAt,
+    record?.meta?.lastSavedAt,
+    record?.updatedAt,
+    record?.createdAt,
+    record?.ts,
+    record?.date,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === "") continue;
+    const numeric = typeof candidate === "number" ? candidate : Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(String(candidate));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function normalizeSavedEstimateStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  if (raw === "pending") return "pending";
+  return raw;
+}
+
+function normalizePulseEstimateStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  return "pending";
+}
+
+function formatSavedEstimateTimestamp(ts) {
+  const value = Number(ts) || 0;
+  if (!value) return "";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return new Date(value).toLocaleString();
+  }
+}
+
+function selectLatestSavedEstimate(records) {
+  const candidates = Array.isArray(records) ? records.filter(Boolean) : [];
+  const estimatesOnly = candidates.filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice");
+  return estimatesOnly
+    .slice()
+    .sort((a, b) => {
+      const diff = toSavedEstimateTimestamp(b) - toSavedEstimateTimestamp(a);
+      if (diff !== 0) return diff;
+      return String(b?.id || "").localeCompare(String(a?.id || ""));
+    })[0] || null;
+}
+
+function deriveBusinessPulseCounts(estimates, invoices) {
+  const counts = {
+    pendingEstimates: 0,
+    approvedEstimates: 0,
+    unpaidInvoices: 0,
+    overdueInvoices: 0,
+  };
+
+  const estimateRecords = Array.isArray(estimates) ? estimates : [];
+  for (const estimate of estimateRecords) {
+    if (String(estimate?.docType || "estimate").toLowerCase() === "invoice") continue;
+    const status = normalizePulseEstimateStatus(estimate?.status);
+    if (status === "approved") counts.approvedEstimates += 1;
+    else if (status !== "lost") counts.pendingEstimates += 1;
+  }
+
+  const invoiceRecords = Array.isArray(invoices) ? invoices : [];
+  for (const invoice of invoiceRecords) {
+    const status = deriveInvoiceStatus(invoice);
+    if (status === INVOICE_STATUSES.PAID || status === INVOICE_STATUSES.VOID) continue;
+    counts.unpaidInvoices += 1;
+    if (status === INVOICE_STATUSES.OVERDUE) counts.overdueInvoices += 1;
+  }
+
+  return counts;
 }
 
 function getSavedLang() {
@@ -808,6 +901,8 @@ function CreateFlow({
   mobileBottomChromeVisible,
   shellOverlayOpen = false,
   onGuidedOverlayOpenChange,
+  homeEstimateLaunch,
+  onHomeEstimateLaunchConsumed,
 }) {
   return (
     <div>
@@ -819,6 +914,8 @@ function CreateFlow({
         mobileBottomChromeVisible={mobileBottomChromeVisible}
         shellOverlayOpen={shellOverlayOpen}
         onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
+        homeEstimateLaunch={homeEstimateLaunch}
+        onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
       />
     </div>
   );
@@ -827,10 +924,90 @@ function CreateFlow({
    Placeholder screens (theme-safe)
    ========================= */
 
-function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
+function HomeScreen({
+  spinTick,
+  onLogoTap,
+  onLogoLongPress,
+  latestSavedEstimate,
+  businessPulseCounts,
+  onResumeLastEstimate,
+  onLaunchEstimate,
+}) {
+  const [launchPrompt, setLaunchPrompt] = useState("");
   const pressTimerRef = useRef(null);
   const didLongPressRef = useRef(false);
   const LONG_PRESS_MS = 650;
+  const hasLatestEstimate = Boolean(latestSavedEstimate);
+  const trimmedLaunchPrompt = String(launchPrompt || "").trim();
+
+  const resumeProjectName = String(
+    latestSavedEstimate?.projectName
+    || latestSavedEstimate?.estimateName
+    || latestSavedEstimate?.name
+    || latestSavedEstimate?.title
+    || ""
+  ).trim();
+  const resumeCustomerName = String(latestSavedEstimate?.customerName || "").trim();
+  const resumeEstimateNumber = String(
+    latestSavedEstimate?.estimateNumber
+    || latestSavedEstimate?.docNumber
+    || latestSavedEstimate?.documentNumber
+    || latestSavedEstimate?.documentNo
+    || latestSavedEstimate?.number
+    || latestSavedEstimate?.job?.docNumber
+    || ""
+  ).trim();
+  const resumeStatus = String(latestSavedEstimate?.statusLabel || "").trim();
+  const resumeTimestampLabel = String(latestSavedEstimate?.timestampLabel || "").trim();
+  const resumeTimestampPrefix = String(latestSavedEstimate?.timestampPrefix || "").trim();
+  const resumeHeadline = resumeProjectName || resumeCustomerName || resumeEstimateNumber || "";
+  const resumeSecondaryLabel = resumeCustomerName && resumeProjectName && resumeCustomerName !== resumeProjectName
+    ? resumeCustomerName
+    : "";
+  const resumeMetaItems = [
+    resumeSecondaryLabel
+      ? { key: "customer", label: resumeSecondaryLabel, tone: "customer" }
+      : null,
+    resumeEstimateNumber
+      ? { key: "estimate-number", label: `Estimate #${resumeEstimateNumber}`, tone: "number" }
+      : null,
+    resumeTimestampLabel
+      ? { key: "timestamp", label: `${resumeTimestampPrefix || "Saved"} ${resumeTimestampLabel}`, tone: "timestamp" }
+      : null,
+    resumeStatus
+      ? { key: "status", label: resumeStatus, tone: "status" }
+      : null,
+  ].filter(Boolean);
+  const pulseItems = [
+    {
+      key: "pending-estimates",
+      label: "Pending",
+      sublabel: "estimates",
+      value: Number(businessPulseCounts?.pendingEstimates || 0),
+      tone: "estimate",
+    },
+    {
+      key: "approved-estimates",
+      label: "Approved",
+      sublabel: "estimates",
+      value: Number(businessPulseCounts?.approvedEstimates || 0),
+      tone: "estimate",
+    },
+    {
+      key: "unpaid-invoices",
+      label: "Unpaid",
+      sublabel: "invoices",
+      value: Number(businessPulseCounts?.unpaidInvoices || 0),
+      tone: "invoice",
+    },
+    {
+      key: "overdue-invoices",
+      label: "Overdue",
+      sublabel: "invoices",
+      value: Number(businessPulseCounts?.overdueInvoices || 0),
+      tone: "invoice",
+    },
+  ];
 
   const startPress = () => {
     try { if (pressTimerRef.current) clearTimeout(pressTimerRef.current); } catch {}
@@ -851,6 +1028,12 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
     try { onLogoTap && onLogoTap(); } catch {}
   };
 
+  const submitLaunchPrompt = (event) => {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    try { onLaunchEstimate && onLaunchEstimate(trimmedLaunchPrompt); } catch {}
+  };
+
   return (
     <div className="pe-main pe-home-screen" style={{ paddingTop: 0 }}>
       <div className="pe-home-shell">
@@ -864,13 +1047,13 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           <div
             className="pe-home-wordmark"
             style={{
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: 600,
               letterSpacing: "2px",
               textTransform: "uppercase",
               opacity: 0.75,
               lineHeight: 1.1,
-              marginBottom: 8,
+              marginBottom: 2,
               textShadow: "0 2px 6px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.35)",
               display: "inline-flex",
               alignItems: "baseline",
@@ -909,14 +1092,14 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
                 onTap();
               }
             }}
-            style={{ display: "flex", justifyContent: "center", margin: "0 auto 10px", cursor: "pointer", maxWidth: "100%" }}
+            style={{ display: "flex", justifyContent: "center", margin: "0 auto 2px", cursor: "pointer", maxWidth: "100%" }}
           >
             <div className="pe-home-logo-offset" style={{ transform: "translateX(-15px)" }}>
               <EstiPaidInlineLogo
                 key={spinTick}
                 className="esti-spin"
                 style={{
-                  height: 110,
+                  height: 72,
                   width: "auto",
                   display: "block",
                   objectFit: "contain",
@@ -929,8 +1112,8 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
           <div
             className="pe-home-tagline"
             style={{
-              marginTop: 10,
-              fontSize: 14,
+              marginTop: 4,
+              fontSize: 13,
               fontWeight: 800,
               letterSpacing: "2.2px",
               textTransform: "uppercase",
@@ -948,74 +1131,75 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
         </div>
       </div>
 
-      <div className="pe-card pe-home-command-slab" style={{ marginTop: 0 }}>
-        <div className="pe-home-command-main">
-          <div className="pe-home-command-head">
-            <div className="pe-home-command-title">Quick Actions</div>
-            <div className="pe-muted pe-home-command-copy">Jump back in or start fresh.</div>
-          </div>
-
-          <div className="pe-home-actions">
+      <div className="pe-card pe-home-momentum-panel">
+        <div className="pe-home-momentum-primary">
+          <div className="pe-home-momentum-label">Resume</div>
+          {hasLatestEstimate ? (
+            <div className="pe-home-resume-card">
+              {resumeHeadline ? <div className="pe-home-resume-title">{resumeHeadline}</div> : null}
+              {resumeMetaItems.length > 0 ? (
+                <div className="pe-home-resume-meta">
+                  {resumeMetaItems.map((item) => (
+                    <div key={item.key} className={`pe-home-resume-meta-item pe-home-resume-meta-${item.tone}`}>
+                      <span className="pe-home-resume-meta-value">{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="pe-home-resume-empty">
+              No saved estimates yet. Save one to resume it here.
+            </div>
+          )}
           <button
-            className="pe-btn pe-home-action"
+            className="pe-btn pe-home-resume-btn"
             type="button"
+            disabled={!hasLatestEstimate}
             onClick={() => {
+              if (!hasLatestEstimate) return;
               try {
-                window.dispatchEvent(
-                  new CustomEvent("pe-shell-action", {
-                    detail: { action: "continueLast" },
-                  })
-                );
+                onResumeLastEstimate && onResumeLastEstimate();
               } catch {}
             }}
-            style={{ flex: "1 1 180px" }}
           >
             Continue Last Estimate
           </button>
-
-          <button
-            className="pe-btn pe-home-action"
-            type="button"
-            onClick={() => {
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("pe-shell-action", {
-                    detail: { action: "newClear" },
-                  })
-                );
-              } catch {}
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("pe-shell-action", {
-                    detail: { action: "openCreate" },
-                  })
-                );
-              } catch {}
-            }}
-            style={{ flex: "1 1 180px" }}
-          >
-            Start New Estimate
-          </button>
-
-          <button
-            className="pe-btn pe-btn-ghost pe-home-action"
-            type="button"
-            onClick={() => {
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("pe-shell-action", {
-                    detail: { action: "goEstimatesTab" },
-                  })
-                );
-              } catch {}
-            }}
-            style={{ flex: "1 1 180px" }}
-          >
-            View Estimates
-          </button>
-          </div>
         </div>
       </div>
+
+      <form className="pe-card pe-home-launcher" onSubmit={submitLaunchPrompt}>
+        <div className="pe-home-launcher-eyebrow">Describe the job</div>
+        <textarea
+          className="pe-input pe-textarea pe-home-launcher-input"
+          value={launchPrompt}
+          onChange={(e) => setLaunchPrompt(e.target.value)}
+          placeholder="Replace the roof, tile the bathroom, repaint exterior... rough scope is enough to start."
+          rows={3}
+        />
+        <button className="pe-btn pe-home-launcher-btn" type="submit">
+          {trimmedLaunchPrompt ? "Start with AI" : "Open Estimate Builder"}
+        </button>
+      </form>
+
+      <div className="pe-card pe-home-pulse-panel">
+        <div className="pe-home-pulse-eyebrow">Business Pulse</div>
+        <div className="pe-home-pulse-strip" role="list" aria-label="Business Pulse">
+          {pulseItems.map((item) => (
+            <div key={item.key} className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`} role="listitem">
+              <div className="pe-home-pulse-value">{item.value}</div>
+              <div className="pe-home-pulse-label">{item.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="pe-home-spacer" aria-hidden="true" />
+
+      <footer className="pe-home-closer" aria-hidden="true">
+        <span className="pe-home-closer-mark">EstiPaid</span>
+        <span className="pe-home-closer-tm">™</span>
+      </footer>
       </div>
     </div>
   );
@@ -1459,9 +1643,59 @@ export default function App() {
   const [createResetSeq, setCreateResetSeq] = useState(0);
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const [guidedOverlayOpen, setGuidedOverlayOpen] = useState(false);
+  const [homeEstimateLaunch, setHomeEstimateLaunch] = useState(null);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
+  const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
+  const latestSavedEstimate = useMemo(() => selectLatestSavedEstimate(estimateHistory), [estimateHistory]);
+  const latestSavedEstimateMeta = useMemo(() => {
+    if (!latestSavedEstimate) return null;
+
+    const projectName = String(
+      latestSavedEstimate?.projectName
+      || latestSavedEstimate?.estimateName
+      || latestSavedEstimate?.name
+      || latestSavedEstimate?.title
+      || ""
+    ).trim();
+    const customerName = String(latestSavedEstimate?.customerName || "").trim();
+    const estimateNumber = String(
+      latestSavedEstimate?.estimateNumber
+      || latestSavedEstimate?.docNumber
+      || latestSavedEstimate?.documentNumber
+      || latestSavedEstimate?.documentNo
+      || latestSavedEstimate?.number
+      || latestSavedEstimate?.job?.docNumber
+      || ""
+    ).trim();
+    const savedTimestamp = Number(
+      latestSavedEstimate?.savedAt
+      || latestSavedEstimate?.meta?.savedAt
+      || latestSavedEstimate?.meta?.lastSavedAt
+      || 0
+    ) || 0;
+    const updatedTimestamp = Number(latestSavedEstimate?.updatedAt || 0) || 0;
+    const timestamp = toSavedEstimateTimestamp(latestSavedEstimate);
+    const status = normalizeSavedEstimateStatus(latestSavedEstimate?.status);
+
+    return {
+      id: String(latestSavedEstimate?.id || "").trim(),
+      projectName,
+      customerName,
+      estimateNumber,
+      status,
+      statusLabel: status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : "",
+      timestampLabel: formatSavedEstimateTimestamp(timestamp),
+      timestampPrefix: updatedTimestamp > 0 && updatedTimestamp !== savedTimestamp ? "Updated" : "Saved",
+    };
+  }, [latestSavedEstimate]);
+  const businessPulseCounts = useMemo(() => {
+    const estimateRecords = Array.isArray(estimateHistory)
+      ? estimateHistory.filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
+    return deriveBusinessPulseCounts(estimateRecords, invoiceHistory);
+  }, [estimateHistory, invoiceHistory]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -1479,7 +1713,7 @@ const [spinTick, setSpinTick] = useState(0);
 
   // ===== In-progress estimate draft (survives tab switches) =====
   const ESTIMATE_DRAFT_KEY = STORAGE_KEYS.ESTIMATE_DRAFT;
-  const hasEstimateDraft = () => {
+  const hasEstimateDraft = useCallback(() => {
     try {
       const raw = localStorage.getItem(ESTIMATE_DRAFT_KEY);
       if (!raw) return false;
@@ -1506,7 +1740,7 @@ const [spinTick, setSpinTick] = useState(0);
         return false;
       }
     }
-  };
+  }, [ESTIMATE_DRAFT_KEY]);
 
   useEffect(() => {
     const onUserProfileDirty = (e) => {
@@ -1515,7 +1749,7 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("estipaid:user-profile-dirty", onUserProfileDirty);
     return () => window.removeEventListener("estipaid:user-profile-dirty", onUserProfileDirty);
-  }, []);
+  }, [hasEstimateDraft]);
 
   const enterTab = useCallback((nextTab, intent) => {
     if (intent) setCreateIntent(intent);
@@ -1585,6 +1819,33 @@ const [spinTick, setSpinTick] = useState(0);
     prepareCompanyProfileReturnTarget();
     navigateTo(ROUTES.COMPANY_PROFILE, options);
   }, [navigateTo, prepareCompanyProfileReturnTarget]);
+
+  const launchEstimateFromHome = useCallback((roughPrompt = "") => {
+    const prompt = String(roughPrompt || "").trim();
+    if (!ensureBuilderAccess()) return;
+    try {
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    } catch {}
+    if (prompt) {
+      setHomeEstimateLaunch({
+        id: `home-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        prompt,
+        ts: Date.now(),
+      });
+    } else {
+      setHomeEstimateLaunch(null);
+    }
+    navigateTo(ROUTES.ESTIMATE_BUILDER);
+  }, [ensureBuilderAccess, navigateTo]);
+
+  const consumeHomeEstimateLaunch = useCallback((launchId = "") => {
+    setHomeEstimateLaunch((current) => {
+      if (!current) return null;
+      if (!launchId) return null;
+      return String(current?.id || "") === String(launchId) ? null : current;
+    });
+  }, []);
 
   const continueCreateFromEdit = useCallback(() => {
     setShowCreateFromEditModal(false);
@@ -1739,11 +2000,40 @@ const [spinTick, setSpinTick] = useState(0);
   }, []);
 
   useEffect(() => {
-    const onShellAction = (evt) => {
+    const refresh = () => setInvoiceHistory(readStoredInvoices());
+    refresh();
+    const onStorage = (e) => {
+      if (!e?.key || e.key === INVOICES_KEY) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("estipaid:invoices-changed", refresh);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("estipaid:invoices-changed", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+  const onShellAction = (evt) => {
       const action = String(evt?.detail?.action || "");
       if (!action) return;
 
-      if (action === "continueLast" || action === "openCreate") {
+      if (action === "continueLast") {
+        try {
+          localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+          const latestId = String(latestSavedEstimateMeta?.id || "").trim();
+          if (latestId) {
+            localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, latestId);
+            window.dispatchEvent(new Event("estipaid:estimate-open"));
+          } else {
+            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+          }
+        } catch {}
+        navigateTo(ROUTES.ESTIMATE_BUILDER);
+        return;
+      }
+
+      if (action === "openCreate") {
         navigateTo(ROUTES.ESTIMATE_BUILDER);
         return;
       }
@@ -1766,7 +2056,7 @@ const [spinTick, setSpinTick] = useState(0);
 
     window.addEventListener("pe-shell-action", onShellAction);
     return () => window.removeEventListener("pe-shell-action", onShellAction);
-  }, [navigateTo, navigateToCompanyProfile]);
+  }, [latestSavedEstimateMeta, navigateTo, navigateToCompanyProfile]);
 
   // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
   useEffect(() => {
@@ -1778,7 +2068,7 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, []);
+  }, [hasEstimateDraft]);
 
 
   
@@ -2038,7 +2328,25 @@ const gated = false;
   };
 
   const renderScreen = () => {
-    if (activeTab === ROUTES.HOME) return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.HOME) return (
+        <HomeScreen
+        spinTick={spinTick}
+        onLogoTap={handleHomeLogoTap}
+        onLogoLongPress={handleHomeLogoLongPress}
+        latestSavedEstimate={latestSavedEstimateMeta}
+        businessPulseCounts={businessPulseCounts}
+        onResumeLastEstimate={() => {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("pe-shell-action", {
+                detail: { action: "continueLast" },
+              })
+            );
+          } catch {}
+        }}
+        onLaunchEstimate={launchEstimateFromHome}
+      />
+    );
     if (activeTab === ROUTES.CUSTOMERS)
       return (
         <CustomersScreen
@@ -2082,9 +2390,9 @@ const gated = false;
         />
       );
     }
-    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
-    if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
     if (activeTab === ROUTES.CREATE) {
       return (
         <CreateFlow
@@ -2095,10 +2403,30 @@ const gated = false;
           mobileBottomChromeVisible={chromeVisible && !drawerOpen}
           shellOverlayOpen={drawerOpen}
           onGuidedOverlayOpenChange={setGuidedOverlayOpen}
+          homeEstimateLaunch={homeEstimateLaunch}
+          onHomeEstimateLaunchConsumed={consumeHomeEstimateLaunch}
         />
       );
     }
-    return <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} />;
+    return (
+      <HomeScreen
+        spinTick={spinTick}
+        onLogoTap={handleHomeLogoTap}
+        onLogoLongPress={handleHomeLogoLongPress}
+        latestSavedEstimate={latestSavedEstimateMeta}
+        businessPulseCounts={businessPulseCounts}
+        onResumeLastEstimate={() => {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("pe-shell-action", {
+                detail: { action: "continueLast" },
+              })
+            );
+          } catch {}
+        }}
+        onLaunchEstimate={launchEstimateFromHome}
+      />
+    );
   };
 
   const onDrawerSelect = (key) => {

@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./EstimateForm.css";
 
@@ -16,6 +16,8 @@ import GuidedBuildOverlay from "./estimator/guided/GuidedBuildOverlay";
 import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
 import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
 import { getAssistConfig } from "./estimator/aiAssist/registry";
+import { requestSectionAssist } from "./estimator/aiAssist/service";
+import { deriveProjectNameFromScopeFlow } from "./estimator/aiAssist/adapters/scope";
 import {
   dedupeProposedMaterialLines,
   isBlankMaterialItem,
@@ -127,6 +129,152 @@ const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
+const SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS = 38000;
+const SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE = "AI assist took too long to respond. Please try again.";
+const SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE = "AI assist could not reach the local AI server.";
+const SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE = "AI assist hit an internal error. Please try again.";
+
+function looksLikeScopeAssistNetworkFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\bfailed to fetch\b/i,
+    /\bfetch failed\b/i,
+    /\bnetworkerror\b/i,
+    /\bnetwork request failed\b/i,
+    /\beconnrefused\b/i,
+    /\benotfound\b/i,
+    /\bconnection refused\b/i,
+    /\bcould not reach the local ai server\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function looksLikeScopeAssistTimeoutFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\btimed out\b/i,
+    /\btimeout\b/i,
+    /\btook too long to respond\b/i,
+    /\brequest timed out\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function looksLikeScopeAssistInternalFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\binternal error\b/i,
+    /\binternal failure\b/i,
+    /\bmalformed\b/i,
+    /\bcouldn'?t complete\b/i,
+    /\bcould not complete\b/i,
+    /\brequest failed\b/i,
+    /\bunable to complete\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function resolveScopeAssistDisplayError(value, elapsedMs = 0) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  if (looksLikeScopeAssistNetworkFailure(text)) return SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE;
+  if (looksLikeScopeAssistTimeoutFailure(text)) return SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE;
+  if (looksLikeScopeAssistInternalFailure(text)) return SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE;
+
+  const busyLike = [
+    /\btemporar(?:y|ily)\b/i,
+    /\bbusy\b/i,
+    /\boverload(?:ed)?\b/i,
+    /\brate[_\s-]?limit\b/i,
+    /\btoo many requests\b/i,
+    /\bunavailable\b/i,
+  ].some((pattern) => pattern.test(text));
+
+  if (busyLike && elapsedMs >= SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS) {
+    return SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE;
+  }
+
+  return text;
+}
+
+function normalizeScopeAssistClientText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function classifyScopeAssistClientResponse({ userInput = "", scopeNotes = "" } = {}) {
+  const rawScopeNotes = typeof scopeNotes === "string" ? scopeNotes : "";
+  const normalizedScopeNotes = normalizeScopeAssistClientText(rawScopeNotes);
+  if (typeof scopeNotes !== "string") {
+    return { valid: false, reason: "rejected_malformed", message: "Scope text was malformed." };
+  }
+  if (!normalizedScopeNotes) {
+    return { valid: false, reason: "rejected_empty", message: "Scope text was empty." };
+  }
+
+  const normalizedInput = normalizeScopeAssistClientText(userInput);
+  if (!normalizedInput) {
+    return { valid: true, reason: "accepted" };
+  }
+
+  const stripPunctuation = (text) => String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const inputNorm = stripPunctuation(normalizedInput);
+  const outputNorm = stripPunctuation(normalizedScopeNotes);
+  if (!outputNorm) {
+    return { valid: false, reason: "rejected_malformed", message: "Scope text was malformed." };
+  }
+  if (outputNorm === inputNorm) {
+    return { valid: false, reason: "rejected_echo", message: "Scope text only repeated the prompt." };
+  }
+
+  const inputTokens = inputNorm.split(" ").filter(Boolean);
+  const outputTokens = outputNorm.split(" ").filter(Boolean);
+  if (inputNorm && outputNorm.startsWith(inputNorm) && outputTokens.length <= inputTokens.length + 2) {
+    return { valid: false, reason: "rejected_echo", message: "Scope text only repeated the prompt." };
+  }
+
+  return { valid: true, reason: "accepted" };
+}
+
+const SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS = [
+  /\bwork on affected areas\b/i,
+  /\bcomplete the described scope\b/i,
+  /\bcomplete the stated scope\b/i,
+  /\bclean up the work area\b/i,
+  /\bnot included unless identified and approved\b/i,
+];
+
+function isExplicitScopeAssistScaffoldText(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) return false;
+  return SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function describeExplicitScopeAssistScaffoldMatch(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) {
+    return { matched: false, pattern: "", match: "" };
+  }
+
+  for (const pattern of SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match) {
+      return {
+        matched: true,
+        pattern: String(pattern),
+        match: String(match[0] || ""),
+      };
+    }
+  }
+
+  return { matched: false, pattern: "", match: "" };
+}
+
 function readSavedCustomers() {
   try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
 }
@@ -139,10 +287,20 @@ function summarizeGuidedShellText(value, max = 140) {
 
 const ESTIPAID_GUIDED_TRACE_KEY = "__ESTIPAID_GUIDED_TRACE__";
 
+function isBrowserDevelopmentRuntime() {
+  try {
+    const runtimeProcess = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    return Boolean(runtimeProcess && runtimeProcess.env && runtimeProcess.env.NODE_ENV === "development");
+  } catch {
+    return false;
+  }
+}
+
 function shouldTraceEstiPaidGuidedRuntime() {
-  if (typeof process !== "undefined") {
-    const envEnabled = process?.env?.ESTIPAID_GUIDED_TRACE === "1"
-      || process?.env?.REACT_APP_ESTIPAID_GUIDED_TRACE === "1";
+  const runtimeProcess = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+  if (runtimeProcess && runtimeProcess.env) {
+    const envEnabled = runtimeProcess.env.ESTIPAID_GUIDED_TRACE === "1"
+      || runtimeProcess.env.REACT_APP_ESTIPAID_GUIDED_TRACE === "1";
     if (envEnabled) return true;
   }
   if (typeof window === "undefined") return false;
@@ -938,6 +1096,8 @@ export default function EstimateForm(props) {
     mobileBottomChromeVisible = true,
     shellOverlayOpen = false,
     onGuidedOverlayOpenChange,
+    homeEstimateLaunch = null,
+    onHomeEstimateLaunchConsumed,
   } = props || {};
   const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
   const editingRecordId = String(editTarget?.id || "").trim();
@@ -986,13 +1146,30 @@ export default function EstimateForm(props) {
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
-  const scopeAssist = useAiAssist("scope", state);
   const laborAssist = useAiAssist("labor", state);
   const materialsAssist = useAiAssist("materials", state);
   const scopeAssistConfig = getAssistConfig("scope");
   const laborAssistConfig = getAssistConfig("labor");
   const materialsAssistConfig = getAssistConfig("materials");
+  const scopeAssistRequestStartedAtRef = useRef(0);
+  const scopeRuntimeMetaRef = useRef({
+    build: "",
+    path: "",
+    parseSource: "",
+    outcome: "",
+    reasonTag: "",
+    excerpt: "",
+    status: "",
+    retryUsed: false,
+  });
+  const scopeRuntimePromiseRef = useRef(Promise.resolve(scopeRuntimeMetaRef.current));
+  const scopeAssistSubmitSeqRef = useRef(0);
+  const [scopeAssistState, setScopeAssistState] = useState({ phase: "idle" });
+  const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
+  const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
   // ──────────────────────────────────────────────────────────────────────────
+  const lastHomeLaunchIdRef = useRef("");
+  const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
 
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
@@ -1273,6 +1450,386 @@ export default function EstimateForm(props) {
     selectedCustomerId,
     selectedCustomerProfile,
     state?.customer,
+  ]);
+
+  const openScopeAssist = useCallback((openOptions = null) => {
+    const options = openOptions && typeof openOptions === "object" ? openOptions : {};
+    setScopeAssistState({ phase: "open", input: "", ...options });
+  }, []);
+
+  const closeScopeAssist = useCallback(() => {
+    scopeAssistSubmitSeqRef.current += 1;
+    setScopeAssistState({ phase: "idle" });
+  }, []);
+
+  const submitScopeAssist = useCallback(async (userInput, serviceOptions = {}) => {
+    const mySeq = ++scopeAssistSubmitSeqRef.current;
+    const traceId = isBrowserDevelopmentRuntime()
+      ? Math.random().toString(36).slice(2, 7)
+      : "";
+    const normalizedInput = String(userInput || "").trim();
+    scopeAssistRequestStartedAtRef.current = Date.now();
+    scopeRuntimeMetaRef.current = {
+      build: "",
+      path: "",
+      parseSource: "",
+      outcome: "",
+      reasonTag: "",
+      excerpt: "",
+      status: "",
+      retryUsed: false,
+    };
+    scopeRuntimePromiseRef.current = Promise.resolve(scopeRuntimeMetaRef.current);
+    setScopeAssistState({ phase: "requesting", input: normalizedInput, result: null });
+    if (traceId) {
+      console.log(`[ai-assist:${traceId}] scope_submit_start`, { inputLen: normalizedInput.length });
+    }
+
+    const shouldTraceRuntime = typeof window !== "undefined"
+      && isBrowserDevelopmentRuntime()
+      && typeof window.fetch === "function";
+    const originalFetch = shouldTraceRuntime ? window.fetch : null;
+    if (shouldTraceRuntime && originalFetch) {
+      window.fetch = async (...args) => {
+        const response = await originalFetch.apply(window, args);
+        try {
+          const requestInput = args[0];
+          const requestInit = args[1] || {};
+          const requestUrl = typeof requestInput === "string" ? requestInput : String(requestInput?.url || "");
+          const requestBody = typeof requestInit.body === "string" ? requestInit.body : "";
+          if (requestUrl.includes("/api/ai-assist") && requestBody) {
+            const requestJson = JSON.parse(requestBody);
+            if (requestJson?.sectionKey === "scope") {
+              scopeRuntimePromiseRef.current = response.clone().json()
+                .then((payload) => {
+                  const scopeNotesRaw = String(payload?.scopeNotes || "");
+                  if (traceId) {
+                    console.log(`[ai-assist:${traceId}] scope_runtime_payload_received`, {
+                      payload,
+                      scopeNotesExcerpt: scopeNotesRaw.replace(/\s+/g, " ").trim().slice(0, 300),
+                      _scopeRuntimeBuild: String(payload?._scopeRuntimeBuild || "missing"),
+                      _scopeRuntimePath: String(payload?._scopeRuntimePath || "missing"),
+                      _scopeParseSource: String(payload?._scopeParseSource || "missing"),
+                      _scopeOutcome: String(payload?._scopeOutcome || "missing"),
+                      _scopeReasonTag: String(payload?._scopeReasonTag || "missing"),
+                    });
+                  }
+                  const runtimeMeta = {
+                    build: String(payload?._scopeRuntimeBuild || "missing"),
+                    path: String(payload?._scopeRuntimePath || "missing"),
+                    parseSource: String(payload?._scopeParseSource || "missing"),
+                    outcome: String(payload?._scopeOutcome || "missing"),
+                    reasonTag: String(payload?._scopeReasonTag || "missing"),
+                    excerpt: String(payload?._scopeExcerpt || scopeNotesRaw || payload?.clarificationQuestion || "")
+                      .replace(/\s+/g, " ")
+                      .trim()
+                      .slice(0, 160),
+                    status: response.status,
+                    retryUsed: Boolean(payload?._scopeRetryUsed),
+                  };
+                  scopeRuntimeMetaRef.current = runtimeMeta;
+                  if (traceId) {
+                    console.log(`[ai-assist:${traceId}] scope_runtime_response`, {
+                      ...runtimeMeta,
+                      _scopeRuntimeBuild: runtimeMeta.build,
+                      _scopeRuntimePath: runtimeMeta.path,
+                      _scopeParseSource: runtimeMeta.parseSource,
+                      _scopeOutcome: runtimeMeta.outcome,
+                      _scopeReasonTag: runtimeMeta.reasonTag,
+                      _scopeExcerpt: runtimeMeta.excerpt,
+                      _scopeRetryUsed: runtimeMeta.retryUsed,
+                    });
+                    const missingTruthFields = [
+                      ["_scopeRuntimeBuild", runtimeMeta.build],
+                      ["_scopeRuntimePath", runtimeMeta.path],
+                      ["_scopeParseSource", runtimeMeta.parseSource],
+                      ["_scopeOutcome", runtimeMeta.outcome],
+                      ["_scopeReasonTag", runtimeMeta.reasonTag],
+                      ["_scopeExcerpt", runtimeMeta.excerpt],
+                    ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
+                    if (missingTruthFields.length) {
+                      console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+                        missingTruthFields,
+                        status: response.status,
+                        excerpt: runtimeMeta.excerpt,
+                      });
+                    }
+                  }
+                  return runtimeMeta;
+                })
+                .catch(async () => {
+                  try {
+                    const text = await response.clone().text();
+                    const runtimeMeta = {
+                      build: "missing",
+                      path: "missing",
+                      parseSource: "missing",
+                      outcome: "missing",
+                      reasonTag: "missing",
+                      excerpt: String(text || "").replace(/\s+/g, " ").trim().slice(0, 160),
+                      status: response.status,
+                      retryUsed: false,
+                    };
+                    scopeRuntimeMetaRef.current = runtimeMeta;
+                    if (traceId) {
+                      console.log(`[ai-assist:${traceId}] scope_runtime_response_unparsed`, {
+                        ...runtimeMeta,
+                      });
+                      console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+                        missingTruthFields: [
+                          "_scopeRuntimeBuild",
+                          "_scopeRuntimePath",
+                          "_scopeParseSource",
+                          "_scopeOutcome",
+                          "_scopeReasonTag",
+                          "_scopeExcerpt",
+                        ],
+                        status: response.status,
+                        excerpt: runtimeMeta.excerpt,
+                      });
+                    }
+                    return runtimeMeta;
+                  } catch (_error) {}
+                });
+            }
+          }
+        } catch (_error) {}
+        return response;
+      };
+    }
+
+    let runtimeMeta = scopeRuntimeMetaRef.current;
+    const logFinalDecision = (decision, extra = {}) => {
+      if (!traceId) return;
+      const excerpt = normalizeScopeAssistClientText(
+        String(extra?.excerpt || extra?.scopeNotes || extra?.error || "")
+      ).slice(0, 80);
+      console.log(`[ai-assist:${traceId}] final_decision`, {
+        decision,
+        _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+        _scopeRuntimePath: String(runtimeMeta?.path || ""),
+        _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+        _scopeOutcome: String(runtimeMeta?.outcome || ""),
+        _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        _scopeExcerpt: String(runtimeMeta?.excerpt || excerpt || ""),
+        _scopeRetryUsed: Boolean(runtimeMeta?.retryUsed),
+        excerpt,
+        ...extra,
+      });
+      const missingTruthFields = [
+        ["_scopeRuntimeBuild", runtimeMeta?.build],
+        ["_scopeRuntimePath", runtimeMeta?.path],
+        ["_scopeParseSource", runtimeMeta?.parseSource],
+        ["_scopeOutcome", runtimeMeta?.outcome],
+        ["_scopeReasonTag", runtimeMeta?.reasonTag],
+        ["_scopeExcerpt", runtimeMeta?.excerpt],
+      ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
+      if (missingTruthFields.length) {
+        console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+          decision,
+          missingTruthFields,
+          excerpt,
+        });
+      }
+    };
+
+    try {
+      const result = await requestSectionAssist({
+        sectionKey: "scope",
+        userInput: normalizedInput,
+        state,
+        ...serviceOptions,
+        _traceId: traceId,
+      });
+
+      runtimeMeta = await scopeRuntimePromiseRef.current.catch(() => scopeRuntimeMetaRef.current) || scopeRuntimeMetaRef.current;
+
+      if (scopeAssistSubmitSeqRef.current !== mySeq) {
+        if (traceId) {
+          console.log(`[ai-assist:${traceId}] scope_stale_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
+        }
+        return result;
+      }
+
+      const scopeNotesValue = result?.writes?.scopeNotes;
+      const explicitScaffoldBlocked = isExplicitScopeAssistScaffoldText(scopeNotesValue);
+      const explicitScaffoldMatch = describeExplicitScopeAssistScaffoldMatch(scopeNotesValue);
+      const localClassification = classifyScopeAssistClientResponse({
+        userInput: normalizedInput,
+        scopeNotes: scopeNotesValue,
+      });
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_client_scaffold_check`, {
+          scopeNotesExcerpt: String(scopeNotesValue || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          explicitScaffoldMatch: explicitScaffoldMatch.matched,
+          matchedPattern: explicitScaffoldMatch.pattern,
+          matchedSubstring: explicitScaffoldMatch.match,
+          clientClassification: localClassification.reason,
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+          _scopeOutcome: String(runtimeMeta?.outcome || ""),
+          _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        });
+      }
+      if (explicitScaffoldBlocked && traceId) {
+        console.warn(`[ai-assist:${traceId}] scope_client_scaffold_detected_non_blocking`, {
+          scopeNotesExcerpt: String(scopeNotesValue || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          explicitScaffoldMatch: explicitScaffoldMatch.matched,
+          matchedPattern: explicitScaffoldMatch.pattern,
+          matchedSubstring: explicitScaffoldMatch.match,
+          clientClassification: localClassification.reason,
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+          _scopeOutcome: String(runtimeMeta?.outcome || ""),
+          _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        });
+      }
+
+      if (!localClassification.valid) {
+        if (traceId) {
+          logFinalDecision(localClassification.reason, { blocked: false, excerpt: scopeNotesValue });
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: localClassification.message,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+
+      if (traceId) {
+        logFinalDecision("accepted_review", {
+          backendValidated: result?.validation?.valid === true,
+          excerpt: scopeNotesValue,
+        });
+        if (result?.validation && result.validation.valid === false) {
+          console.log(`[ai-assist:${traceId}] scope_backend_validation_ignored`, {
+            reason: String(result?.validation?.error || "").slice(0, 120),
+          });
+        }
+      }
+
+      setScopeAssistState({ phase: "review", input: normalizedInput, result, runtime: runtimeMeta });
+      return result;
+    } catch (error) {
+      if (scopeAssistSubmitSeqRef.current !== mySeq) {
+        if (traceId) {
+          console.log(`[ai-assist:${traceId}] scope_stale_error_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
+        }
+        return undefined;
+      }
+
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_submit_error`, {
+          code: error?.assistErrorCode,
+          class: error?.assistFailureClass,
+          msg: String(error?.assistSafeMessage || error?.message || "").slice(0, 100),
+        });
+        logFinalDecision(error?.assistErrorCode || "rejected_error", {
+          blocked: false,
+          error: true,
+          excerpt: error?.assistSafeMessage || error?.message || "",
+        });
+      }
+
+      setScopeAssistState({
+        phase: "error",
+        input: normalizedInput,
+        error: resolveScopeAssistDisplayError(
+          error?.assistSafeMessage || error?.message || String(error || ""),
+          Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+        ),
+        runtime: runtimeMeta,
+      });
+      return undefined;
+    } finally {
+      if (shouldTraceRuntime && originalFetch) {
+        window.fetch = originalFetch;
+      }
+    }
+  }, [state]);
+
+  useEffect(() => {
+    if (!homeLaunchId) {
+      lastHomeLaunchIdRef.current = "";
+      return;
+    }
+    if (!homeLaunchPrompt || isEditMode) return;
+    if (lastHomeLaunchIdRef.current === homeLaunchId) return;
+    lastHomeLaunchIdRef.current = homeLaunchId;
+    try {
+      submitScopeAssist(homeLaunchPrompt, {
+        mode: "initial",
+        sourcePrompt: homeLaunchPrompt,
+        ignoreCurrentScope: true,
+      });
+    } catch {}
+    try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+  }, [
+    homeLaunchId,
+    homeLaunchPrompt,
+    isEditMode,
+    onHomeEstimateLaunchConsumed,
+    submitScopeAssist,
+  ]);
+
+  function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
+    const derivedProjectName = deriveProjectNameFromScopeFlow({
+      scopeNotes: scopeNotesValue,
+      userInput: sourceInput,
+    });
+    if (!derivedProjectName) return;
+
+    const currentProjectName = String(state?.customer?.projectName || "").trim();
+    const autoProjectName = String(projectNameAutoStateRef.current.auto || "").trim();
+    const manualProjectNameTouched = Boolean(projectNameAutoStateRef.current.manual);
+    const canAutoFill = !manualProjectNameTouched && (!currentProjectName || currentProjectName === autoProjectName);
+    if (!canAutoFill) return;
+    if (currentProjectName !== derivedProjectName) {
+      patch("customer.projectName", derivedProjectName);
+    }
+    projectNameAutoStateRef.current.auto = derivedProjectName;
+  }
+
+  useEffect(() => {
+    if (isEditMode) return;
+    const hasAnyContent = Boolean(
+      String(state?.customer?.projectName || "").trim()
+      || String(state?.customer?.name || "").trim()
+      || String(state?.customer?.companyName || "").trim()
+      || String(scopeNotes || "").trim()
+      || String(additionalNotes || "").trim()
+      || (Array.isArray(state?.labor?.lines) && state.labor.lines.some((line) => {
+        return Boolean(
+          String(line?.role || "").trim()
+          || String(line?.qty || "").trim()
+          || String(line?.hours || "").trim()
+          || String(line?.rate || "").trim()
+        );
+      }))
+      || (Array.isArray(state?.materials?.items) && state.materials.items.some((item) => {
+        return Boolean(
+          String(item?.desc || "").trim()
+          || String(item?.qty || "").trim()
+          || String(item?.priceEach || item?.charge || "").trim()
+        );
+      }))
+    );
+    if (hasAnyContent) return;
+    projectNameAutoStateRef.current.manual = false;
+    projectNameAutoStateRef.current.auto = "";
+  }, [
+    additionalNotes,
+    isEditMode,
+    scopeNotes,
+    state?.customer?.companyName,
+    state?.customer?.name,
+    state?.customer?.projectName,
+    state?.labor?.lines,
+    state?.materials?.items,
   ]);
 
   useEffect(() => {
@@ -2933,6 +3490,50 @@ export default function EstimateForm(props) {
     </div>
   );
 
+  const scopeAssistDisplayError = scopeAssistState.phase === "error"
+    ? resolveScopeAssistDisplayError(
+      scopeAssistState.error,
+      Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+    )
+    : "";
+  const scopeAssistPanelState = scopeAssistDisplayError
+    ? { ...scopeAssistState, error: scopeAssistDisplayError }
+    : scopeAssistState;
+
+  useEffect(() => {
+    if (!isBrowserDevelopmentRuntime()) return undefined;
+    if (typeof document === "undefined") return undefined;
+    const dialog = document.querySelector('[role="dialog"][aria-label="AI Assist — Scope Notes"]');
+    if (!dialog) return undefined;
+
+    const runtime = scopeAssistState?.runtime || {};
+    if (scopeAssistState.phase === "idle") {
+      const stale = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+      if (stale?.parentNode) stale.parentNode.removeChild(stale);
+      return undefined;
+    }
+
+    let row = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+    if (!row) {
+      row = document.createElement("div");
+      row.setAttribute("data-scope-runtime-dev", "1");
+      row.style.marginTop = "8px";
+      row.style.padding = "6px 10px";
+      row.style.fontSize = "11px";
+      row.style.lineHeight = "1.35";
+      row.style.opacity = "0.72";
+      row.style.borderTop = "1px solid rgba(255,255,255,0.12)";
+      row.style.fontFamily = "var(--pe-mono, monospace)";
+      dialog.appendChild(row);
+    }
+    row.textContent = `dev: ${runtime.build || "missing"} · ${runtime.path || "missing"} · ${runtime.parseSource || "missing"}`;
+
+    return () => {
+      const current = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+      if (current?.parentNode) current.parentNode.removeChild(current);
+    };
+  }, [scopeAssistState.phase, scopeAssistState.runtime?.build, scopeAssistState.runtime?.path, scopeAssistState.runtime?.parseSource]);
+
   return (
     <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
       {/* Builder bar */}
@@ -3146,7 +3747,11 @@ export default function EstimateForm(props) {
             <div className={jobInfoTopGridClassName}>
               <div>
                 <label style={styles.label}>Project name</label>
-                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
+                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => {
+                  projectNameAutoStateRef.current.manual = true;
+                  projectNameAutoStateRef.current.auto = "";
+                  patch("customer.projectName", e.target.value);
+                }} placeholder="Project name (optional)" />
               </div>
               {isCommercialJob ? (
                 <div>
@@ -3253,7 +3858,7 @@ export default function EstimateForm(props) {
             type="button"
             className="pe-btn pe-btn-ghost"
             style={styles.aiAssistBtn}
-            onClick={scopeAssist.open}
+            onClick={openScopeAssist}
             title="AI Assist — generate scope notes from a description"
           >
             ✦ AI Assist
@@ -3847,16 +4452,20 @@ export default function EstimateForm(props) {
 
       {!builderOverlayOpen ? actionBarNode : null}
 
-      {scopeAssist.assistState.phase !== "idle" && scopeAssistConfig && (
+      {scopeAssistState.phase !== "idle" && scopeAssistConfig && (
         <SectionAssistPanel
           config={scopeAssistConfig}
-          assistState={scopeAssist.assistState}
-          onSubmit={scopeAssist.submit}
+          assistState={scopeAssistPanelState}
+          onSubmit={submitScopeAssist}
           onAccept={(writes) => {
+            maybeAutoPopulateProjectName({
+              scopeNotesValue: String(writes?.scopeNotes || ""),
+              sourceInput: String(scopeAssistState?.input || homeLaunchPrompt || ""),
+            });
             patch("scopeNotes", writes.scopeNotes);
-            scopeAssist.close();
+            closeScopeAssist();
           }}
-          onClose={scopeAssist.close}
+          onClose={closeScopeAssist}
         />
       )}
 

@@ -2,11 +2,13 @@ import {
   analyzeScopeAssistInput,
   buildRiskAwareScopeEchoFallback,
   buildSpecialtyLocalFallbackNote,
+  deriveProjectNameFromScopeFlow,
   extractScopeAssistText,
   isWeakRiskAwareScopeEcho,
   resolveScopeAssistNotes,
   sanitizeScopeAssistText,
   scopeAssistConfig,
+  summarizeScopeAssistSoftBias,
 } from "./scope";
 import { requestSectionAssist } from "../service";
 
@@ -550,6 +552,40 @@ describe("scope assist adapter", () => {
     expect(resolved.toLowerCase()).not.toContain("scope includes");
     expect(resolved.toLowerCase()).not.toContain("adjacent areas");
     expect(resolved.toLowerCase()).not.toContain("masking");
+  });
+
+  test("derives concise contractor-friendly project names from the shared scope flow", () => {
+    expect(
+      deriveProjectNameFromScopeFlow({
+        userInput: "replace roof",
+        scopeNotes: "Remove and replace the existing roof covering within the stated roof area.",
+        analysis: analyzeScopeAssistInput("replace roof"),
+      })
+    ).toBe("Roof Replacement");
+
+    expect(
+      deriveProjectNameFromScopeFlow({
+        userInput: "paint house",
+        scopeNotes: "Prep and repaint the house with two finish coats.",
+        analysis: analyzeScopeAssistInput("paint house"),
+      })
+    ).toBe("House Repaint");
+
+    expect(
+      deriveProjectNameFromScopeFlow({
+        userInput: "tile bathroom",
+        scopeNotes: "Install tile in the bathroom area, including layout, cuts, and finish cleanup.",
+        analysis: analyzeScopeAssistInput("tile bathroom"),
+      })
+    ).toBe("Bathroom Tile Work");
+
+    expect(
+      deriveProjectNameFromScopeFlow({
+        userInput: "replace water heater",
+        scopeNotes: "Remove and replace the existing water heater and reconnect accessible utilities.",
+        analysis: analyzeScopeAssistInput("replace water heater"),
+      })
+    ).toBe("Water Heater Replacement");
   });
 
   test("expands short exhaust fan replacement shorthand without residential filler", () => {
@@ -2645,6 +2681,38 @@ describe("scope assist adapter", () => {
       ],
     },
     {
+      userInput: "replace roof",
+      weakOutput: "Replace roof.",
+      analysis: expect.objectContaining({
+        scopeProfile: "roofing",
+        scopeDepthTarget: "fuller_scope_draft",
+      }),
+      contains: [
+        "Remove and replace the existing roof covering within the stated roof area",
+        "Coordinate roof access and fall protection as required",
+        "flashing, membrane, or weatherproofing tie-in",
+      ],
+      notContains: [
+        "Complete the described scope",
+      ],
+    },
+    {
+      userInput: "tile bathroom",
+      weakOutput: "Tile bathroom.",
+      analysis: expect.objectContaining({
+        scopeProfile: "finish_scope",
+        scopeAssetCategory: "finish_surface",
+      }),
+      contains: [
+        "Install tile",
+        "Complete required layout, fitting, finishing, and cleanup for the described scope",
+        "Keep the work within the identified restroom area and the stated finish scope",
+      ],
+      notContains: [
+        "Complete the described scope and clean up the work area",
+      ],
+    },
+    {
       userInput: "replace man door",
       weakOutput: "Replace man door.",
       analysis: expect.objectContaining({
@@ -3604,6 +3672,147 @@ describe("scope assist adapter", () => {
       scopeNotes: "1. Remove damaged drywall at sink wall.\n2. Install new drywall patch.\n3. Finish ready for paint.",
     });
     expect(scopeAssistConfig.validationRules(writes)).toEqual({ valid: true });
+  });
+
+  test("rejects generic scaffold scope output for rough prompts", () => {
+    const writes = {
+      scopeNotes: "Replace roof. Complete the described scope and clean up the work area. Exclude concealed damage, substrate correction, and work beyond the direct described scope are not included unless identified and approved.",
+    };
+
+    expect(scopeAssistConfig.validationRules(writes)).toEqual({
+      valid: false,
+      error: "Generated scope is too generic.",
+    });
+  });
+
+  test.each([
+    {
+      userInput: "replace electrical circuit breakers",
+      weakOutput: "Replace electrical circuit breakers.",
+      contains: ["breaker", "verify breaker operation"],
+    },
+    {
+      userInput: "repair stucco cracks",
+      weakOutput: "Repair stucco cracks.",
+      contains: ["stucco cracks", "texture blending", "clean up the work area"],
+    },
+    {
+      userInput: "install fence gate",
+      weakOutput: "Install fence gate.",
+      contains: ["fence", "set and align", "clean up the work area"],
+    },
+    {
+      userInput: "patch drywall",
+      weakOutput: "Patch drywall.",
+      contains: ["drywall", "sand smooth", "ready for finish"],
+    },
+    {
+      userInput: "replace roof",
+      weakOutput: "Replace roof.",
+      contains: ["roof covering", "fall protection", "weatherproofing tie-in"],
+    },
+  ])("keeps category misses on the contractor-ready path for '$userInput'", ({
+    userInput,
+    weakOutput,
+    contains,
+  }) => {
+    const analysis = analyzeScopeAssistInput(userInput);
+    const resolved = resolveScopeAssistNotes(
+      { scopeNotes: weakOutput },
+      { userInput, context: { scopeInputAnalysis: analysis } }
+    );
+
+    expect(isWeakRiskAwareScopeEcho(weakOutput, { userInput, analysis })).toBe(true);
+    expect(resolved).not.toBe(weakOutput);
+    expect(resolved).not.toContain("Complete the described scope");
+    expect(resolved).not.toContain("Scope includes");
+    contains.forEach((snippet) => {
+      expect(resolved).toContain(snippet);
+    });
+  });
+
+  test("raw contractor prompts still expand even when taxonomy fields are blanked out", () => {
+    const userInput = "replace roof";
+    const rawAnalysis = {
+      coreScopeText: userInput,
+      rawScopeText: userInput,
+      actions: ["replace"],
+      actionFamilies: ["replace_changeout"],
+      items: ["roof"],
+      quantities: [],
+      scopeProfile: "",
+      scopeTradeBucket: "",
+      scopeWorkBucket: "",
+      scopeAssetCategory: "",
+      scopeAssetFamily: "",
+      objectType: "",
+      connectionModel: "",
+      assemblyScale: "",
+    };
+    const summary = summarizeScopeAssistSoftBias(rawAnalysis, userInput);
+    const resolved = resolveScopeAssistNotes(
+      { scopeNotes: "Replace roof." },
+      { userInput, context: { scopeInputAnalysis: rawAnalysis } }
+    );
+
+    expect(summary).toEqual(expect.objectContaining({
+      rawPrompt: "replace roof",
+      softTaxonomyBiasFound: false,
+      generationPath: "raw-input-first",
+    }));
+    expect(resolved).not.toBe("Replace roof.");
+    expect(resolved.toLowerCase()).toContain("roof");
+    expect(resolved).toMatch(/remove and replace|roof access|clean up|weatherproofing/i);
+  });
+
+  test("taxonomy hits only bias the path and are not required for contractor-ready expansion", () => {
+    const userInput = "replace roof";
+    const baseAnalysis = {
+      coreScopeText: userInput,
+      rawScopeText: userInput,
+      actions: ["replace"],
+      actionFamilies: ["replace_changeout"],
+      items: ["roof"],
+      quantities: [],
+      scopeProfile: "",
+      scopeTradeBucket: "",
+      scopeWorkBucket: "",
+      scopeAssetCategory: "",
+      scopeAssetFamily: "",
+      objectType: "",
+      connectionModel: "",
+      assemblyScale: "",
+    };
+    const biasedAnalysis = {
+      ...baseAnalysis,
+      scopeProfile: "roofing",
+      scopeTradeBucket: "roofing",
+      scopeWorkBucket: "replace_non_connected_asset",
+      scopeAssetCategory: "roofing",
+    };
+
+    expect(summarizeScopeAssistSoftBias(baseAnalysis, userInput)).toEqual(expect.objectContaining({
+      generationPath: "raw-input-first",
+      softTaxonomyBiasFound: false,
+    }));
+    expect(summarizeScopeAssistSoftBias(biasedAnalysis, userInput)).toEqual(expect.objectContaining({
+      generationPath: "specialty-biased",
+      softTaxonomyBiasFound: true,
+    }));
+
+    const weakOutput = "Replace roof.";
+    const rawResolved = resolveScopeAssistNotes(
+      { scopeNotes: weakOutput },
+      { userInput, context: { scopeInputAnalysis: baseAnalysis } }
+    );
+    const biasedResolved = resolveScopeAssistNotes(
+      { scopeNotes: weakOutput },
+      { userInput, context: { scopeInputAnalysis: biasedAnalysis } }
+    );
+
+    expect(rawResolved).toContain("roof");
+    expect(biasedResolved).toContain("roof");
+    expect(biasedResolved.length).toBeGreaterThanOrEqual(rawResolved.length - 5);
   });
 
   test("falls back to usable text fields when scopeNotes is not present", () => {
