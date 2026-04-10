@@ -8,6 +8,7 @@ const AI_ASSIST_SCOPE_INITIAL_TIMEOUT_MS = 45000;
 const AI_ASSIST_SCOPE_REFINE_TIMEOUT_MS = 65000;
 const AI_ASSIST_BUSY_MESSAGE = "AI assist is temporarily busy. Please wait a few seconds and try again.";
 const AI_ASSIST_GENERIC_MESSAGE = "AI assist couldn’t complete that request right now. Please try again.";
+const AI_ASSIST_REQUEST_PATH = "/api/ai-assist";
 
 function normalizeScopeAssistMode(mode) {
   return String(mode || "").trim().toLowerCase() === "refine" ? "refine" : "initial";
@@ -15,6 +16,109 @@ function normalizeScopeAssistMode(mode) {
 
 function normalizeScopeAssistDebugText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function resolveCanonicalScopePromptBasis({
+  scopeSection = false,
+  mode = "initial",
+  userInput = "",
+  sourcePrompt = "",
+} = {}) {
+  if (!scopeSection || normalizeScopeAssistMode(mode) === "refine") return "";
+  return normalizeScopeAssistDebugText(userInput || sourcePrompt || "");
+}
+
+const SCOPE_LOCAL_FALLBACK_GENERIC_CATCH_ALL_PATTERNS = [
+  /\bcomplete the requested scope described in the prompt\b/i,
+  /\bcarry the work through the main field objective\b/i,
+  /\binclude the normal prep,\s*access,\s*layout,\s*repair,\s*install,\s*fabrication,\s*application,\s*adjustment,\s*touch-up,\s*and finish steps\b/i,
+  /\bfinal work should leave the described item or area addressed\b/i,
+];
+
+const SCOPE_LOCAL_FALLBACK_EXPLICIT_SCAFFOLD_PATTERNS = [
+  /\bwork on affected areas\b/i,
+  /\bcomplete the described scope\b/i,
+  /\bcomplete the stated scope\b/i,
+  /\bclean up the work area\b/i,
+  /\bnot included unless identified and approved\b/i,
+];
+
+const SCOPE_LOCAL_FALLBACK_META_LANGUAGE_PATTERNS = [
+  /\braw scope prompt\b/i,
+  /\bdescribed in the prompt\b/i,
+  /\btrade bucket\b/i,
+  /\boutcome\b/i,
+  /\bclarificationquestion\b/i,
+  /\bmissingfields\b/i,
+  /\bprompt\b/i,
+];
+
+const SCOPE_LOCAL_FALLBACK_ACTION_ONLY_TOKENS = new Set([
+  "fix",
+  "repair",
+  "paint",
+  "change",
+  "do",
+  "install",
+  "replace",
+  "patch",
+  "seal",
+  "caulk",
+  "clean",
+  "remove",
+  "service",
+  "adjust",
+  "restore",
+  "redo",
+  "swap",
+  "mount",
+  "set",
+  "reconnect",
+  "disconnect",
+  "weld",
+  "welding",
+  "perform",
+  "complete",
+  "work",
+]);
+
+function tokenizeScopeLocalFallbackText(value) {
+  return normalizeScopeAssistDebugText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s/-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function assessGroundedScopeLocalFallback({
+  basisText = "",
+  scopeNotes = "",
+} = {}) {
+  const normalizedScopeNotes = normalizeScopeAssistDebugText(scopeNotes);
+  if (!normalizedScopeNotes) {
+    return { accepted: false, reason: "missing_scope_notes" };
+  }
+  if (SCOPE_LOCAL_FALLBACK_GENERIC_CATCH_ALL_PATTERNS.some((pattern) => pattern.test(normalizedScopeNotes))) {
+    return { accepted: false, reason: "generic_catchall_fallback" };
+  }
+  if (SCOPE_LOCAL_FALLBACK_EXPLICIT_SCAFFOLD_PATTERNS.some((pattern) => pattern.test(normalizedScopeNotes))) {
+    return { accepted: false, reason: "explicit_scaffold_phrase" };
+  }
+  if (SCOPE_LOCAL_FALLBACK_META_LANGUAGE_PATTERNS.some((pattern) => pattern.test(normalizedScopeNotes))) {
+    return { accepted: false, reason: "meta_language_rejected" };
+  }
+
+  const basisTokens = tokenizeScopeLocalFallbackText(basisText).filter((token) => !SCOPE_LOCAL_FALLBACK_ACTION_ONLY_TOKENS.has(token));
+  const outputTokens = tokenizeScopeLocalFallbackText(normalizedScopeNotes);
+  if (!basisTokens.length) {
+    return { accepted: outputTokens.length >= 4, reason: outputTokens.length >= 4 ? "grounded_by_content" : "too_thin_for_grounded_fallback" };
+  }
+
+  const groundedTokenHits = basisTokens.filter((token) => outputTokens.includes(token));
+  return {
+    accepted: groundedTokenHits.length >= 1,
+    reason: groundedTokenHits.length >= 1 ? "prompt_item_bound" : "missing_prompt_item_binding",
+  };
 }
 
 function extractScopeAssistResponseText(rawResponse) {
@@ -250,6 +354,19 @@ export async function requestSectionAssist({
       ? (normalizedRefineInstruction || userInput || "")
       : (userInput || "")
   ).trim();
+  const canonicalScopePromptBasis = resolveCanonicalScopePromptBasis({
+    scopeSection,
+    mode: normalizedMode,
+    userInput: normalizedUserInput,
+    sourcePrompt: normalizedSourcePrompt,
+  });
+  const localFallbackBasisText = scopeSection
+    ? normalizeScopeAssistDebugText(
+        normalizedMode === "refine"
+          ? (normalizedCurrentScope || normalizedSourcePrompt || normalizedUserInput)
+          : (canonicalScopePromptBasis || normalizedUserInput || normalizedSourcePrompt)
+      )
+    : "";
 
   if (scopeSection && normalizedMode === "refine" && !normalizedCurrentScope) {
     throw new Error("Scope refine requires an existing scope draft.");
@@ -267,6 +384,34 @@ export async function requestSectionAssist({
     }
     : { userInput: normalizedUserInput };
   const context = config.contextBuilder(state, contextOptions);
+  const requestContext = {
+    ...(context || {}),
+    currentSection: normalizedSectionKey || context?.currentSection || "",
+    ...(scopeSection && normalizedMode === "initial" && canonicalScopePromptBasis ? {
+      scopePromptBasis: canonicalScopePromptBasis,
+      sourceScopePrompt: canonicalScopePromptBasis,
+      sourcePrompt: canonicalScopePromptBasis,
+    } : {}),
+  };
+  const requestBody = {
+    sectionKey: normalizedSectionKey,
+    userInput: normalizedUserInput,
+    ...(scopeSection ? {
+      mode: normalizedMode,
+      sourcePrompt: normalizedMode === "initial" && canonicalScopePromptBasis
+        ? canonicalScopePromptBasis
+        : normalizedSourcePrompt,
+      ...(normalizedMode === "initial" && canonicalScopePromptBasis ? {
+        sourceScopePrompt: canonicalScopePromptBasis,
+      } : {}),
+      currentScope: normalizedCurrentScope,
+      refineInstruction: normalizedRefineInstruction,
+      formatIntent: normalizedFormatIntent,
+      ignoreCurrentScope: Boolean(ignoreCurrentScope),
+    } : {}),
+    context: requestContext,
+    _traceId: _traceId || "",
+  };
 
   // Pass 19: trace the normalization state at request time (dev only)
   if (process.env.NODE_ENV === "development" && _traceId && normalizedSectionKey === "scope") {
@@ -293,26 +438,10 @@ export async function requestSectionAssist({
   let raw = preflight;
   try {
     if (!raw) {
-      const response = await fetch("/api/ai-assist", {
+      const response = await fetch(AI_ASSIST_REQUEST_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sectionKey: normalizedSectionKey,
-          userInput: normalizedUserInput,
-          ...(scopeSection ? {
-            mode: normalizedMode,
-            sourcePrompt: normalizedSourcePrompt,
-            currentScope: normalizedCurrentScope,
-            refineInstruction: normalizedRefineInstruction,
-            formatIntent: normalizedFormatIntent,
-            ignoreCurrentScope: Boolean(ignoreCurrentScope),
-          } : {}),
-          context: {
-            ...(context || {}),
-            currentSection: normalizedSectionKey || context?.currentSection || "",
-          },
-          _traceId: _traceId || "",
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -336,11 +465,22 @@ export async function requestSectionAssist({
     if (typeof config.localFallback === "function") {
       try {
         const localResult = config.localFallback({ userInput: normalizedUserInput, state, context });
-        if (localResult) {
+        const fallbackScopeNotes = localResult?.writes?.scopeNotes;
+        const groundedFallback = assessGroundedScopeLocalFallback({
+          basisText: localFallbackBasisText,
+          scopeNotes: fallbackScopeNotes,
+        });
+        if (localResult && groundedFallback.accepted) {
           if (process.env.NODE_ENV === "development") {
-            console.log(`[ai-assist:${_traceId || "?"}] branch=client_specialty_fallback input="${String(normalizedUserInput || "").slice(0, 40)}" error_class=${error?.assistFailureClass || error?.name || "unknown"}`);
+            console.log(`[ai-assist:${_traceId || "?"}] branch=client_grounded_specialty_fallback input="${String(normalizedUserInput || "").slice(0, 40)}" error_class=${error?.assistFailureClass || error?.name || "unknown"} grounded_reason=${groundedFallback.reason}`);
           }
-          return localResult;
+          return {
+            ...localResult,
+            _scopeClientResultSource: "grounded_local_fallback",
+          };
+        }
+        if (localResult && process.env.NODE_ENV === "development") {
+          console.log(`[ai-assist:${_traceId || "?"}] branch=client_specialty_fallback_rejected input="${String(normalizedUserInput || "").slice(0, 40)}" reject_reason=${groundedFallback.reason}`);
         }
       } catch (_fallbackErr) {
         // localFallback must not mask the original error
@@ -385,12 +525,23 @@ export async function requestSectionAssist({
     if (typeof config.localFallback === "function") {
       try {
         const localResult = config.localFallback({ userInput: normalizedUserInput, state, context });
-        if (localResult) {
+        const fallbackScopeNotes = localResult?.writes?.scopeNotes;
+        const groundedFallback = assessGroundedScopeLocalFallback({
+          basisText: localFallbackBasisText,
+          scopeNotes: fallbackScopeNotes,
+        });
+        if (localResult && groundedFallback.accepted) {
           if (process.env.NODE_ENV === "development") {
             const _fc = classifyAssistFailure({ payload: raw });
-            console.log(`[ai-assist:${_traceId || "?"}] branch=client_specialty_fallback_from_assisted_failed input="${String(normalizedUserInput || "").slice(0, 40)}" server_error_code=${raw._errorCode || "none"} server_failure_class=${_fc}`);
+            console.log(`[ai-assist:${_traceId || "?"}] branch=client_grounded_specialty_fallback_from_assisted_failed input="${String(normalizedUserInput || "").slice(0, 40)}" server_error_code=${raw._errorCode || "none"} server_failure_class=${_fc} grounded_reason=${groundedFallback.reason}`);
           }
-          return localResult;
+          return {
+            ...localResult,
+            _scopeClientResultSource: "grounded_local_fallback",
+          };
+        }
+        if (localResult && process.env.NODE_ENV === "development") {
+          console.log(`[ai-assist:${_traceId || "?"}] branch=client_specialty_fallback_from_assisted_failed_rejected input="${String(normalizedUserInput || "").slice(0, 40)}" reject_reason=${groundedFallback.reason}`);
         }
       } catch (_fallbackErr) {
         // localFallback must not mask the original error

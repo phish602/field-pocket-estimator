@@ -19,6 +19,7 @@ const S = {
     top: "50%",
     transform: "translate(-50%, -50%)",
     width: "min(92vw, 480px)",
+    maxHeight: "min(90vh, 680px)",
     background: "rgba(18,20,30,0.97)",
     border: "1px solid rgba(255,255,255,0.13)",
     borderRadius: 16,
@@ -87,6 +88,8 @@ const S = {
     display: "flex",
     flexDirection: "column",
     gap: 14,
+    flex: 1,
+    overflowY: "auto",
   },
   helpText: {
     margin: 0,
@@ -451,21 +454,6 @@ const S = {
     cursor: "pointer",
     letterSpacing: "0.01em",
   },
-  refineTextarea: {
-    width: "100%",
-    minHeight: 64,
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.1)",
-    borderRadius: 8,
-    color: "rgba(230,241,248,0.88)",
-    fontSize: 13,
-    lineHeight: 1.5,
-    padding: "9px 12px",
-    resize: "none",
-    fontFamily: "inherit",
-    boxSizing: "border-box",
-    outline: "none",
-  },
   refineToggleBtn: {
     background: "none",
     border: "none",
@@ -486,17 +474,6 @@ const S = {
     fontWeight: 600,
     letterSpacing: "0.04em",
     padding: "5px 12px",
-  },
-  refineAmendBtn: {
-    background: "rgba(99,179,237,0.14)",
-    border: "1px solid rgba(99,179,237,0.35)",
-    borderRadius: 8,
-    color: "rgba(99,179,237,0.92)",
-    fontSize: 13,
-    fontWeight: 700,
-    padding: "8px 18px",
-    cursor: "pointer",
-    letterSpacing: "0.03em",
   },
 };
 
@@ -591,93 +568,76 @@ function LoadingPhase() {
   );
 }
 
-function ScopeDiffReview({ result, onAccept, onClose, onSubmit }) {
+function ScopeDiffReview({ result, onAccept, onClose, onSubmit, refining, setRefining, previousScope, setPreviousScope, overrideScope, setOverrideScope }) {
   const scopeNotes = result?.writes?.scopeNotes || "";
-  const [refining, setRefining] = useState(false);
-  const [refineInput, setRefineInput] = useState("");
-  const refineRef = useRef(null);
+  const displayedScope = overrideScope !== null ? overrideScope : scopeNotes;
 
-  useEffect(() => {
-    if (refining && refineRef.current) refineRef.current.focus();
-  }, [refining]);
-
-  function submitRefine(instruction) {
-    const text = String(instruction || "").trim();
-    if (!text || !onSubmit) return;
-    onSubmit(text, { mode: "refine", currentScope: scopeNotes, refineInstruction: text });
-    setRefining(false);
-    setRefineInput("");
-  }
-
-  const REFINE_CHIPS = ["Shorter", "More commercial", "Add exclusions", "More technical"];
+  const REFINE_CHIPS = ["Shorter", "Dash + Brief", "More commercial", "Add exclusions", "More technical"];
 
   return (
     <>
       <p style={S.reviewLabel}>Suggested scope</p>
-      <div style={S.reviewBox}>{scopeNotes}</div>
+      <div style={S.reviewBox}>{displayedScope}</div>
 
       {refining ? (
         <div style={S.refineSection}>
           <span style={S.refineLabel}>Amend</span>
           <div style={S.refineChips}>
             {REFINE_CHIPS.map((chip) => (
-              <button key={chip} type="button" style={S.refineChip} onClick={() => submitRefine(chip)}>
+              <button
+                key={chip}
+                type="button"
+                style={S.refineChip}
+                onClick={() => {
+                  if (!onSubmit) return;
+                  setPreviousScope(displayedScope);
+                  setOverrideScope(null);
+                  onSubmit(chip, { mode: "refine", currentScope: displayedScope, refineInstruction: chip });
+                }}
+              >
                 {chip}
               </button>
             ))}
           </div>
-          <textarea
-            ref={refineRef}
-            style={S.refineTextarea}
-            placeholder="Make it more commercial, add demo and disposal, exclude permits…"
-            value={refineInput}
-            onChange={(e) => setRefineInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitRefine(refineInput); }
-              if (e.key === "Escape") { setRefining(false); setRefineInput(""); }
-            }}
-            rows={3}
-          />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <button
               type="button"
               style={S.refineToggleBtn}
-              onClick={() => { setRefining(false); setRefineInput(""); }}
+              onClick={() => { setRefining(false); }}
             >
               ← Back
             </button>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button style={S.cancelBtn} type="button" onClick={onClose}>
-                Cancel
-              </button>
+            {previousScope !== null ? (
               <button
-                style={{ ...S.refineAmendBtn, opacity: refineInput.trim() ? 1 : 0.45 }}
                 type="button"
-                onClick={() => submitRefine(refineInput)}
-                disabled={!refineInput.trim()}
+                style={S.refinePillBtn}
+                onClick={() => {
+                  setOverrideScope(previousScope);
+                  setPreviousScope(null);
+                }}
               >
-                Amend ↑
+                Revert
               </button>
-            </div>
+            ) : null}
           </div>
         </div>
-      ) : (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
-          {onSubmit ? (
-            <button type="button" style={S.refinePillBtn} onClick={() => setRefining(true)}>
-              Refine
-            </button>
-          ) : <span />}
-          <div style={{ display: "flex", gap: 10 }}>
-            <button style={S.cancelBtn} type="button" onClick={onClose}>
-              Cancel
-            </button>
-            <button style={S.acceptBtn} type="button" onClick={() => onAccept(result.writes)}>
-              Accept &amp; Replace
-            </button>
-          </div>
+      ) : null}
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+        {!refining && onSubmit ? (
+          <button type="button" style={S.refinePillBtn} onClick={() => setRefining(true)}>
+            Refine
+          </button>
+        ) : <span />}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button style={S.cancelBtn} type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button style={S.acceptBtn} type="button" onClick={() => onAccept({ ...result.writes, scopeNotes: displayedScope })}>
+            Accept &amp; Replace
+          </button>
         </div>
-      )}
+      </div>
     </>
   );
 }
@@ -921,6 +881,11 @@ function MaterialsReview({ result, onAccept, onClose }) {
 export default function SectionAssistPanel({ config, assistState, onSubmit, onAccept, onClose }) {
   const { phase, input, result, error, suggestedPrompts = [] } = assistState;
 
+  // Lifted scope-refine state — survives the review→requesting→review phase cycle
+  const [scopeRefining, setScopeRefining] = useState(false);
+  const [scopePreviousScope, setScopePreviousScope] = useState(null);
+  const [scopeOverrideScope, setScopeOverrideScope] = useState(null);
+
   // Derive current materials mode for header badge — no parent change required,
   // derived entirely from result.writes which is already populated by the service
   const displayMode = (() => {
@@ -992,7 +957,18 @@ export default function SectionAssistPanel({ config, assistState, onSubmit, onAc
           {phase === "requesting" ? <LoadingPhase /> : null}
 
           {phase === "review" && config.reviewType === "scope-diff" ? (
-            <ScopeDiffReview result={result} onAccept={onAccept} onClose={onClose} onSubmit={onSubmit} />
+            <ScopeDiffReview
+              result={result}
+              onAccept={onAccept}
+              onClose={onClose}
+              onSubmit={onSubmit}
+              refining={scopeRefining}
+              setRefining={setScopeRefining}
+              previousScope={scopePreviousScope}
+              setPreviousScope={setScopePreviousScope}
+              overrideScope={scopeOverrideScope}
+              setOverrideScope={setScopeOverrideScope}
+            />
           ) : null}
 
           {phase === "review" && config.reviewType === "labor-lines" ? (

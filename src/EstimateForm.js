@@ -52,6 +52,7 @@ import useGuidedBuild, {
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
+const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
 const I18N = {
   en: {
     standard: "Standard (1.00×)",
@@ -202,14 +203,75 @@ function normalizeScopeAssistClientText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
-function classifyScopeAssistClientResponse({ userInput = "", scopeNotes = "" } = {}) {
+function resolveScopeAssistDisplaySource({ runtime = null, result = null } = {}) {
+  if (String(result?._scopeClientResultSource || "").trim() === "grounded_local_fallback") {
+    return "grounded_local_fallback";
+  }
+  const runtimePath = String(runtime?.path || "").trim();
+  if (runtimePath === "direct_groq_success") return "groq_success";
+  if (runtimePath === "direct_groq_clarify") return "groq_clarify";
+  if (runtimePath === "grounded_fallback_success") return "grounded_local_fallback";
+  if (runtimePath === "provider_failure_no_grounded_fallback") return "provider_failure_unavailable";
+  if (runtimePath === "junk_blocked_pre_groq") return "junk_blocked_pre_groq";
+  return runtimePath || "unknown";
+}
+
+const SCOPE_ASSIST_META_LANGUAGE_PATTERNS = [
+  /\braw scope prompt\b/i,
+  /\bdescribed in the prompt\b/i,
+  /\btrade bucket\b/i,
+  /\boutcome\b/i,
+  /\bclarificationquestion\b/i,
+  /\bmissingfields\b/i,
+  /\bprompt\b/i,
+];
+
+function describeScopeAssistMetaLanguageMatch(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) return { matched: false, pattern: "", match: "" };
+
+  for (const pattern of SCOPE_ASSIST_META_LANGUAGE_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match) {
+      return {
+        matched: true,
+        pattern: String(pattern),
+        match: String(match[0] || ""),
+      };
+    }
+  }
+
+  return { matched: false, pattern: "", match: "" };
+}
+
+function classifyScopeAssistClientResponse({ userInput = "", scopeNotes = "", outcome = "", clarificationQuestion = "" } = {}) {
   const rawScopeNotes = typeof scopeNotes === "string" ? scopeNotes : "";
   const normalizedScopeNotes = normalizeScopeAssistClientText(rawScopeNotes);
+  const normalizedOutcome = String(outcome || "").trim().toLowerCase();
+  const normalizedClarificationQuestion = normalizeScopeAssistClientText(clarificationQuestion);
+  if (normalizedOutcome === "clarify" && normalizedClarificationQuestion) {
+    return {
+      valid: false,
+      reason: "clarify",
+      message: normalizedClarificationQuestion,
+      clarify: true,
+    };
+  }
   if (typeof scopeNotes !== "string") {
     return { valid: false, reason: "rejected_malformed", message: "Scope text was malformed." };
   }
   if (!normalizedScopeNotes) {
     return { valid: false, reason: "rejected_empty", message: "Scope text was empty." };
+  }
+  const metaLanguageMatch = describeScopeAssistMetaLanguageMatch(normalizedScopeNotes);
+  if (metaLanguageMatch.matched) {
+    return {
+      valid: false,
+      reason: "rejected_meta_language",
+      message: "Scope text contained internal prompt metadata.",
+      metaPattern: metaLanguageMatch.pattern,
+      metaMatch: metaLanguageMatch.match,
+    };
   }
 
   const normalizedInput = normalizeScopeAssistClientText(userInput);
@@ -1157,6 +1219,11 @@ export default function EstimateForm(props) {
     path: "",
     parseSource: "",
     outcome: "",
+    clarificationQuestion: "",
+    promptBasisField: "",
+    promptBasisExcerpt: "",
+    preGroqJunkGateFired: false,
+    groqHandedOff: false,
     reasonTag: "",
     excerpt: "",
     status: "",
@@ -1473,34 +1540,83 @@ export default function EstimateForm(props) {
       build: "",
       path: "",
       parseSource: "",
+      parseBranch: "",
+      parseFailureReason: "",
       outcome: "",
+      responseSource: "",
+      fallbackSource: "",
+      backendPid: "",
+      backendPort: "",
+      backendStartedAt: "",
+      backendBootId: "",
+      backendServerFile: "",
+      backendRuntimeBuild: "",
+      clientRequestUrl: "",
+      clientPageOrigin: "",
+      clarificationQuestion: "",
+      promptBasisField: "",
+      promptBasisExcerpt: "",
+      preGroqJunkGateFired: false,
+      groqHandedOff: false,
       reasonTag: "",
       excerpt: "",
       status: "",
       retryUsed: false,
     };
     scopeRuntimePromiseRef.current = Promise.resolve(scopeRuntimeMetaRef.current);
-    setScopeAssistState({ phase: "requesting", input: normalizedInput, result: null });
+    setScopeAssistState({
+      phase: "requesting",
+      input: normalizedInput,
+      result: null,
+      error: "",
+      runtime: { ...scopeRuntimeMetaRef.current },
+    });
     if (traceId) {
       console.log(`[ai-assist:${traceId}] scope_submit_start`, { inputLen: normalizedInput.length });
     }
 
-    const shouldTraceRuntime = typeof window !== "undefined"
-      && isBrowserDevelopmentRuntime()
+    const shouldCaptureScopeRuntime = typeof window !== "undefined"
       && typeof window.fetch === "function";
-    const originalFetch = shouldTraceRuntime ? window.fetch : null;
-    if (shouldTraceRuntime && originalFetch) {
+    const originalFetch = shouldCaptureScopeRuntime ? window.fetch : null;
+    if (shouldCaptureScopeRuntime && originalFetch) {
       window.fetch = async (...args) => {
-        const response = await originalFetch.apply(window, args);
+        let requestJson = null;
         try {
           const requestInput = args[0];
           const requestInit = args[1] || {};
           const requestUrl = typeof requestInput === "string" ? requestInput : String(requestInput?.url || "");
+          const resolvedRequestUrl = (() => {
+            try {
+              return typeof window !== "undefined"
+                ? new URL(requestUrl || "", window.location.origin).href
+                : String(requestUrl || "");
+            } catch {
+              return String(requestUrl || "");
+            }
+          })();
           const requestBody = typeof requestInit.body === "string" ? requestInit.body : "";
           if (requestUrl.includes("/api/ai-assist") && requestBody) {
-            const requestJson = JSON.parse(requestBody);
-            if (requestJson?.sectionKey === "scope") {
-              scopeRuntimePromiseRef.current = response.clone().json()
+            requestJson = JSON.parse(requestBody);
+            if (requestJson?.sectionKey === "scope" && traceId) {
+              console.log(`[ai-assist:${traceId}] scope_runtime_request_target`, {
+                requestUrlRaw: requestUrl,
+                resolvedRequestUrl,
+                requestOrigin: (() => {
+                  try { return new URL(resolvedRequestUrl).origin; } catch { return ""; }
+                })(),
+                pageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                serverBuildExpectedByClient: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+              });
+              console.log(`[ai-assist:${traceId}] scope_runtime_outbound`, {
+                payload: requestJson,
+              });
+            }
+          }
+        } catch (_error) {}
+        const response = await originalFetch.apply(window, args);
+        try {
+          if (requestJson?.sectionKey === "scope") {
+            scopeRuntimePromiseRef.current = response.clone().json()
                 .then((payload) => {
                   const scopeNotesRaw = String(payload?.scopeNotes || "");
                   if (traceId) {
@@ -1510,15 +1626,46 @@ export default function EstimateForm(props) {
                       _scopeRuntimeBuild: String(payload?._scopeRuntimeBuild || "missing"),
                       _scopeRuntimePath: String(payload?._scopeRuntimePath || "missing"),
                       _scopeParseSource: String(payload?._scopeParseSource || "missing"),
+                      _scopeParseBranch: String(payload?._scopeParseBranch || "missing"),
+                      _scopeParseFailureReason: String(payload?._scopeParseFailureReason || "missing"),
                       _scopeOutcome: String(payload?._scopeOutcome || "missing"),
+                      _scopeResponseSource: String(payload?._scopeResponseSource || "missing"),
+                      _scopeFallbackSource: String(payload?._scopeFallbackSource || "missing"),
+                      _backendPid: String(payload?._backendPid || "missing"),
+                      _backendPort: String(payload?._backendPort || "missing"),
+                      _backendStartedAt: String(payload?._backendStartedAt || "missing"),
+                      _backendBootId: String(payload?._backendBootId || "missing"),
+                      _backendServerFile: String(payload?._backendServerFile || "missing"),
+                      _backendRuntimeBuild: String(payload?._backendRuntimeBuild || "missing"),
                       _scopeReasonTag: String(payload?._scopeReasonTag || "missing"),
+                      _scopePromptBasisField: String(payload?._scopePromptBasisField || "missing"),
+                      _scopePromptBasisExcerpt: String(payload?._scopePromptBasisExcerpt || "missing"),
+                      _scopePreGroqJunkGateFired: Boolean(payload?._scopePreGroqJunkGateFired),
+                      _scopeGroqHandedOff: Boolean(payload?._scopeGroqHandedOff),
                     });
                   }
                   const runtimeMeta = {
                     build: String(payload?._scopeRuntimeBuild || "missing"),
                     path: String(payload?._scopeRuntimePath || "missing"),
                     parseSource: String(payload?._scopeParseSource || "missing"),
+                    parseBranch: String(payload?._scopeParseBranch || ""),
+                    parseFailureReason: String(payload?._scopeParseFailureReason || ""),
                     outcome: String(payload?._scopeOutcome || "missing"),
+                    responseSource: String(payload?._scopeResponseSource || "missing"),
+                    fallbackSource: String(payload?._scopeFallbackSource || ""),
+                    backendPid: String(payload?._backendPid || ""),
+                    backendPort: String(payload?._backendPort || ""),
+                    backendStartedAt: String(payload?._backendStartedAt || ""),
+                    backendBootId: String(payload?._backendBootId || ""),
+                    backendServerFile: String(payload?._backendServerFile || ""),
+                    backendRuntimeBuild: String(payload?._backendRuntimeBuild || ""),
+                    clientRequestUrl: resolvedRequestUrl,
+                    clientPageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                    clarificationQuestion: String(payload?.clarificationQuestion || "").trim(),
+                    promptBasisField: String(payload?._scopePromptBasisField || "missing"),
+                    promptBasisExcerpt: String(payload?._scopePromptBasisExcerpt || "").trim(),
+                    preGroqJunkGateFired: Boolean(payload?._scopePreGroqJunkGateFired),
+                    groqHandedOff: Boolean(payload?._scopeGroqHandedOff),
                     reasonTag: String(payload?._scopeReasonTag || "missing"),
                     excerpt: String(payload?._scopeExcerpt || scopeNotesRaw || payload?.clarificationQuestion || "")
                       .replace(/\s+/g, " ")
@@ -1534,8 +1681,25 @@ export default function EstimateForm(props) {
                       _scopeRuntimeBuild: runtimeMeta.build,
                       _scopeRuntimePath: runtimeMeta.path,
                       _scopeParseSource: runtimeMeta.parseSource,
+                      _scopeParseBranch: runtimeMeta.parseBranch,
+                      _scopeParseFailureReason: runtimeMeta.parseFailureReason,
                       _scopeOutcome: runtimeMeta.outcome,
+                      _scopeResponseSource: runtimeMeta.responseSource,
+                      _scopeFallbackSource: runtimeMeta.fallbackSource,
+                      _backendPid: runtimeMeta.backendPid,
+                      _backendPort: runtimeMeta.backendPort,
+                      _backendStartedAt: runtimeMeta.backendStartedAt,
+                      _backendBootId: runtimeMeta.backendBootId,
+                      _backendServerFile: runtimeMeta.backendServerFile,
+                      _backendRuntimeBuild: runtimeMeta.backendRuntimeBuild,
+                      clientRequestUrl: runtimeMeta.clientRequestUrl,
+                      clientPageOrigin: runtimeMeta.clientPageOrigin,
+                      serverBuildMatchesClientExpectation: runtimeMeta.backendRuntimeBuild === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
                       _scopeReasonTag: runtimeMeta.reasonTag,
+                      _scopePromptBasisField: runtimeMeta.promptBasisField,
+                      _scopePromptBasisExcerpt: runtimeMeta.promptBasisExcerpt,
+                      _scopePreGroqJunkGateFired: runtimeMeta.preGroqJunkGateFired,
+                      _scopeGroqHandedOff: runtimeMeta.groqHandedOff,
                       _scopeExcerpt: runtimeMeta.excerpt,
                       _scopeRetryUsed: runtimeMeta.retryUsed,
                     });
@@ -1543,8 +1707,18 @@ export default function EstimateForm(props) {
                       ["_scopeRuntimeBuild", runtimeMeta.build],
                       ["_scopeRuntimePath", runtimeMeta.path],
                       ["_scopeParseSource", runtimeMeta.parseSource],
+                      ["_scopeParseBranch", runtimeMeta.parseBranch],
                       ["_scopeOutcome", runtimeMeta.outcome],
+                      ["_scopeResponseSource", runtimeMeta.responseSource],
+                      ["_backendPid", runtimeMeta.backendPid],
+                      ["_backendPort", runtimeMeta.backendPort],
+                      ["_backendStartedAt", runtimeMeta.backendStartedAt],
+                      ["_backendBootId", runtimeMeta.backendBootId],
+                      ["_backendServerFile", runtimeMeta.backendServerFile],
+                      ["_backendRuntimeBuild", runtimeMeta.backendRuntimeBuild],
                       ["_scopeReasonTag", runtimeMeta.reasonTag],
+                      ["_scopePromptBasisField", runtimeMeta.promptBasisField],
+                      ["_scopePromptBasisExcerpt", runtimeMeta.promptBasisExcerpt],
                       ["_scopeExcerpt", runtimeMeta.excerpt],
                     ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
                     if (missingTruthFields.length) {
@@ -1564,7 +1738,24 @@ export default function EstimateForm(props) {
                       build: "missing",
                       path: "missing",
                       parseSource: "missing",
+                      parseBranch: "",
+                      parseFailureReason: "",
                       outcome: "missing",
+                      responseSource: "missing",
+                      fallbackSource: "",
+                      backendPid: "",
+                      backendPort: "",
+                      backendStartedAt: "",
+                      backendBootId: "",
+                      backendServerFile: "",
+                      backendRuntimeBuild: "",
+                      clientRequestUrl: resolvedRequestUrl,
+                      clientPageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                      clarificationQuestion: "",
+                      promptBasisField: "missing",
+                      promptBasisExcerpt: "",
+                      preGroqJunkGateFired: false,
+                      groqHandedOff: false,
                       reasonTag: "missing",
                       excerpt: String(text || "").replace(/\s+/g, " ").trim().slice(0, 160),
                       status: response.status,
@@ -1581,7 +1772,15 @@ export default function EstimateForm(props) {
                           "_scopeRuntimePath",
                           "_scopeParseSource",
                           "_scopeOutcome",
+                          "_backendPid",
+                          "_backendPort",
+                          "_backendStartedAt",
+                          "_backendBootId",
+                          "_backendServerFile",
+                          "_backendRuntimeBuild",
                           "_scopeReasonTag",
+                          "_scopePromptBasisField",
+                          "_scopePromptBasisExcerpt",
                           "_scopeExcerpt",
                         ],
                         status: response.status,
@@ -1591,7 +1790,6 @@ export default function EstimateForm(props) {
                     return runtimeMeta;
                   } catch (_error) {}
                 });
-            }
           }
         } catch (_error) {}
         return response;
@@ -1601,34 +1799,68 @@ export default function EstimateForm(props) {
     let runtimeMeta = scopeRuntimeMetaRef.current;
     const logFinalDecision = (decision, extra = {}) => {
       if (!traceId) return;
-      const excerpt = normalizeScopeAssistClientText(
-        String(extra?.excerpt || extra?.scopeNotes || extra?.error || "")
-      ).slice(0, 80);
+      const { result: decisionResult = null, ...decisionExtra } = extra || {};
+      const finalDisplayedExcerpt = normalizeScopeAssistClientText(
+        String(decisionExtra?.excerpt || decisionExtra?.scopeNotes || decisionExtra?.error || "")
+      ).slice(0, 160);
+      const scopeDisplaySource = resolveScopeAssistDisplaySource({
+        runtime: runtimeMeta,
+        result: decisionResult,
+      });
       console.log(`[ai-assist:${traceId}] final_decision`, {
         decision,
+        scopeDisplaySource,
+        clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+        clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
         _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
         _scopeRuntimePath: String(runtimeMeta?.path || ""),
         _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+        _scopeParseBranch: String(runtimeMeta?.parseBranch || ""),
+        _scopeParseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
         _scopeOutcome: String(runtimeMeta?.outcome || ""),
+        _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+        _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
+        _backendPid: String(runtimeMeta?.backendPid || ""),
+        _backendPort: String(runtimeMeta?.backendPort || ""),
+        _backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+        _backendBootId: String(runtimeMeta?.backendBootId || ""),
+        _backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+        _backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+        expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+        serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
         _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
-        _scopeExcerpt: String(runtimeMeta?.excerpt || excerpt || ""),
+        _scopePromptBasisField: String(runtimeMeta?.promptBasisField || ""),
+        _scopePromptBasisExcerpt: String(runtimeMeta?.promptBasisExcerpt || ""),
+        _scopePreGroqJunkGateFired: Boolean(runtimeMeta?.preGroqJunkGateFired),
+        _scopeGroqHandedOff: Boolean(runtimeMeta?.groqHandedOff),
+        _scopeExcerpt: String(runtimeMeta?.excerpt || finalDisplayedExcerpt || ""),
         _scopeRetryUsed: Boolean(runtimeMeta?.retryUsed),
-        excerpt,
-        ...extra,
+        finalDisplayedExcerpt,
+        ...decisionExtra,
       });
       const missingTruthFields = [
         ["_scopeRuntimeBuild", runtimeMeta?.build],
         ["_scopeRuntimePath", runtimeMeta?.path],
         ["_scopeParseSource", runtimeMeta?.parseSource],
+        ["_scopeParseBranch", runtimeMeta?.parseBranch],
         ["_scopeOutcome", runtimeMeta?.outcome],
+        ["_scopeResponseSource", runtimeMeta?.responseSource],
+        ["_backendPid", runtimeMeta?.backendPid],
+        ["_backendPort", runtimeMeta?.backendPort],
+        ["_backendStartedAt", runtimeMeta?.backendStartedAt],
+        ["_backendBootId", runtimeMeta?.backendBootId],
+        ["_backendServerFile", runtimeMeta?.backendServerFile],
+        ["_backendRuntimeBuild", runtimeMeta?.backendRuntimeBuild],
         ["_scopeReasonTag", runtimeMeta?.reasonTag],
+        ["_scopePromptBasisField", runtimeMeta?.promptBasisField],
+        ["_scopePromptBasisExcerpt", runtimeMeta?.promptBasisExcerpt],
         ["_scopeExcerpt", runtimeMeta?.excerpt],
       ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
       if (missingTruthFields.length) {
         console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
           decision,
           missingTruthFields,
-          excerpt,
+          excerpt: finalDisplayedExcerpt,
         });
       }
     };
@@ -1652,11 +1884,60 @@ export default function EstimateForm(props) {
       }
 
       const scopeNotesValue = result?.writes?.scopeNotes;
+      const normalizedClarificationQuestion = normalizeScopeAssistClientText(runtimeMeta?.clarificationQuestion);
+      const clarifyBranchFired = String(runtimeMeta?.outcome || "").trim().toLowerCase() === "clarify"
+        && Boolean(normalizedClarificationQuestion);
+      const scopeDisplaySource = resolveScopeAssistDisplaySource({
+        runtime: runtimeMeta,
+        result,
+      });
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_client_payload`, {
+          scopeDisplaySource,
+          clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+          clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
+          outcome: String(runtimeMeta?.outcome || ""),
+          parseBranch: String(runtimeMeta?.parseBranch || ""),
+          parseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
+          responseSource: String(runtimeMeta?.responseSource || ""),
+          fallbackSource: String(runtimeMeta?.fallbackSource || ""),
+          backendPid: String(runtimeMeta?.backendPid || ""),
+          backendPort: String(runtimeMeta?.backendPort || ""),
+          backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+          backendBootId: String(runtimeMeta?.backendBootId || ""),
+          backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+          backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+          expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          clarificationQuestion: normalizedClarificationQuestion,
+          scopeNotes: String(scopeNotesValue || ""),
+          clarifyBranchFired,
+        });
+      }
+      if (clarifyBranchFired) {
+        if (traceId) {
+          logFinalDecision("clarify", {
+            blocked: false,
+            excerpt: normalizedClarificationQuestion,
+            result,
+          });
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: normalizedClarificationQuestion,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
       const explicitScaffoldBlocked = isExplicitScopeAssistScaffoldText(scopeNotesValue);
       const explicitScaffoldMatch = describeExplicitScopeAssistScaffoldMatch(scopeNotesValue);
+      const metaLanguageMatch = describeScopeAssistMetaLanguageMatch(scopeNotesValue);
       const localClassification = classifyScopeAssistClientResponse({
         userInput: normalizedInput,
         scopeNotes: scopeNotesValue,
+        outcome: runtimeMeta?.outcome,
+        clarificationQuestion: runtimeMeta?.clarificationQuestion,
       });
       if (traceId) {
         console.log(`[ai-assist:${traceId}] scope_client_scaffold_check`, {
@@ -1664,11 +1945,16 @@ export default function EstimateForm(props) {
           explicitScaffoldMatch: explicitScaffoldMatch.matched,
           matchedPattern: explicitScaffoldMatch.pattern,
           matchedSubstring: explicitScaffoldMatch.match,
+          metaLanguageMatch: metaLanguageMatch.matched,
+          metaLanguagePattern: metaLanguageMatch.pattern,
+          metaLanguageSubstring: metaLanguageMatch.match,
           clientClassification: localClassification.reason,
           _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
           _scopeRuntimePath: String(runtimeMeta?.path || ""),
           _scopeParseSource: String(runtimeMeta?.parseSource || ""),
           _scopeOutcome: String(runtimeMeta?.outcome || ""),
+          _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+          _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
           _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
         });
       }
@@ -1689,7 +1975,7 @@ export default function EstimateForm(props) {
 
       if (!localClassification.valid) {
         if (traceId) {
-          logFinalDecision(localClassification.reason, { blocked: false, excerpt: scopeNotesValue });
+          logFinalDecision(localClassification.reason, { blocked: false, excerpt: scopeNotesValue, result });
         }
         setScopeAssistState({
           phase: "error",
@@ -1704,6 +1990,27 @@ export default function EstimateForm(props) {
         logFinalDecision("accepted_review", {
           backendValidated: result?.validation?.valid === true,
           excerpt: scopeNotesValue,
+          result,
+        });
+        console.log(`[ai-assist:${traceId}] scope_final_displayed`, {
+          scopeDisplaySource,
+          displayedScopeExcerpt: normalizeScopeAssistClientText(scopeNotesValue).slice(0, 240),
+          clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+          clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseBranch: String(runtimeMeta?.parseBranch || ""),
+          _scopeParseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
+          _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+          _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
+          _backendPid: String(runtimeMeta?.backendPid || ""),
+          _backendPort: String(runtimeMeta?.backendPort || ""),
+          _backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+          _backendBootId: String(runtimeMeta?.backendBootId || ""),
+          _backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+          _backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+          expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
         });
         if (result?.validation && result.validation.valid === false) {
           console.log(`[ai-assist:${traceId}] scope_backend_validation_ignored`, {
@@ -1746,7 +2053,7 @@ export default function EstimateForm(props) {
       });
       return undefined;
     } finally {
-      if (shouldTraceRuntime && originalFetch) {
+      if (shouldCaptureScopeRuntime && originalFetch) {
         window.fetch = originalFetch;
       }
     }
