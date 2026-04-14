@@ -5,6 +5,7 @@ import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
+import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -15,6 +16,14 @@ const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 // ===== Customer KPI (live-compute) =====
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+
+const CUST_PROJECT_STATUS_COLORS = {
+  draft: { color: "rgba(230,241,248,0.5)" },
+  estimating: { color: "rgba(245,158,11,0.84)" },
+  active: { color: "rgba(72,187,120,0.82)" },
+  completed: { color: "rgba(99,179,237,0.84)" },
+  archived: { color: "rgba(230,241,248,0.35)" },
+};
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -428,8 +437,12 @@ export default function CustomersScreen({
   selectedCustomerId,
   setSelectedCustomerId,
   onDone,
+  onOpenProjectDetail,
 }) {
   const label = (en, es) => labelOf(lang, en, es);
+
+  const [projectChooser, setProjectChooser] = useState(null);
+  // projectChooser: null | { customerId, projects: [] } | { customerId, empty: true }
 
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const customerSettings = settingsSnapshot?.customer || DEFAULT_SETTINGS.customer;
@@ -579,6 +592,35 @@ export default function CustomersScreen({
     return byId;
   }, [customers, localCustomers, q, mode]);
 
+  const customerProjectMeta = useMemo(() => {
+    const allProjects = readStoredProjects();
+    let allEstimates = [];
+    let allInvoices = [];
+    try {
+      const eRaw = localStorage.getItem(ESTIMATES_KEY);
+      allEstimates = eRaw ? safeParse(eRaw, []) : [];
+      if (!Array.isArray(allEstimates)) allEstimates = [];
+    } catch {}
+    try {
+      const iRaw = localStorage.getItem(INVOICES_KEY);
+      allInvoices = iRaw ? safeParse(iRaw, []) : [];
+      if (!Array.isArray(allInvoices)) allInvoices = [];
+    } catch {}
+    const byId = {};
+    for (const p of allProjects) {
+      const cid = String(p?.customerId || "");
+      if (!cid) continue;
+      if (!byId[cid]) byId[cid] = { projectCount: 0, latestProjectName: "", latestProjectDisplayStatus: null };
+      byId[cid].projectCount += 1;
+      // allProjects is sorted updatedAt desc, so first match per customer is the most recent
+      if (!byId[cid].latestProjectName && String(p?.projectName || "").trim()) {
+        byId[cid].latestProjectName = String(p.projectName).trim();
+        const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
+        byId[cid].latestProjectDisplayStatus = deriveProjectDisplayStatus(view);
+      }
+    }
+    return byId;
+  }, [mode]);
 
   const filtered = useMemo(() => {
   const qq = norm(q);
@@ -879,6 +921,27 @@ export default function CustomersScreen({
                         {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
                         {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
 
+                        {/* Project context */}
+                        {id && customerProjectMeta[id]?.projectCount > 0 ? (
+                          <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 5, alignItems: "baseline" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.55, letterSpacing: "0.2px" }}>
+                              {customerProjectMeta[id].projectCount === 1
+                                ? label("1 project", "1 proyecto")
+                                : `${customerProjectMeta[id].projectCount} ${label("projects", "proyectos")}`}
+                            </span>
+                            {customerProjectMeta[id].latestProjectName ? (
+                              <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.82 }}>
+                                · {customerProjectMeta[id].latestProjectName}
+                              </span>
+                            ) : null}
+                            {customerProjectMeta[id].latestProjectDisplayStatus ? (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.5)" }}>
+                                {customerProjectMeta[id].latestProjectDisplayStatus.label}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+
                         {/* KPIs (live computed from saved estimates/invoices) */}
                         {customerKpis && id ? (
                           <div
@@ -927,7 +990,7 @@ export default function CustomersScreen({
                         ) : null}
                       </div>
 
-                      <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
+                        <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
                         <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
                           {label("Use", "Usar")}
                         </button>
@@ -939,6 +1002,63 @@ export default function CustomersScreen({
                             {label("Delete", "Eliminar")}
                           </button>
                         </div>
+                        {onOpenProjectDetail ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            style={{ width: "100%" }}
+                            onClick={() => {
+                              const custId = String(c?.id || "");
+                              if (!custId) return;
+                              const allProjects = readStoredProjects();
+                              const matched = allProjects.filter((p) => String(p?.customerId || "") === custId);
+                              if (matched.length === 1) {
+                                setProjectChooser(null);
+                                onOpenProjectDetail(String(matched[0].id || ""));
+                              } else if (matched.length > 1) {
+                                setProjectChooser({ customerId: custId, projects: matched });
+                              } else {
+                                setProjectChooser({ customerId: custId, empty: true });
+                              }
+                            }}
+                          >
+                            {label("Projects", "Proyectos")}
+                          </button>
+                        ) : null}
+                        {projectChooser && projectChooser.customerId === id && projectChooser.empty ? (
+                          <div style={{ fontSize: 12, color: "rgba(230,241,248,0.5)", padding: "4px 0" }}>
+                            {label("No linked projects yet.", "Aún no hay proyectos vinculados.")}
+                          </div>
+                        ) : null}
+                        {projectChooser && projectChooser.customerId === id && projectChooser.projects?.length > 1 ? (
+                          <div style={{ display: "grid", gap: 4, padding: "6px 0 0" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                              {label("Choose project", "Elegir proyecto")}
+                            </div>
+                            {projectChooser.projects.map((proj) => (
+                              <button
+                                key={String(proj.id)}
+                                className="pe-btn pe-btn-ghost"
+                                type="button"
+                                style={{ width: "100%", textAlign: "left", fontSize: 13, padding: "6px 10px" }}
+                                onClick={() => {
+                                  setProjectChooser(null);
+                                  onOpenProjectDetail(String(proj.id || ""));
+                                }}
+                              >
+                                {String(proj.projectName || proj.siteAddress || proj.projectNumber || proj.id || "Untitled")}
+                              </button>
+                            ))}
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              style={{ width: "100%", fontSize: 11, opacity: 0.5, padding: "4px 10px" }}
+                              onClick={() => setProjectChooser(null)}
+                            >
+                              {label("Cancel", "Cancelar")}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>

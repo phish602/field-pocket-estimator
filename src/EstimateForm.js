@@ -42,6 +42,13 @@ import {
   normalizeInvoiceRecord,
   validateInvoiceAgainstEstimate,
 } from "./utils/invoices";
+import {
+  backfillProjectCollections,
+  readStoredProjects,
+  resolveProjectPersistenceTarget,
+  upsertProject,
+  writeStoredProjects,
+} from "./utils/projects";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 import useGuidedBuild, {
@@ -128,12 +135,37 @@ const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
 const SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS = 38000;
 const SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE = "AI assist took too long to respond. Please try again.";
 const SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE = "AI assist could not reach the local AI server.";
 const SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE = "AI assist hit an internal error. Please try again.";
+
+function readAndConsumeProjectCreateSeed() {
+  try {
+    const raw = localStorage.getItem(PROJECT_CREATE_SEED_KEY);
+    localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const projectId = String(parsed.projectId || "").trim();
+    const customerId = String(parsed.customerId || "").trim();
+    if (!projectId && !customerId) return null;
+    return {
+      projectId,
+      customerId,
+      customerName: String(parsed.customerName || "").trim(),
+      projectName: String(parsed.projectName || "").trim(),
+      projectNumber: String(parsed.projectNumber || "").trim(),
+      siteAddress: String(parsed.siteAddress || "").trim(),
+    };
+  } catch {
+    try { localStorage.removeItem(PROJECT_CREATE_SEED_KEY); } catch {}
+    return null;
+  }
+}
 
 function looksLikeScopeAssistNetworkFailure(value) {
   const text = String(value || "").trim();
@@ -469,9 +501,36 @@ function triggerHaptic() {
 
 function readSavedDocList(key) {
   try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    if (key !== ESTIMATES_KEY && key !== INVOICES_KEY) {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    }
+
+    const readList = (storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const next = backfillProjectCollections({
+      customers: readSavedCustomers(),
+      projects: readStoredProjects(),
+      estimates: readList(ESTIMATES_KEY),
+      invoices: readList(INVOICES_KEY),
+    });
+
+    if (next.changed) {
+      writeStoredProjects(next.projects);
+      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next.estimates));
+      localStorage.setItem(INVOICES_KEY, JSON.stringify(next.invoices));
+    }
+
+    return key === ESTIMATES_KEY ? next.estimates : next.invoices;
   } catch {
     return [];
   }
@@ -1231,9 +1290,11 @@ export default function EstimateForm(props) {
   });
   const scopeRuntimePromiseRef = useRef(Promise.resolve(scopeRuntimeMetaRef.current));
   const scopeAssistSubmitSeqRef = useRef(0);
+  const scopeRefineInFlightRef = useRef(null);
   const [scopeAssistState, setScopeAssistState] = useState({ phase: "idle" });
   const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
   const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
+  const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
   // ──────────────────────────────────────────────────────────────────────────
   const lastHomeLaunchIdRef = useRef("");
   const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
@@ -1348,6 +1409,7 @@ export default function EstimateForm(props) {
   const [savePrompt, setSavePrompt] = useState(null);
   const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
   const [savePulse, setSavePulse] = useState(false);
+  const [projectSeedSummary, setProjectSeedSummary] = useState(null);
   const saveBaselineRef = useRef("");
   const hasSaveBaselineRef = useRef(false);
   const lastSavedAtSeenRef = useRef(0);
@@ -1366,6 +1428,37 @@ export default function EstimateForm(props) {
       }
       if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "auto" });
     } catch {}
+  }, []);
+
+  // Consume project-scoped create seed (written by ProjectDetailScreen before navigation)
+  useEffect(() => {
+    if (isEditMode) return;
+    const seed = readAndConsumeProjectCreateSeed();
+    if (!seed) return;
+    if (seed.customerName) {
+      patch("customer.name", seed.customerName);
+      setSearchCustomerText(seed.customerName);
+    }
+    if (seed.customerId) {
+      patch("customer.id", seed.customerId);
+      setSelectedCustomerId(seed.customerId);
+      const profile = buildSelectedCustomerProfileFromDraft(
+        { id: seed.customerId, name: seed.customerName },
+        seed.customerId,
+        readSavedCustomers()
+      );
+      if (profile) setSelectedCustomerProfile(profile);
+    }
+    if (seed.projectName) patch("customer.projectName", seed.projectName);
+    if (seed.projectNumber) patch("customer.projectNumber", seed.projectNumber);
+    if (seed.siteAddress) patch("customer.projectAddress", seed.siteAddress);
+    if (seed.projectId) patch("projectId", seed.projectId);
+    setProjectSeedSummary({
+      projectName: seed.projectName,
+      customerName: seed.customerName,
+      siteAddress: seed.siteAddress,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1529,12 +1622,25 @@ export default function EstimateForm(props) {
     setScopeAssistState({ phase: "idle" });
   }, []);
 
-  const submitScopeAssist = useCallback(async (userInput, serviceOptions = {}) => {
+  const submitScopeAssist = useCallback((userInput, serviceOptions = {}) => {
+    const isRefineRequest = String(serviceOptions?.mode || "").trim().toLowerCase() === "refine";
+    if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_SUBMIT_ENTER]", { isRefineRequest, chip: userInput, inFlightActive: Boolean(scopeRefineInFlightRef.current), ts: Date.now() });
+
+    // Upstream in-flight guard: only one scope refine request at a time
+    if (isRefineRequest && scopeRefineInFlightRef.current) {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_UPSTREAM_BLOCKED]", { chip: userInput, ts: Date.now() });
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_SKIPPED_DUPLICATE]", { chip: userInput, ts: Date.now() });
+      return scopeRefineInFlightRef.current;
+    }
+
+    const runScopeAssist = async () => {
     const mySeq = ++scopeAssistSubmitSeqRef.current;
     const traceId = isBrowserDevelopmentRuntime()
       ? Math.random().toString(36).slice(2, 7)
       : "";
     const normalizedInput = String(userInput || "").trim();
+
+    const previousResult = isRefineRequest ? (scopeAssistState?.result || null) : null;
     scopeAssistRequestStartedAtRef.current = Date.now();
     scopeRuntimeMetaRef.current = {
       build: "",
@@ -1866,6 +1972,7 @@ export default function EstimateForm(props) {
     };
 
     try {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_START]", { chip: normalizedInput, isRefine: isRefineRequest, seq: mySeq, ts: Date.now() });
       const result = await requestSectionAssist({
         sectionKey: "scope",
         userInput: normalizedInput,
@@ -2042,21 +2149,47 @@ export default function EstimateForm(props) {
         });
       }
 
-      setScopeAssistState({
-        phase: "error",
-        input: normalizedInput,
-        error: resolveScopeAssistDisplayError(
-          error?.assistSafeMessage || error?.message || String(error || ""),
-          Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
-        ),
-        runtime: runtimeMeta,
-      });
+      // On refine error, return to review with the previous result instead of showing InputPhase
+      if (isRefineRequest && previousResult) {
+        setScopeAssistState({
+          phase: "review",
+          input: normalizedInput,
+          result: previousResult,
+          refineError: resolveScopeAssistDisplayError(
+            error?.assistSafeMessage || error?.message || String(error || ""),
+            Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+          ),
+          runtime: runtimeMeta,
+        });
+      } else {
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: resolveScopeAssistDisplayError(
+            error?.assistSafeMessage || error?.message || String(error || ""),
+            Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+          ),
+          runtime: runtimeMeta,
+        });
+      }
       return undefined;
     } finally {
       if (shouldCaptureScopeRuntime && originalFetch) {
         window.fetch = originalFetch;
       }
     }
+    }; // end runScopeAssist
+
+    const promise = runScopeAssist().finally(() => {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_SETTLED]", { isRefine: isRefineRequest, chip: userInput, willClearRef: scopeRefineInFlightRef.current === promise, ts: Date.now() });
+      if (scopeRefineInFlightRef.current === promise) {
+        scopeRefineInFlightRef.current = null;
+      }
+    });
+    if (isRefineRequest) {
+      scopeRefineInFlightRef.current = promise;
+    }
+    return promise;
   }, [state]);
 
   useEffect(() => {
@@ -2064,9 +2197,18 @@ export default function EstimateForm(props) {
       lastHomeLaunchIdRef.current = "";
       return;
     }
-    if (!homeLaunchPrompt || isEditMode) return;
+    if (isEditMode) return;
     if (lastHomeLaunchIdRef.current === homeLaunchId) return;
     lastHomeLaunchIdRef.current = homeLaunchId;
+    if (homeLaunchMode === "open_only") {
+      setScopeAssistState({ phase: "open", input: "" });
+      try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+      return;
+    }
+    if (!homeLaunchPrompt) {
+      try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+      return;
+    }
     try {
       submitScopeAssist(homeLaunchPrompt, {
         mode: "initial",
@@ -2077,6 +2219,7 @@ export default function EstimateForm(props) {
     try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
   }, [
     homeLaunchId,
+    homeLaunchMode,
     homeLaunchPrompt,
     isEditMode,
     onHomeEstimateLaunchConsumed,
@@ -3047,8 +3190,8 @@ export default function EstimateForm(props) {
           || ""
         ).trim();
       const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
-      const projectName = String(state?.customer?.projectName || "").trim();
-      const projectNumber = String(state?.customer?.projectNumber || "").trim();
+      let projectName = String(state?.customer?.projectName || "").trim();
+      let projectNumber = String(state?.customer?.projectNumber || "").trim();
       const linkedEstimateSnapshot = saveDocType === "invoice"
         ? (
           persistedState?.sourceEstimateSnapshot
@@ -3064,6 +3207,20 @@ export default function EstimateForm(props) {
           || ""
         ).trim()
         : "";
+      projectName = String(
+        projectName
+        || persistedState?.projectName
+        || existingMatch?.projectName
+        || linkedEstimateSnapshot?.projectName
+        || ""
+      ).trim();
+      projectNumber = String(
+        projectNumber
+        || persistedState?.projectNumber
+        || existingMatch?.projectNumber
+        || linkedEstimateSnapshot?.projectNumber
+        || ""
+      ).trim();
       const invoiceApprovedTotal = saveDocType === "invoice"
         ? Number(
           persistedState?.invoiceMeta?.approvedTotalAtCreation
@@ -3072,6 +3229,52 @@ export default function EstimateForm(props) {
           || totalRevenue
         ) || Number(totalRevenue || 0)
         : Number(totalRevenue || 0);
+      const projectContext = {
+        projectId: String(
+          persistedState?.projectId
+          || existingMatch?.projectId
+          || linkedEstimateSnapshot?.projectId
+          || ""
+        ).trim(),
+        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+        customerName,
+        projectName,
+        projectNumber,
+        customer: {
+          ...(persistedState?.customer || {}),
+          ...(state?.customer || {}),
+          id: String(selectedCustomerId || state?.customer?.id || "").trim(),
+          name: customerName,
+          projectName,
+          projectNumber,
+        },
+        siteAddress: String(
+          resolvedProjectAddress
+          || state?.customer?.projectAddress
+          || state?.customer?.address
+          || linkedEstimateSnapshot?.siteAddress
+          || linkedEstimateSnapshot?.customer?.projectAddress
+          || ""
+        ).trim(),
+        status: "active",
+        notes: String(persistedState?.additionalNotes || state?.additionalNotes || "").trim(),
+        scopeSummary: String(persistedState?.scopeNotes || persistedState?.additionalNotes || state?.scopeNotes || "").trim(),
+        createdAt,
+        updatedAt,
+      };
+      const currentProjects = readStoredProjects();
+      const { project: resolvedProject } = resolveProjectPersistenceTarget(projectContext, currentProjects, { nowTs: updatedAt });
+      const projectRecord = resolvedProject && typeof resolvedProject === "object"
+        ? resolvedProject
+        : null;
+      if (!projectRecord || !String(projectRecord.id || "").trim()) {
+        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+        return;
+      }
+      projectName = String(projectRecord.projectName || projectName).trim();
+      projectNumber = String(projectRecord.projectNumber || projectNumber).trim();
+      const resolvedCustomerId = String(projectRecord.customerId || selectedCustomerId || state?.customer?.id || "").trim();
+      const nextProjects = upsertProject(currentProjects, projectRecord);
       const shouldUseLinkedInvoiceFinancials = (
         saveDocType === "invoice"
         && !!linkedEstimateId
@@ -3092,7 +3295,8 @@ export default function EstimateForm(props) {
         ...financialSummary,
         id: recordId,
         docType: saveDocType,
-        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+        projectId: projectRecord.id,
+        customerId: resolvedCustomerId,
         customerName,
         projectName,
         projectNumber,
@@ -3117,7 +3321,7 @@ export default function EstimateForm(props) {
         customer: {
           ...(persistedState?.customer || {}),
           ...(state?.customer || {}),
-          id: String(selectedCustomerId || state?.customer?.id || "").trim(),
+          id: resolvedCustomerId,
           name: customerName,
           projectName,
           projectNumber,
@@ -3142,6 +3346,8 @@ export default function EstimateForm(props) {
       if (saveDocType === "invoice") {
         const savedInvoice = normalizeInvoiceRecord({
           ...baseRecord,
+          projectId: projectRecord.id,
+          customerId: resolvedCustomerId,
           invoiceNumber,
           estimateNumber,
           invoiceTotal: Number(totalRevenue || 0),
@@ -3163,6 +3369,7 @@ export default function EstimateForm(props) {
           return;
         }
 
+        writeStoredProjects(nextProjects);
         const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
         localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
         try {
@@ -3180,9 +3387,11 @@ export default function EstimateForm(props) {
       } else {
         const savedEstimate = {
           ...baseRecord,
+          projectId: projectRecord.id,
           estimateNumber,
           invoiceNumber: "",
         };
+        writeStoredProjects(nextProjects);
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
 
@@ -3904,6 +4113,18 @@ export default function EstimateForm(props) {
           </div>
 
           <div ref={customerTopRef} className="pe-card pe-estimator-shell">
+        {projectSeedSummary ? (
+          <div style={styles.seedBanner}>
+            <div style={styles.seedBannerLabel}>Working under project</div>
+            <div style={styles.seedBannerName}>{projectSeedSummary.projectName || "Untitled Project"}</div>
+            {projectSeedSummary.customerName ? (
+              <div style={styles.seedBannerMeta}>{projectSeedSummary.customerName}</div>
+            ) : null}
+            {projectSeedSummary.siteAddress ? (
+              <div style={styles.seedBannerAddr}>{projectSeedSummary.siteAddress}</div>
+            ) : null}
+          </div>
+        ) : null}
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
         <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
@@ -4903,6 +5124,38 @@ const styles = {
   guidedEntryBtn: {
     minWidth: 118,
     borderRadius: 999,
+  },
+  seedBanner: {
+    margin: "0 0 12px",
+    padding: "12px 14px 10px",
+    borderRadius: 10,
+    background: "rgba(99,179,237,0.06)",
+    border: "1px solid rgba(99,179,237,0.16)",
+    display: "grid",
+    gap: 2,
+  },
+  seedBannerLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "rgba(99,179,237,0.58)",
+    marginBottom: 2,
+  },
+  seedBannerName: {
+    fontSize: 15,
+    fontWeight: 800,
+    color: "rgba(230,241,248,0.94)",
+    lineHeight: 1.25,
+  },
+  seedBannerMeta: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "rgba(230,241,248,0.55)",
+  },
+  seedBannerAddr: {
+    fontSize: 11.5,
+    color: "rgba(230,241,248,0.38)",
   },
   editHeaderStack: {
     minWidth: 0,

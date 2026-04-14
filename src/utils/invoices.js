@@ -4,6 +4,12 @@
 import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import {
+  backfillProjectCollections,
+  createProjectRecord,
+  readStoredProjects,
+  writeStoredProjects,
+} from "./projects";
 
 export const INVOICE_TYPES = {
   DEPOSIT: "deposit",
@@ -30,6 +36,20 @@ export const PAYMENT_STATUSES = {
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const EPSILON = 0.005;
+
+function readStoredArray(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredCustomers() {
+  return readStoredArray(STORAGE_KEYS.CUSTOMERS);
+}
 
 function deepClone(value) {
   try {
@@ -493,22 +513,28 @@ export function generateNextInvoiceNumber(invoices) {
 
 export function readStoredInvoices() {
   try {
-    const raw = localStorage.getItem(INVOICES_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
+    const parsed = readStoredArray(INVOICES_KEY);
     let merged = Array.isArray(parsed) ? parsed : [];
 
     try {
-      const legacyRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
-      const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : [];
-      const legacyInvoices = Array.isArray(legacyParsed)
-        ? legacyParsed.filter((entry) => asText(entry?.docType).toLowerCase() === "invoice")
-        : [];
+      const legacyParsed = readStoredArray(STORAGE_KEYS.ESTIMATES);
+      const legacyInvoices = legacyParsed.filter((entry) => asText(entry?.docType).toLowerCase() === "invoice");
       if (legacyInvoices.length > 0) {
         merged = [...merged, ...legacyInvoices];
       }
     } catch {}
 
-    return normalizeInvoiceList(merged);
+    const nextInvoices = normalizeInvoiceList(merged);
+    const sync = backfillProjectCollections({
+      customers: readStoredCustomers(),
+      projects: readStoredProjects(),
+      invoices: nextInvoices,
+    });
+    if (sync.changed) {
+      writeStoredProjects(sync.projects);
+    }
+    localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
+    return sync.invoices;
   } catch {
     return [];
   }
@@ -516,8 +542,16 @@ export function readStoredInvoices() {
 
 export function writeStoredInvoices(invoices) {
   const next = normalizeInvoiceList(invoices);
-  localStorage.setItem(INVOICES_KEY, JSON.stringify(next));
-  return next;
+  const sync = backfillProjectCollections({
+    customers: readStoredCustomers(),
+    projects: readStoredProjects(),
+    invoices: next,
+  });
+  if (sync.changed) {
+    writeStoredProjects(sync.projects);
+  }
+  localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
+  return sync.invoices;
 }
 
 export function buildEstimateInvoiceSnapshot(estimate) {
@@ -528,6 +562,7 @@ export function buildEstimateInvoiceSnapshot(estimate) {
   return {
     estimateId: asText(source?.id),
     estimateNumber: asText(source?.estimateNumber || source?.job?.docNumber),
+    projectId: asText(source?.projectId || source?.customer?.projectId || source?.sourceEstimateSnapshot?.projectId),
     approvedTotal: financialSummary.approvedTotal,
     totalRevenue: financialSummary.totalRevenue,
     grandTotal: financialSummary.grandTotal,
@@ -616,6 +651,26 @@ export function normalizeInvoiceRecord(record) {
   );
   const createdAt = Number(source?.createdAt || source?.savedAt || Date.now()) || Date.now();
   const updatedAt = Number(source?.updatedAt || source?.savedAt || createdAt) || createdAt;
+  const projectId = asText(source?.projectId || source?.project?.id || snapshot?.projectId)
+    || createProjectRecord({
+      customerId,
+      customerName,
+      projectName,
+      projectNumber,
+      siteAddress: asText(
+        source?.siteAddress
+        || source?.projectAddress
+        || source?.customer?.projectAddress
+        || source?.customer?.address
+        || snapshot?.siteAddress
+        || source?.job?.location
+      ),
+      status: source?.projectStatus || source?.status,
+      notes: source?.notes || source?.projectNotes,
+      scopeSummary: source?.scopeSummary || source?.scopeNotes || source?.additionalNotes || source?.notes,
+      createdAt,
+      updatedAt,
+    }, { nowTs: updatedAt }).id;
   const normalizedSnapshot = sourceEstimateId
     ? {
         ...(snapshot || {}),
@@ -649,6 +704,7 @@ export function normalizeInvoiceRecord(record) {
     customerName,
     projectName,
     projectNumber,
+    projectId,
     sourceEstimateId,
     sourceEstimateSnapshot: normalizedSnapshot,
     date: invoiceDate,
@@ -915,6 +971,7 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   draft.estimateNumber = snapshot.estimateNumber;
   draft.sourceEstimateId = snapshot.estimateId;
   draft.sourceEstimateSnapshot = snapshot;
+  draft.projectId = asText(snapshot?.projectId || draft?.projectId || createProjectRecord(snapshot || {}).id);
   draft.customerId = snapshot.customerId;
   draft.customerName = snapshot.customerName;
   draft.projectName = snapshot.projectName;

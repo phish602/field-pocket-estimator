@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, useRef, useId } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef, useId } from "react";
 import EstimateForm from "./EstimateForm";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
 import InvoicesScreen from "./screens/InvoicesScreen";
+import ProjectsScreen from "./screens/ProjectsScreen";
+import NewProjectScreen from "./screens/NewProjectScreen";
+import ProjectDetailScreen from "./screens/ProjectDetailScreen";
+import { readProjectDetailTarget, writeProjectDetailTarget } from "./screens/ProjectDetailScreen";
 import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
@@ -11,6 +15,7 @@ import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
 import { requireCompanyProfile } from "./utils/guards";
 import { migrateLegacyStorageNamespace } from "./utils/storage";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
+import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "./utils/projects";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -119,6 +124,7 @@ const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
 
 function safeParseJson(raw) {
   try {
@@ -204,6 +210,47 @@ function writeProfileReturnTarget(value) {
 function clearProfileReturnTarget() {
   try {
     localStorage.removeItem(PROFILE_RETURN_TARGET_KEY);
+  } catch {}
+}
+
+function normalizeProjectDetailReturnTarget(value) {
+  if (!value || typeof value !== "object") return null;
+  const route = String(value?.route || "").trim();
+  if (route !== ROUTES.PROJECT_DETAIL) return null;
+  const projectId = String(value?.projectId || "").trim();
+  return {
+    route,
+    ...(projectId ? { projectId } : {}),
+  };
+}
+
+function readProjectDetailReturnTarget() {
+  try {
+    const raw = localStorage.getItem(PROJECT_DETAIL_RETURN_TARGET_KEY);
+    if (!raw) return null;
+    return normalizeProjectDetailReturnTarget(safeParseJson(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeProjectDetailReturnTarget(value) {
+  const normalized = normalizeProjectDetailReturnTarget(value);
+  try {
+    if (!normalized) {
+      localStorage.removeItem(PROJECT_DETAIL_RETURN_TARGET_KEY);
+      return null;
+    }
+    localStorage.setItem(PROJECT_DETAIL_RETURN_TARGET_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function clearProjectDetailReturnTarget() {
+  try {
+    localStorage.removeItem(PROJECT_DETAIL_RETURN_TARGET_KEY);
   } catch {}
 }
 
@@ -448,6 +495,25 @@ function IconInvoices({ size = 24 }) {
   );
 }
 
+function IconProjects({ size = 24 }) {
+  return (
+    <IconBase size={size}>
+      <BlueprintCorners size={24} />
+      <g
+        stroke="currentColor"
+        strokeWidth="2"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="6" y="6.5" width="12" height="4" rx="1" opacity="0.95" />
+        <rect x="6" y="13" width="5.5" height="5" rx="1" opacity="0.8" />
+        <rect x="12.5" y="13" width="5.5" height="5" rx="1" opacity="0.65" />
+      </g>
+    </IconBase>
+  );
+}
+
 function IconCreate({ size = 28 }) {
   return (
     <IconBase size={size} viewBox="0 0 28 28">
@@ -597,8 +663,8 @@ function TopBar({
           key={`header-brand-wrap-${routeEnterKey || "default"}`}
           type="button"
           style={styles.headerSpinBtn}
-          aria-label="Go Home (Hold for Shortcuts)"
-          title="Tap: Home • Hold: Shortcuts"
+          aria-label="Home"
+          title="Home"
           onClick={(e) => {
             if (e?.currentTarget?.__lpFired) return;
             onHeaderSpinTap && onHeaderSpinTap();
@@ -664,7 +730,7 @@ function TopBar({
 function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mobileCreateChromeMotion }) {
   const tabs = useMemo(
     () => [
-      { key: ROUTES.HOME, label: "Home", Icon: IconHome },
+      { key: ROUTES.PROJECTS, label: "Projects", Icon: IconProjects },
       { key: ROUTES.CUSTOMERS, label: "Customers", Icon: IconCustomers },
       { key: ROUTES.CREATE, label: "Create", Icon: IconCreate, center: true },
       { key: ROUTES.ESTIMATES, label: "Estimates", Icon: IconEstimates },
@@ -816,6 +882,67 @@ function QuickMenu({ open, onClose, onSelect }) {
 }
 
 
+function CreateLauncher({ open, onClose, onAction }) {
+  if (!open) return null;
+  return (
+    <>
+      <div className="pe-quick-overlay" style={styles.quickOverlay} onClick={onClose} />
+      <div style={styles.createLauncherPanel} role="dialog" aria-modal="true" aria-label="Start New">
+        <div style={styles.quickTitleRow}>
+          <div style={styles.quickTitle}>Start New</div>
+          <button
+            className="pe-btn pe-btn-ghost"
+            style={styles.quickClose}
+            onClick={onClose}
+            aria-label="Close"
+            type="button"
+          >
+            ✕
+          </button>
+        </div>
+        <div style={styles.createLauncherStack}>
+          <button
+            className="pe-btn"
+            type="button"
+            style={styles.createLauncherHero}
+            onClick={() => onAction("getStarted")}
+          >
+            <span style={styles.createLauncherHeroLabel}>✦ Get Started</span>
+            <span style={styles.createLauncherHeroHint}>AI-assisted estimate</span>
+          </button>
+          <div style={styles.createLauncherRow}>
+            <button
+              className="pe-btn"
+              type="button"
+              style={styles.createLauncherAction}
+              onClick={() => onAction("project")}
+            >
+              Project
+            </button>
+            <button
+              className="pe-btn"
+              type="button"
+              style={styles.createLauncherAction}
+              onClick={() => onAction("estimate")}
+            >
+              Estimate
+            </button>
+            <button
+              className="pe-btn"
+              type="button"
+              style={styles.createLauncherAction}
+              onClick={() => onAction("invoice")}
+            >
+              Invoice
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+
 function Drawer({ open, onClose, onSelect, disabled }) {
   return (
     <>
@@ -904,6 +1031,35 @@ function CreateFlow({
   homeEstimateLaunch,
   onHomeEstimateLaunchConsumed,
 }) {
+  const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
+  const [isSeedReady, setIsSeedReady] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      const parsed = raw ? safeParseJson(raw) : null;
+      const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+      return currentDocType === desiredDocType;
+    } catch {
+      return desiredDocType === "estimate";
+    }
+  });
+
+  useLayoutEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      const parsed = raw ? safeParseJson(raw) : null;
+      const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+      if (currentDocType !== desiredDocType) {
+        const nextState = parsed && typeof parsed === "object"
+          ? { ...parsed, ui: { ...(parsed.ui || {}), docType: desiredDocType } }
+          : { ui: { docType: desiredDocType } };
+        localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(nextState));
+      }
+    } catch {}
+    setIsSeedReady(true);
+  }, [desiredDocType]);
+
+  if (!isSeedReady) return null;
+
   return (
     <div>
       <EstimateForm
@@ -920,6 +1076,15 @@ function CreateFlow({
     </div>
   );
 }
+
+const HOME_PROJECT_STATUS_COLORS = {
+  draft: { bg: "rgba(230,241,248,0.06)", border: "rgba(230,241,248,0.14)", color: "rgba(230,241,248,0.5)" },
+  estimating: { bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.22)", color: "rgba(245,158,11,0.84)" },
+  active: { bg: "rgba(72,187,120,0.1)", border: "rgba(72,187,120,0.22)", color: "rgba(72,187,120,0.82)" },
+  completed: { bg: "rgba(99,179,237,0.1)", border: "rgba(99,179,237,0.22)", color: "rgba(99,179,237,0.84)" },
+  archived: { bg: "rgba(230,241,248,0.04)", border: "rgba(230,241,248,0.1)", color: "rgba(230,241,248,0.35)" },
+};
+
 /* =========================
    Placeholder screens (theme-safe)
    ========================= */
@@ -932,6 +1097,8 @@ function HomeScreen({
   businessPulseCounts,
   onResumeLastEstimate,
   onLaunchEstimate,
+  recentProjects,
+  onOpenProjectDetail,
 }) {
   const [launchPrompt, setLaunchPrompt] = useState("");
   const pressTimerRef = useRef(null);
@@ -1194,6 +1361,74 @@ function HomeScreen({
         </div>
       </div>
 
+      {recentProjects && recentProjects.length > 0 ? (
+        <div className="pe-card pe-home-projects-panel" style={{ overflow: "hidden" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", opacity: 0.5, padding: "14px 16px 10px" }}>
+            Active Projects
+          </div>
+          <div style={{ display: "grid", gap: 0 }}>
+            {recentProjects.map((p, idx) => {
+              const pName = String(p?.projectName || "").trim() || "Untitled Project";
+              const cName = String(p?.customerName || "").trim();
+              const dsKey = p?._displayStatus?.key || "draft";
+              const dsLabel = p?._displayStatus?.label || "Draft";
+              const SC = HOME_PROJECT_STATUS_COLORS[dsKey] || HOME_PROJECT_STATUS_COLORS.draft;
+              return (
+                <button
+                  key={String(p?.id || idx)}
+                  type="button"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 8,
+                    alignItems: "center",
+                    width: "100%",
+                    padding: "10px 16px",
+                    borderTop: "1px solid rgba(255,255,255,0.07)",
+                    borderRight: "none",
+                    borderBottom: "none",
+                    borderLeft: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    color: "inherit",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                  }}
+                  onClick={() => {
+                    try { onOpenProjectDetail && onOpenProjectDetail(String(p?.id || "")); } catch {}
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {pName}
+                    </div>
+                    {cName ? (
+                      <div style={{ fontSize: 12, opacity: 0.55, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {cName}
+                      </div>
+                    ) : null}
+                  </div>
+                  <span style={{
+                    flexShrink: 0,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    background: SC.bg,
+                    color: SC.color,
+                    border: `1px solid ${SC.border}`,
+                    textTransform: "capitalize",
+                  }}>
+                    {dsLabel}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       <div className="pe-home-spacer" aria-hidden="true" />
 
       <footer className="pe-home-closer" aria-hidden="true">
@@ -1331,6 +1566,63 @@ const styles = {
     gap: 12,
   },
   quickItem: {
+    height: 54,
+    borderRadius: 16,
+    fontWeight: 900,
+    letterSpacing: "0.06em",
+  },
+
+  createLauncherPanel: {
+    position: "fixed",
+    top: `calc(env(safe-area-inset-top, 0px) + ${HEADER_H + HEADER_SAFE_GAP + 18}px)`,
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: "min(520px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px))",
+    zIndex: 85,
+    padding: 18,
+    borderRadius: 24,
+    background: "linear-gradient(180deg, rgba(16, 24, 34, 0.96), rgba(8, 13, 20, 0.94))",
+    border: "1px solid rgba(164, 184, 197, 0.14)",
+    backdropFilter: "blur(18px) saturate(118%)",
+    WebkitBackdropFilter: "blur(18px) saturate(118%)",
+    boxShadow: "0 34px 80px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.05)",
+    overflow: "hidden",
+  },
+  createLauncherStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  createLauncherHero: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 3,
+    height: "auto",
+    padding: "16px 14px 14px",
+    borderRadius: 16,
+    background: "rgba(99,179,237,0.08)",
+    border: "1px solid rgba(99,179,237,0.22)",
+    cursor: "pointer",
+  },
+  createLauncherHeroLabel: {
+    fontSize: 14,
+    fontWeight: 900,
+    color: "rgba(99,179,237,0.95)",
+    letterSpacing: "0.06em",
+  },
+  createLauncherHeroHint: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: "rgba(230,241,248,0.4)",
+    letterSpacing: "0.03em",
+  },
+  createLauncherRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: 12,
+  },
+  createLauncherAction: {
     height: 54,
     borderRadius: 16,
     fontWeight: 900,
@@ -1697,6 +1989,22 @@ const [spinTick, setSpinTick] = useState(0);
     return deriveBusinessPulseCounts(estimateRecords, invoiceHistory);
   }, [estimateHistory, invoiceHistory]);
 
+  const recentProjects = useMemo(() => {
+    try {
+      const allProjects = readStoredProjects();
+      const estRecords = Array.isArray(estimateHistory) ? estimateHistory : [];
+      const invRecords = Array.isArray(invoiceHistory) ? invoiceHistory : [];
+      return allProjects
+        .filter((p) => String(p?.status || "active") !== "archived")
+        .slice(0, 5)
+        .map((p) => {
+          const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: estRecords, invoices: invRecords });
+          const ds = deriveProjectDisplayStatus(view);
+          return { ...p, _displayStatus: ds };
+        });
+    } catch { return []; }
+  }, [activeTab, estimateHistory, invoiceHistory]);
+
   const shellT = useCallback((key) => {
     const en = {
       estimateNumLabel: "Estimate #",
@@ -1820,17 +2128,30 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(ROUTES.COMPANY_PROFILE, options);
   }, [navigateTo, prepareCompanyProfileReturnTarget]);
 
-  const launchEstimateFromHome = useCallback((roughPrompt = "") => {
+  const armProjectDetailReturnTarget = useCallback(() => {
+    const projectId = String(readProjectDetailTarget() || "").trim();
+    if (!projectId) {
+      clearProjectDetailReturnTarget();
+      return;
+    }
+    writeProjectDetailReturnTarget({ route: ROUTES.PROJECT_DETAIL, projectId });
+  }, []);
+
+  const launchEstimateFromHome = useCallback((roughPrompt = "", launchOptions = {}) => {
+    const options = launchOptions && typeof launchOptions === "object" ? launchOptions : {};
     const prompt = String(roughPrompt || "").trim();
+    const launchMode = String(options?.mode || "").trim() === "open_only" ? "open_only" : "";
     if (!ensureBuilderAccess()) return;
     try {
       localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
     } catch {}
-    if (prompt) {
+    clearProjectDetailReturnTarget();
+    if (prompt || launchMode === "open_only") {
       setHomeEstimateLaunch({
         id: `home-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        prompt,
+        prompt: launchMode === "open_only" ? "" : prompt,
+        ...(launchMode ? { mode: launchMode } : {}),
         ts: Date.now(),
       });
     } else {
@@ -1851,6 +2172,7 @@ const [spinTick, setSpinTick] = useState(0);
     setShowCreateFromEditModal(false);
     setCreateEditSessionActive(false);
     try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+    clearProjectDetailReturnTarget();
 
     let draftRaw = "";
     try {
@@ -1878,8 +2200,10 @@ const [spinTick, setSpinTick] = useState(0);
       return;
     }
 
+    setHomeEstimateLaunch(null);
+    clearProjectDetailReturnTarget();
     navigateTo(ROUTES.ESTIMATE_BUILDER);
-  }, [createEditSessionActive, navigateTo]);
+  }, [createEditSessionActive, navigateTo, setHomeEstimateLaunch]);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
@@ -1893,9 +2217,31 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     const onNavEstimates = () => {
+      if (activeTab === ROUTES.CREATE) {
+        const returnTarget = readProjectDetailReturnTarget();
+        if (returnTarget?.route === ROUTES.PROJECT_DETAIL) {
+          if (returnTarget.projectId) {
+            writeProjectDetailTarget(returnTarget.projectId);
+          }
+          clearProjectDetailReturnTarget();
+          try { navigateTo(ROUTES.PROJECT_DETAIL, { bypassDirtyGuard: true }); } catch {}
+          return;
+        }
+      }
       try { navigateTo(ROUTES.ESTIMATES); } catch {}
     };
     const onNavInvoices = () => {
+      if (activeTab === ROUTES.CREATE) {
+        const returnTarget = readProjectDetailReturnTarget();
+        if (returnTarget?.route === ROUTES.PROJECT_DETAIL) {
+          if (returnTarget.projectId) {
+            writeProjectDetailTarget(returnTarget.projectId);
+          }
+          clearProjectDetailReturnTarget();
+          try { navigateTo(ROUTES.PROJECT_DETAIL, { bypassDirtyGuard: true }); } catch {}
+          return;
+        }
+      }
       try { navigateTo(ROUTES.INVOICES); } catch {}
     };
     window.addEventListener("estipaid:navigate-estimates", onNavEstimates);
@@ -1904,10 +2250,11 @@ const [spinTick, setSpinTick] = useState(0);
       window.removeEventListener("estipaid:navigate-estimates", onNavEstimates);
       window.removeEventListener("estipaid:navigate-invoices", onNavInvoices);
     };
-  }, [navigateTo]);
+  }, [activeTab, navigateTo]);
 
   useEffect(() => {
     const onNavEstimator = () => {
+      clearProjectDetailReturnTarget();
       try {
         navigateTo(ROUTES.ESTIMATE_BUILDER);
       } catch {}
@@ -1918,6 +2265,7 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     const onNavInvoiceBuilder = () => {
+      clearProjectDetailReturnTarget();
       try { navigateTo(ROUTES.INVOICE_BUILDER); } catch {}
     };
     window.addEventListener("estipaid:navigate-invoice-builder", onNavInvoiceBuilder);
@@ -2014,11 +2362,12 @@ const [spinTick, setSpinTick] = useState(0);
   }, []);
 
   useEffect(() => {
-  const onShellAction = (evt) => {
+    const onShellAction = (evt) => {
       const action = String(evt?.detail?.action || "");
       if (!action) return;
 
       if (action === "continueLast") {
+        clearProjectDetailReturnTarget();
         try {
           localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
           const latestId = String(latestSavedEstimateMeta?.id || "").trim();
@@ -2034,11 +2383,13 @@ const [spinTick, setSpinTick] = useState(0);
       }
 
       if (action === "openCreate") {
+        clearProjectDetailReturnTarget();
         navigateTo(ROUTES.ESTIMATE_BUILDER);
         return;
       }
 
       if (action === "newClear") {
+        clearProjectDetailReturnTarget();
         try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
         try { localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT); } catch {}
         return;
@@ -2083,6 +2434,7 @@ const [spinTick, setSpinTick] = useState(0);
   const chromeScrollStateRef = useRef({ lastTop: 0, anchorTop: 0, direction: "none" });
   const [quickOpen, setQuickOpen] = useState(false);
   const quickOpenRef = useRef(false);
+  const [createLauncherOpen, setCreateLauncherOpen] = useState(false);
   const setShellScrolled = useCallback((nextScrolled) => {
     if (isScrolledRef.current === nextScrolled) return;
     isScrolledRef.current = nextScrolled;
@@ -2345,6 +2697,12 @@ const gated = false;
           } catch {}
         }}
         onLaunchEstimate={launchEstimateFromHome}
+        recentProjects={recentProjects}
+        onOpenProjectDetail={(projectId) => {
+          clearProjectDetailReturnTarget();
+          writeProjectDetailTarget(projectId);
+          navigateTo(ROUTES.PROJECT_DETAIL);
+        }}
       />
     );
     if (activeTab === ROUTES.CUSTOMERS)
@@ -2364,6 +2722,11 @@ const gated = false;
               navigateTo(ROUTES.ESTIMATE_BUILDER);
             } catch {}
           }}
+          onOpenProjectDetail={(projectId) => {
+            clearProjectDetailReturnTarget();
+            writeProjectDetailTarget(projectId);
+            navigateTo(ROUTES.PROJECT_DETAIL);
+          }}
         />
       );
     if (activeTab === ROUTES.ESTIMATES) {
@@ -2375,7 +2738,68 @@ const gated = false;
           history={estimateHistory}
           onDone={() => navigateTo(ROUTES.HOME)}
           onOpenEstimate={() => {
+            clearProjectDetailReturnTarget();
             navigateTo(ROUTES.ESTIMATE_BUILDER);
+          }}
+          onOpenProjectDetail={(projectId) => {
+            clearProjectDetailReturnTarget();
+            writeProjectDetailTarget(projectId);
+            navigateTo(ROUTES.PROJECT_DETAIL);
+          }}
+        />
+      );
+    }
+    if (activeTab === ROUTES.PROJECT_DETAIL) {
+      return (
+        <ProjectDetailScreen
+          onBack={() => {
+            clearProjectDetailReturnTarget();
+            navigateTo(ROUTES.PROJECTS);
+          }}
+          onOpenEstimate={(estimate) => {
+            armProjectDetailReturnTarget();
+            const id = String(estimate?.id || "").trim();
+            try {
+              if (id) localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, id);
+              else localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+              localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+            } catch {}
+            setCreateEditSessionActive(false);
+            setHomeEstimateLaunch(null);
+            try {
+              window.dispatchEvent(new Event("estipaid:estimate-open"));
+            } catch {}
+            navigateTo(ROUTES.ESTIMATE_BUILDER);
+          }}
+          onOpenInvoice={(invoice) => {
+            armProjectDetailReturnTarget();
+            const id = String(invoice?.id || "").trim();
+            try {
+              if (id) localStorage.setItem(EDIT_INVOICE_TARGET_KEY, id);
+              else localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+              localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+            } catch {}
+            setCreateEditSessionActive(false);
+            setHomeEstimateLaunch(null);
+            navigateTo(ROUTES.INVOICE_BUILDER);
+          }}
+          onNewEstimate={() => {
+            armProjectDetailReturnTarget();
+            try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+            try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
+            setCreateEditSessionActive(false);
+            setHomeEstimateLaunch(null);
+            setCreateResetSeq((n) => n + 1);
+            navigateTo(ROUTES.ESTIMATE_BUILDER);
+          }}
+          onNewInvoice={() => {
+            armProjectDetailReturnTarget();
+            try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+            try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
+            setCreateEditSessionActive(false);
+            setHomeEstimateLaunch(null);
+            setCreateResetSeq((n) => n + 1);
+            navigateTo(ROUTES.INVOICE_BUILDER);
           }}
         />
       );
@@ -2387,6 +2811,34 @@ const gated = false;
           t={shellT}
           spinTick={spinTick}
           onDone={() => navigateTo(ROUTES.HOME)}
+          onOpenProjectDetail={(projectId) => {
+            clearProjectDetailReturnTarget();
+            writeProjectDetailTarget(projectId);
+            navigateTo(ROUTES.PROJECT_DETAIL);
+          }}
+        />
+      );
+    }
+    if (activeTab === ROUTES.NEW_PROJECT) {
+      return (
+        <NewProjectScreen
+          onBack={() => navigateTo(ROUTES.PROJECTS)}
+          onSave={(newProjectId) => {
+            clearProjectDetailReturnTarget();
+            writeProjectDetailTarget(newProjectId);
+            navigateTo(ROUTES.PROJECT_DETAIL);
+          }}
+        />
+      );
+    }
+    if (activeTab === ROUTES.PROJECTS) {
+      return (
+        <ProjectsScreen
+          onOpenProjectDetail={(projectId) => {
+            clearProjectDetailReturnTarget();
+            writeProjectDetailTarget(projectId);
+            navigateTo(ROUTES.PROJECT_DETAIL);
+          }}
         />
       );
     }
@@ -2396,6 +2848,7 @@ const gated = false;
     if (activeTab === ROUTES.CREATE) {
       return (
         <CreateFlow
+          key={`create:${createIntent || ""}:${createResetSeq}`}
           gated={gated}
           intent={createIntent}
           spinTick={spinTick}
@@ -2454,6 +2907,7 @@ const gated = false;
       return;
     }
     if (key === "templates") {
+      clearProjectDetailReturnTarget();
       navigateTo(ROUTES.ESTIMATE_BUILDER);
       return;
     }
@@ -2635,7 +3089,7 @@ const gated = false;
             return;
           }
           if (key === ROUTES.CREATE) {
-            onCreateButtonRoute();
+            setCreateLauncherOpen(true);
             return;
           }
           if (key === ROUTES.ESTIMATES) {
@@ -2648,6 +3102,33 @@ const gated = false;
           }
           if (key === ROUTES.COMPANY_PROFILE) {
             navigateToCompanyProfile();
+            return;
+          }
+        }}
+      />
+
+      <CreateLauncher
+        open={createLauncherOpen}
+        onClose={() => setCreateLauncherOpen(false)}
+        onAction={(action) => {
+          setCreateLauncherOpen(false);
+          if (action === "getStarted") {
+            launchEstimateFromHome("", { mode: "open_only" });
+            return;
+          }
+          if (action === "estimate") {
+            onCreateButtonRoute();
+            return;
+          }
+          if (action === "project") {
+            clearProjectDetailReturnTarget();
+            navigateTo(ROUTES.NEW_PROJECT);
+            return;
+          }
+          if (action === "invoice") {
+            setHomeEstimateLaunch(null);
+            clearProjectDetailReturnTarget();
+            navigateTo(ROUTES.INVOICE_BUILDER);
             return;
           }
         }}
@@ -2744,7 +3225,7 @@ const gated = false;
             return;
           }
           if (key === ROUTES.CREATE) {
-            onCreateButtonRoute();
+            setCreateLauncherOpen(true);
             return;
           }
           navigateTo(key);

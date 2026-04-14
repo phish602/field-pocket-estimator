@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
   ESTIMATOR_STATE: "estipaid-estimator-v1",
   ESTIMATE_DRAFT: "estipaid-estimate-draft-v1",
   ESTIMATES: "estipaid-estimates-v1",
+  PROJECTS: "estipaid-projects-v1",
   INVOICES: "estipaid-invoices-v1",
   PENDING_CUSTOMER_USE: "estipaid-pending-customer-use-v1",
   PENDING_CUSTOMER_CREATE: "estipaid-pending-customer-create-v1",

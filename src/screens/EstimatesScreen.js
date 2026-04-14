@@ -11,6 +11,12 @@ import {
   roundCurrency,
   writeStoredInvoices,
 } from "../utils/invoices";
+import {
+  readStoredProjects,
+  resolveProjectNavigationTarget,
+  upsertProject,
+  writeStoredProjects,
+} from "../utils/projects";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -516,7 +522,7 @@ function calcBreakdown(e) {
   };
 }
 
-export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spinTick = 0 }) {
+export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOpenProjectDetail, spinTick = 0 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -1963,24 +1969,21 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spin
                 flexWrap: "wrap",
               };
               const customerEstimateRow = {
-                display: "flex",
-                gap: "8px",
+                display: "grid",
+                gap: 2,
                 minWidth: 0,
-                flexWrap: "wrap",
               };
               const customerField = {
                 ...cardBodyLine,
                 fontSize: 12.5,
                 opacity: 0.78,
                 lineHeight: 1.2,
-                flex: "1 1 auto",
               };
               const estimateField = {
                 ...cardBodyLine,
-                fontSize: 12.5,
-                opacity: 0.78,
+                fontSize: 12,
+                opacity: 0.65,
                 lineHeight: 1.2,
-                flex: "0 1 auto",
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
@@ -2277,6 +2280,25 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, spin
                       >
                         {isOpen ? labelHide : labelDetails}
                       </button>
+                      {onOpenProjectDetail ? (
+                        <button
+                          className="pe-btn pe-btn-ghost"
+                          type="button"
+                          onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "project")}
+                          onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "project")}
+                          onClick={(evt) => runEstimateCardAction(evt, id, "project", () => {
+                            const currentProjects = readStoredProjects();
+                            const target = resolveProjectNavigationTarget(e, currentProjects);
+                            if (target?.needsBackfill && target?.project) {
+                              const nextProjects = upsertProject(currentProjects, target.project);
+                              writeStoredProjects(nextProjects);
+                            }
+                            if (target?.projectId) onOpenProjectDetail(target.projectId);
+                          })}
+                        >
+                          Project
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 

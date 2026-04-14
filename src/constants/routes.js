@@ -12,6 +12,9 @@ export const ROUTES = {
   SNAPSHOT: "snapshot",
   COMPANY_PROFILE: "companyProfile",
   ADVANCED: "advanced",
+  PROJECTS: "projects",
+  PROJECT_DETAIL: "projectDetail",
+  NEW_PROJECT: "newProject",
 };
 
 export const BUILDER_INTENTS = {

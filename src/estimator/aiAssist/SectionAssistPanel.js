@@ -497,16 +497,44 @@ function formatMoney(value) {
   });
 }
 
+// Refine-command labels that must never be submitted as initial scope generation requests
+const REFINE_COMMAND_PATTERNS = [
+  /^\s*dash\s*\+\s*brief\s*$/i,
+  /^\s*shorter\s*$/i,
+  /^\s*more\s+commercial\s*$/i,
+  /^\s*more\s+technical\s*$/i,
+  /^\s*add\s+exclusions\s*$/i,
+];
+const REFINE_COMMAND_MESSAGE = "This looks like a refine action, not a job description. Generate a scope first, then use the Amend actions to refine it.";
+
+function isRefineCommandText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  return REFINE_COMMAND_PATTERNS.some((p) => p.test(trimmed));
+}
+
 function InputPhase({ config, initialInput, onSubmit, onClose, error, suggestedPrompts = [] }) {
   const [value, setValue] = useState(initialInput || "");
+  const [commandWarning, setCommandWarning] = useState("");
   const taRef = useRef(null);
 
   useEffect(() => {
     taRef.current?.focus();
   }, []);
 
+  const guardedSubmit = (text) => {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return;
+    if (isRefineCommandText(trimmed)) {
+      setCommandWarning(REFINE_COMMAND_MESSAGE);
+      return;
+    }
+    setCommandWarning("");
+    onSubmit(trimmed);
+  };
+
   const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (value.trim()) onSubmit(value); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); guardedSubmit(value); }
     if (e.key === "Escape") onClose();
   };
 
@@ -524,7 +552,7 @@ function InputPhase({ config, initialInput, onSubmit, onClose, error, suggestedP
                 key={`${label}:${index}`}
                 type="button"
                 style={S.promptChip}
-                onClick={() => onSubmit(prompt)}
+                onClick={() => guardedSubmit(prompt)}
               >
                 {label}
               </button>
@@ -537,10 +565,11 @@ function InputPhase({ config, initialInput, onSubmit, onClose, error, suggestedP
         style={S.textarea}
         placeholder={config.inputPlaceholder}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => { setValue(e.target.value); if (commandWarning) setCommandWarning(""); }}
         onKeyDown={handleKeyDown}
         rows={4}
       />
+      {commandWarning ? <p style={S.errorText}>{commandWarning}</p> : null}
       {error ? <p style={S.errorText}>{error}</p> : null}
       <div style={S.actionsRow}>
         <button style={S.cancelBtn} type="button" onClick={onClose}>
@@ -549,7 +578,7 @@ function InputPhase({ config, initialInput, onSubmit, onClose, error, suggestedP
         <button
           style={S.generateBtn}
           type="button"
-          onClick={() => onSubmit(value)}
+          onClick={() => guardedSubmit(value)}
         >
           {config.generateLabel}
         </button>
@@ -568,18 +597,49 @@ function LoadingPhase() {
   );
 }
 
-function ScopeDiffReview({ result, onAccept, onClose, onSubmit, refining, setRefining, previousScope, setPreviousScope, overrideScope, setOverrideScope }) {
+function ScopeDiffReview({
+  result,
+  refineError,
+  onAccept,
+  onClose,
+  onSubmit,
+  refining,
+  setRefining,
+  previousScope,
+  setPreviousScope,
+  overrideScope,
+  setOverrideScope,
+  amendLocked = false,
+}) {
   const scopeNotes = result?.writes?.scopeNotes || "";
   const displayedScope = overrideScope !== null ? overrideScope : scopeNotes;
 
-  const REFINE_CHIPS = ["Shorter", "Dash + Brief", "More commercial", "Add exclusions", "More technical"];
+  const submitRefineAction = (chip) => {
+    if (process.env.NODE_ENV === "development") console.log("[SCOPE_AMEND_CLICK]", { chip, amendLocked, ts: Date.now() });
+    if (amendLocked || !onSubmit) {
+      if (process.env.NODE_ENV === "development") console.log("[SCOPE_AMEND_PANEL_BLOCKED]", { chip, amendLocked, ts: Date.now() });
+      return;
+    }
+    setPreviousScope(displayedScope);
+    setOverrideScope(null);
+    setRefining(false);
+    onSubmit(chip, { mode: "refine", currentScope: displayedScope, refineInstruction: chip });
+  };
+
+  const REFINE_CHIPS = ["Shorter", "Dash + Brief"];
 
   return (
     <>
       <p style={S.reviewLabel}>Suggested scope</p>
       <div style={S.reviewBox}>{displayedScope}</div>
 
-      {refining ? (
+      {refineError ? <p style={S.errorText}>{refineError}</p> : null}
+
+      {amendLocked ? (
+        <div style={S.refineSection}>
+          <span style={S.refineLabel}>Amending\u2026</span>
+        </div>
+      ) : refining ? (
         <div style={S.refineSection}>
           <span style={S.refineLabel}>Amend</span>
           <div style={S.refineChips}>
@@ -589,10 +649,7 @@ function ScopeDiffReview({ result, onAccept, onClose, onSubmit, refining, setRef
                 type="button"
                 style={S.refineChip}
                 onClick={() => {
-                  if (!onSubmit) return;
-                  setPreviousScope(displayedScope);
-                  setOverrideScope(null);
-                  onSubmit(chip, { mode: "refine", currentScope: displayedScope, refineInstruction: chip });
+                  submitRefineAction(chip);
                 }}
               >
                 {chip}
@@ -603,7 +660,7 @@ function ScopeDiffReview({ result, onAccept, onClose, onSubmit, refining, setRef
             <button
               type="button"
               style={S.refineToggleBtn}
-              onClick={() => { setRefining(false); }}
+              onClick={() => setRefining(false)}
             >
               ← Back
             </button>
@@ -624,8 +681,12 @@ function ScopeDiffReview({ result, onAccept, onClose, onSubmit, refining, setRef
       ) : null}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
-        {!refining && onSubmit ? (
-          <button type="button" style={S.refinePillBtn} onClick={() => setRefining(true)}>
+        {!amendLocked && !refining && onSubmit ? (
+          <button
+            type="button"
+            style={S.refinePillBtn}
+            onClick={() => setRefining(true)}
+          >
             Refine
           </button>
         ) : <span />}
@@ -886,6 +947,17 @@ export default function SectionAssistPanel({ config, assistState, onSubmit, onAc
   const [scopePreviousScope, setScopePreviousScope] = useState(null);
   const [scopeOverrideScope, setScopeOverrideScope] = useState(null);
 
+  // Parent-owned amend lock: single source of truth for scope amend in-flight state.
+  // Ref is set synchronously before calling onSubmit to block re-entry on the same tick.
+  // State drives the visual lock (re-render). Both cleared only in the promise .finally().
+  const scopeAmendLockRef = useRef(false);
+  const scopeAmendPromiseRef = useRef(null);
+  const [scopeAmendLocked, setScopeAmendLocked] = useState(false);
+  const lastScopeResultRef = useRef(null);
+  if (phase === "review" && result && config.reviewType === "scope-diff") {
+    lastScopeResultRef.current = result;
+  }
+
   // Derive current materials mode for header badge — no parent change required,
   // derived entirely from result.writes which is already populated by the service
   const displayMode = (() => {
@@ -954,20 +1026,50 @@ export default function SectionAssistPanel({ config, assistState, onSubmit, onAc
             />
           ) : null}
 
-          {phase === "requesting" ? <LoadingPhase /> : null}
+          {phase === "requesting" && !scopeAmendLocked ? <LoadingPhase /> : null}
 
-          {phase === "review" && config.reviewType === "scope-diff" ? (
+          {((phase === "review") || (phase === "requesting" && scopeAmendLocked)) && config.reviewType === "scope-diff" ? (
             <ScopeDiffReview
-              result={result}
+              result={phase === "review" ? result : lastScopeResultRef.current}
+              refineError={assistState.refineError || null}
               onAccept={onAccept}
               onClose={onClose}
-              onSubmit={onSubmit}
+              onSubmit={(userInput, options) => {
+                const isRefineMode = options?.mode === "refine";
+                if (isRefineMode) {
+                  if (scopeAmendLockRef.current) return scopeAmendPromiseRef.current;
+                  scopeAmendLockRef.current = true;
+                  setScopeAmendLocked(true);
+                }
+                try {
+                  const requestPromise = onSubmit(userInput, options);
+                  if (isRefineMode) {
+                    const tracked = Promise.resolve(requestPromise)
+                      .catch(() => null)
+                      .finally(() => {
+                        scopeAmendLockRef.current = false;
+                        scopeAmendPromiseRef.current = null;
+                        setScopeAmendLocked(false);
+                      });
+                    scopeAmendPromiseRef.current = tracked;
+                  }
+                  return requestPromise;
+                } catch (error) {
+                  if (isRefineMode) {
+                    scopeAmendLockRef.current = false;
+                    scopeAmendPromiseRef.current = null;
+                    setScopeAmendLocked(false);
+                  }
+                  throw error;
+                }
+              }}
               refining={scopeRefining}
               setRefining={setScopeRefining}
               previousScope={scopePreviousScope}
               setPreviousScope={setScopePreviousScope}
               overrideScope={scopeOverrideScope}
               setOverrideScope={setScopeOverrideScope}
+              amendLocked={scopeAmendLocked}
             />
           ) : null}
 

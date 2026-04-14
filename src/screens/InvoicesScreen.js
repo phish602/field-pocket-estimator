@@ -13,6 +13,7 @@ import {
   updateInvoiceLifecycleStatus,
   writeStoredInvoices,
 } from "../utils/invoices";
+import { readStoredProjects, resolveProjectNavigationTarget } from "../utils/projects";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -136,6 +137,18 @@ const invoiceEstimateNumberStyle = {
   whiteSpace: "normal",
   overflow: "visible",
   textOverflow: "clip",
+};
+
+const invoiceDocLineStyle = {
+  fontSize: 12,
+  lineHeight: 1.3,
+  fontWeight: 600,
+  opacity: 0.65,
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  alignItems: "baseline",
+  minWidth: 0,
 };
 
 const invoiceSecondaryLineStyle = {
@@ -366,7 +379,7 @@ function getStatusConfirmationContent(nextStatus, lang) {
   return null;
 }
 
-export default function InvoicesScreen({ lang, t, spinTick = 0 }) {
+export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDetail }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [list, setList] = useState(() => readStoredInvoices());
@@ -800,20 +813,20 @@ export default function InvoicesScreen({ lang, t, spinTick = 0 }) {
                       <div className="pe-estimate-card-header" style={invoiceCardTopStyle}>
                         <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
                           <div style={invoicePrimaryLineStyle}>
-                            <span className="pe-estimate-card-title" style={invoiceTitleStyle}>{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
-                            {invoice?.estimateNumber ? (
-                              <span className="pe-estimate-card-number" style={invoiceEstimateNumberStyle}>
-                                {t("estimateNumLabel")} {invoice.estimateNumber}
-                              </span>
-                            ) : null}
+                            <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
+                              {invoice?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
+                            </span>
                           </div>
                           <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
                             <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
                               {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
                             </div>
-                            {invoice?.projectName ? (
-                              <div style={invoiceProjectLineStyle}>{invoice.projectName}</div>
-                            ) : null}
+                            <div style={invoiceDocLineStyle}>
+                              <span className="pe-estimate-card-number">{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
+                              {invoice?.estimateNumber ? (
+                                <span className="pe-estimate-card-number">{"• "}{t("estimateNumLabel")} {invoice.estimateNumber}</span>
+                              ) : null}
+                            </div>
                           </div>
                           <div className="pe-estimate-card-updated" style={invoiceMetaLineStyle}>
                             <span style={invoiceDateStyle}>{formatDateTime(invoice?.updatedAt || invoice?.createdAt)}</span>
@@ -890,6 +903,20 @@ export default function InvoicesScreen({ lang, t, spinTick = 0 }) {
                           >
                             {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
                           </button>
+                          {onOpenProjectDetail ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
+                              onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
+                              onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "project", () => {
+                                const { projectId } = resolveProjectNavigationTarget(invoice, readStoredProjects());
+                                if (projectId) onOpenProjectDetail(projectId);
+                              })}
+                            >
+                              Project
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </div>

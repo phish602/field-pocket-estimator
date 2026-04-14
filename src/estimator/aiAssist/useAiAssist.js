@@ -85,6 +85,7 @@ export function useAiAssist(sectionKey, state) {
       }
 
       const requestPromise = (async () => {
+        if (DEV && sectionKey === "scope" && normalizedMode === "refine") console.log("[SCOPE_AMEND_SUBMIT_ENTER_USE_AI_ASSIST]", { section: sectionKey, mode: normalizedMode, chip: userInput, seq: mySeq, ts: Date.now() });
         setAssistState({ phase: "requesting", input: userInput });
         if (DEV) console.log(`[ai-assist:${traceId}] submit_start`, { section: sectionKey, seq: mySeq, inputLen: String(userInput || "").length });
         try {

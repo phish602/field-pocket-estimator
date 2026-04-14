@@ -5682,6 +5682,68 @@ function formatScopeLines(lines, analysis = {}) {
   return formatDefaultContractorBlocks(normalizedLines, analysis);
 }
 
+function hasDashBriefScopeIntent(userInput = "", context = null, analysis = {}) {
+  const userInputText = normalizeInstructionSpacing(userInput).toLowerCase();
+  const contextFormatIntent = String(context?.scopeFormatIntent || "").trim().toLowerCase();
+  const refineFormattingIntent = String(context?.scopeRefineAnalysis?.formattingIntent || "").trim().toLowerCase();
+  const inputFormattingIntent = String(context?.scopeInputAnalysis?.formattingIntent || analysis?.formattingIntent || "").trim().toLowerCase();
+
+  if (/\bdash\s*\+\s*brief\b/.test(userInputText)) return true;
+  if (/\bdash\s+mode\b/.test(userInputText)) return true;
+  if (contextFormatIntent === "dash") return true;
+  if (refineFormattingIntent === "dash") return true;
+  if (inputFormattingIntent === "dash") return true;
+  return false;
+}
+
+function formatDashBriefScopeNotes(text, analysis = {}) {
+  const normalized = sanitizeScopeAssistText(text);
+  if (!normalized) return "";
+
+  if (/^[-*•]\s+/.test(normalized) && /\n\n/.test(normalized)) {
+    return normalized;
+  }
+
+  const sections = normalized
+    .split(/\n\s*\n/)
+    .map((section) => section.trim())
+    .filter(Boolean);
+  if (sections.length >= 2) {
+    const leadSections = sections.slice(0, -1);
+    const closingParagraph = sections[sections.length - 1].replace(/\s+/g, " ").trim();
+    if (leadSections.some((section) => /^[-*•]\s+/m.test(section))) {
+      return `${leadSections.join("\n\n")}\n\n${closingParagraph}`.trim();
+    }
+  }
+
+  const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+  const dashLines = lines.filter((line) => /^[-*•]\s+/.test(line));
+  if (dashLines.length) {
+    const closingLines = lines.filter((line) => !/^[-*•]\s+/.test(line));
+    if (closingLines.length >= 1) {
+      return `${dashLines.join("\n")}\n\n${closingLines.join(" ")}`.trim();
+    }
+    if (dashLines.length >= 2) {
+      const closingLine = ensureSentence(dashLines[dashLines.length - 1].replace(/^[-*•]\s+/, ""));
+      return `${dashLines.slice(0, -1).join("\n")}\n\n${closingLine}`.trim();
+    }
+    return dashLines.join("\n");
+  }
+
+  const sentences = splitScopeNoteSentences(normalized);
+  if (sentences.length >= 2) {
+    const bodyLines = sentences.slice(0, -1)
+      .map((sentence) => sentence.replace(/[.]+$/g, "").trim())
+      .filter(Boolean);
+    const closingParagraph = ensureSentence(sentences[sentences.length - 1].replace(/[.]+$/g, "").trim());
+    if (bodyLines.length) {
+      return `${bodyLines.map((sentence) => `- ${sentence}`).join("\n")}\n\n${closingParagraph}`.trim();
+    }
+  }
+
+  return normalized;
+}
+
 function buildGenericScopeLines(analysis) {
   const certainWork = getSkeletonValues(analysis, "directWork", "certain").map(normalizeScopePhrase);
   const impliedWork = getSkeletonValues(analysis, "directWork", "implied").map(normalizeScopePhrase);
@@ -7070,6 +7132,10 @@ export function resolveScopeAssistNotes(rawResponse, { userInput = "", context =
   const analysis = context?.scopeInputAnalysis && typeof context.scopeInputAnalysis === "object"
     ? context.scopeInputAnalysis
     : analyzeScopeAssistInput(userInput);
+
+  if (hasDashBriefScopeIntent(userInput, context, analysis)) {
+    return formatDashBriefScopeNotes(scopeNotes, analysis) || scopeNotes;
+  }
 
   const enriched = buildRiskAwareScopeEchoFallback({ analysis });
   if (
