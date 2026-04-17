@@ -77,11 +77,62 @@ function statusLabel(status) {
   const s = String(status || "").toLowerCase();
   if (s === "approved") return "Approved";
   if (s === "lost") return "Lost";
+  if (s === "sent") return "Sent";
   if (s === "draft") return "Draft";
   if (s === "archived") return "Archived";
   if (s === "active") return "Active";
   return "Pending";
 }
+
+// open/actionable first, closed last — tiebreaker is existing date-desc order from buildNormalizedProjectView
+function estSortPriority(est) {
+  const s = String(est?.status || "").toLowerCase();
+  if (s === "sent") return 0;
+  if (s === "pending") return 1;
+  if (s === "draft") return 2;
+  if (s === "approved") return 3;
+  if (s === "lost") return 5;
+  return 4;
+}
+
+function invSortPriority(inv) {
+  const s = String(inv?.status || "").toLowerCase();
+  if (s === "overdue") return 0;
+  if (s === "partial") return 1;
+  if (s === "sent") return 2;
+  if (s === "draft") return 3;
+  if (s === "paid") return 5;
+  if (s === "void") return 6;
+  return 4;
+}
+
+function invStatusLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "overdue") return "Overdue";
+  if (s === "partial") return "Partial";
+  if (s === "sent") return "Sent";
+  if (s === "draft") return "Draft";
+  if (s === "paid") return "Paid";
+  if (s === "void") return "Void";
+  return "";
+}
+
+const EST_STATUS_ACCENT = {
+  sent: "rgba(99,179,237,0.82)",
+  pending: "rgba(245,158,11,0.82)",
+  approved: "rgba(72,187,120,0.82)",
+  draft: "rgba(230,241,248,0.42)",
+  lost: "rgba(230,241,248,0.30)",
+};
+
+const INV_STATUS_ACCENT = {
+  overdue: "rgba(239,68,68,0.88)",
+  partial: "rgba(245,158,11,0.84)",
+  sent: "rgba(99,179,237,0.78)",
+  draft: "rgba(230,241,248,0.42)",
+  paid: "rgba(72,187,120,0.78)",
+  void: "rgba(230,241,248,0.30)",
+};
 
 const PROJECT_STATUS_CONTROLS = [
   { key: "draft", label: "Draft" },
@@ -116,10 +167,21 @@ const S = {
   topBar: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 10,
     padding: "14px 16px 10px",
   },
   backBtn: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    color: "rgba(99,179,237,0.85)",
+    fontSize: 14,
+    fontWeight: 600,
+    padding: "4px 8px",
+    borderRadius: 6,
+  },
+  editBtn: {
     background: "none",
     border: "none",
     cursor: "pointer",
@@ -308,6 +370,7 @@ export function readProjectDetailTarget() {
 
 export default function ProjectDetailScreen({
   onBack,
+  onEditProject,
   onNewEstimate,
   onNewInvoice,
   onOpenEstimate,
@@ -337,7 +400,7 @@ export default function ProjectDetailScreen({
     return (
       <div style={S.screen}>
         <div style={S.topBar}>
-          <button type="button" style={S.backBtn} onClick={onBack}>← Estimates</button>
+          <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
         </div>
         <div style={{ ...S.sectionWrap, ...S.emptyState }}>Project not found.</div>
       </div>
@@ -348,15 +411,21 @@ export default function ProjectDetailScreen({
   const projectStatusStyle = PROJECT_STATUS_COLORS[displayStatus.key] || PROJECT_STATUS_COLORS.draft;
   const storedProjectStatus = normalizeProjectControlStatus(project.status);
 
+  // Attention signals — derived from existing assembled view data, not mutated
+  const overdueCount = invoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length;
+  const approvedEstCount = estimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length;
+  const hasAttentionSignals = overdueCount > 0 || totals.balanceRemaining > 0 || approvedEstCount > 0;
+
   return (
     <div style={S.screen}>
       <div style={S.topBar}>
-        <button type="button" style={S.backBtn} onClick={onBack}>← Estimates</button>
+        <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
       </div>
 
       {/* Hero */}
       <div style={S.heroCard}>
         <div style={S.projectName}>{project.projectName || "Untitled Project"}</div>
+        {project.projectNumber ? <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(230,241,248,0.38)", letterSpacing: "0.04em" }}>Project #{project.projectNumber}</div> : null}
         {customer ? (
           <div style={S.customerName}>{customer.name || customer.companyName || customer.fullName || "—"}</div>
         ) : null}
@@ -364,6 +433,7 @@ export default function ProjectDetailScreen({
         <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
           {displayStatus.label}
         </div>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: "6px 0 2px" }} />
         <div style={S.statusControlWrap}>
           <div style={S.statusControlLabel}>Project lifecycle</div>
           <div style={S.statusControlRow}>
@@ -391,27 +461,52 @@ export default function ProjectDetailScreen({
             })}
           </div>
         </div>
-        <div style={S.actionsRow}>
-          <button
-            type="button"
-            style={S.actionBtn}
-            onClick={() => {
-              writeProjectCreateSeed(view);
-              onNewEstimate && onNewEstimate();
-            }}
-          >
-            New Estimate
-          </button>
-          <button
-            type="button"
-            style={S.actionBtn}
-            onClick={() => {
-              writeProjectCreateSeed(view);
-              onNewInvoice && onNewInvoice();
-            }}
-          >
-            New Invoice
-          </button>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: "6px 0 4px" }} />
+        <div style={{ display: "grid", gap: 8, marginTop: 4 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <button
+              type="button"
+              style={{ ...S.actionBtn, background: "rgba(72,187,120,0.12)", border: "1px solid rgba(72,187,120,0.28)", color: "rgba(72,187,120,0.94)" }}
+              onClick={() => {
+                writeProjectCreateSeed(view);
+                onNewEstimate && onNewEstimate();
+              }}
+            >
+              + New Estimate
+            </button>
+            <button
+              type="button"
+              style={{ ...S.actionBtn, background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.28)", color: "rgba(99,179,237,0.94)" }}
+              onClick={() => {
+                writeProjectCreateSeed(view);
+                onNewInvoice && onNewInvoice();
+              }}
+            >
+              + New Invoice
+            </button>
+          </div>
+          {onEditProject ? (
+            <button
+              type="button"
+              style={{
+                width: "100%",
+                padding: "8px 0",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.03)",
+                color: "rgba(230,241,248,0.52)",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                letterSpacing: "0.03em",
+                textAlign: "center",
+                font: "inherit",
+              }}
+              onClick={onEditProject}
+            >
+              Edit Project Details
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -436,6 +531,25 @@ export default function ProjectDetailScreen({
             <div style={S.overviewValue}>{money(totals.invoiceTotal)}</div>
           </div>
         </div>
+        {hasAttentionSignals ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+            {overdueCount > 0 ? (
+              <div style={{ padding: "4px 10px", borderRadius: 8, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 11, fontWeight: 700 }}>
+                {overdueCount === 1 ? "1 invoice overdue" : `${overdueCount} invoices overdue`}
+              </div>
+            ) : null}
+            {totals.balanceRemaining > 0 ? (
+              <div style={{ padding: "4px 10px", borderRadius: 8, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 11, fontWeight: 700 }}>
+                {money(totals.balanceRemaining)} balance due
+              </div>
+            ) : null}
+            {approvedEstCount > 0 ? (
+              <div style={{ padding: "4px 10px", borderRadius: 8, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 11, fontWeight: 700 }}>
+                {approvedEstCount === 1 ? "1 estimate approved" : `${approvedEstCount} estimates approved`}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {latestActivityAt ? (
           <div style={{ ...S.meta, marginTop: 8 }}>Latest activity: {fmtDate(latestActivityAt)}</div>
         ) : null}
@@ -443,14 +557,27 @@ export default function ProjectDetailScreen({
 
       {/* Estimates */}
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Estimates</div>
+        <div style={S.sectionTitle}>Estimates{estimates.length > 0 ? ` (${estimates.length})` : ""}</div>
         {estimates.length === 0 ? (
-          <div style={S.emptyState}>No estimates linked to this project.</div>
+          <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
+            <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No estimates for this project yet.</div>
+            {onNewEstimate ? (
+              <button
+                type="button"
+                style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
+                onClick={() => { writeProjectCreateSeed(view); onNewEstimate && onNewEstimate(); }}
+              >
+                + New Estimate
+              </button>
+            ) : null}
+          </div>
         ) : (
-          estimates.map((est, i) => {
+          [...estimates].sort((a, b) => estSortPriority(a) - estSortPriority(b)).map((est, i) => {
             const estTotal = est?.approvedTotal ?? est?.total ?? est?.grandTotal ?? 0;
             const estNum = est?.estimateNumber || est?.docNumber || "";
             const estDate = fmtDate(est?.updatedAt || est?.savedAt || est?.createdAt);
+            const estStatusStr = statusLabel(est?.status);
+            const estStatusKey = String(est?.status || "").toLowerCase();
             return (
               <button
                 key={est?.id || i}
@@ -459,11 +586,12 @@ export default function ProjectDetailScreen({
                 onClick={() => onOpenEstimate && onOpenEstimate(est)}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={S.docTitle}>{est?.projectName || "Estimate"}</div>
+                  <div style={S.docTitle}>{estNum ? `Estimate #${estNum}` : (est?.projectName || "Estimate")}</div>
                   <div style={S.docAmount}>{money(estTotal)}</div>
                 </div>
                 <div style={S.docMeta}>
-                  {[estNum ? `#${estNum}` : null, statusLabel(est?.status), estDate].filter(Boolean).join(" · ")}
+                  <span style={{ color: EST_STATUS_ACCENT[estStatusKey] || "rgba(230,241,248,0.45)" }}>{estStatusStr}</span>
+                  {estDate ? ` · ${estDate}` : ""}
                 </div>
               </button>
             );
@@ -473,14 +601,27 @@ export default function ProjectDetailScreen({
 
       {/* Invoices */}
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Invoices</div>
+        <div style={S.sectionTitle}>Invoices{invoices.length > 0 ? ` (${invoices.length})` : ""}</div>
         {invoices.length === 0 ? (
-          <div style={S.emptyState}>No invoices linked to this project.</div>
+          <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
+            <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No invoices for this project yet.</div>
+            {onNewInvoice ? (
+              <button
+                type="button"
+                style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
+                onClick={() => { writeProjectCreateSeed(view); onNewInvoice && onNewInvoice(); }}
+              >
+                + New Invoice
+              </button>
+            ) : null}
+          </div>
         ) : (
-          invoices.map((inv, i) => {
+          [...invoices].sort((a, b) => invSortPriority(a) - invSortPriority(b)).map((inv, i) => {
             const invTotal = inv?.invoiceTotal ?? inv?.total ?? 0;
             const invNum = inv?.invoiceNumber || inv?.docNumber || "";
             const invDate = fmtDate(inv?.updatedAt || inv?.savedAt || inv?.createdAt || inv?.date);
+            const invStatusStr = invStatusLabel(inv?.status);
+            const invStatusKey = String(inv?.status || "").toLowerCase();
             return (
               <button
                 key={inv?.id || i}
@@ -489,11 +630,13 @@ export default function ProjectDetailScreen({
                 onClick={() => onOpenInvoice && onOpenInvoice(inv)}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={S.docTitle}>{inv?.customerName || "Invoice"}</div>
+                  <div style={S.docTitle}>{invNum ? `Invoice #${invNum}` : (inv?.customerName || "Invoice")}</div>
                   <div style={S.docAmount}>{money(invTotal)}</div>
                 </div>
                 <div style={S.docMeta}>
-                  {[invNum ? `#${invNum}` : null, invDate].filter(Boolean).join(" · ")}
+                  {invStatusStr ? <span style={{ color: INV_STATUS_ACCENT[invStatusKey] || "rgba(230,241,248,0.45)" }}>{invStatusStr}</span> : null}
+                  {invStatusStr && invDate ? " · " : ""}
+                  {invDate || ""}
                 </div>
               </button>
             );

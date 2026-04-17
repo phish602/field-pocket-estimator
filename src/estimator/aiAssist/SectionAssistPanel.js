@@ -630,8 +630,11 @@ function ScopeDiffReview({
 
   return (
     <>
-      <p style={S.reviewLabel}>Suggested scope</p>
+      <p style={S.reviewLabel}>Drafted scope</p>
       <div style={S.reviewBox}>{displayedScope}</div>
+      <p style={{ ...S.helpText, fontSize: 12, color: "rgba(230,241,248,0.38)", marginTop: -6 }}>
+        Accept to load into your scope — edit there to fit the job.
+      </p>
 
       {refineError ? <p style={S.errorText}>{refineError}</p> : null}
 
@@ -695,7 +698,7 @@ function ScopeDiffReview({
             Cancel
           </button>
           <button style={S.acceptBtn} type="button" onClick={() => onAccept({ ...result.writes, scopeNotes: displayedScope })}>
-            Accept &amp; Replace
+            Accept Draft
           </button>
         </div>
       </div>

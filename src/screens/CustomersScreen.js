@@ -610,14 +610,27 @@ export default function CustomersScreen({
     for (const p of allProjects) {
       const cid = String(p?.customerId || "");
       if (!cid) continue;
-      if (!byId[cid]) byId[cid] = { projectCount: 0, latestProjectName: "", latestProjectDisplayStatus: null };
+      if (!byId[cid]) byId[cid] = { projectCount: 0, latestProjectName: "", latestProjectDisplayStatus: null, _archName: "", _archStatus: null };
       byId[cid].projectCount += 1;
-      // allProjects is sorted updatedAt desc, so first match per customer is the most recent
-      if (!byId[cid].latestProjectName && String(p?.projectName || "").trim()) {
-        byId[cid].latestProjectName = String(p.projectName).trim();
-        const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
-        byId[cid].latestProjectDisplayStatus = deriveProjectDisplayStatus(view);
+      const pName = String(p?.projectName || "").trim();
+      if (!pName) continue;
+      const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
+      const ds = deriveProjectDisplayStatus(view);
+      if (ds.key === "archived") {
+        if (!byId[cid]._archName) { byId[cid]._archName = pName; byId[cid]._archStatus = ds; }
+      } else {
+        if (!byId[cid].latestProjectName) { byId[cid].latestProjectName = pName; byId[cid].latestProjectDisplayStatus = ds; }
       }
+    }
+    // Fall back to archived context if customer has only archived projects
+    for (const cid of Object.keys(byId)) {
+      const entry = byId[cid];
+      if (!entry.latestProjectName && entry._archName) {
+        entry.latestProjectName = entry._archName;
+        entry.latestProjectDisplayStatus = entry._archStatus;
+      }
+      delete entry._archName;
+      delete entry._archStatus;
     }
     return byId;
   }, [mode]);
@@ -910,11 +923,11 @@ export default function CustomersScreen({
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
                       <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                          <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: 0.2 }}>{displayName(c)}</div>
-                          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
+                          <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 0.2 }}>{displayName(c)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75 }}>
                             {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
                           </div>
-                          {active ? <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+                          {active ? <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
                         </div>
 
                         {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
@@ -923,70 +936,84 @@ export default function CustomersScreen({
 
                         {/* Project context */}
                         {id && customerProjectMeta[id]?.projectCount > 0 ? (
-                          <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 5, alignItems: "baseline" }}>
-                            <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.55, letterSpacing: "0.2px" }}>
-                              {customerProjectMeta[id].projectCount === 1
-                                ? label("1 project", "1 proyecto")
-                                : `${customerProjectMeta[id].projectCount} ${label("projects", "proyectos")}`}
-                            </span>
+                          <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.07)", display: "grid", gap: 4 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                              <span style={{ fontSize: 11, fontWeight: 800, opacity: 0.48, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                                {customerProjectMeta[id].projectCount === 1
+                                  ? label("1 project", "1 proyecto")
+                                  : `${customerProjectMeta[id].projectCount} ${label("projects", "proyectos")}`}
+                              </span>
+                              {customerProjectMeta[id].latestProjectDisplayStatus ? (
+                                <span style={{
+                                  display: "inline-block",
+                                  padding: "2px 7px",
+                                  borderRadius: 999,
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  letterSpacing: "0.04em",
+                                  textTransform: "uppercase",
+                                  color: CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.5)",
+                                  background: "rgba(255,255,255,0.05)",
+                                  border: `1px solid ${CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.12)"}`,
+                                  borderColor: (CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.12)").replace(/[\d.]+\)$/, "0.28)"),
+                                }}>
+                                  {customerProjectMeta[id].latestProjectDisplayStatus.label}
+                                </span>
+                              ) : null}
+                            </div>
                             {customerProjectMeta[id].latestProjectName ? (
-                              <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.82 }}>
-                                · {customerProjectMeta[id].latestProjectName}
-                              </span>
-                            ) : null}
-                            {customerProjectMeta[id].latestProjectDisplayStatus ? (
-                              <span style={{ fontSize: 11, fontWeight: 700, color: CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.5)" }}>
-                                {customerProjectMeta[id].latestProjectDisplayStatus.label}
-                              </span>
+                              <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.88, lineHeight: 1.25 }}>
+                                {customerProjectMeta[id].latestProjectName}
+                              </div>
                             ) : null}
                           </div>
                         ) : null}
 
                         {/* KPIs (live computed from saved estimates/invoices) */}
-                        {customerKpis && id ? (
+                        {customerKpis && id && customerKpis[id] ? (
                           <div
                             style={{
                               marginTop: 6,
                               paddingTop: 10,
                               borderTop: "1px solid rgba(255,255,255,0.10)",
                               display: "grid",
-                              gridTemplateColumns: "1fr 1fr",
+                              gridTemplateColumns: "1fr 1fr 1fr",
                               gap: 10,
                             }}
                           >
                             <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Revenue", "Ingresos")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
                                 {moneyUSD(customerKpis[id]?.revenue || 0)}
                               </div>
                             </div>
                             <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Avg margin", "Margen prom.")}
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Margin", "Margen")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
                                 {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
                               </div>
                             </div>
                             <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Jobs", "Trabajos")}
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Docs", "Docs")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
-                                {toNum(customerKpis[id]?.estimateCount || 0) + toNum(customerKpis[id]?.invoiceCount || 0)}
+                              <div style={{ fontSize: 13, fontWeight: 800, opacity: 0.88, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {toNum(customerKpis[id]?.estimateCount || 0) > 0 ? (
+                                  <span>{toNum(customerKpis[id].estimateCount)} {label("est", "est")}</span>
+                                ) : null}
+                                {toNum(customerKpis[id]?.invoiceCount || 0) > 0 ? (
+                                  <span>{toNum(customerKpis[id].invoiceCount)} {label("inv", "fac")}</span>
+                                ) : null}
+                                {toNum(customerKpis[id]?.estimateCount || 0) === 0 && toNum(customerKpis[id]?.invoiceCount || 0) === 0 ? (
+                                  <span style={{ opacity: 0.5 }}>—</span>
+                                ) : null}
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Last", "Último")}
-                              </div>
-                              <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.85 }}>
-                                {String(customerKpis[id]?.lastDate || "—") || "—"}
-                              </div>
                             </div>
-                          </div>
                         ) : null}
                       </div>
 
@@ -1004,9 +1031,9 @@ export default function CustomersScreen({
                         </div>
                         {onOpenProjectDetail ? (
                           <button
-                            className="pe-btn pe-btn-ghost"
+                            className="pe-btn"
                             type="button"
-                            style={{ width: "100%" }}
+                            style={{ width: "100%", background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.28)", color: "rgba(99,179,237,0.94)" }}
                             onClick={() => {
                               const custId = String(c?.id || "");
                               if (!custId) return;

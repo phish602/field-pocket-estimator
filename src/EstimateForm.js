@@ -12,7 +12,6 @@ import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from ".
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
-import GuidedBuildOverlay from "./estimator/guided/GuidedBuildOverlay";
 import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
 import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
 import { getAssistConfig } from "./estimator/aiAssist/registry";
@@ -34,6 +33,11 @@ import {
 import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
 import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
+import {
+  createScopeTemplate,
+  readStoredScopeTemplates,
+  writeStoredScopeTemplates,
+} from "./utils/scopeTemplates";
 import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import {
   allocateFinancialSummaryFromSource,
@@ -74,15 +78,15 @@ const I18N = {
     risk: "% risk",
     materialsMeta: "% materials",
     materials: "Materials",
-    materialsMode: "Materials mode",
+    materialsMode: "Entry type",
     materialsModeBlanket: "Blanket",
     materialsModeItemized: "Itemized",
     materialsCost: "Materials cost",
     markupPct: "Markup %",
-    materialsBlanketDescriptionLabel: "Materials Description (prints on PDF)",
-    materialsBlanketDescriptionPlaceholder: "Example: Include fixtures, fittings, fasteners, consumables, delivery, and disposal.",
+    materialsBlanketDescriptionLabel: "What's included (prints on PDF)",
+    materialsBlanketDescriptionPlaceholder: "Example: Fixtures, fittings, fasteners, consumables, delivery, and disposal.",
     addMaterialItem: "+ Add Item",
-    materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
+    materialsItemizedHelp: "List materials line by line — qty × price builds the section total. Good for detailed breakdowns or when itemizing helps price the job.",
     materialDesc: "Description",
     materialNote: "Line note (optional)",
     materialNotePlaceholder: "Prints under this item in the PDF",
@@ -90,6 +94,10 @@ const I18N = {
     materialCostInternal: "Cost (internal)",
     materialCharge: "Price (each)",
     materialsItemizedTotal: "Itemized materials total",
+    labor: "Labor",
+    hours: "Hours",
+    rate: "Rate ($/hr)",
+    selectRole: "Select role…",
   },
   es: {
     standard: "Estándar (1.00×)",
@@ -104,15 +112,15 @@ const I18N = {
     risk: "% riesgo",
     materialsMeta: "% materiales",
     materials: "Materiales",
-    materialsMode: "Modo de materiales",
+    materialsMode: "Tipo de entrada",
     materialsModeBlanket: "Global",
     materialsModeItemized: "Detallado",
     materialsCost: "Costo de materiales",
     markupPct: "Margen %",
-    materialsBlanketDescriptionLabel: "Descripción de materiales (se imprime en PDF)",
-    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye accesorios, herrajes, fijaciones, consumibles, entrega y disposición.",
+    materialsBlanketDescriptionLabel: "Qué incluye (se imprime en PDF)",
+    materialsBlanketDescriptionPlaceholder: "Ejemplo: Accesorios, herrajes, fijaciones, consumibles, entrega y disposición.",
     addMaterialItem: "+ Agregar Partida",
-    materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
+    materialsItemizedHelp: "Lista materiales línea por línea — cant. × precio construye el total. Útil para desglosar costos o cuando conviene itemizar el presupuesto.",
     materialDesc: "Descripción",
     materialNote: "Nota de línea (opcional)",
     materialNotePlaceholder: "Se imprime debajo de esta partida en el PDF",
@@ -120,6 +128,10 @@ const I18N = {
     materialCostInternal: "Costo (interno)",
     materialCharge: "Precio (c/u)",
     materialsItemizedTotal: "Total de materiales por partida",
+    labor: "Mano de obra",
+    hours: "Horas",
+    rate: "Tarifa ($/hr)",
+    selectRole: "Seleccionar rol…",
   },
 };
 
@@ -676,14 +688,6 @@ const LABOR_PRESETS = [
   { key: "operator", label: "Equipment Operator" },
 ];
 
-// Scope / Notes master templates (append-on-select)
-const SCOPE_MASTER_TEMPLATES = [
-  { key: "furnish_install", label: "Furnish & Install", text: "Furnish all materials, labor, and equipment required to complete the scope of work per specifications." },
-  { key: "demo_dispose",    label: "Demo & Dispose",    text: "Demolish and dispose of existing materials. Remove all debris from site in a safe and timely manner." },
-  { key: "inspect_repair",  label: "Inspect & Repair",  text: "Inspect existing conditions and perform repairs as needed per site assessment. Document all findings." },
-  { key: "supply_install",  label: "Supply & Install",  text: "Supply and install per approved submittal. Coordinate with general contractor for scheduling and inspections." },
-  { key: "rough_finish",    label: "Rough & Finish",    text: "Complete rough-in phase followed by finish work per drawings and specifications." },
-];
 // TEMPLATE ADD-ONS (TRADE INSERTS)
 const SCOPE_TRADE_INSERTS = [
   {
@@ -1371,6 +1375,15 @@ export default function EstimateForm(props) {
     };
   }, []);
 
+  useEffect(() => {
+    const refreshScopeTemplates = (e) => {
+      if (e?.key && e.key !== STORAGE_KEYS.SCOPE_TEMPLATES) return;
+      setScopeTemplates(readStoredScopeTemplates());
+    };
+    window.addEventListener("storage", refreshScopeTemplates);
+    return () => window.removeEventListener("storage", refreshScopeTemplates);
+  }, []);
+
   const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
   const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
   const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(() => (
@@ -1410,6 +1423,7 @@ export default function EstimateForm(props) {
   const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
   const [savePulse, setSavePulse] = useState(false);
   const [projectSeedSummary, setProjectSeedSummary] = useState(null);
+  const [scopeTemplates, setScopeTemplates] = useState(() => readStoredScopeTemplates());
   const saveBaselineRef = useRef("");
   const hasSaveBaselineRef = useRef(false);
   const lastSavedAtSeenRef = useRef(0);
@@ -2401,6 +2415,12 @@ export default function EstimateForm(props) {
   const shouldSyncActionBarWithBottomChrome =
     embeddedInShell
     && isMobileActionBarViewport;
+  const scopeTemplateSourceId = String(state?.meta?.savedDocId || editingRecordId || "").trim();
+  const scopeTemplateSourceNumber = String(
+    state?.job?.docNumber
+    || openedDocNumberRef.current
+    || ""
+  ).trim();
 
   function autoResizeScopeNotes(el) {
     if (!el) return;
@@ -2443,6 +2463,37 @@ export default function EstimateForm(props) {
     const ok = window.confirm("Unsaved notes will be lost. Clear notes?");
     if (!ok) return;
     patch("scopeNotes", "");
+  }
+
+  function handleSaveScopeTemplate() {
+    const currentScopeText = String(scopeNotes || "").trim();
+    if (!currentScopeText) {
+      window.alert("Enter scope text before saving a template.");
+      return;
+    }
+
+    const defaultName = createScopeTemplate({ scopeText: currentScopeText })?.name || "Untitled scope template";
+    const enteredName = window.prompt("Name this scope template:", defaultName);
+    if (enteredName === null) return;
+
+    const template = createScopeTemplate({
+      name: String(enteredName || "").trim() || defaultName,
+      scopeText: currentScopeText,
+      ...(scopeTemplateSourceId ? { sourceEstimateId: scopeTemplateSourceId } : {}),
+      ...(scopeTemplateSourceNumber ? { sourceEstimateNumber: scopeTemplateSourceNumber } : {}),
+    });
+    if (!template) return;
+
+    const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates]);
+    setScopeTemplates(nextTemplates);
+  }
+
+  function handleApplyScopeTemplate(templateId) {
+    const nextId = String(templateId || "").trim();
+    if (!nextId) return;
+    const template = scopeTemplates.find((entry) => String(entry?.id || "").trim() === nextId);
+    if (!template) return;
+    patch("scopeNotes", String(template.scopeText || ""));
   }
 
   const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
@@ -2501,7 +2552,6 @@ export default function EstimateForm(props) {
 
   const {
     guided,
-    openGuided,
     closeGuided,
     submitAnswer: submitGuidedAnswer,
     selectChoice: selectGuidedChoice,
@@ -3605,7 +3655,7 @@ export default function EstimateForm(props) {
   };
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
-  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimate Builder";
   const editPrimaryTitle = isInvoiceEditMode ? "EDIT INVOICE" : "EDIT ESTIMATE";
   const editDocNumberRaw = String(
     state?.estimateNumber
@@ -4066,14 +4116,6 @@ export default function EstimateForm(props) {
                   {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
                 </div>
                 <div style={styles.builderHeaderActionGroup}>
-                  <button
-                    type="button"
-                    className="pe-btn pe-btn-ghost"
-                    onClick={openGuided}
-                    style={styles.guidedEntryBtn}
-                  >
-                    Guided Build
-                  </button>
                   <div style={styles.editModeBadge}>EDIT MODE</div>
                 </div>
               </>
@@ -4100,14 +4142,6 @@ export default function EstimateForm(props) {
                     Invoice
                   </button>
                 </div>
-                <button
-                  type="button"
-                  className="pe-btn pe-btn-ghost"
-                  onClick={openGuided}
-                  style={styles.guidedEntryBtn}
-                >
-                  Guided Build
-                </button>
               </>
             )}
           </div>
@@ -4115,10 +4149,10 @@ export default function EstimateForm(props) {
           <div ref={customerTopRef} className="pe-card pe-estimator-shell">
         {projectSeedSummary ? (
           <div style={styles.seedBanner}>
-            <div style={styles.seedBannerLabel}>Working under project</div>
+            <div style={styles.seedBannerLabel}>{uiDocType === "invoice" ? "New invoice for" : "New estimate for"}</div>
             <div style={styles.seedBannerName}>{projectSeedSummary.projectName || "Untitled Project"}</div>
             {projectSeedSummary.customerName ? (
-              <div style={styles.seedBannerMeta}>{projectSeedSummary.customerName}</div>
+              <div style={styles.seedBannerCustomer}>{projectSeedSummary.customerName}</div>
             ) : null}
             {projectSeedSummary.siteAddress ? (
               <div style={styles.seedBannerAddr}>{projectSeedSummary.siteAddress}</div>
@@ -4127,7 +4161,19 @@ export default function EstimateForm(props) {
         ) : null}
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
-        <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
+          {projectSeedSummary ? (
+            <span style={{ marginTop: 4, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(99,179,237,0.8)", background: "rgba(99,179,237,0.10)", borderRadius: 999, padding: "2px 8px", border: "1px solid rgba(99,179,237,0.22)", whiteSpace: "nowrap" }}>
+              Linked
+            </span>
+          ) : null}
+        </div>
+        {!projectSeedSummary ? (
+          <div style={{ marginTop: -6, marginBottom: 8, fontSize: 12, color: "rgba(156,163,175,0.82)" }}>
+            {uiDocType === "invoice" ? "Who is this invoice for?" : "Who is this estimate for?"}
+          </div>
+        ) : null}
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4200,7 +4246,7 @@ export default function EstimateForm(props) {
           </button>
         </div>
         <div style={styles.selectedCustomerText}>
-          Selected: {selectedProfile?.displayName ? (
+          {projectSeedSummary ? "Linked customer: " : "Selected: "}{selectedProfile?.displayName ? (
             <>
               <span style={{ fontWeight: 800 }}>{selectedProfile.displayName}</span>
               {selectedProfile.companyName && selectedProfile.companyName !== selectedProfile.displayName ? ` • ${selectedProfile.companyName}` : ""}
@@ -4269,12 +4315,24 @@ export default function EstimateForm(props) {
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} />
+        {!projectSeedSummary ? (
+          <div style={{ marginTop: -6, marginBottom: 8, fontSize: 12, color: "rgba(156,163,175,0.82)" }}>
+            {uiDocType === "invoice" ? "Job details for this invoice" : "Job details for this estimate"}
+          </div>
+        ) : null}
+
+        {projectSeedSummary ? (
+          <div style={{ margin: "0 0 10px", padding: "6px 10px", background: "rgba(99,179,237,0.06)", borderRadius: 8, borderLeft: "2px solid rgba(99,179,237,0.32)", fontSize: 12, color: "rgba(220,235,245,0.65)", lineHeight: 1.6 }}>
+            <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.82)" }}>{projectSeedSummary.projectName || "Untitled Project"}</span>
+            {projectSeedSummary.siteAddress ? <> &mdash; {projectSeedSummary.siteAddress}</> : null}
+          </div>
+        ) : null}
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
             <div className={jobInfoTopGridClassName}>
               <div>
-                <label style={styles.label}>Project name</label>
+                <label style={styles.label}>Project name{projectSeedSummary ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: "rgba(99,179,237,0.55)" }}>from project</span> : null}</label>
                 <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => {
                   projectNameAutoStateRef.current.manual = true;
                   projectNameAutoStateRef.current.auto = "";
@@ -4381,13 +4439,16 @@ export default function EstimateForm(props) {
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
-          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope / Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <div style={{ display: "grid", gap: 2 }}>
+            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope of Work" styles={styles} stackStyle={{ marginBottom: 0 }} />
+            <div style={styles.scopeSubtitle}>Describe the job — what you're doing, where, and roughly how much.</div>
+          </div>
           <button
             type="button"
             className="pe-btn pe-btn-ghost"
             style={styles.aiAssistBtn}
             onClick={openScopeAssist}
-            title="AI Assist — generate scope notes from a description"
+            title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
           >
             ✦ AI Assist
           </button>
@@ -4397,48 +4458,61 @@ export default function EstimateForm(props) {
           style={{ ...styles.notesCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
           <div className="pe-scope-insert-grid">
-            <select
-              className="pe-input"
-              defaultValue=""
-              style={{ width: "100%" }}
-              onChange={(e) => {
-                const key = e.target.value;
-                if (!key) return;
-                const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
-                if (!tmpl) return;
-                const existing = scopeNotes;
-                const sep = existing.trim().length > 0 ? "\n\n" : "";
-                patch("scopeNotes", existing + sep + tmpl.text);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Insert template…</option>
-              {SCOPE_MASTER_TEMPLATES.map((t) => (
-                <option key={t.key} value={t.key}>{t.label}</option>
-              ))}
-            </select>
-            <select
-              className="pe-input"
-              defaultValue=""
-              style={{ width: "100%" }}
-              onChange={(e) => {
-                const key = e.target.value;
-                if (!key) return;
-                const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
-                if (!insert) return;
-                const existing = scopeNotes;
-                const sep = existing.trim().length > 0 ? "\n\n" : "";
-                patch("scopeNotes", existing + sep + insert.text);
-                patch("tradeInsert.key", insert.key);
-                patch("tradeInsert.text", insert.text);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Insert trade…</option>
-              {SCOPE_TRADE_INSERTS.map((t) => (
-                <option key={t.key} value={t.key}>{t.label}</option>
-              ))}
-            </select>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
+                {lang === "es" ? "Mis plantillas" : "Your saved templates"}
+              </div>
+              <select
+                className="pe-input"
+                defaultValue=""
+                style={{ width: "100%" }}
+                onChange={(e) => {
+                  handleApplyScopeTemplate(e.target.value);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">
+                  {scopeTemplates.length === 0
+                    ? (lang === "es" ? "Ninguna guardada — usa Guardar plantilla abajo" : "None saved — use Save as Template below")
+                    : (lang === "es" ? "Aplicar plantilla guardada…" : "Apply a saved template…")}
+                </option>
+                {scopeTemplates.map((tmpl) => (
+                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
+                {lang === "es" ? "Punto de partida por oficio" : "Trade scope starters"}
+              </div>
+              <select
+                className="pe-input"
+                defaultValue=""
+                style={{ width: "100%" }}
+                onChange={(e) => {
+                  const key = e.target.value;
+                  if (!key) return;
+                  const insert = SCOPE_TRADE_INSERTS.find((tmpl) => tmpl.key === key);
+                  if (!insert) return;
+                  const existing = scopeNotes;
+                  const sep = existing.trim().length > 0 ? "\n\n" : "";
+                  patch("scopeNotes", existing + sep + insert.text);
+                  patch("tradeInsert.key", insert.key);
+                  patch("tradeInsert.text", insert.text);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">{lang === "es" ? "Agregar punto de partida por oficio…" : "Add a trade starting point…"}</option>
+                {SCOPE_TRADE_INSERTS.map((tmpl) => (
+                  <option key={tmpl.key} value={tmpl.key}>{tmpl.label}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: "rgba(230,241,248,0.32)", lineHeight: 1.35 }}>
+                {lang === "es"
+                  ? "Se agrega al alcance existente — edítalo para ajustarlo al trabajo."
+                  : "Appends to your scope — edit to fit the job."}
+              </div>
+            </div>
           </div>
           <textarea
             ref={scopeNotesRef}
@@ -4448,7 +4522,7 @@ export default function EstimateForm(props) {
               patch("scopeNotes", e.target.value);
               autoResizeScopeNotes(e.target);
             }}
-            placeholder="Scope / notes…"
+            placeholder="What work is being done? e.g. Tear off existing roof, install 30-yr architectural shingles, replace flashing and vents…"
             style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
           />
         </div>
@@ -4459,7 +4533,7 @@ export default function EstimateForm(props) {
           <div className="pe-muted" style={styles.scopeCollapsedPreview}>
             {scopeNotes.trim()
               ? `${scopeNotes.replace(/\s+/g, " ").trim().slice(0, 120)}${scopeNotes.replace(/\s+/g, " ").trim().length > 120 ? "…" : ""}`
-              : "No notes"}
+              : "No scope entered yet — describe the work to get started"}
           </div>
         </div>
         <div style={styles.sectionFooterActions}>
@@ -4481,6 +4555,15 @@ export default function EstimateForm(props) {
                 onClick={handleClearScopeNotes}
               >
                 Clear Notes
+              </button>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                style={styles.sectionFooterBtn}
+                onClick={handleSaveScopeTemplate}
+                title="Save current scope text as a reusable personal template"
+              >
+                {lang === "es" ? "Guardar plantilla" : "Save as Template"}
               </button>
             </>
           ) : (
@@ -4541,6 +4624,11 @@ export default function EstimateForm(props) {
           className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
           style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
+          <div className="pe-muted" style={{ marginTop: 10, marginBottom: 2 }}>
+            {lang === "es"
+              ? "Agrega una línea por rol — selecciona un rol para cargar tarifas de referencia, luego ingresa las horas. + / − ajusta la cantidad en esa línea."
+              : "Add a line per role — select a preset to load reference rates, then enter hours. Use + / − to adjust headcount per line."}
+          </div>
           {laborLines.map((l, i) => {
             const presetLabels = LABOR_PRESETS.map((p) => p.label);
             const hasLegacyLabel = l.label && !presetLabels.includes(l.label);
@@ -4731,7 +4819,14 @@ export default function EstimateForm(props) {
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionHeaderRow}>
-          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <div style={{ display: "grid", gap: 2 }}>
+            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+            <div style={styles.scopeSubtitle}>
+              {lang === "es"
+                ? "Incrementos opcionales sobre la mano de obra — sitios difíciles o trabajos con incertidumbre."
+                : "Optional % add-ons to your labor total — for hazardous sites or jobs with unknowns."}
+            </div>
+          </div>
           {!specialConditionsOpen ? (
             <button
               className="pe-btn pe-btn-ghost"
@@ -4754,7 +4849,9 @@ export default function EstimateForm(props) {
               <div style={styles.fieldStack}>
                 <div style={styles.label}>Hazard / Site Conditions</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  Physical/site constraints & safety burden.
+                  {lang === "es"
+                    ? "Acceso difícil, PPE, riesgos en el sitio. Agrega % a la mano de obra."
+                    : "Tight access, PPE, or site hazards — adds % to labor."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.hazardPct ?? "")}
@@ -4789,7 +4886,9 @@ export default function EstimateForm(props) {
               <div style={styles.fieldStack}>
                 <div style={styles.label}>Risk / Uncertainty Buffer</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  Unknowns & contingency for scope/schedule.
+                  {lang === "es"
+                    ? "Condiciones ocultas o incertidumbre de alcance. Agrega % a la mano de obra."
+                    : "Scope unknowns, hidden conditions, or schedule exposure — adds % to labor."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.riskPct ?? "")}
@@ -5042,21 +5141,6 @@ export default function EstimateForm(props) {
         />
       )}
 
-      <GuidedBuildOverlay
-        guided={guidedDisplay}
-        summary={guidedSummary}
-        isThinking={guidedDisplay?.isThinking}
-        pendingStepKey={guidedDisplay?.pendingStepKey}
-        pendingSectionKey={guidedDisplay?.pendingSectionKey}
-        onClose={closeGuided}
-        onSubmitAnswer={submitGuidedAnswer}
-        onSelectChoice={selectGuidedChoice}
-        onSkip={skipGuidedQuestion}
-        onOpenReview={openGuidedReview}
-        onJumpToSection={jumpGuidedSection}
-        onConfirmPending={confirmGuidedPending}
-        onRejectPending={rejectGuidedPending}
-      />
 
       <PdfPromptModal
         open={pdfPromptOpen}
@@ -5121,21 +5205,18 @@ const styles = {
     flexWrap: "wrap",
     justifyContent: "flex-end",
   },
-  guidedEntryBtn: {
-    minWidth: 118,
-    borderRadius: 999,
-  },
+
   seedBanner: {
-    margin: "0 0 12px",
-    padding: "12px 14px 10px",
-    borderRadius: 10,
+    margin: "0 0 14px",
+    padding: "14px 16px 12px",
+    borderRadius: 12,
     background: "rgba(99,179,237,0.06)",
     border: "1px solid rgba(99,179,237,0.16)",
     display: "grid",
-    gap: 2,
+    gap: 3,
   },
   seedBannerLabel: {
-    fontSize: 10,
+    fontSize: 10.5,
     fontWeight: 700,
     letterSpacing: "0.1em",
     textTransform: "uppercase",
@@ -5145,17 +5226,20 @@ const styles = {
   seedBannerName: {
     fontSize: 15,
     fontWeight: 800,
-    color: "rgba(230,241,248,0.94)",
-    lineHeight: 1.25,
+    letterSpacing: 0.2,
+    color: "rgba(230,241,248,0.96)",
+    lineHeight: 1.3,
   },
-  seedBannerMeta: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: "rgba(230,241,248,0.55)",
+  seedBannerCustomer: {
+    fontSize: 12.5,
+    fontWeight: 500,
+    color: "rgba(99,179,237,0.78)",
+    lineHeight: 1.3,
   },
   seedBannerAddr: {
     fontSize: 11.5,
     color: "rgba(230,241,248,0.38)",
+    lineHeight: 1.3,
   },
   editHeaderStack: {
     minWidth: 0,
@@ -5442,7 +5526,8 @@ const styles = {
   grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 10 },
   label: { display: "block", fontSize: 12.5, fontWeight: 800, letterSpacing: "0.2px", textTransform: "none", opacity: 0.82, marginBottom: 6 },
   small: { fontSize: 12, fontWeight: 800, letterSpacing: "0.6px", opacity: 0.78, textTransform: "uppercase" },
-  scopeHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 },
+  scopeHeaderRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 8 },
+  scopeSubtitle: { fontSize: 11.5, fontWeight: 500, color: "rgba(230,241,248,0.38)", lineHeight: 1.35, maxWidth: 320 },
   scopeClearBtn: { padding: "8px 12px", minHeight: 36 },
   scopeCollapseRow: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 },
   scopeCollapseBtn: { padding: "6px 10px", minHeight: 32 },

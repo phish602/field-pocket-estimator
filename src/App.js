@@ -5,6 +5,7 @@ import EstimatesScreen from "./screens/EstimatesScreen";
 import InvoicesScreen from "./screens/InvoicesScreen";
 import ProjectsScreen from "./screens/ProjectsScreen";
 import NewProjectScreen from "./screens/NewProjectScreen";
+import EditProjectScreen from "./screens/EditProjectScreen";
 import ProjectDetailScreen from "./screens/ProjectDetailScreen";
 import { readProjectDetailTarget, writeProjectDetailTarget } from "./screens/ProjectDetailScreen";
 import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
@@ -405,25 +406,6 @@ function IconBase({ children, size = 24, viewBox = "0 0 24 24" }) {
     >
       {children}
     </svg>
-  );
-}
-
-function IconHome({ size = 24 }) {
-  return (
-    <IconBase size={size}>
-      <BlueprintCorners size={24} />
-      <g
-        stroke="currentColor"
-        strokeWidth="2"
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M6.5 11.2L12 6.5l5.5 4.7" />
-        <path d="M8.2 10.9V18h7.6v-7.1" />
-        <path d="M10.3 18v-4.2h3.4V18" opacity="0.9" />
-      </g>
-    </IconBase>
   );
 }
 
@@ -1077,6 +1059,23 @@ function CreateFlow({
   );
 }
 
+function homeRelDate(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  if (diff < 86400000) return "Today";
+  if (diff < 172800000) return "Yesterday";
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+  try { return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch { return ""; }
+}
+
+function homeMoney(v) {
+  const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(n)) return "$0";
+  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n); } catch { return `$${Math.round(n)}`; }
+}
+
 const HOME_PROJECT_STATUS_COLORS = {
   draft: { bg: "rgba(230,241,248,0.06)", border: "rgba(230,241,248,0.14)", color: "rgba(230,241,248,0.5)" },
   estimating: { bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.22)", color: "rgba(245,158,11,0.84)" },
@@ -1369,21 +1368,24 @@ function HomeScreen({
           <div style={{ display: "grid", gap: 0 }}>
             {recentProjects.map((p, idx) => {
               const pName = String(p?.projectName || "").trim() || "Untitled Project";
-              const cName = String(p?.customerName || "").trim();
+              const cName = String(p?._customerName || p?.customerName || "").trim();
               const dsKey = p?._displayStatus?.key || "draft";
               const dsLabel = p?._displayStatus?.label || "Draft";
               const SC = HOME_PROJECT_STATUS_COLORS[dsKey] || HOME_PROJECT_STATUS_COLORS.draft;
+              const actDate = homeRelDate(p?._latestActivityAt || 0);
+              const overdueCount = p?._overdueCount || 0;
+              const balDue = p?._totals?.balanceRemaining || 0;
+              const approvedEstCount = p?._approvedEstCount || 0;
+              const hasSignals = overdueCount > 0 || balDue > 0 || approvedEstCount > 0;
               return (
                 <button
                   key={String(p?.id || idx)}
                   type="button"
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    gap: 8,
-                    alignItems: "center",
+                    gap: 6,
                     width: "100%",
-                    padding: "10px 16px",
+                    padding: "11px 16px",
                     borderTop: "1px solid rgba(255,255,255,0.07)",
                     borderRight: "none",
                     borderBottom: "none",
@@ -1399,29 +1401,59 @@ function HomeScreen({
                     try { onOpenProjectDetail && onOpenProjectDetail(String(p?.id || "")); } catch {}
                   }}
                 >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {pName}
-                    </div>
-                    {cName ? (
-                      <div style={{ fontSize: 12, opacity: 0.55, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {cName}
+                  {/* Identity + status badge */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 15, lineHeight: 1.3, letterSpacing: 0.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {pName}
                       </div>
-                    ) : null}
+                      {cName ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
+                          <div style={{ fontSize: 12.5, color: "rgba(99,179,237,0.78)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+                            {cName}
+                          </div>
+                          {actDate ? <div style={{ fontSize: 11, opacity: 0.35, fontWeight: 600, flexShrink: 0 }}>{actDate}</div> : null}
+                        </div>
+                      ) : (
+                        actDate ? <div style={{ fontSize: 11, opacity: 0.35, fontWeight: 600, marginTop: 3 }}>{actDate}</div> : null
+                      )}
+                    </div>
+                    <span style={{
+                      flexShrink: 0,
+                      fontSize: 10.5,
+                      fontWeight: 700,
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      background: SC.bg,
+                      color: SC.color,
+                      border: `1px solid ${SC.border}`,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.07em",
+                    }}>
+                      {dsLabel}
+                    </span>
                   </div>
-                  <span style={{
-                    flexShrink: 0,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    padding: "2px 8px",
-                    borderRadius: 6,
-                    background: SC.bg,
-                    color: SC.color,
-                    border: `1px solid ${SC.border}`,
-                    textTransform: "capitalize",
-                  }}>
-                    {dsLabel}
-                  </span>
+
+                  {/* Attention signals */}
+                  {hasSignals ? (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {overdueCount > 0 ? (
+                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
+                          {overdueCount === 1 ? "1 overdue" : `${overdueCount} overdue`}
+                        </span>
+                      ) : null}
+                      {balDue > 0 ? (
+                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
+                          {homeMoney(balDue)} due
+                        </span>
+                      ) : null}
+                      {approvedEstCount > 0 ? (
+                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
+                          {approvedEstCount === 1 ? "1 est. approved" : `${approvedEstCount} ests. approved`}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </button>
               );
             })}
@@ -1994,16 +2026,32 @@ const [spinTick, setSpinTick] = useState(0);
       const allProjects = readStoredProjects();
       const estRecords = Array.isArray(estimateHistory) ? estimateHistory : [];
       const invRecords = Array.isArray(invoiceHistory) ? invoiceHistory : [];
-      return allProjects
-        .filter((p) => String(p?.status || "active") !== "archived")
-        .slice(0, 5)
+      const mapped = allProjects
         .map((p) => {
           const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: estRecords, invoices: invRecords });
           const ds = deriveProjectDisplayStatus(view);
-          return { ...p, _displayStatus: ds };
-        });
+          const projInvoices = view.invoices || [];
+          const projEstimates = view.estimates || [];
+          return {
+            ...p,
+            _displayStatus: ds,
+            _customerName: view.customer?.name || view.customer?.companyName || view.customer?.fullName || p.customerName || "",
+            _latestActivityAt: view.latestActivityAt || 0,
+            _totals: view.totals || {},
+            _overdueCount: projInvoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length,
+            _approvedEstCount: projEstimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length,
+          };
+        })
+        .filter((p) => p._displayStatus.key !== "archived");
+      mapped.sort((a, b) => {
+        const pa = a._overdueCount > 0 ? 0 : (a._totals?.balanceRemaining > 0 ? 1 : (a._approvedEstCount > 0 ? 2 : 3));
+        const pb = b._overdueCount > 0 ? 0 : (b._totals?.balanceRemaining > 0 ? 1 : (b._approvedEstCount > 0 ? 2 : 3));
+        if (pa !== pb) return pa - pb;
+        return (b._latestActivityAt || 0) - (a._latestActivityAt || 0);
+      });
+      return mapped.slice(0, 5);
     } catch { return []; }
-  }, [activeTab, estimateHistory, invoiceHistory]);
+  }, [estimateHistory, invoiceHistory]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -2749,6 +2797,14 @@ const gated = false;
         />
       );
     }
+    if (activeTab === ROUTES.EDIT_PROJECT) {
+      return (
+        <EditProjectScreen
+          onBack={() => navigateTo(ROUTES.PROJECT_DETAIL)}
+          onSave={() => navigateTo(ROUTES.PROJECT_DETAIL)}
+        />
+      );
+    }
     if (activeTab === ROUTES.PROJECT_DETAIL) {
       return (
         <ProjectDetailScreen
@@ -2756,6 +2812,7 @@ const gated = false;
             clearProjectDetailReturnTarget();
             navigateTo(ROUTES.PROJECTS);
           }}
+          onEditProject={() => navigateTo(ROUTES.EDIT_PROJECT)}
           onOpenEstimate={(estimate) => {
             armProjectDetailReturnTarget();
             const id = String(estimate?.id || "").trim();

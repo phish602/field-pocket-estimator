@@ -87,9 +87,9 @@ const filtersRowStyle = {
 };
 
 const invoiceCardStyle = {
-  padding: 16,
-  borderRadius: 16,
-  border: "1px solid rgba(255,255,255,0.12)",
+  padding: "14px 16px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.08)",
   background: "rgba(255,255,255,0.04)",
   boxSizing: "border-box",
   overflow: "hidden",
@@ -115,9 +115,10 @@ const invoicePrimaryLineStyle = {
 };
 
 const invoiceTitleStyle = {
-  fontSize: 15.5,
-  lineHeight: 1.28,
-  fontWeight: 700,
+  fontSize: 15,
+  lineHeight: 1.3,
+  fontWeight: 800,
+  letterSpacing: 0.2,
   minWidth: 0,
   display: "block",
   whiteSpace: "normal",
@@ -152,10 +153,10 @@ const invoiceDocLineStyle = {
 };
 
 const invoiceSecondaryLineStyle = {
-  fontSize: 13,
-  lineHeight: 1.32,
+  fontSize: 12.5,
+  lineHeight: 1.3,
   fontWeight: 500,
-  color: "rgba(226,232,240,0.78)",
+  color: "rgba(99,179,237,0.78)",
   minWidth: 0,
   whiteSpace: "normal",
   overflow: "visible",
@@ -785,6 +786,11 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const isOpen = !!expanded[invoiceId];
                 const derivedStatus = deriveInvoiceStatus(invoice);
                 const invoiceMarginValue = getExistingInvoiceMarginValue(invoice);
+                const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+                const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+                const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+                const dueDate = formatDateOnly(invoice?.dueDate);
+                const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const statusTone = derivedStatus === INVOICE_STATUSES.PAID
                   ? "rgba(34,197,94,0.14)"
                   : derivedStatus === INVOICE_STATUSES.OVERDUE
@@ -821,6 +827,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
                               {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
                             </div>
+                            {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                             <div style={invoiceDocLineStyle}>
                               <span className="pe-estimate-card-number">{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
                               {invoice?.estimateNumber ? (
@@ -830,6 +837,13 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           </div>
                           <div className="pe-estimate-card-updated" style={invoiceMetaLineStyle}>
                             <span style={invoiceDateStyle}>{formatDateTime(invoice?.updatedAt || invoice?.createdAt)}</span>
+                            {dueDate ? (
+                              <span style={{ fontWeight: 700, opacity: 0.82 }}>
+                                {derivedStatus === INVOICE_STATUSES.OVERDUE
+                                  ? <span style={{ color: "rgba(248,113,113,0.92)" }}>{lang === "es" ? "Venció" : "Due"} {dueDate}</span>
+                                  : <span>{lang === "es" ? "Vence" : "Due"} {dueDate}</span>}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
 
@@ -864,9 +878,24 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           <div style={invoiceMetricColumnStyle}>
                             <div style={invoiceMetricLabelStyle}>{labelTotalMetric}</div>
                             <div style={invoiceMetricPillStyle(true)} title={labelRevenue}>
-                              {moneyUSD(invoice?.invoiceTotal)}
+                              {moneyUSD(invoiceTotal)}
                             </div>
                           </div>
+                          {balanceRemaining > 0 ? (
+                            <div style={invoiceMetricColumnStyle}>
+                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "SALDO" : "BALANCE"}</div>
+                              <div style={invoiceMetricPillStyle(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
+                                {moneyUSD(balanceRemaining)}
+                              </div>
+                            </div>
+                          ) : amountPaid > 0 ? (
+                            <div style={invoiceMetricColumnStyle}>
+                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "PAGADO" : "PAID"}</div>
+                              <div style={{ ...invoiceMetricPillStyle(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
+                                {moneyUSD(amountPaid)}
+                              </div>
+                            </div>
+                          ) : null}
                           {invoiceMarginValue !== null ? (
                             <div style={invoiceMetricColumnStyle}>
                               <div style={invoiceMetricLabelStyle}>{labelMarginMetric}</div>

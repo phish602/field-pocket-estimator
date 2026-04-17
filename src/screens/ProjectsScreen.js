@@ -53,6 +53,14 @@ function formatRelativeDate(ts) {
   }
 }
 
+// Attention-first sort: overdue > balance due > approved est > recent activity
+function projSortPriority(proj) {
+  if ((proj.overdueCount || 0) > 0) return 0;
+  if ((proj.totals?.balanceRemaining || 0) > 0) return 1;
+  if ((proj.approvedEstCount || 0) > 0) return 2;
+  return 3;
+}
+
 const FILTER_CHIPS = [
   { key: "all", label: "All" },
   { key: "draft", label: "Draft" },
@@ -107,7 +115,7 @@ const S = {
   },
   cardTop: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   cardName: { fontWeight: 800, fontSize: 15, letterSpacing: 0.2, lineHeight: 1.3 },
-  cardCustomer: { fontSize: 13, fontWeight: 600, opacity: 0.6 },
+  cardCustomer: { fontSize: 13, fontWeight: 600, color: "rgba(99,179,237,0.78)" },
   cardAddress: { fontSize: 12, opacity: 0.45, lineHeight: 1.4 },
   statusBadge: {
     display: "inline-flex",
@@ -176,9 +184,12 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         invoices,
       });
       const displayStatus = deriveProjectDisplayStatus(view);
+      const projInvoices = view.invoices || [];
+      const projEstimates = view.estimates || [];
       return {
         id: proj.id,
         projectName: proj.projectName || "",
+        projectNumber: proj.projectNumber || "",
         customerName: view.customer?.name || view.customer?.companyName || view.customer?.fullName || proj.customerName || "",
         siteAddress: proj.siteAddress || "",
         status: displayStatus.key,
@@ -186,6 +197,8 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         displayStatus,
         latestActivityAt: view.latestActivityAt || 0,
         totals: view.totals,
+        overdueCount: projInvoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length,
+        approvedEstCount: projEstimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length,
       };
     });
   }, []);
@@ -209,7 +222,12 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         (p.projectName + " " + p.customerName + " " + p.siteAddress).toLowerCase().includes(term)
       );
     }
-    return list.sort((a, b) => (b.latestActivityAt || 0) - (a.latestActivityAt || 0));
+    return list.sort((a, b) => {
+      const pa = projSortPriority(a);
+      const pb = projSortPriority(b);
+      if (pa !== pb) return pa - pb;
+      return (b.latestActivityAt || 0) - (a.latestActivityAt || 0);
+    });
   }, [allData, q, activeFilter]);
 
   if (!allData.length) {
@@ -290,8 +308,11 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                 }}
               >
                 <div style={S.cardTop}>
-                  <div style={{ display: "grid", gap: 4, minWidth: 0, flex: 1 }}>
+                  <div style={{ display: "grid", gap: 3, minWidth: 0, flex: 1 }}>
                     <div style={S.cardName}>{proj.projectName || proj.siteAddress || "Untitled Project"}</div>
+                    {proj.projectNumber ? (
+                      <div style={{ fontSize: 10.5, fontWeight: 600, color: "rgba(230,241,248,0.35)", letterSpacing: "0.04em" }}>#{proj.projectNumber}</div>
+                    ) : null}
                     {proj.customerName ? <div style={S.cardCustomer}>{proj.customerName}</div> : null}
                     {proj.siteAddress && proj.projectName ? <div style={S.cardAddress}>{proj.siteAddress}</div> : null}
                   </div>
@@ -299,6 +320,26 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                     {statusLabel}
                   </span>
                 </div>
+
+                {(proj.overdueCount > 0 || (proj.totals?.balanceRemaining || 0) > 0 || proj.approvedEstCount > 0) ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {proj.overdueCount > 0 ? (
+                      <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
+                        {proj.overdueCount === 1 ? "1 overdue" : `${proj.overdueCount} overdue`}
+                      </span>
+                    ) : null}
+                    {(proj.totals?.balanceRemaining || 0) > 0 ? (
+                      <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
+                        {formatMoney(proj.totals.balanceRemaining)} due
+                      </span>
+                    ) : null}
+                    {proj.approvedEstCount > 0 ? (
+                      <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
+                        {proj.approvedEstCount === 1 ? "1 est. approved" : `${proj.approvedEstCount} ests. approved`}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div style={S.statsRow}>
                   {proj.totals.estimateCount > 0 ? (

@@ -15,6 +15,7 @@ export const ROUTES = {
   PROJECTS: "projects",
   PROJECT_DETAIL: "projectDetail",
   NEW_PROJECT: "newProject",
+  EDIT_PROJECT: "editProject",
 };
 
 export const BUILDER_INTENTS = {

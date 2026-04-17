@@ -1924,6 +1924,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                         ? buildEstimateInvoiceSummary(e, invoices)
                         : null;
                       const isActiveCard = isOpen;
+                      const siteAddr = String(e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
 
               const card = {
                 padding: 16,
@@ -1976,7 +1977,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
               const customerField = {
                 ...cardBodyLine,
                 fontSize: 12.5,
-                opacity: 0.78,
+                color: "rgba(99,179,237,0.78)",
                 lineHeight: 1.2,
               };
               const estimateField = {
@@ -2184,7 +2185,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                         <div
                           className="pe-estimate-card-title"
                           style={{
-                            fontWeight: 600,
+                            fontWeight: 800,
                             fontSize: "15px",
                             lineHeight: 1.25,
                           }}
@@ -2195,6 +2196,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                           <div className="pe-estimate-card-customer" style={customerField}>
                             {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
                           </div>
+                          {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                           <div className="pe-estimate-card-numbers" style={estimateField}>
                             {e?.estimateNumber ? (
                               <>
@@ -2239,6 +2241,12 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                           </div>
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                          <div style={metricLabel}>{labelProfit}</div>
+                          <div style={pill(bd.totals.profit > 0)} title={labelProfit}>
+                            {money(bd.totals.profit)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                           <div style={metricLabel}>{labelMarginMetric}</div>
                           <div style={pill(false)} title={labelMargin}>
                             {(bd.totals.margin * 100).toFixed(1)}%
@@ -2246,6 +2254,25 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                         </div>
                       </div>
                     </div>
+                    {status === STATUS_APPROVED && invoiceSummary ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", opacity: 0.52 }}>
+                          {lang === "es" ? "Facturado" : "Invoiced"}
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.82 }}>
+                          {money(invoiceSummary.invoicedTotal)} / {money(invoiceSummary.approvedTotal)}
+                        </div>
+                        {invoiceSummary.remainingToInvoice > 0 ? (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(245,158,11,0.84)" }}>
+                            {money(invoiceSummary.remainingToInvoice)} {lang === "es" ? "restante" : "remaining"}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(72,187,120,0.82)" }}>
+                            {lang === "es" ? "Completamente facturado" : "Fully invoiced"}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="pe-estimate-actions">

@@ -151,8 +151,56 @@ export default function NewProjectScreen({ onBack, onSave }) {
 
       <div style={S.heroCard}>
         <div style={S.title}>New Project</div>
-        <div style={S.subtitle}>Create a new job / project</div>
+        <div style={S.subtitle}>Name the job, link a customer, and start tracking.</div>
       </div>
+
+      {/* ── Project Identity ── */}
+      <div style={{ margin: "0 16px 10px", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Project</div>
+
+      {/* Project Name */}
+      <div style={S.fieldGroup}>
+        <label style={S.label}>Project Name <span style={S.required}>*</span></label>
+        <input
+          type="text"
+          style={S.input}
+          placeholder="e.g. Kitchen Remodel, Roof Repair…"
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+          autoFocus
+        />
+      </div>
+
+      {/* Site Address */}
+      <div style={S.fieldGroup}>
+        <label style={S.label}>Site / Job Address</label>
+        <input
+          type="text"
+          style={S.input}
+          placeholder="123 Main St, City, State"
+          value={siteAddress}
+          onChange={(e) => setSiteAddress(e.target.value)}
+        />
+      </div>
+
+      {/* Status */}
+      <div style={S.fieldGroup}>
+        <label style={S.label}>Status</label>
+        <div style={S.statusRow}>
+          {["active", "draft"].map((s) => (
+            <button
+              key={s}
+              type="button"
+              style={{ ...S.statusOption, ...(status === s ? S.statusOptionActive : {}) }}
+              onClick={() => setStatus(s)}
+            >
+              {s === "active" ? "Active" : "Draft"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Customer ── */}
+      <div style={{ margin: "6px 16px 10px", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Customer</div>
 
       {/* Customer */}
       <div style={S.fieldGroup}>
@@ -242,46 +290,8 @@ export default function NewProjectScreen({ onBack, onSave }) {
         )}
       </div>
 
-      {/* Project Name */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Project Name <span style={S.required}>*</span></label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="e.g. Kitchen Remodel, Roof Repair…"
-          value={projectName}
-          onChange={(e) => setProjectName(e.target.value)}
-        />
-      </div>
-
-      {/* Site Address */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Site / Job Address</label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="123 Main St, City, State"
-          value={siteAddress}
-          onChange={(e) => setSiteAddress(e.target.value)}
-        />
-      </div>
-
-      {/* Status */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Status</label>
-        <div style={S.statusRow}>
-          {["active", "draft"].map((s) => (
-            <button
-              key={s}
-              type="button"
-              style={{ ...S.statusOption, ...(status === s ? S.statusOptionActive : {}) }}
-              onClick={() => setStatus(s)}
-            >
-              {s === "active" ? "Active" : "Draft"}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* ── Additional ── */}
+      <div style={{ margin: "6px 16px 10px", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Additional</div>
 
       {/* Notes */}
       <div style={S.fieldGroup}>
@@ -297,6 +307,11 @@ export default function NewProjectScreen({ onBack, onSave }) {
 
       {/* Save */}
       <div style={S.actionWrap}>
+        {canSave ? (
+          <div style={{ fontSize: 12, color: "rgba(230,241,248,0.42)", marginBottom: 8, lineHeight: 1.35 }}>
+            {projectName.trim()}{selectedCustomer ? ` · ${customerDisplayName(selectedCustomer)}` : ""}{siteAddress.trim() ? ` · ${siteAddress.trim()}` : ""}
+          </div>
+        ) : null}
         <button
           type="button"
           style={{ ...S.saveBtn, ...(canSave ? {} : S.saveBtnDisabled) }}
@@ -526,9 +541,9 @@ const S = {
     width: "100%",
     padding: "13px 0",
     borderRadius: 12,
-    border: "1px solid rgba(99,179,237,0.3)",
-    background: "rgba(99,179,237,0.15)",
-    color: "rgba(99,179,237,0.95)",
+    border: "1px solid rgba(72,187,120,0.32)",
+    background: "rgba(72,187,120,0.14)",
+    color: "rgba(72,187,120,0.95)",
     fontSize: 15,
     fontWeight: 700,
     cursor: "pointer",

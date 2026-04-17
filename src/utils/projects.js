@@ -317,6 +317,24 @@ export function updateProjectStoredStatus(projectId, nextStatus) {
   return updated;
 }
 
+export function updateProjectMetadata(projectId, fields) {
+  const id = asText(projectId);
+  if (!id) return null;
+  const projects = readStoredProjects();
+  const index = projects.findIndex((p) => asText(p?.id) === id);
+  if (index < 0) return null;
+  const existing = projects[index];
+  if (!existing) return null;
+  const updated = mergeProjectRecords(existing, {
+    ...fields,
+    updatedAt: Date.now(),
+  });
+  const next = projects.slice();
+  next[index] = updated;
+  writeStoredProjects(next);
+  return updated;
+}
+
 function latestTimestampForDoc(doc = {}) {
   return normalizeTimestamp(doc?.updatedAt || doc?.savedAt || doc?.createdAt || doc?.date, 0);
 }

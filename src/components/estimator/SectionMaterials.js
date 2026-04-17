@@ -317,6 +317,11 @@ export default function SectionMaterials(props) {
 
       {materialsMode === "blanket" && (
         <>
+          <div className="pe-muted" style={{ marginTop: 10 }}>
+            {lang === "es"
+              ? "Total global — ingresa un monto para todos los materiales del trabajo. Costo + margen = monto facturado."
+              : "One total covering all materials for this job — cost + markup = billed amount on the document."}
+          </div>
           <div
             className="pe-grid"
             style={{
