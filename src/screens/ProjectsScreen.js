@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   readStoredProjects,
@@ -168,6 +168,39 @@ const S = {
 export default function ProjectsScreen({ onOpenProjectDetail }) {
   const [q, setQ] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
+  const [refreshSeq, setRefreshSeq] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => setRefreshSeq((prev) => prev + 1);
+    const onStorage = (event) => {
+      if (
+        !event?.key
+        || event.key === STORAGE_KEYS.PROJECTS
+        || event.key === STORAGE_KEYS.CUSTOMERS
+        || event.key === STORAGE_KEYS.ESTIMATES
+        || event.key === STORAGE_KEYS.INVOICES
+      ) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    refresh();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("estipaid:navigate-estimates", refresh);
+    window.addEventListener("estipaid:invoices-changed", refresh);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("estipaid:navigate-estimates", refresh);
+      window.removeEventListener("estipaid:invoices-changed", refresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   const allData = useMemo(() => {
     const projects = readStoredProjects();
@@ -201,7 +234,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         approvedEstCount: projEstimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length,
       };
     });
-  }, []);
+  }, [refreshSeq]);
 
   const chipCounts = useMemo(() => {
     const counts = { draft: 0, estimating: 0, active: 0, completed: 0, archived: 0 };
