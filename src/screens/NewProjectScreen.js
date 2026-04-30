@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   createProjectRecord,
@@ -75,6 +75,27 @@ export default function NewProjectScreen({ onBack, onSave }) {
   const [inlineName, setInlineName] = useState("");
   const [inlinePhone, setInlinePhone] = useState("");
   const [inlineEmail, setInlineEmail] = useState("");
+
+  useEffect(() => {
+    const refreshCustomers = () => setCustomers(readCustomers());
+    const onStorage = (event) => {
+      if (!event || event.key === STORAGE_KEYS.CUSTOMERS) {
+        refreshCustomers();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshCustomers();
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refreshCustomers);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refreshCustomers);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   const selectedCustomer = useMemo(() => {
     if (!selectedCustomerId) return null;
