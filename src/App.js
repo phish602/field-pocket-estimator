@@ -2039,6 +2039,7 @@ export default function App() {
   const [guidedOverlayOpen, setGuidedOverlayOpen] = useState(false);
   const [homeEstimateLaunch, setHomeEstimateLaunch] = useState(null);
   const [newProjectReturnRoute, setNewProjectReturnRoute] = useState(ROUTES.PROJECTS);
+  const [projectDetailBackRoute, setProjectDetailBackRoute] = useState(ROUTES.PROJECTS);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -2256,6 +2257,27 @@ const [spinTick, setSpinTick] = useState(0);
     }
     writeProjectDetailReturnTarget({ route: ROUTES.PROJECT_DETAIL, projectId });
   }, []);
+
+  const resolveProjectDetailBackRoute = useCallback((route) => {
+    const candidate = String(route || "").trim();
+    if (
+      candidate === ROUTES.HOME
+      || candidate === ROUTES.PROJECTS
+      || candidate === ROUTES.CUSTOMERS
+      || candidate === ROUTES.ESTIMATES
+      || candidate === ROUTES.INVOICES
+    ) {
+      return candidate;
+    }
+    return ROUTES.PROJECTS;
+  }, []);
+
+  const openProjectDetail = useCallback((projectId, originRoute = activeTab) => {
+    clearProjectDetailReturnTarget();
+    writeProjectDetailTarget(projectId);
+    setProjectDetailBackRoute(resolveProjectDetailBackRoute(originRoute));
+    navigateTo(ROUTES.PROJECT_DETAIL);
+  }, [activeTab, navigateTo, resolveProjectDetailBackRoute]);
 
   const launchNewProject = useCallback(() => {
     clearProjectDetailReturnTarget();
@@ -2852,9 +2874,7 @@ const gated = false;
         onLaunchEstimate={launchEstimateFromHome}
         recentProjects={recentProjects}
         onOpenProjectDetail={(projectId) => {
-          clearProjectDetailReturnTarget();
-          writeProjectDetailTarget(projectId);
-          navigateTo(ROUTES.PROJECT_DETAIL);
+          openProjectDetail(projectId, ROUTES.HOME);
         }}
       />
     );
@@ -2876,9 +2896,7 @@ const gated = false;
             } catch {}
           }}
           onOpenProjectDetail={(projectId) => {
-            clearProjectDetailReturnTarget();
-            writeProjectDetailTarget(projectId);
-            navigateTo(ROUTES.PROJECT_DETAIL);
+            openProjectDetail(projectId, ROUTES.CUSTOMERS);
           }}
         />
       );
@@ -2895,9 +2913,7 @@ const gated = false;
             navigateTo(ROUTES.ESTIMATE_BUILDER);
           }}
           onOpenProjectDetail={(projectId) => {
-            clearProjectDetailReturnTarget();
-            writeProjectDetailTarget(projectId);
-            navigateTo(ROUTES.PROJECT_DETAIL);
+            openProjectDetail(projectId, ROUTES.ESTIMATES);
           }}
         />
       );
@@ -2915,7 +2931,7 @@ const gated = false;
         <ProjectDetailScreen
           onBack={() => {
             clearProjectDetailReturnTarget();
-            navigateTo(ROUTES.PROJECTS);
+            navigateTo(projectDetailBackRoute || ROUTES.PROJECTS);
           }}
           onEditProject={() => navigateTo(ROUTES.EDIT_PROJECT)}
           onOpenEstimate={(estimate) => {
@@ -2974,9 +2990,7 @@ const gated = false;
           spinTick={spinTick}
           onDone={() => navigateTo(ROUTES.HOME)}
           onOpenProjectDetail={(projectId) => {
-            clearProjectDetailReturnTarget();
-            writeProjectDetailTarget(projectId);
-            navigateTo(ROUTES.PROJECT_DETAIL);
+            openProjectDetail(projectId, ROUTES.INVOICES);
           }}
         />
       );
@@ -2986,9 +3000,7 @@ const gated = false;
         <NewProjectScreen
           onBack={() => navigateTo(newProjectReturnRoute || ROUTES.PROJECTS)}
           onSave={(newProjectId) => {
-            clearProjectDetailReturnTarget();
-            writeProjectDetailTarget(newProjectId);
-            navigateTo(ROUTES.PROJECT_DETAIL);
+            openProjectDetail(newProjectId, newProjectReturnRoute);
           }}
         />
       );
@@ -2997,9 +3009,7 @@ const gated = false;
       return (
         <ProjectsScreen
           onOpenProjectDetail={(projectId) => {
-            clearProjectDetailReturnTarget();
-            writeProjectDetailTarget(projectId);
-            navigateTo(ROUTES.PROJECT_DETAIL);
+            openProjectDetail(projectId, ROUTES.PROJECTS);
           }}
         />
       );
