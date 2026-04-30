@@ -41,6 +41,8 @@ export default function EditProjectScreen({ onBack, onSave }) {
 
   const handleSave = useCallback(() => {
     if (!canSave || !projectId) return;
+    const latestProject = readProjectById(projectId);
+    if (!latestProject) return;
     const updated = updateProjectMetadata(projectId, {
       projectName: projectName.trim(),
       siteAddress: siteAddress.trim(),
