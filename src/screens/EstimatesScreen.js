@@ -2301,6 +2301,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                       className="actions-right pe-estimate-actions-row"
                       style={{
                         display: "flex",
+                        flexWrap: "wrap",
                         gap: 10,
                         marginTop: 8,
                         position: "relative",
