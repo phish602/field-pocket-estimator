@@ -443,34 +443,6 @@ export default function ProjectDetailScreen({
         <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
           {displayStatus.label}
         </div>
-        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 4px" : "6px 0 2px" }} />
-        <div style={S.statusControlWrap}>
-          <div style={S.statusControlLabel}>Project lifecycle</div>
-          <div style={isPhone ? { ...S.statusControlRow, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.statusControlRow}>
-            {PROJECT_STATUS_CONTROLS.map((option) => {
-              const selected = storedProjectStatus === option.key;
-              const optionStyle = PROJECT_STATUS_COLORS[option.key] || PROJECT_STATUS_COLORS.active;
-              return (
-                <button
-                  key={option.key}
-                  type="button"
-                  style={{
-                    ...S.statusControlChip,
-                    background: selected ? optionStyle.bg : "rgba(255,255,255,0.03)",
-                    border: `1px solid ${selected ? optionStyle.border : "rgba(255,255,255,0.08)"}`,
-                    color: selected ? optionStyle.color : "rgba(230,241,248,0.62)",
-                  }}
-                  onClick={() => {
-                    const updated = updateProjectStoredStatus(project.id, option.key);
-                    if (updated) setRefreshSeq((value) => value + 1);
-                  }}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 6px" : "6px 0 4px" }} />
         <div style={{ display: "grid", gap: 8, marginTop: isPhone ? 0 : 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -517,6 +489,34 @@ export default function ProjectDetailScreen({
               Edit Project Details
             </button>
           ) : null}
+        </div>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 4px" : "6px 0 2px" }} />
+        <div style={S.statusControlWrap}>
+          <div style={S.statusControlLabel}>Project lifecycle</div>
+          <div style={isPhone ? { ...S.statusControlRow, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.statusControlRow}>
+            {PROJECT_STATUS_CONTROLS.map((option) => {
+              const selected = storedProjectStatus === option.key;
+              const optionStyle = PROJECT_STATUS_COLORS[option.key] || PROJECT_STATUS_COLORS.active;
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  style={{
+                    ...S.statusControlChip,
+                    background: selected ? optionStyle.bg : "rgba(255,255,255,0.03)",
+                    border: `1px solid ${selected ? optionStyle.border : "rgba(255,255,255,0.08)"}`,
+                    color: selected ? optionStyle.color : "rgba(230,241,248,0.62)",
+                  }}
+                  onClick={() => {
+                    const updated = updateProjectStoredStatus(project.id, option.key);
+                    if (updated) setRefreshSeq((value) => value + 1);
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
