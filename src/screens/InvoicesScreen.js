@@ -13,7 +13,12 @@ import {
   updateInvoiceLifecycleStatus,
   writeStoredInvoices,
 } from "../utils/invoices";
-import { readStoredProjects, resolveProjectNavigationTarget } from "../utils/projects";
+import {
+  readStoredProjects,
+  resolveProjectNavigationTarget,
+  upsertProject,
+  writeStoredProjects,
+} from "../utils/projects";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -964,8 +969,13 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
                               onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
                               onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "project", () => {
-                                const { projectId } = resolveProjectNavigationTarget(invoice, readStoredProjects());
-                                if (projectId) onOpenProjectDetail(projectId);
+                                const currentProjects = readStoredProjects();
+                                const target = resolveProjectNavigationTarget(invoice, currentProjects);
+                                if (target?.needsBackfill && target?.project) {
+                                  const nextProjects = upsertProject(currentProjects, target.project);
+                                  writeStoredProjects(nextProjects);
+                                }
+                                if (target?.projectId) onOpenProjectDetail(target.projectId);
                               })}
                             >
                               Project
