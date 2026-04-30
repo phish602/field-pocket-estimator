@@ -4019,41 +4019,79 @@ export default function EstimateForm(props) {
   const actionBarNode = (
     <div style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
-        <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
-          <button
-            className="pe-btn pe-shortcut-tip"
-            data-shortcut="Ctrl + S"
-            type="button"
-            onClick={onSaveNow}
-            style={{
-              ...styles.estimatorActionButton,
-              transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
-              ...(saveNeedsAttention
-                ? {
-                    borderColor: "rgba(74,222,128,0.5)",
-                    boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
-                  }
-                : null),
-              ...(savePulse ? { transform: "scale(1.02)" } : null),
-            }}
-          >
-            {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
-          </button>
-          <div style={styles.estimatorActionSecondary}>
+        {isMobileActionBarViewport ? (
+          /* ── Mobile: single compact row — [Clear/Cancel] [Save] [PDF] ── */
+          <div style={styles.estimatorActionButtonsMobileRow} className="pe-estimator-sticky-actions">
             {isEditMode ? (
-              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
-                Cancel Edit
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButtonMobileSide, ...styles.estimatorActionButtonCompact }}>
+                Cancel
               </button>
             ) : (
-              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButtonMobileSide}>
                 Clear
               </button>
             )}
-            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
-              Export PDF
+            <button
+              className="pe-btn pe-shortcut-tip"
+              data-shortcut="Ctrl + S"
+              type="button"
+              onClick={onSaveNow}
+              style={{
+                ...styles.estimatorActionButtonMobileMain,
+                transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
+                ...(saveNeedsAttention
+                  ? {
+                      borderColor: "rgba(74,222,128,0.5)",
+                      boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
+                    }
+                  : null),
+                ...(savePulse ? { transform: "scale(1.02)" } : null),
+              }}
+            >
+              {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
+            </button>
+            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButtonMobileSide}>
+              PDF
             </button>
           </div>
-        </div>
+        ) : (
+          /* ── Desktop/tablet: existing column layout ── */
+          <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
+            <button
+              className="pe-btn pe-shortcut-tip"
+              data-shortcut="Ctrl + S"
+              type="button"
+              onClick={onSaveNow}
+              style={{
+                ...styles.estimatorActionButton,
+                transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
+                ...(saveNeedsAttention
+                  ? {
+                      borderColor: "rgba(74,222,128,0.5)",
+                      boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
+                    }
+                  : null),
+                ...(savePulse ? { transform: "scale(1.02)" } : null),
+              }}
+            >
+              {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
+            </button>
+            <div style={styles.estimatorActionSecondary}>
+              {isEditMode ? (
+                <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
+                  Cancel Edit
+                </button>
+              ) : (
+                <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+                  Clear
+                </button>
+              )}
+              <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+                Export PDF
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -4741,17 +4779,18 @@ export default function EstimateForm(props) {
                 </div>
 
                   <div style={styles.laborLineActions}>
-                  <div
-                    className="pe-muted"
-                    title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
-                    style={styles.laborQtyLabel}
-                  >
-                    x{normalizeLaborQtyValue(l?.qty)}
-                  </div>
-
-                  <div style={styles.laborLineTotalWrap}>
-                    <span style={styles.laborLineTotalLabel}>Line total</span>
-                    <span style={styles.laborLineTotalValue}>{money.format(laborTotalsById.get(String(l.id)) || 0)}</span>
+                  <div style={styles.laborLineLeftGroup}>
+                    <div
+                      className="pe-muted"
+                      title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
+                      style={styles.laborQtyLabel}
+                    >
+                      x{normalizeLaborQtyValue(l?.qty)}
+                    </div>
+                    <div style={styles.laborLineTotalWrap}>
+                      <span style={styles.laborLineTotalLabel}>Line total</span>
+                      <span style={styles.laborLineTotalValue}>{money.format(laborTotalsById.get(String(l.id)) || 0)}</span>
+                    </div>
                   </div>
 
                   <div style={styles.laborLineActionButtons}>
@@ -5041,12 +5080,18 @@ export default function EstimateForm(props) {
             ? "Exclusiones, condiciones de pago y términos de cronograma — aparecen al final de tu estimado. Usa los accesos rápidos o escribe los tuyos."
             : "Exclusions, payment terms, and schedule conditions — these print at the bottom of your estimate. Use the quick-inserts or write your own."}
         </div>
-        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
+        <div
+          className="pe-additional-notes-actions"
+          style={isMobileActionBarViewport
+            ? { display: "flex", gap: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch", marginBottom: 8, marginTop: 10, paddingBottom: 4 }
+            : { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}
+        >
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
               className="pe-btn pe-btn-ghost"
               type="button"
+              style={isMobileActionBarViewport ? { flexShrink: 0, minHeight: 36, padding: "6px 10px", fontSize: 12, whiteSpace: "nowrap" } : undefined}
               onClick={() => {
                 const existing = state.additionalNotes || "";
                 const sep = existing.trim().length > 0 ? "\n\n" : "";
@@ -5059,6 +5104,7 @@ export default function EstimateForm(props) {
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
+            style={isMobileActionBarViewport ? { flexShrink: 0, minHeight: 36, padding: "6px 10px", fontSize: 12, whiteSpace: "nowrap" } : undefined}
             onClick={() => patch("additionalNotes", "")}
           >
             Clear Notes
@@ -5403,9 +5449,10 @@ const styles = {
   laborLineFieldStack: { display: "grid", gap: 4 },
   laborLineGrid: { gap: 10 },
   laborLineOptional: { marginLeft: 6, fontSize: "inherit", fontWeight: "inherit", lineHeight: "inherit", letterSpacing: "normal", textTransform: "none", opacity: 0.74 },
-  laborLineActions: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 },
-  laborQtyLabel: { minWidth: 54 },
-  laborLineTotalWrap: { marginLeft: "auto", display: "inline-flex", gap: 8, alignItems: "center" },
+  laborLineActions: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8, justifyContent: "space-between" },
+  laborLineLeftGroup: { display: "inline-flex", gap: 10, alignItems: "center", minWidth: 0, flex: "1 1 auto" },
+  laborQtyLabel: { minWidth: 54, flexShrink: 0 },
+  laborLineTotalWrap: { display: "inline-flex", gap: 8, alignItems: "center", minWidth: 0, flexShrink: 1 },
   laborLineTotalLabel: { color: "var(--muted)", fontSize: 13, fontWeight: 800 },
   laborLineTotalValue: { color: "var(--text)", fontSize: 14, fontWeight: 900 },
   laborLineActionButtons: { display: "inline-flex", gap: 8, alignItems: "center" },
@@ -5687,6 +5734,9 @@ const styles = {
   estimatorActionButtonsEdit: { display: "flex", flexDirection: "column", gap: 8 },
   estimatorActionSecondary: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
   estimatorActionButton: { width: "100%" },
+  estimatorActionButtonsMobileRow: { display: "flex", flexDirection: "row", gap: 8, alignItems: "stretch" },
+  estimatorActionButtonMobileMain: { flex: "1 1 auto", minWidth: 0 },
+  estimatorActionButtonMobileSide: { flex: "0 0 auto", minWidth: 52, fontSize: 13, paddingLeft: 10, paddingRight: 10, whiteSpace: "nowrap" },
   estimatorActionButtonCompact: {
     fontSize: 13,
     paddingLeft: 10,
