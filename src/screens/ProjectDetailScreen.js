@@ -205,6 +205,7 @@ const S = {
     fontWeight: 800,
     lineHeight: 1.25,
     color: "rgba(230,241,248,0.96)",
+    overflowWrap: "break-word",
   },
   customerName: {
     fontSize: 13,
@@ -378,6 +379,14 @@ export default function ProjectDetailScreen({
 }) {
   const [projectId] = useState(() => readProjectDetailTarget());
   const [refreshSeq, setRefreshSeq] = useState(0);
+  const [isPhone, setIsPhone] = useState(
+    typeof window !== "undefined" ? window.innerWidth < 480 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsPhone(window.innerWidth < 480);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const view = useMemo(() => {
     if (!projectId) return null;
@@ -415,6 +424,7 @@ export default function ProjectDetailScreen({
   const overdueCount = invoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length;
   const approvedEstCount = estimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length;
   const hasAttentionSignals = overdueCount > 0 || totals.balanceRemaining > 0 || approvedEstCount > 0;
+  const overviewValueStyle = isPhone ? { ...S.overviewValue, fontSize: 17 } : S.overviewValue;
 
   return (
     <div style={S.screen}>
@@ -433,10 +443,10 @@ export default function ProjectDetailScreen({
         <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
           {displayStatus.label}
         </div>
-        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: "6px 0 2px" }} />
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 4px" : "6px 0 2px" }} />
         <div style={S.statusControlWrap}>
           <div style={S.statusControlLabel}>Project lifecycle</div>
-          <div style={S.statusControlRow}>
+          <div style={isPhone ? { ...S.statusControlRow, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.statusControlRow}>
             {PROJECT_STATUS_CONTROLS.map((option) => {
               const selected = storedProjectStatus === option.key;
               const optionStyle = PROJECT_STATUS_COLORS[option.key] || PROJECT_STATUS_COLORS.active;
@@ -461,8 +471,8 @@ export default function ProjectDetailScreen({
             })}
           </div>
         </div>
-        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: "6px 0 4px" }} />
-        <div style={{ display: "grid", gap: 8, marginTop: 4 }}>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 6px" : "6px 0 4px" }} />
+        <div style={{ display: "grid", gap: 8, marginTop: isPhone ? 0 : 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <button
               type="button"
@@ -516,19 +526,19 @@ export default function ProjectDetailScreen({
         <div style={S.overviewGrid}>
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Estimates</div>
-            <div style={S.overviewValue}>{totals.estimateCount}</div>
+            <div style={overviewValueStyle}>{totals.estimateCount}</div>
           </div>
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Invoices</div>
-            <div style={S.overviewValue}>{totals.invoiceCount}</div>
+            <div style={overviewValueStyle}>{totals.invoiceCount}</div>
           </div>
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Est. Total</div>
-            <div style={S.overviewValue}>{money(totals.estimateTotal)}</div>
+            <div style={overviewValueStyle}>{money(totals.estimateTotal)}</div>
           </div>
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Invoiced</div>
-            <div style={S.overviewValue}>{money(totals.invoiceTotal)}</div>
+            <div style={overviewValueStyle}>{money(totals.invoiceTotal)}</div>
           </div>
         </div>
         {hasAttentionSignals ? (

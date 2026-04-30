@@ -110,12 +110,12 @@ const invoiceCardTopStyle = {
 
 const invoicePrimaryLineStyle = {
   display: "grid",
-  gap: 3,
+  gap: 5,
   minWidth: 0,
 };
 
 const invoiceTitleStyle = {
-  fontSize: 15,
+  fontSize: 15.5,
   lineHeight: 1.3,
   fontWeight: 800,
   letterSpacing: 0.2,
@@ -153,10 +153,10 @@ const invoiceDocLineStyle = {
 };
 
 const invoiceSecondaryLineStyle = {
-  fontSize: 12.5,
+  fontSize: 13,
   lineHeight: 1.3,
   fontWeight: 500,
-  color: "rgba(99,179,237,0.78)",
+  color: "rgba(99,179,237,0.84)",
   minWidth: 0,
   whiteSpace: "normal",
   overflow: "visible",
@@ -193,7 +193,7 @@ const invoiceDateStyle = {
 
 const invoiceMetricsWrapStyle = {
   display: "flex",
-  justifyContent: "flex-end",
+  width: "100%",
   minWidth: 0,
 };
 
@@ -202,16 +202,16 @@ const invoiceMetricRowStyle = {
   justifyContent: "space-between",
   alignItems: "center",
   flexWrap: "nowrap",
-  columnGap: 12,
   gap: "8px",
+  width: "100%",
   minWidth: 0,
 };
 
 const invoiceMetricLabelStyle = {
-  fontSize: 10.5,
+  fontSize: 10,
   fontWeight: 900,
-  opacity: 0.82,
-  letterSpacing: "1px",
+  opacity: 0.72,
+  letterSpacing: "0.9px",
   textTransform: "uppercase",
   textAlign: "center",
   lineHeight: 1.1,
@@ -220,34 +220,37 @@ const invoiceMetricLabelStyle = {
 const invoiceMetricColumnStyle = {
   display: "flex",
   flexDirection: "column",
-  alignItems: "center",
+  alignItems: "stretch",
   gap: 4,
+  flex: "1 1 0",
 };
 
 const invoiceMetricPillStyle = (highlight) => ({
-  padding: "6px 10px",
+  padding: "6px 12px",
   borderRadius: 999,
   border: "1px solid rgba(255,255,255,0.14)",
   background: highlight ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
   boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
-  fontSize: 12,
+  fontSize: 12.5,
   fontWeight: 800,
   letterSpacing: "0.3px",
   flexShrink: 0,
   whiteSpace: "nowrap",
   color: "rgba(245,248,252,0.96)",
+  textAlign: "center",
+  flex: "1 1 0",
 });
 
 const invoiceHeaderInfoStyle = {
   display: "grid",
-  gap: 6,
+  gap: 8,
   minWidth: 0,
   flex: "1 1 0",
 };
 
 const invoiceCustomerProjectWrapStyle = {
   display: "grid",
-  gap: 2,
+  gap: 4,
   minWidth: 0,
 };
 
@@ -393,6 +396,28 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const prevListCountRef = useRef(0);
   const hasMeasuredListRef = useRef(false);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
+
+  const [isPhone, setIsPhone] = useState(
+    typeof window !== "undefined" ? window.innerWidth < 480 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsPhone(window.innerWidth < 480);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const invoiceMetricRowStyleLocal = isPhone
+    ? { ...invoiceMetricRowStyle, flexWrap: "wrap" }
+    : invoiceMetricRowStyle;
+  const invoiceMetricColumnStyleLocal = isPhone
+    ? { ...invoiceMetricColumnStyle, flex: "1 1 auto" }
+    : invoiceMetricColumnStyle;
+  const invoiceMetricPillStyleLocal = (highlight) => ({
+    ...invoiceMetricPillStyle(highlight),
+    padding: isPhone ? "5px 8px" : "6px 12px",
+    fontSize: isPhone ? 11.5 : 12.5,
+  });
+
   const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
   const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
   const labelRevenue = lang === "es" ? "Ingresos" : "Revenue";
@@ -874,32 +899,32 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                         </div>
                       </div>
                       <div className="pe-estimate-card-metrics-wrap" style={invoiceMetricsWrapStyle}>
-                        <div className="pe-estimate-card-metrics" style={invoiceMetricRowStyle}>
-                          <div style={invoiceMetricColumnStyle}>
+                        <div className="pe-estimate-card-metrics" style={invoiceMetricRowStyleLocal}>
+                          <div style={invoiceMetricColumnStyleLocal}>
                             <div style={invoiceMetricLabelStyle}>{labelTotalMetric}</div>
-                            <div style={invoiceMetricPillStyle(true)} title={labelRevenue}>
+                            <div style={invoiceMetricPillStyleLocal(true)} title={labelRevenue}>
                               {moneyUSD(invoiceTotal)}
                             </div>
                           </div>
                           {balanceRemaining > 0 ? (
-                            <div style={invoiceMetricColumnStyle}>
+                            <div style={invoiceMetricColumnStyleLocal}>
                               <div style={invoiceMetricLabelStyle}>{lang === "es" ? "SALDO" : "BALANCE"}</div>
-                              <div style={invoiceMetricPillStyle(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
+                              <div style={invoiceMetricPillStyleLocal(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
                                 {moneyUSD(balanceRemaining)}
                               </div>
                             </div>
                           ) : amountPaid > 0 ? (
-                            <div style={invoiceMetricColumnStyle}>
+                            <div style={invoiceMetricColumnStyleLocal}>
                               <div style={invoiceMetricLabelStyle}>{lang === "es" ? "PAGADO" : "PAID"}</div>
-                              <div style={{ ...invoiceMetricPillStyle(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
+                              <div style={{ ...invoiceMetricPillStyleLocal(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
                                 {moneyUSD(amountPaid)}
                               </div>
                             </div>
                           ) : null}
                           {invoiceMarginValue !== null ? (
-                            <div style={invoiceMetricColumnStyle}>
+                            <div style={invoiceMetricColumnStyleLocal}>
                               <div style={invoiceMetricLabelStyle}>{labelMarginMetric}</div>
-                              <div style={invoiceMetricPillStyle(false)} title={labelMargin}>
+                              <div style={invoiceMetricPillStyleLocal(false)} title={labelMargin}>
                                 {invoiceMarginValue.toFixed(1)}%
                               </div>
                             </div>

@@ -553,6 +553,19 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
   });
   const boardRef = useRef(null);
   const prevRevenueRef = useRef(null);
+
+  const [boardCols, setBoardCols] = useState(
+    typeof window !== "undefined" ? (window.innerWidth >= 860 ? 3 : window.innerWidth >= 480 ? 2 : 1) : 3
+  );
+  useEffect(() => {
+    const onResize = () => {
+      const w = window.innerWidth;
+      setBoardCols(w >= 860 ? 3 : w >= 480 ? 2 : 1);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   useEffect(() => {
     setEstimates(normalizeEstimateList(history));
   }, [history]);
@@ -1765,7 +1778,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
               display: "grid",
               gridTemplateColumns:
                 statusFilter === "all"
-                  ? "repeat(3, minmax(0, 1fr))"
+                  ? `repeat(${boardCols}, minmax(0, 1fr))`
                   : "minmax(0, 1fr)",
               gap: 16,
               width: "100%",
@@ -1959,42 +1972,42 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
               const row = {
                 display: "grid",
                 gridTemplateRows: "auto auto auto",
-                rowGap: "8px",
+                rowGap: "12px",
                 width: "100%",
               };
               const headerRow = {
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "flex-start",
-                gap: 8,
+                gap: 10,
                 flexWrap: "wrap",
               };
               const customerEstimateRow = {
                 display: "grid",
-                gap: 2,
+                gap: 4,
                 minWidth: 0,
               };
               const customerField = {
                 ...cardBodyLine,
-                fontSize: 12.5,
-                color: "rgba(99,179,237,0.78)",
-                lineHeight: 1.2,
+                fontSize: 13,
+                color: "rgba(99,179,237,0.82)",
+                lineHeight: 1.25,
               };
               const estimateField = {
                 ...cardBodyLine,
                 fontSize: 12,
-                opacity: 0.65,
-                lineHeight: 1.2,
+                opacity: 0.60,
+                lineHeight: 1.25,
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
                 flexWrap: "wrap",
               };
               const metricLabel = {
-                fontSize: 10.5,
+                fontSize: 10,
                 fontWeight: 900,
-                opacity: 0.82,
-                letterSpacing: "1px",
+                opacity: 0.72,
+                letterSpacing: "0.9px",
                 textTransform: "uppercase",
                 textAlign: "center",
                 lineHeight: 1.1,
@@ -2004,23 +2017,31 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                flexWrap: "nowrap",
-                columnGap: 12,
-                gap: "8px",
+                flexWrap: boardCols === 1 ? "wrap" : "nowrap",
+                gap: boardCols === 1 ? "6px" : "8px",
+                width: "100%",
                 minWidth: 0,
               };
 
               const pill = (ok) => ({
-                padding: "6px 10px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                minHeight: boardCols === 1 ? 30 : 32,
+                padding: boardCols === 1 ? "0 6px" : "0 12px",
                 borderRadius: 999,
                 border: "1px solid rgba(255,255,255,0.14)",
                 background: ok ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
                 boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
-                fontSize: 12,
+                fontSize: boardCols === 1 ? 11.5 : 12.5,
                 fontWeight: 800,
                 letterSpacing: "0.3px",
-                flexShrink: 0,
+                lineHeight: 1,
                 whiteSpace: "nowrap",
+                textAlign: "center",
+                flex: "1 1 0",
+                minWidth: 0,
+                boxSizing: "border-box",
               });
 
               const panel = {
@@ -2181,13 +2202,13 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                 >
                   <div className="pe-estimate-card-mainrow" style={row}>
                     <div className="pe-estimate-card-header" style={headerRow}>
-                      <div className="pe-estimate-card-info" style={{ display: "grid", gap: 4, minWidth: 0, flex: "1 1 0" }}>
+                      <div className="pe-estimate-card-info" style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 0" }}>
                         <div
                           className="pe-estimate-card-title"
                           style={{
                             fontWeight: 800,
-                            fontSize: "15px",
-                            lineHeight: 1.25,
+                            fontSize: "15.5px",
+                            lineHeight: 1.3,
                           }}
                         >
                           {e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
@@ -2232,21 +2253,21 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                         {statusLabel}
                       </div>
                     </div>
-                    <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
+                    <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", width: "100%", minWidth: 0 }}>
                       <div className="pe-estimate-card-metrics" style={metricRow}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
                           <div style={metricLabel}>{labelTotalMetric}</div>
                           <div style={pill(true)} title={labelRevenue}>
                             {money(bd.totals.revenue)}
                           </div>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
                           <div style={metricLabel}>{labelProfit}</div>
                           <div style={pill(bd.totals.profit > 0)} title={labelProfit}>
                             {money(bd.totals.profit)}
                           </div>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
                           <div style={metricLabel}>{labelMarginMetric}</div>
                           <div style={pill(false)} title={labelMargin}>
                             {(bd.totals.margin * 100).toFixed(1)}%
