@@ -471,18 +471,18 @@ export function deriveProjectDisplayStatus({ project = null, estimates = [], inv
 
   if (projectStatus === "archived") {
     key = "archived";
+  } else if (projectStatus === "completed") {
+    key = "completed";
+  } else if (projectStatus === "estimating") {
+    key = "estimating";
+  } else if (projectStatus === "draft") {
+    key = hasOpenEstimate ? "estimating" : "draft";
   } else if (hasPaidInvoice && allInvoicesClosed && !hasOpenEstimate) {
     key = "completed";
   } else if (hasOpenEstimate && !hasAnyInvoice && !hasApprovedEstimate) {
     key = "estimating";
   } else if (hasApprovedEstimate || hasOpenInvoice || (hasOpenEstimate && hasAnyInvoice)) {
     key = "active";
-  } else if (projectStatus === "completed") {
-    key = "completed";
-  } else if (projectStatus === "estimating") {
-    key = "estimating";
-  } else if (projectStatus === "draft") {
-    key = "draft";
   } else if (projectStatus === "active") {
     key = "active";
   }
