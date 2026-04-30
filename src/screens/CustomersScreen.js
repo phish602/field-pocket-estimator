@@ -913,7 +913,7 @@ export default function CustomersScreen({
                 </button>
               </div>
             ) : (
-              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
+              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(min(340px, 100%), 1fr))" }}>
               {filtered.map((c) => {
                 const id = String(c?.id || "");
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
@@ -921,7 +921,7 @@ export default function CustomersScreen({
                 return (
                   <div className="pe-card pe-card-content ep-glass-tile" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10, cursor: "pointer" }}>
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
-                      <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
+                      <div style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 200px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                           <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 0.2 }}>{displayName(c)}</div>
                           <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75 }}>
@@ -1017,7 +1017,7 @@ export default function CustomersScreen({
                         ) : null}
                       </div>
 
-                        <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
+                        <div style={{ display: "grid", gap: 8, minWidth: 0, justifyItems: "stretch" }}>
                         <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
                           {label("Use", "Usar")}
                         </button>

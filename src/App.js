@@ -521,7 +521,7 @@ function IconCreate({ size = 28 }) {
    Overlay dimensions
    ========================= */
 const HEADER_H = 56;
-const FOOTER_H = 82;
+const FOOTER_H = 70;
 const HEADER_SAFE_GAP = 6;
 const FOOTER_FLOAT_GAP = 16;
 const FOOTER_CONTENT_BREATHING = "clamp(36px, 5svh, 56px)";
@@ -581,6 +581,60 @@ function isMenuEdgeSwipeBlockedTarget(target) {
       ].join(", ")
     )
   );
+}
+
+function getAppScrollHost() {
+  if (typeof document === "undefined") return null;
+
+  const shellHost = document.querySelector(".pe-content");
+  if (shellHost instanceof Element) {
+    try {
+      const computedStyle = typeof window !== "undefined" ? window.getComputedStyle(shellHost) : null;
+      const overflowY = String(computedStyle?.overflowY || "");
+      const shellCanScroll = shellHost.scrollHeight > shellHost.clientHeight + 1;
+      if ((overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") && shellCanScroll) {
+        return shellHost;
+      }
+    } catch {
+      // fall through to the document scroll root
+    }
+  }
+
+  return document.scrollingElement || document.documentElement || document.body || null;
+}
+
+function readAppScrollTop() {
+  const host = getAppScrollHost();
+  if (host && typeof host.scrollTop === "number") {
+    return Math.max(0, Number(host.scrollTop) || 0);
+  }
+
+  if (typeof window !== "undefined") {
+    return Math.max(
+      0,
+      Number(window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || document.body?.scrollTop || 0)
+    );
+  }
+
+  return 0;
+}
+
+function resetAppScrollPosition() {
+  const host = getAppScrollHost();
+  try {
+    if (host && typeof host.scrollTo === "function") {
+      host.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } else if (host) {
+      host.scrollTop = 0;
+      host.scrollLeft = 0;
+    }
+  } catch {}
+
+  try {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+  } catch {}
 }
 
 /* =========================
@@ -709,7 +763,16 @@ function TopBar({
   );
 }
 
-function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mobileCreateChromeMotion }) {
+function BottomNav({
+  active,
+  setActive,
+  disabled,
+  onQuickOpen,
+  chromeVisible,
+  mobileCreateChromeMotion,
+  className,
+  ...rest
+}) {
   const tabs = useMemo(
     () => [
       { key: ROUTES.PROJECTS, label: "Projects", Icon: IconProjects },
@@ -768,6 +831,8 @@ function BottomNav({ active, setActive, disabled, onQuickOpen, chromeVisible, mo
 
   return (
     <div
+      className={className}
+      {...rest}
       style={{
         ...styles.bottomnav,
         ...(mobileCreateChromeMotion ? styles.bottomnavCreateMotion : null),
@@ -1775,8 +1840,12 @@ const styles = {
     boxSizing: "border-box",
   },
   contentCreateMobile: {
-    paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
-    scrollPaddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)`,
+    paddingBottom: `calc(${FOOTER_H + 88}px + env(safe-area-inset-bottom, 0px))`,
+    scrollPaddingBottom: `calc(${FOOTER_H + 88}px + env(safe-area-inset-bottom, 0px))`,
+  },
+  contentMobile: {
+    paddingBottom: `calc(${FOOTER_H}px + env(safe-area-inset-bottom, 0px) + ${FOOTER_CONTENT_BREATHING})`,
+    scrollPaddingBottom: `calc(${FOOTER_H}px + env(safe-area-inset-bottom, 0px) + ${FOOTER_CONTENT_BREATHING})`,
   },
   contentLocked: {
     maxHeight: "100dvh",
@@ -1791,11 +1860,11 @@ const styles = {
     minHeight: FOOTER_H,
     height: "auto",
     position: "fixed",
-    left: "50%",
-    transform: "translateX(-50%)",
-    width: "min(1100px, calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 18px))",
+    left: 0,
+    transform: "translateY(0)",
+    width: "100%",
     maxWidth: "100%",
-    bottom: FOOTER_FLOAT_GAP,
+    bottom: 0,
     zIndex: 50,
     display: "flex",
     justifyContent: "space-around",
@@ -1816,7 +1885,7 @@ const styles = {
     transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
   },
   bottomnavHidden: {
-    transform: "translate(-50%, calc(100% + env(safe-area-inset-bottom, 0px) + 24px))",
+    transform: "translateY(calc(100% + env(safe-area-inset-bottom, 0px) + 24px))",
     opacity: 0,
     pointerEvents: "none",
   },
@@ -2493,15 +2562,16 @@ const [spinTick, setSpinTick] = useState(0);
     chromeVisibleRef.current = nextVisible;
     setChromeVisible(nextVisible);
   }, []);
-  useEffect(() => {
+
+  useLayoutEffect(() => {
     setSpinTick((v) => v + 1);
-    try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch {}
+    resetAppScrollPosition();
     isScrolledRef.current = false;
     setIsScrolled(false);
     chromeScrollStateRef.current = { lastTop: 0, anchorTop: 0, direction: "none" };
     setChromeVisibility(true);
     setQuickOpen(false);
-  }, [activeTab, setChromeVisibility]);
+  }, [activeTab, createIntent, setChromeVisibility]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -2727,6 +2797,15 @@ const gated = false;
     try { setQuickOpen(true); } catch {}
   };
 
+  const hideMobileBottomNav =
+    isMobileChromeViewport
+    && (activeTab === ROUTES.NEW_PROJECT || activeTab === ROUTES.EDIT_PROJECT);
+  const showBottomNav = !hideMobileBottomNav;
+  const mobileBottomNavActive = isMobileChromeViewport && showBottomNav;
+  const mobileBuilderFooterActive = isMobileChromeViewport && activeTab === ROUTES.CREATE;
+  const mobileFooterSwipeEnabled = mobileBottomNavActive || mobileBuilderFooterActive;
+  const mobileFooterChromeVisible = mobileFooterSwipeEnabled ? chromeVisible : true;
+
   const renderScreen = () => {
     if (activeTab === ROUTES.HOME) return (
         <HomeScreen
@@ -2910,7 +2989,7 @@ const gated = false;
           intent={createIntent}
           spinTick={spinTick}
           resetSeq={createResetSeq}
-          mobileBottomChromeVisible={chromeVisible && !drawerOpen}
+          mobileBottomChromeVisible={isMobileChromeViewport ? mobileFooterChromeVisible && !drawerOpen : true}
           shellOverlayOpen={drawerOpen}
           onGuidedOverlayOpenChange={setGuidedOverlayOpen}
           homeEstimateLaunch={homeEstimateLaunch}
@@ -2983,20 +3062,18 @@ const gated = false;
     : `${activeTab}:${createIntent || ""}:${routeEnterSeq}`;
   const glassOnScroll = activeTab !== ROUTES.HOME && activeTab !== ROUTES.CREATE;
   const handleWindowScroll = useCallback(() => {
-    const st = Math.max(
-      0,
-      Number(
-        window.scrollY
-        || window.pageYOffset
-        || document.documentElement?.scrollTop
-        || document.body?.scrollTop
-        || 0
-      )
-    );
+    const st = readAppScrollTop();
     const nextScrolled = st > 6;
     setShellScrolled(nextScrolled);
 
     const nextState = chromeScrollStateRef.current;
+    if (isMobileChromeViewport && !mobileFooterSwipeEnabled) {
+      nextState.lastTop = st;
+      nextState.anchorTop = st;
+      nextState.direction = "none";
+      setChromeVisibility(true);
+      return;
+    }
 
     if (st <= CHROME_TOP_REVEAL_THRESHOLD) {
       nextState.lastTop = st;
@@ -3028,10 +3105,18 @@ const gated = false;
     }
 
     nextState.lastTop = st;
-  }, [setChromeVisibility, setShellScrolled]);
+  }, [isMobileChromeViewport, mobileFooterSwipeEnabled, setChromeVisibility, setShellScrolled]);
   useEffect(() => {
-    window.addEventListener("scroll", handleWindowScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleWindowScroll);
+    if (typeof window === "undefined" || typeof document === "undefined") return undefined;
+    const scrollHost = getAppScrollHost();
+    const useWindowListener =
+      !scrollHost
+      || scrollHost === document.scrollingElement
+      || scrollHost === document.documentElement
+      || scrollHost === document.body;
+    const scrollTarget = useWindowListener ? window : scrollHost;
+    scrollTarget.addEventListener("scroll", handleWindowScroll, { passive: true });
+    return () => scrollTarget.removeEventListener("scroll", handleWindowScroll);
   }, [handleWindowScroll]);
   const unsavedModalOverlay = {
     position: "fixed",
@@ -3256,40 +3341,46 @@ const gated = false;
       <div
         className={`pe-content${activeTab === ROUTES.CREATE ? " pe-content-estimator" : ""}`}
         aria-hidden={drawerOpen ? "true" : undefined}
-        style={activeTab === ROUTES.CREATE && isMobileChromeViewport
+        style={isMobileChromeViewport
           ? {
               ...styles.content,
-              ...styles.contentCreateMobile,
+              ...(showBottomNav && activeTab !== ROUTES.CREATE
+                ? styles.contentMobile
+                : styles.contentCreateMobile),
               ...(drawerOpen ? styles.contentLocked : null),
             }
           : {
               ...styles.content,
+              ...(isMobileChromeViewport ? styles.contentMobile : null),
               ...(drawerOpen ? styles.contentLocked : null),
             }}
       >
         {renderScreen()}
       </div>
 
-      <BottomNav
-        active={activeTab}
-        chromeVisible={chromeVisible}
-        mobileCreateChromeMotion={activeTab === ROUTES.CREATE && isMobileChromeViewport}
-        setActive={(key) => {
-          if (
-            key === ROUTES.CUSTOMERS
-            && Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)
-          ) {
-            return;
-          }
-          if (key === ROUTES.CREATE) {
-            setCreateLauncherOpen(true);
-            return;
-          }
-          navigateTo(key);
-        }}
-        onQuickOpen={() => setQuickOpen(true)}
-        disabled={gated || (activeTab === ROUTES.CREATE && guidedOverlayOpen)}
-      />
+      {showBottomNav ? (
+        <BottomNav
+          className="pe-mobile-footer"
+          active={activeTab}
+          chromeVisible={isMobileChromeViewport ? mobileFooterChromeVisible : chromeVisible}
+          mobileCreateChromeMotion={activeTab === ROUTES.CREATE && isMobileChromeViewport}
+          setActive={(key) => {
+            if (
+              key === ROUTES.CUSTOMERS
+              && Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)
+            ) {
+              return;
+            }
+            if (key === ROUTES.CREATE) {
+              setCreateLauncherOpen(true);
+              return;
+            }
+            navigateTo(key);
+          }}
+          onQuickOpen={() => setQuickOpen(true)}
+          disabled={gated || (activeTab === ROUTES.CREATE && guidedOverlayOpen)}
+        />
+      ) : null}
     </div>
   );
 }

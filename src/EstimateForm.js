@@ -1044,7 +1044,8 @@ function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
 
 const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
-const SHELL_DOCK_HEIGHT = 78;
+const SHELL_DOCK_HEIGHT = 98;
+const SHELL_DOCK_HEIGHT_MOBILE = 70;
 const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
 const MOBILE_ACTION_BAR_BREAKPOINT = 820;
@@ -3880,7 +3881,7 @@ export default function EstimateForm(props) {
     setSpecialConditionsOpen(false);
   }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
 
-  const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
+  const dockHeight = embeddedInShell ? (isMobileActionBarViewport ? SHELL_DOCK_HEIGHT_MOBILE : SHELL_DOCK_HEIGHT) : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
   const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
@@ -4038,19 +4039,20 @@ export default function EstimateForm(props) {
           >
             {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
           </button>
-          {isEditMode ? (
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
-              Cancel Edit
+          <div style={styles.estimatorActionSecondary}>
+            {isEditMode ? (
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
+                Cancel Edit
+              </button>
+            ) : (
+              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+                Clear
+              </button>
+            )}
+            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+              Export PDF
             </button>
-          ) : null}
-          {!isEditMode ? (
-            <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
-              Clear
-            </button>
-          ) : null}
-          <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
-            Export PDF
-          </button>
+          </div>
         </div>
       </div>
     </div>
@@ -4162,18 +4164,18 @@ export default function EstimateForm(props) {
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-          <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
+          <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} stackStyle={{ marginBottom: 0 }} />
           {projectSeedSummary ? (
             <span style={{ marginTop: 4, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(99,179,237,0.8)", background: "rgba(99,179,237,0.10)", borderRadius: 999, padding: "2px 8px", border: "1px solid rgba(99,179,237,0.22)", whiteSpace: "nowrap" }}>
               Linked
             </span>
           ) : null}
         </div>
-        {!projectSeedSummary ? (
-          <div style={{ marginTop: -6, marginBottom: 8, fontSize: 12, color: "rgba(156,163,175,0.82)" }}>
-            {uiDocType === "invoice" ? "Who is this invoice for?" : "Who is this estimate for?"}
-          </div>
-        ) : null}
+        <div style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
+          {lang === "es"
+            ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Trabajo."
+            : "Who you're billing — select an existing customer or create one. Job site details go in Job Info."}
+        </div>
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4314,12 +4316,12 @@ export default function EstimateForm(props) {
 
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} />
-        {!projectSeedSummary ? (
-          <div style={{ marginTop: -6, marginBottom: 8, fontSize: 12, color: "rgba(156,163,175,0.82)" }}>
-            {uiDocType === "invoice" ? "Job details for this invoice" : "Job details for this estimate"}
-          </div>
-        ) : null}
+        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <div style={styles.scopeSubtitle}>
+          {lang === "es"
+            ? "Nombre del trabajo, dirección del sitio y fecha — aparece en el encabezado del estimado, por separado del cliente."
+            : "Job name, site address, and date — goes on your estimate header, separate from who you're billing."}
+        </div>
 
         {projectSeedSummary ? (
           <div style={{ margin: "0 0 10px", padding: "6px 10px", background: "rgba(99,179,237,0.06)", borderRadius: 8, borderLeft: "2px solid rgba(99,179,237,0.32)", fontSize: 12, color: "rgba(220,235,245,0.65)", lineHeight: 1.6 }}>
@@ -4364,7 +4366,7 @@ export default function EstimateForm(props) {
                   checked={projectLocationSame}
                   onChange={(e) => patch("customer.projectSameAsCustomer", !!e.target.checked)}
                 />
-                <span>Project location (use customer address)</span>
+                <span>Same as customer address</span>
               </label>
             </div>
 
@@ -4820,11 +4822,11 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionHeaderRow}>
           <div style={{ display: "grid", gap: 2 }}>
-            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Job Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
             <div style={styles.scopeSubtitle}>
               {lang === "es"
-                ? "Incrementos opcionales sobre la mano de obra — sitios difíciles o trabajos con incertidumbre."
-                : "Optional % add-ons to your labor total — for hazardous sites or jobs with unknowns."}
+                ? "Costo adicional de mano de obra por condiciones del sitio o riesgos del trabajo — se aplica sobre el total de mano de obra, no sobre el alcance ni los materiales."
+                : "Extra labor cost driven by site conditions or job risk — applies on top of your base labor total. Not scope, not materials, not crew hours."}
             </div>
           </div>
           {!specialConditionsOpen ? (
@@ -4833,7 +4835,7 @@ export default function EstimateForm(props) {
               type="button"
               style={styles.scopeCollapseBtn}
               onClick={() => setSpecialConditionsOpen(true)}
-              title="Expand special conditions"
+              title="Expand job conditions"
             >
               Expand ▾
             </button>
@@ -4850,8 +4852,8 @@ export default function EstimateForm(props) {
                 <div style={styles.label}>Hazard / Site Conditions</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
                   {lang === "es"
-                    ? "Acceso difícil, PPE, riesgos en el sitio. Agrega % a la mano de obra."
-                    : "Tight access, PPE, or site hazards — adds % to labor."}
+                    ? "Acceso difícil, EPP requerido o peligros conocidos en el sitio — agrega un % a tu total de mano de obra."
+                    : "Tight access, required PPE, or known site hazards — adds a % to your labor total."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.hazardPct ?? "")}
@@ -4887,8 +4889,8 @@ export default function EstimateForm(props) {
                 <div style={styles.label}>Risk / Uncertainty Buffer</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
                   {lang === "es"
-                    ? "Condiciones ocultas o incertidumbre de alcance. Agrega % a la mano de obra."
-                    : "Scope unknowns, hidden conditions, or schedule exposure — adds % to labor."}
+                    ? "Condiciones ocultas, planos incompletos o incertidumbre de cronograma — agrega un % a tu total de mano de obra."
+                    : "Hidden conditions, incomplete drawings, or schedule uncertainty — adds a % to your labor total."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.riskPct ?? "")}
@@ -4922,20 +4924,20 @@ export default function EstimateForm(props) {
             </div>
 
             <div className="pe-row pe-row-slim">
-              <div className="pe-muted">Adjusted labor</div>
+              <div className="pe-muted">Your labor total</div>
               <div className="pe-value">{money.format(adjustedLabor)}</div>
             </div>
 
             {hazardEnabled && (
               <div className="pe-row pe-row-slim">
-                <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
+                <div className="pe-muted">{`Hazard add-on (${hazardPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(hazardFee)}</div>
               </div>
             )}
 
             {riskEnabled && (
               <div className="pe-row pe-row-slim">
-                <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
+                <div className="pe-muted">{`Risk buffer (${riskPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(riskFee)}</div>
               </div>
             )}
@@ -4956,7 +4958,7 @@ export default function EstimateForm(props) {
               type="button"
               style={styles.sectionFooterBtn}
               onClick={() => setSpecialConditionsOpen(false)}
-              title="Collapse special conditions"
+              title="Collapse job conditions"
             >
               Collapse ▴
             </button>
@@ -5023,13 +5025,23 @@ export default function EstimateForm(props) {
             {money.format(totalRevenue)}
           </div>
         </div>
+        <div style={{ ...styles.scopeSubtitle, marginTop: 6 }}>
+          {lang === "es"
+            ? "Mano de obra, condiciones del trabajo y materiales — revisa antes de agregar términos o exportar."
+            : "Labor, job conditions, and materials — review before adding terms or exporting."}
+        </div>
       </section>
 
-      {/* Additional Notes */}
+      {/* Terms & Notes */}
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Additional Notes" styles={styles} />
-        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Terms & Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <div style={styles.scopeSubtitle}>
+          {lang === "es"
+            ? "Exclusiones, condiciones de pago y términos de cronograma — aparecen al final de tu estimado. Usa los accesos rápidos o escribe los tuyos."
+            : "Exclusions, payment terms, and schedule conditions — these print at the bottom of your estimate. Use the quick-inserts or write your own."}
+        </div>
+        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
@@ -5060,7 +5072,7 @@ export default function EstimateForm(props) {
             patch("additionalNotes", e.target.value);
             autoResizeScopeNotes(e.target);
           }}
-          placeholder="Additional notes, terms, exclusions…"
+          placeholder="Payment terms, exclusions, schedule conditions, warranty — anything the client needs to know about how this job runs…"
           style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
       </section>
@@ -5527,7 +5539,7 @@ const styles = {
   label: { display: "block", fontSize: 12.5, fontWeight: 800, letterSpacing: "0.2px", textTransform: "none", opacity: 0.82, marginBottom: 6 },
   small: { fontSize: 12, fontWeight: 800, letterSpacing: "0.6px", opacity: 0.78, textTransform: "uppercase" },
   scopeHeaderRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 8 },
-  scopeSubtitle: { fontSize: 11.5, fontWeight: 500, color: "rgba(230,241,248,0.38)", lineHeight: 1.35, maxWidth: 320 },
+  scopeSubtitle: { fontSize: 11.5, fontWeight: 500, color: "rgba(230,241,248,0.38)", lineHeight: 1.35, maxWidth: 320, marginTop: 4 },
   scopeClearBtn: { padding: "8px 12px", minHeight: 36 },
   scopeCollapseRow: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 },
   scopeCollapseBtn: { padding: "6px 10px", minHeight: 32 },
@@ -5671,8 +5683,9 @@ const styles = {
     borderRadius: 18,
     padding: 10,
   },
-  estimatorActionButtons: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
-  estimatorActionButtonsEdit: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
+  estimatorActionButtons: { display: "flex", flexDirection: "column", gap: 8 },
+  estimatorActionButtonsEdit: { display: "flex", flexDirection: "column", gap: 8 },
+  estimatorActionSecondary: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
   estimatorActionButton: { width: "100%" },
   estimatorActionButtonCompact: {
     fontSize: 13,
