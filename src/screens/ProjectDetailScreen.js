@@ -500,12 +500,12 @@ export default function ProjectDetailScreen({
               type="button"
               style={{
                 width: "100%",
-                padding: "8px 0",
+                padding: "12px 0",
                 borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.08)",
-                background: "rgba(255,255,255,0.03)",
-                color: "rgba(230,241,248,0.52)",
-                fontSize: 12,
+                border: "1px solid rgba(255,255,255,0.11)",
+                background: "rgba(255,255,255,0.04)",
+                color: "rgba(230,241,248,0.68)",
+                fontSize: 13,
                 fontWeight: 600,
                 cursor: "pointer",
                 letterSpacing: "0.03em",
