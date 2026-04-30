@@ -508,6 +508,7 @@ export default function CustomersScreen({
   const [returnToEstimator, setReturnToEstimator] = useState(false);
   const [autoUseOnSave, setAutoUseOnSave] = useState(false);
   const [missingRequired, setMissingRequired] = useState({});
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   const phoneFieldMissing = !!missingRequired.phone;
   const emailFieldMissing = !!missingRequired.email;
@@ -539,6 +540,39 @@ export default function CustomersScreen({
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [customers]);
+
+  useEffect(() => {
+    const relevantStorageKeys = new Set([
+      STORAGE_KEYS.PROJECTS,
+      STORAGE_KEYS.CUSTOMERS,
+      STORAGE_KEYS.ESTIMATES,
+      STORAGE_KEYS.INVOICES,
+    ]);
+    const refresh = () => setRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (!event || event.key == null || relevantStorageKeys.has(event.key)) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const appEvents = [
+      "estipaid:navigate-estimates",
+      "estipaid:invoices-changed",
+    ];
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
+    appEvents.forEach((name) => window.addEventListener(name, refresh));
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refresh);
+      appEvents.forEach((name) => window.removeEventListener(name, refresh));
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
@@ -639,7 +673,7 @@ export default function CustomersScreen({
       byId[cid].margin = safeDiv(prof, rev);
     }
     return byId;
-  }, [customers, localCustomers, q, mode]);
+  }, [customers, localCustomers, q, mode, refreshSeq]);
 
   const customerProjectMeta = useMemo(() => {
     const allProjects = readStoredProjects();
@@ -686,7 +720,7 @@ export default function CustomersScreen({
       delete entry._archStatus;
     }
     return byId;
-  }, [mode, list]);
+  }, [mode, list, refreshSeq]);
 
   const filtered = useMemo(() => {
   const qq = norm(q);
