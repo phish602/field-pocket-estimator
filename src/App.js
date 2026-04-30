@@ -121,6 +121,7 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
 const LANG_KEY = STORAGE_KEYS.LANG;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
@@ -2041,6 +2042,7 @@ export default function App() {
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
+  const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
   const latestSavedEstimate = useMemo(() => selectLatestSavedEstimate(estimateHistory), [estimateHistory]);
   const latestSavedEstimateMeta = useMemo(() => {
     if (!latestSavedEstimate) return null;
@@ -2092,7 +2094,7 @@ const [spinTick, setSpinTick] = useState(0);
 
   const recentProjects = useMemo(() => {
     try {
-      const allProjects = readStoredProjects();
+      const allProjects = Array.isArray(projectHistory) ? projectHistory : [];
       const estRecords = Array.isArray(estimateHistory) ? estimateHistory : [];
       const invRecords = Array.isArray(invoiceHistory) ? invoiceHistory : [];
       const mapped = allProjects
@@ -2120,7 +2122,7 @@ const [spinTick, setSpinTick] = useState(0);
       });
       return mapped.slice(0, 5);
     } catch { return []; }
-  }, [estimateHistory, invoiceHistory]);
+  }, [projectHistory, estimateHistory, invoiceHistory]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -2477,6 +2479,23 @@ const [spinTick, setSpinTick] = useState(0);
       window.removeEventListener("estipaid:invoices-changed", refresh);
     };
   }, []);
+
+  useEffect(() => {
+    const refresh = () => setProjectHistory(readStoredProjects());
+    refresh();
+    const onStorage = (e) => {
+      if (!e?.key || e.key === PROJECTS_KEY) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== ROUTES.HOME) return;
+    setProjectHistory(readStoredProjects());
+  }, [activeTab]);
 
   useEffect(() => {
     const onShellAction = (evt) => {
