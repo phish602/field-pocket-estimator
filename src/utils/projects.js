@@ -577,11 +577,14 @@ export function resolveProjectNavigationTarget(doc = {}, projects = []) {
   const projectList = normalizeProjectList(projects);
 
   if (explicitProjectId) {
-    return {
-      projectId: explicitProjectId,
-      project: projectList.find((entry) => asText(entry?.id) === explicitProjectId) || null,
-      needsBackfill: false,
-    };
+    const existingExplicitProject = projectList.find((entry) => asText(entry?.id) === explicitProjectId) || null;
+    if (existingExplicitProject) {
+      return {
+        projectId: explicitProjectId,
+        project: existingExplicitProject,
+        needsBackfill: false,
+      };
+    }
   }
 
   const fallbackProject = createProjectRecord(source);
