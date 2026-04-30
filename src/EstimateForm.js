@@ -147,6 +147,7 @@ const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
@@ -157,9 +158,24 @@ const SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE = "AI assist hit an internal error. 
 
 function readAndConsumeProjectCreateSeed() {
   try {
+    let returnTarget = null;
+    try {
+      const returnTargetRaw = localStorage.getItem(PROJECT_DETAIL_RETURN_TARGET_KEY);
+      returnTarget = returnTargetRaw ? JSON.parse(returnTargetRaw) : null;
+    } catch {
+      returnTarget = null;
+    }
+    const hasLiveProjectDetailReturnTarget = returnTarget
+      && typeof returnTarget === "object"
+      && String(returnTarget.route || "").trim() === ROUTES.PROJECT_DETAIL
+      && String(returnTarget.projectId || "").trim();
     const raw = localStorage.getItem(PROJECT_CREATE_SEED_KEY);
-    localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
     if (!raw) return null;
+    if (!hasLiveProjectDetailReturnTarget) {
+      localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+      return null;
+    }
+    localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     const projectId = String(parsed.projectId || "").trim();
