@@ -33,6 +33,22 @@ function customerDisplayName(c) {
   return String(c?.name || c?.companyName || c?.fullName || "").trim();
 }
 
+function normalizeLookupValue(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function matchesCreatedProject(project, record) {
+  const projectCustomerId = normalizeLookupValue(project?.customerId || project?.customer?.id);
+  const recordCustomerId = normalizeLookupValue(record?.customerId || record?.customer?.id);
+  const projectCustomerName = normalizeLookupValue(project?.customerName || project?.customer?.name || project?.customer?.companyName || project?.customer?.fullName);
+  const recordCustomerName = normalizeLookupValue(record?.customerName || record?.customer?.name || record?.customer?.companyName || record?.customer?.fullName);
+  return (
+    (projectCustomerId || projectCustomerName) === (recordCustomerId || recordCustomerName)
+    && normalizeLookupValue(project?.projectName) === normalizeLookupValue(record?.projectName)
+    && normalizeLookupValue(project?.siteAddress) === normalizeLookupValue(record?.siteAddress)
+  );
+}
+
 export default function NewProjectScreen({ onBack, onSave }) {
   const [customers, setCustomers] = useState(() => readCustomers());
 
@@ -139,8 +155,11 @@ export default function NewProjectScreen({ onBack, onSave }) {
     });
     const projects = readStoredProjects();
     const next = upsertProject(projects, record);
-    writeStoredProjects(next);
-    if (onSave) onSave(record.id);
+    const savedProjects = writeStoredProjects(next);
+    const persisted = savedProjects.find((project) => String(project?.id || "") === String(record.id || ""))
+      || savedProjects.find((project) => matchesCreatedProject(project, record))
+      || record;
+    if (onSave) onSave(persisted.id);
   }, [canSave, selectedCustomerId, selectedCustomer, projectName, siteAddress, status, notes, onSave]);
 
   return (
