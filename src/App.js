@@ -2038,6 +2038,7 @@ export default function App() {
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const [guidedOverlayOpen, setGuidedOverlayOpen] = useState(false);
   const [homeEstimateLaunch, setHomeEstimateLaunch] = useState(null);
+  const [newProjectReturnRoute, setNewProjectReturnRoute] = useState(ROUTES.PROJECTS);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -2255,6 +2256,12 @@ const [spinTick, setSpinTick] = useState(0);
     }
     writeProjectDetailReturnTarget({ route: ROUTES.PROJECT_DETAIL, projectId });
   }, []);
+
+  const launchNewProject = useCallback(() => {
+    clearProjectDetailReturnTarget();
+    setNewProjectReturnRoute(activeTab && activeTab !== ROUTES.NEW_PROJECT ? activeTab : ROUTES.PROJECTS);
+    navigateTo(ROUTES.NEW_PROJECT);
+  }, [activeTab, navigateTo]);
 
   const launchEstimateFromHome = useCallback((roughPrompt = "", launchOptions = {}) => {
     const options = launchOptions && typeof launchOptions === "object" ? launchOptions : {};
@@ -2977,7 +2984,7 @@ const gated = false;
     if (activeTab === ROUTES.NEW_PROJECT) {
       return (
         <NewProjectScreen
-          onBack={() => navigateTo(ROUTES.PROJECTS)}
+          onBack={() => navigateTo(newProjectReturnRoute || ROUTES.PROJECTS)}
           onSave={(newProjectId) => {
             clearProjectDetailReturnTarget();
             writeProjectDetailTarget(newProjectId);
@@ -3282,8 +3289,7 @@ const gated = false;
             return;
           }
           if (action === "project") {
-            clearProjectDetailReturnTarget();
-            navigateTo(ROUTES.NEW_PROJECT);
+            launchNewProject();
             return;
           }
           if (action === "invoice") {
