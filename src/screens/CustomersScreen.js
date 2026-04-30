@@ -656,19 +656,23 @@ export default function CustomersScreen({
       if (!Array.isArray(allInvoices)) allInvoices = [];
     } catch {}
     const byId = {};
-    for (const p of allProjects) {
-      const cid = String(p?.customerId || "");
+    for (const customer of list || []) {
+      const cid = String(customer?.id || "");
       if (!cid) continue;
+      const linkedProjects = findLinkedProjectsForCustomer(customer, allProjects, list, allEstimates, allInvoices);
+      if (!linkedProjects.length) continue;
       if (!byId[cid]) byId[cid] = { projectCount: 0, latestProjectName: "", latestProjectDisplayStatus: null, _archName: "", _archStatus: null };
-      byId[cid].projectCount += 1;
-      const pName = String(p?.projectName || "").trim();
-      if (!pName) continue;
-      const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
-      const ds = deriveProjectDisplayStatus(view);
-      if (ds.key === "archived") {
-        if (!byId[cid]._archName) { byId[cid]._archName = pName; byId[cid]._archStatus = ds; }
-      } else {
-        if (!byId[cid].latestProjectName) { byId[cid].latestProjectName = pName; byId[cid].latestProjectDisplayStatus = ds; }
+      byId[cid].projectCount = linkedProjects.length;
+      for (const p of linkedProjects) {
+        const pName = String(p?.projectName || "").trim();
+        if (!pName) continue;
+        const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
+        const ds = deriveProjectDisplayStatus(view);
+        if (ds.key === "archived") {
+          if (!byId[cid]._archName) { byId[cid]._archName = pName; byId[cid]._archStatus = ds; }
+        } else {
+          if (!byId[cid].latestProjectName) { byId[cid].latestProjectName = pName; byId[cid].latestProjectDisplayStatus = ds; }
+        }
       }
     }
     // Fall back to archived context if customer has only archived projects
@@ -682,7 +686,7 @@ export default function CustomersScreen({
       delete entry._archStatus;
     }
     return byId;
-  }, [mode]);
+  }, [mode, list]);
 
   const filtered = useMemo(() => {
   const qq = norm(q);
