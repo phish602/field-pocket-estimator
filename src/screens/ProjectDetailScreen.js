@@ -387,6 +387,44 @@ export default function ProjectDetailScreen({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+  useEffect(() => {
+    const relevantStorageKeys = new Set([
+      STORAGE_KEYS.PROJECTS,
+      STORAGE_KEYS.CUSTOMERS,
+      STORAGE_KEYS.ESTIMATES,
+      STORAGE_KEYS.INVOICES,
+    ]);
+    const refresh = () => setRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (!event) return;
+      if (event.key == null || relevantStorageKeys.has(event.key)) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    const appEvents = [
+      "estipaid:navigate-estimates",
+      "estipaid:invoices-changed",
+    ];
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", onStorage);
+    appEvents.forEach((name) => window.addEventListener(name, refresh));
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", onStorage);
+      appEvents.forEach((name) => window.removeEventListener(name, refresh));
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
 
   const view = useMemo(() => {
     if (!projectId) return null;
