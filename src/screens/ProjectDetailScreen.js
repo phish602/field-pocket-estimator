@@ -136,6 +136,7 @@ const INV_STATUS_ACCENT = {
 
 const PROJECT_STATUS_CONTROLS = [
   { key: "draft", label: "Draft" },
+  { key: "estimating", label: "Estimating" },
   { key: "active", label: "Active" },
   { key: "completed", label: "Completed" },
   { key: "archived", label: "Archived" },
@@ -145,8 +146,7 @@ function normalizeProjectControlStatus(status) {
   const raw = String(status || "").toLowerCase();
   if (raw === "complete") return "completed";
   if (raw === "closed" || raw === "inactive") return "archived";
-  if (raw === "estimating") return "active";
-  if (raw === "draft" || raw === "active" || raw === "completed" || raw === "archived") return raw;
+  if (raw === "draft" || raw === "estimating" || raw === "active" || raw === "completed" || raw === "archived") return raw;
   return "active";
 }
 

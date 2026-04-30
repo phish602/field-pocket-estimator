@@ -8,6 +8,7 @@ const DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 
 const STATUS_OPTIONS = [
   { key: "draft", label: "Draft" },
+  { key: "estimating", label: "Estimating" },
   { key: "active", label: "Active" },
   { key: "completed", label: "Completed" },
   { key: "archived", label: "Archived" },
