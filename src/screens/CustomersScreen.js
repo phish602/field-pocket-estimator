@@ -166,6 +166,55 @@ function norm(s) {
   return String(s || "").trim().toLowerCase();
 }
 
+function normalizeCustomerLookupName(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function collectCustomerLookupNames(customer) {
+  const rawNames = [
+    customer?.name,
+    customer?.companyName,
+    customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
+function collectProjectLookupNames(project, view) {
+  const rawNames = [
+    project?.customerName,
+    project?.customer?.name,
+    project?.customer?.companyName,
+    project?.customer?.fullName,
+    view?.customer?.name,
+    view?.customer?.companyName,
+    view?.customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
+function findLinkedProjectsForCustomer(customer, allProjects = [], allCustomers = [], allEstimates = [], allInvoices = []) {
+  const customerId = String(customer?.id || "").trim();
+  const projectList = Array.isArray(allProjects) ? allProjects.filter(Boolean) : [];
+  const exactMatches = customerId
+    ? projectList.filter((project) => String(project?.customerId || project?.customer?.id || "").trim() === customerId)
+    : [];
+  if (exactMatches.length > 0) return exactMatches;
+
+  const targetNames = new Set(collectCustomerLookupNames(customer));
+  if (!targetNames.size) return [];
+
+  return projectList.filter((project) => {
+    const view = buildNormalizedProjectView({
+      project,
+      projects: projectList,
+      customers: Array.isArray(allCustomers) ? allCustomers : [],
+      estimates: Array.isArray(allEstimates) ? allEstimates : [],
+      invoices: Array.isArray(allInvoices) ? allInvoices : [],
+    });
+    return collectProjectLookupNames(project, view).some((name) => targetNames.has(name));
+  });
+}
+
 function joinAddr(a) {
   const street = String(a?.street || "").trim();
   const city = String(a?.city || "").trim();
@@ -1036,9 +1085,20 @@ export default function CustomersScreen({
                             style={{ width: "100%", background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.28)", color: "rgba(99,179,237,0.94)" }}
                             onClick={() => {
                               const custId = String(c?.id || "");
-                              if (!custId) return;
                               const allProjects = readStoredProjects();
-                              const matched = allProjects.filter((p) => String(p?.customerId || "") === custId);
+                              let allEstimates = [];
+                              let allInvoices = [];
+                              try {
+                                const eRaw = localStorage.getItem(ESTIMATES_KEY);
+                                allEstimates = eRaw ? safeParse(eRaw, []) : [];
+                                if (!Array.isArray(allEstimates)) allEstimates = [];
+                              } catch {}
+                              try {
+                                const iRaw = localStorage.getItem(INVOICES_KEY);
+                                allInvoices = iRaw ? safeParse(iRaw, []) : [];
+                                if (!Array.isArray(allInvoices)) allInvoices = [];
+                              } catch {}
+                              const matched = findLinkedProjectsForCustomer(c, allProjects, list, allEstimates, allInvoices);
                               if (matched.length === 1) {
                                 setProjectChooser(null);
                                 onOpenProjectDetail(String(matched[0].id || ""));
