@@ -9,6 +9,14 @@ import {
   upsertProject,
 } from "../utils/projects";
 
+const PROJECT_STATUS_OPTIONS = [
+  { key: "draft", label: "Draft" },
+  { key: "estimating", label: "Estimating" },
+  { key: "active", label: "Active" },
+  { key: "completed", label: "Completed" },
+  { key: "archived", label: "Archived" },
+];
+
 function readCustomers() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
@@ -205,14 +213,14 @@ export default function NewProjectScreen({ onBack, onSave }) {
       <div style={S.fieldGroup}>
         <label style={S.label}>Status</label>
         <div style={S.statusRow}>
-          {["active", "draft"].map((s) => (
+          {PROJECT_STATUS_OPTIONS.map((option) => (
             <button
-              key={s}
+              key={option.key}
               type="button"
-              style={{ ...S.statusOption, ...(status === s ? S.statusOptionActive : {}) }}
-              onClick={() => setStatus(s)}
+              style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
+              onClick={() => setStatus(option.key)}
             >
-              {s === "active" ? "Active" : "Draft"}
+              {option.label}
             </button>
           ))}
         </div>
@@ -532,11 +540,11 @@ const S = {
     cursor: "default",
   },
   statusRow: {
-    display: "flex",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))",
     gap: 8,
   },
   statusOption: {
-    flex: 1,
     padding: "8px 0",
     borderRadius: 8,
     border: "1px solid rgba(255,255,255,0.1)",
