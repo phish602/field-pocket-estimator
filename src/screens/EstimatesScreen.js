@@ -577,11 +577,24 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       if (!event?.key || event.key === STORAGE_KEYS.INVOICES) refresh();
     };
     const onInvoicesChanged = () => refresh();
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", refresh);
     window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", refresh);
       window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, []);
 
