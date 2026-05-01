@@ -1222,7 +1222,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
     setInvoices(nextInvoices);
     closeInvoiceComposer();
     try {
-      localStorage.setItem("estipaid-edit-invoice-target-v1", String(created.draft.id || ""));
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
     } catch {}
     try {
       window.dispatchEvent(new Event("estipaid:invoices-changed"));
