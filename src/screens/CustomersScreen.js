@@ -5,6 +5,7 @@ import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
+import { readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
@@ -47,9 +48,8 @@ function moneyUSD(v) {
 function readSavedDocs() {
   try {
     const estimateRaw = localStorage.getItem(ESTIMATES_KEY);
-    const invoiceRaw = localStorage.getItem(INVOICES_KEY);
     const estimates = estimateRaw ? safeParse(estimateRaw, []) : [];
-    const invoices = invoiceRaw ? safeParse(invoiceRaw, []) : [];
+    const invoices = readStoredInvoices();
     const estimateRecords = Array.isArray(estimates)
       ? estimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice")
       : [];
@@ -741,9 +741,7 @@ export default function CustomersScreen({
       allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
     } catch {}
     try {
-      const iRaw = localStorage.getItem(INVOICES_KEY);
-      allInvoices = iRaw ? safeParse(iRaw, []) : [];
-      if (!Array.isArray(allInvoices)) allInvoices = [];
+      allInvoices = readStoredInvoices();
     } catch {}
     const byId = {};
     for (const customer of list || []) {
@@ -1200,9 +1198,7 @@ export default function CustomersScreen({
                                 allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
                               } catch {}
                               try {
-                                const iRaw = localStorage.getItem(INVOICES_KEY);
-                                allInvoices = iRaw ? safeParse(iRaw, []) : [];
-                                if (!Array.isArray(allInvoices)) allInvoices = [];
+                                allInvoices = readStoredInvoices();
                               } catch {}
                               const matched = findLinkedProjectsForCustomer(c, allProjects, list, allEstimates, allInvoices);
                               if (matched.length === 1) {
