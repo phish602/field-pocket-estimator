@@ -549,7 +549,9 @@ function readSavedDocList(key) {
     const next = backfillProjectCollections({
       customers: readSavedCustomers(),
       projects: readStoredProjects(),
-      estimates: readList(ESTIMATES_KEY),
+      estimates: readList(ESTIMATES_KEY).filter(
+        (record) => String(record?.docType || "estimate").toLowerCase() !== "invoice"
+      ),
       invoices: readList(INVOICES_KEY),
     });
 
