@@ -537,11 +537,18 @@ export default function CustomersScreen({
       if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
       setSettingsSnapshot(loadSettings());
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SETTINGS) {
+        setSettingsSnapshot(loadSettings());
+      }
+    };
     window.addEventListener("estipaid:settings-changed", refresh);
     window.addEventListener("storage", refresh);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     return () => {
       window.removeEventListener("estipaid:settings-changed", refresh);
       window.removeEventListener("storage", refresh);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
     };
   }, []);
 

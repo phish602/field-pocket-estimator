@@ -1387,11 +1387,18 @@ export default function EstimateForm(props) {
       if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
       setSettingsSnapshot(loadSettings());
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SETTINGS) {
+        setSettingsSnapshot(loadSettings());
+      }
+    };
     window.addEventListener("estipaid:settings-changed", refresh);
     window.addEventListener("storage", refresh);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     return () => {
       window.removeEventListener("estipaid:settings-changed", refresh);
       window.removeEventListener("storage", refresh);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
     };
   }, []);
 
@@ -1400,8 +1407,17 @@ export default function EstimateForm(props) {
       if (e?.key && e.key !== STORAGE_KEYS.SCOPE_TEMPLATES) return;
       setScopeTemplates(readStoredScopeTemplates());
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SCOPE_TEMPLATES) {
+        setScopeTemplates(readStoredScopeTemplates());
+      }
+    };
     window.addEventListener("storage", refreshScopeTemplates);
-    return () => window.removeEventListener("storage", refreshScopeTemplates);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", refreshScopeTemplates);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
   }, []);
 
   const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
