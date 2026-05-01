@@ -555,6 +555,9 @@ function readSavedDocList(key) {
     if (next.changed) {
       writeStoredProjects(next.projects);
       localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next.estimates));
+      try {
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
+      } catch {}
       localStorage.setItem(INVOICES_KEY, JSON.stringify(next.invoices));
       try {
         window.dispatchEvent(new Event("estipaid:invoices-changed"));
