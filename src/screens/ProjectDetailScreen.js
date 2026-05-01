@@ -33,7 +33,9 @@ function readEstimates() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((record) => record && String(record?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
   } catch {
     return [];
   }

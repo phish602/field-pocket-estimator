@@ -12,7 +12,10 @@ import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../ut
 function readEstimates() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
-    return Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
   } catch {
     return [];
   }

@@ -50,8 +50,11 @@ function readSavedDocs() {
     const invoiceRaw = localStorage.getItem(INVOICES_KEY);
     const estimates = estimateRaw ? safeParse(estimateRaw, []) : [];
     const invoices = invoiceRaw ? safeParse(invoiceRaw, []) : [];
+    const estimateRecords = Array.isArray(estimates)
+      ? estimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
     const merged = [
-      ...(Array.isArray(estimates) ? estimates : []),
+      ...estimateRecords,
       ...(Array.isArray(invoices) ? invoices : []),
     ].filter(Boolean);
     const deduped = [];
@@ -735,6 +738,7 @@ export default function CustomersScreen({
       const eRaw = localStorage.getItem(ESTIMATES_KEY);
       allEstimates = eRaw ? safeParse(eRaw, []) : [];
       if (!Array.isArray(allEstimates)) allEstimates = [];
+      allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
     } catch {}
     try {
       const iRaw = localStorage.getItem(INVOICES_KEY);
@@ -1193,6 +1197,7 @@ export default function CustomersScreen({
                                 const eRaw = localStorage.getItem(ESTIMATES_KEY);
                                 allEstimates = eRaw ? safeParse(eRaw, []) : [];
                                 if (!Array.isArray(allEstimates)) allEstimates = [];
+                                allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
                               } catch {}
                               try {
                                 const iRaw = localStorage.getItem(INVOICES_KEY);
