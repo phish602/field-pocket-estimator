@@ -561,6 +561,13 @@ function readSavedDocList(key) {
   }
 }
 
+function writeStoredEstimatesLocal(nextEstimates) {
+  localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+  try {
+    window.dispatchEvent(new Event("estipaid:estimates-changed"));
+  } catch {}
+}
+
 function hasExplicitInternalCostInputs(doc) {
   const blanketInternalCost = String(
     doc?.materials?.blanketInternalCost
@@ -3130,7 +3137,7 @@ export default function EstimateForm(props) {
         const existingEstimates = readSavedDocList(ESTIMATES_KEY);
         const nextEstimates = existingEstimates.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
         if (nextEstimates.length !== existingEstimates.length) {
-          localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+          writeStoredEstimatesLocal(nextEstimates);
         }
       } catch {}
     }
@@ -3513,7 +3520,7 @@ export default function EstimateForm(props) {
           return String(entry?.invoiceNumber || "").trim() !== invoiceNumber;
         });
         if (filteredEstimates.length !== existingEstimates.length) {
-          localStorage.setItem(ESTIMATES_KEY, JSON.stringify(filteredEstimates));
+          writeStoredEstimatesLocal(filteredEstimates);
         }
       } else {
         const savedEstimate = {
@@ -3524,7 +3531,7 @@ export default function EstimateForm(props) {
         };
         writeStoredProjects(nextProjects);
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
-        localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+        writeStoredEstimatesLocal(nextEstimates);
 
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
