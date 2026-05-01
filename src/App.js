@@ -2402,7 +2402,14 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     const onNavEstimator = (event) => {
-      clearProjectDetailReturnTarget();
+      const hasLiveProjectDetailReturnTarget = (() => {
+        const returnTarget = readProjectDetailReturnTarget();
+        return returnTarget?.route === ROUTES.PROJECT_DETAIL
+          && String(returnTarget?.projectId || "").trim();
+      })();
+      if (!hasLiveProjectDetailReturnTarget) {
+        clearProjectDetailReturnTarget();
+      }
       try {
         const builderIntent = event?.detail?.builderIntent === BUILDER_INTENTS.INVOICE
           ? BUILDER_INTENTS.INVOICE
