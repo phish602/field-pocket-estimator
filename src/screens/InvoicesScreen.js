@@ -445,17 +445,22 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const onStorage = (event) => {
       if (!event?.key || event.key === INVOICES_KEY) refresh();
     };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === INVOICES_KEY) refresh();
+    };
     const onInvoicesChanged = () => refresh();
     const onFocus = () => refresh();
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
     };
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);

@@ -587,6 +587,9 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
     const onStorage = (event) => {
       if (!event?.key || event.key === STORAGE_KEYS.INVOICES) refresh();
     };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === STORAGE_KEYS.INVOICES) refresh();
+    };
     const onInvoicesChanged = () => refresh();
     const onVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
@@ -594,6 +597,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       }
     };
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("focus", refresh);
     window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
     if (typeof document !== "undefined") {
@@ -601,6 +605,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
     }
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
       if (typeof document !== "undefined") {
