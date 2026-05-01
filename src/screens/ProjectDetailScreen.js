@@ -8,7 +8,7 @@ import {
   deriveProjectDisplayStatus,
   updateProjectStoredStatus,
 } from "../utils/projects";
-import { readStoredInvoices } from "../utils/invoices";
+import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 
 const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
@@ -96,13 +96,13 @@ function estSortPriority(est) {
 }
 
 function invSortPriority(inv) {
-  const s = String(inv?.status || "").toLowerCase();
-  if (s === "overdue") return 0;
-  if (s === "partial") return 1;
-  if (s === "sent") return 2;
-  if (s === "draft") return 3;
-  if (s === "paid") return 5;
-  if (s === "void") return 6;
+  const status = deriveInvoiceStatus(inv);
+  if (status === INVOICE_STATUSES.OVERDUE) return 0;
+  if (status === INVOICE_STATUSES.PARTIAL) return 1;
+  if (status === INVOICE_STATUSES.SENT) return 2;
+  if (status === INVOICE_STATUSES.DRAFT) return 3;
+  if (status === INVOICE_STATUSES.PAID) return 5;
+  if (status === INVOICE_STATUSES.VOID) return 6;
   return 4;
 }
 
@@ -459,7 +459,7 @@ export default function ProjectDetailScreen({
   const storedProjectStatus = normalizeProjectControlStatus(project.status);
 
   // Attention signals — derived from existing assembled view data, not mutated
-  const overdueCount = invoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length;
+  const overdueCount = invoices.filter((inv) => deriveInvoiceStatus(inv) === INVOICE_STATUSES.OVERDUE).length;
   const approvedEstCount = estimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length;
   const hasAttentionSignals = overdueCount > 0 || totals.balanceRemaining > 0 || approvedEstCount > 0;
   const overviewValueStyle = isPhone ? { ...S.overviewValue, fontSize: 17 } : S.overviewValue;
@@ -668,8 +668,9 @@ export default function ProjectDetailScreen({
             const invTotal = inv?.invoiceTotal ?? inv?.total ?? 0;
             const invNum = inv?.invoiceNumber || inv?.docNumber || "";
             const invDate = fmtDate(inv?.updatedAt || inv?.savedAt || inv?.createdAt || inv?.date);
-            const invStatusStr = invStatusLabel(inv?.status);
-            const invStatusKey = String(inv?.status || "").toLowerCase();
+            const invDerivedStatus = deriveInvoiceStatus(inv);
+            const invStatusStr = invStatusLabel(invDerivedStatus);
+            const invStatusKey = String(invDerivedStatus || "").toLowerCase();
             return (
               <button
                 key={inv?.id || i}

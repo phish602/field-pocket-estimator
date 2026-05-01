@@ -2034,6 +2034,7 @@ export default function App() {
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
   const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
+  const [createFromEditIntent, setCreateFromEditIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const [createResetSeq, setCreateResetSeq] = useState(0);
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const [guidedOverlayOpen, setGuidedOverlayOpen] = useState(false);
@@ -2338,10 +2339,10 @@ const [spinTick, setSpinTick] = useState(0);
     }
 
     setCreateResetSeq((n) => n + 1);
-    navigateTo(ROUTES.ESTIMATE_BUILDER);
-  }, [ESTIMATE_DRAFT_KEY, navigateTo]);
+    navigateTo(createFromEditIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+  }, [ESTIMATE_DRAFT_KEY, createFromEditIntent, navigateTo]);
 
-  const onCreateButtonRoute = useCallback(() => {
+  const onCreateButtonRoute = useCallback((intent = BUILDER_INTENTS.ESTIMATE) => {
     let estimateEditTarget = "";
     let invoiceEditTarget = "";
     try {
@@ -2349,14 +2350,16 @@ const [spinTick, setSpinTick] = useState(0);
       invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
     } catch {}
 
+    const nextIntent = intent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE;
     if (estimateEditTarget || invoiceEditTarget || createEditSessionActive) {
+      setCreateFromEditIntent(nextIntent);
       setShowCreateFromEditModal(true);
       return;
     }
 
     setHomeEstimateLaunch(null);
     clearProjectDetailReturnTarget();
-    navigateTo(ROUTES.ESTIMATE_BUILDER);
+    navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
   }, [createEditSessionActive, navigateTo, setHomeEstimateLaunch]);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
@@ -3322,9 +3325,7 @@ const gated = false;
             return;
           }
           if (action === "invoice") {
-            setHomeEstimateLaunch(null);
-            clearProjectDetailReturnTarget();
-            navigateTo(ROUTES.INVOICE_BUILDER);
+            onCreateButtonRoute(BUILDER_INTENTS.INVOICE);
             return;
           }
         }}
