@@ -45,6 +45,7 @@ import {
   generateNextInvoiceNumber,
   normalizeInvoiceRecord,
   validateInvoiceAgainstEstimate,
+  writeStoredInvoices,
 } from "./utils/invoices";
 import {
   backfillProjectCollections,
@@ -551,18 +552,6 @@ function readSavedDocList(key) {
       estimates: readList(ESTIMATES_KEY),
       invoices: readList(INVOICES_KEY),
     });
-
-    if (next.changed) {
-      writeStoredProjects(next.projects);
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next.estimates));
-      try {
-        window.dispatchEvent(new Event("estipaid:estimates-changed"));
-      } catch {}
-      localStorage.setItem(INVOICES_KEY, JSON.stringify(next.invoices));
-      try {
-        window.dispatchEvent(new Event("estipaid:invoices-changed"));
-      } catch {}
-    }
 
     return key === ESTIMATES_KEY ? next.estimates : next.invoices;
   } catch {
@@ -3129,7 +3118,7 @@ export default function EstimateForm(props) {
         const existingInvoices = readSavedDocList(INVOICES_KEY);
         const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
         if (nextInvoices.length !== existingInvoices.length) {
-          localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+          writeStoredInvoices(nextInvoices);
           try {
             window.dispatchEvent(new Event("estipaid:invoices-changed"));
           } catch {}
@@ -3511,7 +3500,7 @@ export default function EstimateForm(props) {
 
         writeStoredProjects(nextProjects);
         const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
-        localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+        writeStoredInvoices(nextInvoices);
         try {
           window.dispatchEvent(new Event("estipaid:invoices-changed"));
         } catch {}
@@ -3537,7 +3526,7 @@ export default function EstimateForm(props) {
 
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
-          localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
+          writeStoredInvoices(filteredInvoices);
           try {
             window.dispatchEvent(new Event("estipaid:invoices-changed"));
           } catch {}
