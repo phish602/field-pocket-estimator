@@ -119,6 +119,7 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
    ========================================================= */
 
 const LANG_KEY = STORAGE_KEYS.LANG;
+const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -281,6 +282,16 @@ try {
 function loadSavedEstimates() {
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadSavedCustomers() {
+  try {
+    const raw = localStorage.getItem(CUSTOMERS_KEY);
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr) ? arr.filter(Boolean) : [];
   } catch {
@@ -2098,11 +2109,12 @@ const [spinTick, setSpinTick] = useState(0);
   const recentProjects = useMemo(() => {
     try {
       const allProjects = Array.isArray(projectHistory) ? projectHistory : [];
+      const customerRecords = activeTab === ROUTES.HOME ? loadSavedCustomers() : [];
       const estRecords = Array.isArray(estimateHistory) ? estimateHistory : [];
       const invRecords = Array.isArray(invoiceHistory) ? invoiceHistory : [];
       const mapped = allProjects
         .map((p) => {
-          const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: estRecords, invoices: invRecords });
+          const view = buildNormalizedProjectView({ project: p, projects: allProjects, customers: customerRecords, estimates: estRecords, invoices: invRecords });
           const ds = deriveProjectDisplayStatus(view);
           const projInvoices = view.invoices || [];
           const projEstimates = view.estimates || [];
@@ -2125,7 +2137,7 @@ const [spinTick, setSpinTick] = useState(0);
       });
       return mapped.slice(0, 5);
     } catch { return []; }
-  }, [projectHistory, estimateHistory, invoiceHistory]);
+  }, [activeTab, projectHistory, estimateHistory, invoiceHistory]);
 
   const shellT = useCallback((key) => {
     const en = {
