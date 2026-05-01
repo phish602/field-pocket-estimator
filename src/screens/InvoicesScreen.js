@@ -35,6 +35,16 @@ function loadSavedEstimates() {
   }
 }
 
+function readCustomers() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function EmptyInvoiceIcon() {
   return (
     <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
@@ -392,6 +402,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [list, setList] = useState(() => readStoredInvoices());
+  const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [expanded, setExpanded] = useState(() => ({}));
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showToast, setShowToast] = useState(false);
@@ -452,6 +463,50 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   }, []);
 
   useEffect(() => {
+    const refresh = () => setMetadataRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (
+        !event?.key
+        || event.key === STORAGE_KEYS.PROJECTS
+        || event.key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || event.detail.key === STORAGE_KEYS.PROJECTS
+        || event.detail.key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
+    window.addEventListener("focus", refresh);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
+      window.removeEventListener("focus", refresh);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
     return () => window.clearTimeout(timer);
   }, []);
@@ -473,14 +528,62 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     return () => window.clearTimeout(timer);
   }, [showToast]);
 
+  const invoiceDisplayMeta = useMemo(() => {
+    const currentProjects = readStoredProjects();
+    const currentCustomers = readCustomers();
+    const customerById = new Map(
+      currentCustomers
+        .filter(Boolean)
+        .map((customer) => [String(customer?.id || "").trim(), customer])
+        .filter(([id]) => !!id)
+    );
+    const customerByName = new Map();
+
+    currentCustomers.forEach((customer) => {
+      const name = String(
+        customer?.name
+        || customer?.companyName
+        || customer?.fullName
+        || ""
+      ).trim();
+      if (name) customerByName.set(name.toLowerCase(), customer);
+    });
+
+    return new Map((Array.isArray(list) ? list : []).map((invoice) => {
+      const invoiceId = String(invoice?.id || "").trim();
+      const target = resolveProjectNavigationTarget(invoice, currentProjects);
+      const project = target?.project || null;
+      const projectName = String(
+        project?.projectName
+        || project?.name
+        || invoice?.projectName
+        || ""
+      ).trim();
+      const linkedCustomer = customerById.get(String(project?.customerId || invoice?.customerId || "").trim())
+        || customerByName.get(String(project?.customerName || invoice?.customerName || "").trim().toLowerCase())
+        || null;
+      const customerName = String(
+        linkedCustomer?.name
+        || linkedCustomer?.companyName
+        || linkedCustomer?.fullName
+        || project?.customerName
+        || invoice?.customerName
+        || ""
+      ).trim();
+
+      return [invoiceId, { projectName, customerName }];
+    }));
+  }, [list, metadataRefreshSeq]);
+
   const filtered = useMemo(() => {
     const search = String(q || "").trim().toLowerCase();
     const filterStatus = String(statusFilter || "all").trim().toLowerCase();
     return (Array.isArray(list) ? list : []).filter((invoice) => {
       const derivedStatus = deriveInvoiceStatus(invoice);
+      const displayMeta = invoiceDisplayMeta.get(String(invoice?.id || "").trim()) || {};
       const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
-      const customerName = String(invoice?.customerName || "").toLowerCase();
-      const projectName = String(invoice?.projectName || "").toLowerCase();
+      const customerName = String(displayMeta.customerName || invoice?.customerName || "").toLowerCase();
+      const projectName = String(displayMeta.projectName || invoice?.projectName || "").toLowerCase();
       const estimateNumber = String(invoice?.estimateNumber || "").toLowerCase();
       const searchMatch = !search
         || invoiceNumber.includes(search)
@@ -490,7 +593,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
       return searchMatch && statusMatch;
     });
-  }, [list, q, statusFilter]);
+  }, [invoiceDisplayMeta, list, q, statusFilter]);
 
   const clearCardActionIntent = () => {
     cardActionIntentRef.current = {
@@ -822,6 +925,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
               filtered.map((invoice) => {
                 const invoiceId = String(invoice?.id || "");
                 const isOpen = !!expanded[invoiceId];
+                const displayMeta = invoiceDisplayMeta.get(invoiceId) || {};
                 const derivedStatus = deriveInvoiceStatus(invoice);
                 const invoiceMarginValue = getExistingInvoiceMarginValue(invoice);
                 const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
@@ -829,6 +933,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
+                const projectLabel = displayMeta.projectName || invoice?.projectName || "";
+                const customerLabel = displayMeta.customerName || invoice?.customerName || "";
                 const statusTone = derivedStatus === INVOICE_STATUSES.PAID
                   ? "rgba(34,197,94,0.14)"
                   : derivedStatus === INVOICE_STATUSES.OVERDUE
@@ -858,12 +964,12 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                         <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
                           <div style={invoicePrimaryLineStyle}>
                             <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
-                              {invoice?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
+                              {projectLabel || (lang === "es" ? "Sin proyecto" : "No project")}
                             </span>
                           </div>
                           <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
                             <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
-                              {invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")}
+                              {customerLabel || (lang === "es" ? "Sin cliente" : "No customer")}
                             </div>
                             {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                             <div style={invoiceDocLineStyle}>
