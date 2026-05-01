@@ -2705,7 +2705,11 @@ export default function EstimateForm(props) {
       patch("customer.billingDiff", false);
       try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
       try {
-        localStorage.setItem(PENDING_CUSTOMER_CREATE_KEY, JSON.stringify({ ts: Date.now(), source: "estimator" }));
+        localStorage.setItem(PENDING_CUSTOMER_CREATE_KEY, JSON.stringify({
+          ts: Date.now(),
+          source: "estimator",
+          builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+        }));
       } catch {}
       try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {}
       return;
@@ -2731,7 +2735,12 @@ export default function EstimateForm(props) {
     setDropdownOpen(false);
     patch("customer.id", id);
     try {
-      const payload = { id, customer: payloadCustomer, ts: Date.now() };
+      const payload = {
+        id,
+        customer: payloadCustomer,
+        ts: Date.now(),
+        builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+      };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
       window.dispatchEvent(new Event("estipaid:customer-use"));
       addToCustomerRecents(id);
@@ -4281,7 +4290,11 @@ export default function EstimateForm(props) {
             disabled={!selectedCustomerId}
             onClick={() => {
               try {
-                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({
+                  id: selectedCustomerId,
+                  returnTo: "estimator",
+                  builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+                }));
                 window.dispatchEvent(new Event("estipaid:navigate-customers"));
               } catch {}
             }}

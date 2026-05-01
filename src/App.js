@@ -2401,10 +2401,13 @@ const [spinTick, setSpinTick] = useState(0);
   }, [activeTab, navigateTo]);
 
   useEffect(() => {
-    const onNavEstimator = () => {
+    const onNavEstimator = (event) => {
       clearProjectDetailReturnTarget();
       try {
-        navigateTo(ROUTES.ESTIMATE_BUILDER);
+        const builderIntent = event?.detail?.builderIntent === BUILDER_INTENTS.INVOICE
+          ? BUILDER_INTENTS.INVOICE
+          : BUILDER_INTENTS.ESTIMATE;
+        navigateTo(builderIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
       } catch {}
     };
     window.addEventListener("estipaid:navigate-estimator", onNavEstimator);
@@ -2892,7 +2895,10 @@ const gated = false;
               }
             } catch {}
             try {
-              navigateTo(ROUTES.ESTIMATE_BUILDER);
+              const builderIntent = p?.builderIntent === BUILDER_INTENTS.INVOICE
+                ? BUILDER_INTENTS.INVOICE
+                : BUILDER_INTENTS.ESTIMATE;
+              navigateTo(builderIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
             } catch {}
           }}
           onOpenProjectDetail={(projectId) => {

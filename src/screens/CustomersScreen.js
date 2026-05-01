@@ -170,6 +170,10 @@ function normalizeCustomerLookupName(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function normalizeBuilderIntent(value) {
+  return String(value || "").trim().toLowerCase() === "invoice" ? "invoice" : "estimate";
+}
+
 function collectCustomerLookupNames(customer) {
   const rawNames = [
     customer?.name,
@@ -517,6 +521,7 @@ export default function CustomersScreen({
   const [draft, setDraft] = useState(() => emptyDraft(defaultCustomerType));
   const [returnToEstimator, setReturnToEstimator] = useState(false);
   const [autoUseOnSave, setAutoUseOnSave] = useState(false);
+  const [builderReturnIntent, setBuilderReturnIntent] = useState("estimate");
   const [missingRequired, setMissingRequired] = useState({});
   const [refreshSeq, setRefreshSeq] = useState(0);
 
@@ -608,7 +613,7 @@ export default function CustomersScreen({
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
-          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true }); }
+          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true, builderIntent: payload?.builderIntent || payload?.intent }); }
         }
       }
     } catch {}
@@ -637,6 +642,7 @@ export default function CustomersScreen({
           if (fromEstimator) {
             setReturnToEstimator(true);
             setAutoUseOnSave(true);
+            setBuilderReturnIntent(normalizeBuilderIntent(payload2?.builderIntent || payload2?.intent));
           }
         } catch {}
         setDraft(emptyDraft(defaultCustomerType));
@@ -793,6 +799,7 @@ export default function CustomersScreen({
   function startNew(type = defaultCustomerType) {
     setReturnToEstimator(false);
     setAutoUseOnSave(false);
+    setBuilderReturnIntent("estimate");
     setDraft(emptyDraft(type));
     setMissingRequired({});
     setMode("edit");
@@ -803,6 +810,7 @@ export default function CustomersScreen({
     const useAutoOnSave = !!opts?.autoUseOnSave;
     setReturnToEstimator(useEstimatorReturn);
     setAutoUseOnSave(useAutoOnSave);
+    setBuilderReturnIntent(useEstimatorReturn ? normalizeBuilderIntent(opts?.builderIntent) : "estimate");
     const type = String(c?.type || "residential");
     const base = emptyDraft(type);
     setDraft({ ...base, ...(c || {}) });
@@ -814,7 +822,11 @@ export default function CustomersScreen({
     try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
     setAutoUseOnSave(false);
     setReturnToEstimator(false);
-    try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
+    try {
+      window.dispatchEvent(new CustomEvent("estipaid:navigate-estimator", {
+        detail: { builderIntent: builderReturnIntent },
+      }));
+    } catch {}
   }
 
   function saveDraft() {
@@ -912,10 +924,15 @@ export default function CustomersScreen({
     if (autoUseOnSave && typeof onDone === "function") {
       try {
         const payloadCustomer = { ...nextItem, ...toEstimatorFlat(nextItem) };
-        localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify({ id, customer: payloadCustomer, ts: Date.now() }));
+        localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify({
+          id,
+          customer: payloadCustomer,
+          ts: Date.now(),
+          builderIntent: builderReturnIntent,
+        }));
         window.dispatchEvent(new Event("estipaid:customer-use"));
       } catch {}
-      try { onDone({ id, customer: nextItem }); } catch {}
+      try { onDone({ id, customer: nextItem, builderIntent: builderReturnIntent }); } catch {}
       setAutoUseOnSave(false);
     }
   }
@@ -944,12 +961,12 @@ export default function CustomersScreen({
 
     // Handoff to EstimateForm (same-tab; storage event won't fire)
     try {
-      const payload = { id, customer: { ...c, ...toEstimatorFlat(c) }, ts: Date.now() };
+      const payload = { id, customer: { ...c, ...toEstimatorFlat(c) }, ts: Date.now(), builderIntent: builderReturnIntent };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
       window.dispatchEvent(new Event("estipaid:customer-use"));
     } catch {}
 
-    if (typeof onDone === "function") onDone({ id, customer: c });
+    if (typeof onDone === "function") onDone({ id, customer: c, builderIntent: builderReturnIntent });
   }
 
   return (
