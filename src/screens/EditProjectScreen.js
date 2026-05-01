@@ -1,6 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 import { readStoredProjects, updateProjectMetadata } from "../utils/projects";
 
 // Reads the same target key used by ProjectDetailScreen — no separate key needed.
@@ -24,19 +25,72 @@ function readProjectById(projectId) {
   }
 }
 
+function normalizeStatusValue(value) {
+  const status = String(value || "active").toLowerCase();
+  return STATUS_OPTIONS.some((option) => option.key === status) ? status : "active";
+}
+
 export default function EditProjectScreen({ onBack, onSave }) {
   const [projectId] = useState(() => {
     try { return String(localStorage.getItem(DETAIL_TARGET_KEY) || "").trim(); } catch { return ""; }
   });
-  const [project] = useState(() => readProjectById(projectId));
+  const [project, setProject] = useState(() => readProjectById(projectId));
 
   const [projectName, setProjectName] = useState(() => String(project?.projectName || ""));
   const [siteAddress, setSiteAddress] = useState(() => String(project?.siteAddress || ""));
-  const [status, setStatus] = useState(() => {
-    const s = String(project?.status || "active").toLowerCase();
-    return STATUS_OPTIONS.some((o) => o.key === s) ? s : "active";
-  });
+  const [status, setStatus] = useState(() => normalizeStatusValue(project?.status));
   const [notes, setNotes] = useState(() => String(project?.notes || ""));
+
+  useEffect(() => {
+    if (!projectId) return undefined;
+
+    const syncProject = () => {
+      setProject((currentProject) => {
+        const latestProject = readProjectById(projectId);
+        const currentName = String(currentProject?.projectName || "");
+        const currentAddress = String(currentProject?.siteAddress || "");
+        const currentStatus = normalizeStatusValue(currentProject?.status);
+        const currentNotes = String(currentProject?.notes || "");
+
+        if (!latestProject) {
+          if (projectName === currentName) setProjectName("");
+          if (siteAddress === currentAddress) setSiteAddress("");
+          if (status === currentStatus) setStatus("active");
+          if (notes === currentNotes) setNotes("");
+          return null;
+        }
+
+        const nextName = String(latestProject?.projectName || "");
+        const nextAddress = String(latestProject?.siteAddress || "");
+        const nextStatus = normalizeStatusValue(latestProject?.status);
+        const nextNotes = String(latestProject?.notes || "");
+
+        if (projectName === currentName) setProjectName(nextName);
+        if (siteAddress === currentAddress) setSiteAddress(nextAddress);
+        if (status === currentStatus) setStatus(nextStatus);
+        if (notes === currentNotes) setNotes(nextNotes);
+        return latestProject;
+      });
+    };
+
+    const onStorage = (event) => {
+      if (!event || event.key == null || event.key === STORAGE_KEYS.PROJECTS) {
+        syncProject();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncProject();
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", syncProject);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", syncProject);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [notes, projectId, projectName, siteAddress, status]);
 
   const canSave = projectName.trim().length > 0;
 
