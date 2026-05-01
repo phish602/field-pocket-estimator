@@ -2547,9 +2547,22 @@ const [spinTick, setSpinTick] = useState(0);
     const onStorage = (e) => {
       if (!e?.key || e.key === PROJECTS_KEY) refresh();
     };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
+      window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, []);
 
