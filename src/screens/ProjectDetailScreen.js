@@ -401,6 +401,16 @@ export default function ProjectDetailScreen({
         refresh();
       }
     };
+    const onLocalStorage = (event) => {
+      const key = event?.detail?.key;
+      if (
+        key == null
+        || key === STORAGE_KEYS.PROJECTS
+        || key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
     const onVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         refresh();
@@ -412,6 +422,8 @@ export default function ProjectDetailScreen({
     ];
     window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
     appEvents.forEach((name) => window.addEventListener(name, refresh));
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibilityChange);
@@ -419,6 +431,8 @@ export default function ProjectDetailScreen({
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
       appEvents.forEach((name) => window.removeEventListener(name, refresh));
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
