@@ -2215,8 +2215,9 @@ const [spinTick, setSpinTick] = useState(0);
     const nextTab = isBuilderTarget ? ROUTES.CREATE : tab;
     if (isBuilderTarget) {
       try {
-        const editTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
-        if (editTarget) setCreateEditSessionActive(true);
+        const estimateEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+        const invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
+        if (estimateEditTarget || invoiceEditTarget) setCreateEditSessionActive(true);
       } catch {}
     } else {
       setCreateEditSessionActive(false);
@@ -2319,7 +2320,10 @@ const [spinTick, setSpinTick] = useState(0);
   const continueCreateFromEdit = useCallback(() => {
     setShowCreateFromEditModal(false);
     setCreateEditSessionActive(false);
-    try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+    } catch {}
     clearProjectDetailReturnTarget();
 
     let draftRaw = "";
@@ -2338,12 +2342,14 @@ const [spinTick, setSpinTick] = useState(0);
   }, [ESTIMATE_DRAFT_KEY, navigateTo]);
 
   const onCreateButtonRoute = useCallback(() => {
-    let editTarget = "";
+    let estimateEditTarget = "";
+    let invoiceEditTarget = "";
     try {
-      editTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+      estimateEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+      invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
     } catch {}
 
-    if (editTarget || createEditSessionActive) {
+    if (estimateEditTarget || invoiceEditTarget || createEditSessionActive) {
       setShowCreateFromEditModal(true);
       return;
     }
