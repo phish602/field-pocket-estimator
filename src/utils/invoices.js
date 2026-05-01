@@ -500,16 +500,7 @@ export function readStoredInvoices() {
     } catch {}
 
     const nextInvoices = normalizeInvoiceList(merged);
-    const sync = backfillProjectCollections({
-      customers: readStoredCustomers(),
-      projects: readStoredProjects(),
-      invoices: nextInvoices,
-    });
-    if (sync.changed) {
-      writeStoredProjects(sync.projects);
-    }
-    localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
-    return sync.invoices;
+    return nextInvoices;
   } catch {
     return [];
   }
