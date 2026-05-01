@@ -671,6 +671,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const openInvoice = (invoice) => {
     const id = String(invoice?.id || "").trim();
     try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       if (id) localStorage.setItem(EDIT_INVOICE_TARGET_KEY, id);
       else localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}
@@ -700,6 +701,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       lang === "es" ? "Borrador de factura creado" : "Invoice draft created"
     );
     try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(draft.id || ""));
     } catch {}
     setExpanded({});
@@ -736,6 +738,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       lang === "es" ? "Factura duplicada" : "Invoice duplicated"
     );
     try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(duplicated.draft.id || ""));
     } catch {}
     setExpanded({});

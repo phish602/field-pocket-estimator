@@ -1350,6 +1350,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       setExpanded({});
 
       try {
+        localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
         localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, duplicate.id);
       } catch {}
 

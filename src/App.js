@@ -257,17 +257,38 @@ function clearProjectDetailReturnTarget() {
   } catch {}
 }
 
-function buildProfileReturnTarget(activeTab, createIntent) {
+function buildProfileReturnTarget(activeTab, createIntent, requestedTab = "") {
   if (!activeTab || activeTab === ROUTES.COMPANY_PROFILE) {
     return null;
   }
 
-  if (activeTab === ROUTES.CREATE) {
+  const requestedBuilderTab = (
+    requestedTab === ROUTES.CREATE
+    || requestedTab === ROUTES.ESTIMATE_BUILDER
+    || requestedTab === ROUTES.INVOICE_BUILDER
+  ) ? requestedTab : "";
+
+  if (activeTab === ROUTES.CREATE || requestedBuilderTab) {
+    const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
+    let editContext = null;
+    const nextIntent = requestedBuilderTab === ROUTES.INVOICE_BUILDER
+      ? BUILDER_INTENTS.INVOICE
+      : (requestedBuilderTab === ROUTES.ESTIMATE_BUILDER
+        ? BUILDER_INTENTS.ESTIMATE
+        : (createIntent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE));
+
+    if (nextIntent === BUILDER_INTENTS.INVOICE && invoiceEditTarget) {
+      editContext = { type: "invoice", id: invoiceEditTarget };
+    } else if (nextIntent === BUILDER_INTENTS.ESTIMATE && estimateEditTarget) {
+      editContext = { type: "estimate", id: estimateEditTarget };
+    } else {
+      editContext = readActiveEditContext();
+    }
+
     const target = {
       route: ROUTES.CREATE,
-      intent: createIntent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+      intent: nextIntent,
     };
-    const editContext = readActiveEditContext();
     if (editContext) target.editContext = editContext;
     return target;
   }
@@ -2235,15 +2256,15 @@ const [spinTick, setSpinTick] = useState(0);
     if (nextTab !== ROUTES.HOME) setRouteEnterSeq((n) => n + 1);
   }, []);
 
-  const prepareCompanyProfileReturnTarget = useCallback(() => {
-    writeProfileReturnTarget(buildProfileReturnTarget(activeTab, createIntent));
+  const prepareCompanyProfileReturnTarget = useCallback((requestedTab = "") => {
+    writeProfileReturnTarget(buildProfileReturnTarget(activeTab, createIntent, requestedTab));
   }, [activeTab, createIntent]);
 
-  const ensureBuilderAccess = useCallback(() => {
+  const ensureBuilderAccess = useCallback((requestedTab = "") => {
     const gate = requireCompanyProfile({
       message: "User Profile required. Open User Profile?",
       onRequireProfile: () => {
-        prepareCompanyProfileReturnTarget();
+        prepareCompanyProfileReturnTarget(requestedTab);
         enterTab(ROUTES.COMPANY_PROFILE);
       },
     });
@@ -2255,7 +2276,7 @@ const [spinTick, setSpinTick] = useState(0);
       tab === ROUTES.CREATE
       || tab === ROUTES.ESTIMATE_BUILDER
       || tab === ROUTES.INVOICE_BUILDER;
-    if (isBuilderTarget && !ensureBuilderAccess()) return;
+    if (isBuilderTarget && !ensureBuilderAccess(tab)) return;
 
     let nextIntent = null;
     if (tab === ROUTES.ESTIMATE_BUILDER) nextIntent = BUILDER_INTENTS.ESTIMATE;
