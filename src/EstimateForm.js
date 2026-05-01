@@ -3313,6 +3313,15 @@ export default function EstimateForm(props) {
           || totalRevenue
         ) || Number(totalRevenue || 0)
         : Number(totalRevenue || 0);
+      const selectedCustomerKey = String(selectedCustomerId || "").trim();
+      const draftCustomerKey = String(state?.customer?.id || "").trim();
+      const liveSelectedCustomer = Array.isArray(allCustomers)
+        ? allCustomers.find((customer) => {
+          const id = String(customer?.id || "").trim();
+          return id && (id === selectedCustomerKey || id === draftCustomerKey);
+        }) || null
+        : null;
+      const liveCustomerId = String(liveSelectedCustomer?.id || "").trim();
       const projectContext = {
         projectId: String(
           persistedState?.projectId
@@ -3320,14 +3329,14 @@ export default function EstimateForm(props) {
           || linkedEstimateSnapshot?.projectId
           || ""
         ).trim(),
-        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+        customerId: liveCustomerId,
         customerName,
         projectName,
         projectNumber,
         customer: {
           ...(persistedState?.customer || {}),
           ...(state?.customer || {}),
-          id: String(selectedCustomerId || state?.customer?.id || "").trim(),
+          id: liveCustomerId,
           name: customerName,
           projectName,
           projectNumber,
@@ -3357,7 +3366,7 @@ export default function EstimateForm(props) {
       }
       projectName = String(projectRecord.projectName || projectName).trim();
       projectNumber = String(projectRecord.projectNumber || projectNumber).trim();
-      const resolvedCustomerId = String(projectRecord.customerId || selectedCustomerId || state?.customer?.id || "").trim();
+      const resolvedCustomerId = liveCustomerId;
       const nextProjects = upsertProject(currentProjects, projectRecord);
       const shouldUseLinkedInvoiceFinancials = (
         saveDocType === "invoice"
