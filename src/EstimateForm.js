@@ -1620,12 +1620,28 @@ export default function EstimateForm(props) {
       return;
     }
 
-    if (String(selectedCustomerId || "") === draftCustomerId && selectedCustomerProfile) {
+    const liveCustomer = Array.isArray(allCustomers)
+      ? allCustomers.find((customer) => String(customer?.id || "").trim() === draftCustomerId) || null
+      : null;
+
+    if (!liveCustomer) {
+      if (selectedCustomerId) setSelectedCustomerId("");
+      if (selectedCustomerProfile) setSelectedCustomerProfile(null);
       return;
     }
 
-    const nextProfile = buildSelectedCustomerProfileFromDraft(state?.customer, draftCustomerId, allCustomers);
-    if (!nextProfile) return;
+    const nextProfile = {
+      ...liveCustomer,
+      ...flattenCustomerForEstimator(liveCustomer),
+      id: draftCustomerId,
+    };
+
+    if (
+      String(selectedCustomerId || "") === draftCustomerId
+      && JSON.stringify(selectedCustomerProfile || null) === JSON.stringify(nextProfile)
+    ) {
+      return;
+    }
 
     setSelectedCustomerId(draftCustomerId);
     setSelectedCustomerProfile(nextProfile);
