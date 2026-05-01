@@ -537,6 +537,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [valueFilter, setValueFilter] = useState("all");
+  const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
   const [draggingEstimateId, setDraggingEstimateId] = useState(null);
@@ -602,6 +603,46 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setMetadataRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (!event?.key || event.key === STORAGE_KEYS.PROJECTS || event.key === STORAGE_KEYS.CUSTOMERS) {
+        refresh();
+      }
+    };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || event.detail.key === STORAGE_KEYS.PROJECTS
+        || event.detail.key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
+    window.addEventListener("focus", refresh);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
+      window.removeEventListener("focus", refresh);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       }
@@ -781,19 +822,26 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
         },
       ];
     }));
-  }, [estimates, invoices]);
+  }, [estimates, invoices, metadataRefreshSeq]);
 
   const matchesSearch = (estimate) => {
     const q = (searchQuery || "").toLowerCase();
     const status = String(statusFilter || "all").toLowerCase();
     const value = String(valueFilter || "all").toLowerCase();
 
+    const displayMeta = estimateDisplayMeta.get(String(estimate?.id || estimateIdentity(estimate) || "")) || {};
+
     const name =
       String(estimate?.name || "").toLowerCase();
 
+    const projectName =
+      String(displayMeta.projectName || estimate?.projectName || "").toLowerCase();
+
     const customer =
       String(
-        estimate?.customer?.name
+        displayMeta.customerName
+        || estimate?.customerName
+        || estimate?.customer?.name
         || estimate?.customer
         || ""
       ).toLowerCase();
@@ -806,6 +854,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
 
     const matchesText = !q
       || name.includes(q)
+      || projectName.includes(q)
       || customer.includes(q)
       || number.includes(q);
 
