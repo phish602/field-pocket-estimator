@@ -98,18 +98,16 @@ function estSortPriority(est) {
 function invSortPriority(inv) {
   const status = deriveInvoiceStatus(inv);
   if (status === INVOICE_STATUSES.OVERDUE) return 0;
-  if (status === INVOICE_STATUSES.PARTIAL) return 1;
-  if (status === INVOICE_STATUSES.SENT) return 2;
-  if (status === INVOICE_STATUSES.DRAFT) return 3;
+  if (status === INVOICE_STATUSES.SENT) return 1;
+  if (status === INVOICE_STATUSES.DRAFT) return 2;
   if (status === INVOICE_STATUSES.PAID) return 5;
   if (status === INVOICE_STATUSES.VOID) return 6;
-  return 4;
+  return 3;
 }
 
 function invStatusLabel(status) {
   const s = String(status || "").toLowerCase();
   if (s === "overdue") return "Overdue";
-  if (s === "partial") return "Partial";
   if (s === "sent") return "Sent";
   if (s === "draft") return "Draft";
   if (s === "paid") return "Paid";
@@ -127,7 +125,6 @@ const EST_STATUS_ACCENT = {
 
 const INV_STATUS_ACCENT = {
   overdue: "rgba(239,68,68,0.88)",
-  partial: "rgba(245,158,11,0.84)",
   sent: "rgba(99,179,237,0.78)",
   draft: "rgba(230,241,248,0.42)",
   paid: "rgba(72,187,120,0.78)",
