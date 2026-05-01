@@ -2112,7 +2112,7 @@ const [spinTick, setSpinTick] = useState(0);
             _customerName: view.customer?.name || view.customer?.companyName || view.customer?.fullName || p.customerName || "",
             _latestActivityAt: view.latestActivityAt || 0,
             _totals: view.totals || {},
-            _overdueCount: projInvoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length,
+            _overdueCount: projInvoices.filter((inv) => deriveInvoiceStatus(inv) === INVOICE_STATUSES.OVERDUE).length,
             _approvedEstCount: projEstimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length,
           };
         })
@@ -2520,11 +2520,24 @@ const [spinTick, setSpinTick] = useState(0);
     const onStorage = (e) => {
       if (!e?.key || e.key === INVOICES_KEY) refresh();
     };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
     window.addEventListener("estipaid:invoices-changed", refresh);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
+      window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("estipaid:invoices-changed", refresh);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, []);
 

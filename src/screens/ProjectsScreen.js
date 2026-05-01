@@ -7,7 +7,7 @@ import {
   buildNormalizedProjectView,
   deriveProjectDisplayStatus,
 } from "../utils/projects";
-import { readStoredInvoices } from "../utils/invoices";
+import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 
 function readEstimates() {
   try {
@@ -230,7 +230,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         displayStatus,
         latestActivityAt: view.latestActivityAt || 0,
         totals: view.totals,
-        overdueCount: projInvoices.filter((inv) => String(inv?.status || "").toLowerCase() === "overdue").length,
+        overdueCount: projInvoices.filter((inv) => deriveInvoiceStatus(inv) === INVOICE_STATUSES.OVERDUE).length,
         approvedEstCount: projEstimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length,
       };
     });
