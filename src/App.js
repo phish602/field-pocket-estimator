@@ -2054,6 +2054,7 @@ export default function App() {
   const [projectDetailBackRoute, setProjectDetailBackRoute] = useState(ROUTES.PROJECTS);
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
+  const [customerHistory, setCustomerHistory] = useState(() => loadSavedCustomers());
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
   const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
@@ -2109,7 +2110,7 @@ const [spinTick, setSpinTick] = useState(0);
   const recentProjects = useMemo(() => {
     try {
       const allProjects = Array.isArray(projectHistory) ? projectHistory : [];
-      const customerRecords = activeTab === ROUTES.HOME ? loadSavedCustomers() : [];
+      const customerRecords = Array.isArray(customerHistory) ? customerHistory : [];
       const estRecords = Array.isArray(estimateHistory) ? estimateHistory : [];
       const invRecords = Array.isArray(invoiceHistory) ? invoiceHistory : [];
       const mapped = allProjects
@@ -2137,7 +2138,7 @@ const [spinTick, setSpinTick] = useState(0);
       });
       return mapped.slice(0, 5);
     } catch { return []; }
-  }, [activeTab, projectHistory, estimateHistory, invoiceHistory]);
+  }, [customerHistory, projectHistory, estimateHistory, invoiceHistory]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -2582,6 +2583,37 @@ const [spinTick, setSpinTick] = useState(0);
     if (activeTab !== ROUTES.HOME) return;
     setProjectHistory(readStoredProjects());
   }, [activeTab]);
+
+  useEffect(() => {
+    const refresh = () => setCustomerHistory(loadSavedCustomers());
+    const onStorage = (event) => {
+      if (!event?.key || event.key === CUSTOMERS_KEY) refresh();
+    };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === CUSTOMERS_KEY) refresh();
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
+    window.addEventListener("focus", refresh);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
+      window.removeEventListener("focus", refresh);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const onShellAction = (evt) => {
