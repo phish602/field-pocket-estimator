@@ -51,6 +51,8 @@ function normalizeProjectStatus(value) {
   return "active";
 }
 
+const MANUAL_LIFECYCLE_STATUSES = new Set(["draft", "estimating", "completed", "archived"]);
+
 function normalizeTextKey(value) {
   return asText(value).toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -369,10 +371,12 @@ export function backfillProjectCollections({
     const byId = projectById.get(normalized.id);
     const bySignature = projectBySignature.get(projectSignature(normalized));
     const existing = byId || bySignature || null;
+    const preserveExistingStatus = MANUAL_LIFECYCLE_STATUSES.has(normalizeProjectStatus(existing?.status));
     const merged = existing
       ? mergeProjectRecords(existing, {
         ...normalized,
         id: asText(existing?.id || normalized.id),
+        status: preserveExistingStatus ? existing.status : normalized.status,
       })
       : normalized;
     if (!existing || JSON.stringify(existing) !== JSON.stringify(merged)) {
