@@ -404,6 +404,8 @@ export default function ProjectDetailScreen({
         key == null
         || key === STORAGE_KEYS.PROJECTS
         || key === STORAGE_KEYS.CUSTOMERS
+        || key === STORAGE_KEYS.ESTIMATES
+        || key === STORAGE_KEYS.INVOICES
       ) {
         refresh();
       }

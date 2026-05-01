@@ -188,6 +188,8 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         !event?.detail?.key
         || event.detail.key === STORAGE_KEYS.PROJECTS
         || event.detail.key === STORAGE_KEYS.CUSTOMERS
+        || event.detail.key === STORAGE_KEYS.ESTIMATES
+        || event.detail.key === STORAGE_KEYS.INVOICES
       ) {
         refresh();
       }
