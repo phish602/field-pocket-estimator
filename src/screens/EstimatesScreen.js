@@ -70,6 +70,16 @@ function readSavedEstimatesList() {
   }
 }
 
+function readCustomers() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function cloneAsNewEstimate(record, nowTs = Date.now()) {
   let cloned = {};
   try {
@@ -738,6 +748,40 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
     ],
     [lang, pendingEstimates, approvedEstimates, lostEstimates]
   );
+
+  const estimateDisplayMeta = useMemo(() => {
+    const currentProjects = readStoredProjects();
+    const currentCustomers = readCustomers();
+    return new Map((estimates || []).map((estimate) => {
+      const target = resolveProjectNavigationTarget(estimate, currentProjects);
+      const project = target?.project && typeof target.project === "object"
+        ? target.project
+        : null;
+      const customer = currentCustomers.find((entry) => String(entry?.id || "").trim() === String(project?.customerId || "").trim())
+        || currentCustomers.find((entry) => {
+          const left = String(entry?.name || entry?.companyName || entry?.fullName || "").trim().toLowerCase();
+          const right = String(project?.customerName || estimate?.customerName || "").trim().toLowerCase();
+          return Boolean(left && right && left === right);
+        })
+        || null;
+
+      return [
+        String(estimate?.id || estimateIdentity(estimate) || ""),
+        {
+          projectName: String(project?.projectName || estimate?.projectName || "").trim(),
+          customerName: String(
+            customer?.name
+            || customer?.companyName
+            || customer?.fullName
+            || project?.customerName
+            || estimate?.customerName
+            || ""
+          ).trim(),
+          siteAddress: String(project?.siteAddress || "").trim(),
+        },
+      ];
+    }));
+  }, [estimates, invoices]);
 
   const matchesSearch = (estimate) => {
     const q = (searchQuery || "").toLowerCase();
@@ -1943,6 +1987,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                       const estimate = entry;
                       const e = estimate;
                       const id = String(e?.id || "");
+                      const displayMeta = estimateDisplayMeta.get(id) || {};
                       const isOpen = Boolean(expanded[id]);
                       const status = normalizeEstimateStatus(e?.status);
                       const bd = calcBreakdown(e);
@@ -1950,7 +1995,9 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                         ? buildEstimateInvoiceSummary(e, invoices)
                         : null;
                       const isActiveCard = isOpen;
-                      const siteAddr = String(e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
+                      const siteAddr = String(displayMeta.siteAddress || e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
+                      const projectTitle = displayMeta.projectName || (lang === "es" ? "Sin proyecto" : "No project");
+                      const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
 
               const card = {
                 padding: 16,
@@ -2224,11 +2271,11 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
                             lineHeight: 1.3,
                           }}
                         >
-                          {e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
+                          {projectTitle}
                         </div>
                         <div className="pe-estimate-card-customer-row" style={customerEstimateRow}>
                           <div className="pe-estimate-card-customer" style={customerField}>
-                            {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
+                            {customerLabel}
                           </div>
                           {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                           <div className="pe-estimate-card-numbers" style={estimateField}>
