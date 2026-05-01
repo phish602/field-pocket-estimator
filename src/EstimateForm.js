@@ -2365,13 +2365,30 @@ export default function EstimateForm(props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync customer list when storage changes (other tabs)
+  // Sync customer list when storage changes or same-tab customer flows update it
   useEffect(() => {
+    const refreshCustomers = () => setAllCustomers(readSavedCustomers());
     const onStorage = (e) => {
-      if (e.key === CUSTOMERS_KEY) setAllCustomers(readSavedCustomers());
+      if (e.key === CUSTOMERS_KEY) refreshCustomers();
+    };
+    const onLocalStorage = (e) => {
+      if (e?.detail?.key === CUSTOMERS_KEY) refreshCustomers();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshCustomers();
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refreshCustomers);
+    window.addEventListener("focus", refreshCustomers);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refreshCustomers);
+      window.removeEventListener("focus", refreshCustomers);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   // Allow shell-level navigation to force a draft save before tab switches.
