@@ -10,9 +10,15 @@ import {
   readStoredProjects,
   writeStoredProjects,
 } from "./projects";
-import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
+import {
+  INVOICE_STATUSES,
+  deriveInvoiceStatus,
+  normalizeInvoiceLifecycleRecord,
+  normalizeIsoDate,
+  normalizeStoredInvoiceStatus,
+} from "./invoiceStatus";
 
-export { INVOICE_STATUSES, deriveInvoiceStatus };
+export { INVOICE_STATUSES, deriveInvoiceStatus, normalizeStoredInvoiceStatus };
 
 export const INVOICE_TYPES = {
   DEPOSIT: "deposit",
@@ -413,15 +419,6 @@ export function extractFinancialSummaryFromDoc(doc, options = {}) {
   }
 }
 
-function normalizeIsoDate(value, fallback = "") {
-  const raw = asText(value);
-  if (!raw) return fallback;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return fallback;
-  return todayParts(parsed);
-}
-
 export function createInvoiceId() {
   return `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -437,23 +434,6 @@ export function normalizeInvoiceType(value) {
   if (raw === INVOICE_TYPES.FINAL) return INVOICE_TYPES.FINAL;
   if (raw === INVOICE_TYPES.CUSTOM) return INVOICE_TYPES.CUSTOM;
   return INVOICE_TYPES.MANUAL;
-}
-
-export function normalizeStoredInvoiceStatus(value) {
-  const raw = asText(value).toLowerCase();
-  if (raw === INVOICE_STATUSES.VOID) return INVOICE_STATUSES.VOID;
-  if (raw === INVOICE_STATUSES.PAID) return INVOICE_STATUSES.PAID;
-  if (raw === INVOICE_STATUSES.OVERDUE) return INVOICE_STATUSES.OVERDUE;
-  if (raw === INVOICE_STATUSES.SENT) return INVOICE_STATUSES.SENT;
-  return INVOICE_STATUSES.DRAFT;
-}
-
-function normalizePaymentStatus(value) {
-  const raw = asText(value).toLowerCase();
-  if (raw === PAYMENT_STATUSES.VOID) return PAYMENT_STATUSES.VOID;
-  if (raw === PAYMENT_STATUSES.PAID) return PAYMENT_STATUSES.PAID;
-  if (raw === PAYMENT_STATUSES.PARTIAL) return PAYMENT_STATUSES.PARTIAL;
-  return PAYMENT_STATUSES.UNPAID;
 }
 
 function normalizePayments(payments) {
@@ -612,30 +592,14 @@ export function normalizeInvoiceRecord(record) {
   const estimateNumber = asText(source?.estimateNumber || snapshot?.estimateNumber);
   const sourceEstimateId = asText(source?.sourceEstimateId || snapshot?.estimateId);
   const invoiceDate = invoiceDateLabel(source?.date || source?.job?.date, todayISO());
-  const dueDate = invoiceDateLabel(source?.dueDate || source?.job?.due);
   const payments = normalizePayments(source?.payments);
-  let invoiceTotal = roundCurrency(source?.invoiceTotal ?? source?.total);
-  let amountPaid = roundCurrency(source?.amountPaid);
-  const paidFromLedger = roundCurrency(
-    payments.reduce((sum, payment) => sum + roundCurrency(payment?.amount), 0)
-  );
-  if (paidFromLedger > 0) amountPaid = paidFromLedger;
-
-  let status = normalizeStoredInvoiceStatus(source?.status);
-  if (status === INVOICE_STATUSES.PAID) amountPaid = invoiceTotal;
-  if (status === INVOICE_STATUSES.VOID) amountPaid = 0;
-  if (invoiceTotal > 0 && amountPaid > invoiceTotal) amountPaid = invoiceTotal;
-  if (invoiceTotal <= 0) amountPaid = 0;
-
-  let paymentStatus = normalizePaymentStatus(source?.paymentStatus);
-  if (status === INVOICE_STATUSES.VOID) paymentStatus = PAYMENT_STATUSES.VOID;
-  else if (invoiceTotal > 0 && amountPaid >= invoiceTotal - EPSILON) paymentStatus = PAYMENT_STATUSES.PAID;
-  else if (amountPaid > 0) paymentStatus = PAYMENT_STATUSES.PARTIAL;
-  else paymentStatus = PAYMENT_STATUSES.UNPAID;
-
-  const balanceRemaining = status === INVOICE_STATUSES.VOID
-    ? 0
-    : roundCurrency(Math.max(invoiceTotal - amountPaid, 0));
+  const invoiceTotal = roundCurrency(source?.invoiceTotal ?? source?.total);
+  const lifecycle = normalizeInvoiceLifecycleRecord(source);
+  const status = lifecycle.status;
+  const amountPaid = lifecycle.amountPaid;
+  const paymentStatus = lifecycle.paymentStatus;
+  const balanceRemaining = lifecycle.balanceRemaining;
+  const dueDate = lifecycle.dueDate;
 
   const customerName = asText(source?.customerName || source?.customer?.name || snapshot?.customerName);
   const customerId = asText(source?.customerId || source?.customer?.id || snapshot?.customerId);

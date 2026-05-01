@@ -40,7 +40,7 @@ function todayParts(date = new Date()) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function normalizeIsoDate(value, fallback = "") {
+export function normalizeIsoDate(value, fallback = "") {
   const raw = asText(value);
   if (!raw) return fallback;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
@@ -49,7 +49,7 @@ function normalizeIsoDate(value, fallback = "") {
   return todayParts(parsed);
 }
 
-function normalizeStoredInvoiceStatus(value) {
+export function normalizeStoredInvoiceStatus(value) {
   const raw = asText(value).toLowerCase();
   if (raw === INVOICE_STATUSES.VOID) return INVOICE_STATUSES.VOID;
   if (raw === INVOICE_STATUSES.PAID) return INVOICE_STATUSES.PAID;
@@ -58,7 +58,7 @@ function normalizeStoredInvoiceStatus(value) {
   return INVOICE_STATUSES.DRAFT;
 }
 
-function normalizePaymentStatus(value) {
+export function normalizePaymentStatus(value) {
   const raw = asText(value).toLowerCase();
   if (raw === PAYMENT_STATUSES.VOID) return PAYMENT_STATUSES.VOID;
   if (raw === PAYMENT_STATUSES.PAID) return PAYMENT_STATUSES.PAID;
@@ -66,7 +66,7 @@ function normalizePaymentStatus(value) {
   return PAYMENT_STATUSES.UNPAID;
 }
 
-function normalizeInvoiceLifecycleRecord(record) {
+export function normalizeInvoiceLifecycleRecord(record) {
   const source = record && typeof record === "object" ? record : {};
   const payments = Array.isArray(source?.payments) ? source.payments.filter(Boolean) : [];
   let invoiceTotal = roundCurrency(source?.invoiceTotal ?? source?.total);
