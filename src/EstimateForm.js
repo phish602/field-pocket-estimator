@@ -556,6 +556,9 @@ function readSavedDocList(key) {
       writeStoredProjects(next.projects);
       localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next.estimates));
       localStorage.setItem(INVOICES_KEY, JSON.stringify(next.invoices));
+      try {
+        window.dispatchEvent(new Event("estipaid:invoices-changed"));
+      } catch {}
     }
 
     return key === ESTIMATES_KEY ? next.estimates : next.invoices;
@@ -3516,6 +3519,9 @@ export default function EstimateForm(props) {
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
           localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
+          try {
+            window.dispatchEvent(new Event("estipaid:invoices-changed"));
+          } catch {}
         }
       }
 
