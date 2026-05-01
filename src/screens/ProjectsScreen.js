@@ -183,18 +183,31 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         refresh();
       }
     };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || event.detail.key === STORAGE_KEYS.PROJECTS
+        || event.detail.key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
     };
 
     refresh();
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
     window.addEventListener("focus", refresh);
     window.addEventListener("estipaid:navigate-estimates", refresh);
     window.addEventListener("estipaid:invoices-changed", refresh);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("estipaid:navigate-estimates", refresh);
       window.removeEventListener("estipaid:invoices-changed", refresh);
