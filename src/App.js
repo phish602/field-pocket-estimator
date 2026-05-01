@@ -2578,6 +2578,9 @@ const [spinTick, setSpinTick] = useState(0);
     const onStorage = (e) => {
       if (!e?.key || e.key === INVOICES_KEY) refresh();
     };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === INVOICES_KEY) refresh();
+    };
     const onVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         refresh();
@@ -2585,6 +2588,7 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("estipaid:invoices-changed", refresh);
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibilityChange);
@@ -2592,6 +2596,7 @@ const [spinTick, setSpinTick] = useState(0);
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("estipaid:invoices-changed", refresh);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -2605,6 +2610,9 @@ const [spinTick, setSpinTick] = useState(0);
     const onStorage = (e) => {
       if (!e?.key || e.key === PROJECTS_KEY) refresh();
     };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === PROJECTS_KEY) refresh();
+    };
     const onVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         refresh();
@@ -2612,12 +2620,14 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibilityChange);
     }
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       }
