@@ -70,6 +70,34 @@ function readSavedEstimatesList() {
   }
 }
 
+function readLegacyInvoiceEstimateRecords() {
+  try {
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.filter((record) => {
+      if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
+      const key = String(record?.id || record?.invoiceNumber || record?.docNumber || record?.documentNumber || "").trim();
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredEstimatesPreservingLegacy(nextEstimates) {
+  const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
+  const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
+  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]));
+  try {
+    window.dispatchEvent(new Event("estipaid:estimates-changed"));
+  } catch {}
+}
+
 function readCustomers() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
@@ -1104,10 +1132,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
         if (!matches) return item;
         return { ...item, status: normalized };
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
-      try {
-        window.dispatchEvent(new Event("estipaid:estimates-changed"));
-      } catch {}
+      writeStoredEstimatesPreservingLegacy(next);
     } catch {}
   };
 
@@ -1154,10 +1179,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
         if (String(est?.id || "").trim() !== draggedId) return est;
         return { ...est, status: normalized };
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
-      try {
-        window.dispatchEvent(new Event("estipaid:estimates-changed"));
-      } catch {}
+      writeStoredEstimatesPreservingLegacy(next);
     } catch {}
   };
 
@@ -1257,7 +1279,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
+      writeStoredEstimatesPreservingLegacy(next);
 
       if (deletedId) {
         const currentEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
@@ -1265,10 +1287,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
           localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
         }
       }
-
-      try {
-        window.dispatchEvent(new Event("estipaid:estimates-changed"));
-      } catch {}
     } catch {}
 
     if (deletedId) {
@@ -1346,7 +1364,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       }
 
       const existing = readSavedEstimatesList();
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify([duplicate, ...existing]));
+      writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
 
       setExpanded({});
 
@@ -1354,11 +1372,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
         localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
         localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, duplicate.id);
       } catch {}
-
-      try {
-        window.dispatchEvent(new Event("estipaid:estimates-changed"));
-      } catch {}
-
       try {
         window.dispatchEvent(
           new CustomEvent("pe-shell-action", {

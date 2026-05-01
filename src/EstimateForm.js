@@ -562,7 +562,23 @@ function readSavedDocList(key) {
 }
 
 function writeStoredEstimatesLocal(nextEstimates) {
-  localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
+  let legacyInvoiceRecords = [];
+  try {
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) {
+      const seen = new Set();
+      legacyInvoiceRecords = parsed.filter((record) => {
+        if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
+        const key = String(record?.id || record?.invoiceNumber || record?.docNumber || record?.documentNumber || "").trim();
+        if (!key) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+  } catch {}
+  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...(Array.isArray(nextEstimates) ? nextEstimates : []), ...legacyInvoiceRecords]));
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
