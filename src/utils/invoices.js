@@ -10,6 +10,9 @@ import {
   readStoredProjects,
   writeStoredProjects,
 } from "./projects";
+import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
+
+export { INVOICE_STATUSES, deriveInvoiceStatus };
 
 export const INVOICE_TYPES = {
   DEPOSIT: "deposit",
@@ -17,14 +20,6 @@ export const INVOICE_TYPES = {
   FINAL: "final",
   CUSTOM: "custom",
   MANUAL: "manual",
-};
-
-export const INVOICE_STATUSES = {
-  DRAFT: "draft",
-  SENT: "sent",
-  PAID: "paid",
-  OVERDUE: "overdue",
-  VOID: "void",
 };
 
 export const PAYMENT_STATUSES = {
@@ -735,25 +730,6 @@ export function normalizeInvoiceRecord(record) {
     updatedAt,
     ts: Number(source?.ts || updatedAt) || updatedAt,
   };
-}
-
-export function deriveInvoiceStatus(record, nowTs = Date.now()) {
-  const invoice = normalizeInvoiceRecord(record);
-  if (invoice.status === INVOICE_STATUSES.VOID) return INVOICE_STATUSES.VOID;
-  if (invoice.paymentStatus === PAYMENT_STATUSES.PAID) return INVOICE_STATUSES.PAID;
-  const sentLikeStatus = invoice.status === INVOICE_STATUSES.SENT || invoice.status === INVOICE_STATUSES.OVERDUE;
-  const hasCommittedBalance =
-    roundCurrency(invoice.balanceRemaining) > 0
-    && (
-      sentLikeStatus
-      || invoice.paymentStatus === PAYMENT_STATUSES.PARTIAL
-      || roundCurrency(invoice.amountPaid) > 0
-    );
-  const today = todayParts(new Date(nowTs));
-  if (invoice.dueDate && invoice.dueDate < today && hasCommittedBalance) return INVOICE_STATUSES.OVERDUE;
-  if (invoice.status === INVOICE_STATUSES.OVERDUE) return INVOICE_STATUSES.OVERDUE;
-  if (invoice.status === INVOICE_STATUSES.SENT) return INVOICE_STATUSES.SENT;
-  return INVOICE_STATUSES.DRAFT;
 }
 
 export function normalizeInvoiceList(records) {

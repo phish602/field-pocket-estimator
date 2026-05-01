@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
 
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 
@@ -444,8 +445,8 @@ const PROJECT_DISPLAY_STATUS_LABELS = {
 
 const OPEN_ESTIMATE_STATUSES = new Set(["draft", "pending", "sent"]);
 const APPROVED_ESTIMATE_STATUSES = new Set(["approved"]);
-const ACTIVE_INVOICE_STATUSES = new Set(["draft", "sent", "partial", "overdue"]);
-const CLOSED_INVOICE_STATUSES = new Set(["paid", "void"]);
+const ACTIVE_INVOICE_STATUSES = new Set([INVOICE_STATUSES.DRAFT, INVOICE_STATUSES.SENT, INVOICE_STATUSES.OVERDUE]);
+const CLOSED_INVOICE_STATUSES = new Set([INVOICE_STATUSES.PAID, INVOICE_STATUSES.VOID]);
 
 function normalizeProjectDisplayStatusKey(value) {
   const raw = asText(value).toLowerCase();
@@ -462,12 +463,12 @@ function normalizeDocStatusKey(doc = {}) {
 export function deriveProjectDisplayStatus({ project = null, estimates = [], invoices = [] } = {}) {
   const projectStatus = normalizeProjectDisplayStatusKey(project?.status || project?.projectStatus);
   const estimateStatuses = Array.isArray(estimates) ? estimates.map((entry) => normalizeDocStatusKey(entry)) : [];
-  const invoiceStatuses = Array.isArray(invoices) ? invoices.map((entry) => normalizeDocStatusKey(entry)) : [];
+  const invoiceStatuses = Array.isArray(invoices) ? invoices.map((entry) => deriveInvoiceStatus(entry)) : [];
 
   const hasOpenEstimate = estimateStatuses.some((status) => OPEN_ESTIMATE_STATUSES.has(status));
   const hasApprovedEstimate = estimateStatuses.some((status) => APPROVED_ESTIMATE_STATUSES.has(status));
   const hasAnyInvoice = invoiceStatuses.length > 0;
-  const hasPaidInvoice = invoiceStatuses.some((status) => status === "paid");
+  const hasPaidInvoice = invoiceStatuses.some((status) => status === INVOICE_STATUSES.PAID);
   const hasOpenInvoice = invoiceStatuses.some((status) => ACTIVE_INVOICE_STATUSES.has(status));
   const allInvoicesClosed = hasAnyInvoice && invoiceStatuses.every((status) => CLOSED_INVOICE_STATUSES.has(status));
 
