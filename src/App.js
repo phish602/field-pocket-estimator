@@ -304,7 +304,9 @@ function loadSavedEstimates() {
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
     const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr.filter(Boolean) : [];
+    return Array.isArray(arr)
+      ? arr.filter((record) => record && String(record?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
   } catch {
     return [];
   }
