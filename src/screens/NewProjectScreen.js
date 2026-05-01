@@ -173,7 +173,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     if (!canSave) return;
     const now = Date.now();
     const record = createProjectRecord({
-      customerId: selectedCustomerId || "",
+      customerId: selectedCustomer ? String(selectedCustomer?.id || "") : "",
       customerName: selectedCustomer ? customerDisplayName(selectedCustomer) : "",
       projectName: projectName.trim(),
       siteAddress: siteAddress.trim(),
