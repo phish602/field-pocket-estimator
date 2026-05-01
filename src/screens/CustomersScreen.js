@@ -552,8 +552,17 @@ export default function CustomersScreen({
         if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
       }
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === CUSTOMERS_KEY) {
+        if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+      }
+    };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
   }, [customers]);
 
   useEffect(() => {
@@ -569,6 +578,14 @@ export default function CustomersScreen({
         refresh();
       }
     };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || relevantStorageKeys.has(event.detail.key)
+      ) {
+        refresh();
+      }
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
     };
@@ -578,11 +595,13 @@ export default function CustomersScreen({
     ];
 
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("focus", refresh);
     appEvents.forEach((name) => window.addEventListener(name, refresh));
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("focus", refresh);
       appEvents.forEach((name) => window.removeEventListener(name, refresh));
       document.removeEventListener("visibilitychange", onVisibilityChange);
