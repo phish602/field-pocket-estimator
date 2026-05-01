@@ -44,6 +44,11 @@ export default function EditProjectScreen({ onBack, onSave }) {
   useEffect(() => {
     if (!projectId) return undefined;
 
+    const relevantStorageKeys = new Set([
+      STORAGE_KEYS.PROJECTS,
+      STORAGE_KEYS.CUSTOMERS,
+    ]);
+
     const syncProject = () => {
       setProject((currentProject) => {
         const latestProject = readProjectById(projectId);
@@ -74,7 +79,15 @@ export default function EditProjectScreen({ onBack, onSave }) {
     };
 
     const onStorage = (event) => {
-      if (!event || event.key == null || event.key === STORAGE_KEYS.PROJECTS) {
+      if (!event || event.key == null || relevantStorageKeys.has(event.key)) {
+        syncProject();
+      }
+    };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || relevantStorageKeys.has(event.detail.key)
+      ) {
         syncProject();
       }
     };
@@ -83,10 +96,12 @@ export default function EditProjectScreen({ onBack, onSave }) {
     };
 
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("focus", syncProject);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("focus", syncProject);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };

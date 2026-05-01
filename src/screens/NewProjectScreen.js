@@ -83,15 +83,25 @@ export default function NewProjectScreen({ onBack, onSave }) {
         refreshCustomers();
       }
     };
+    const onLocalStorage = (event) => {
+      if (
+        event?.detail?.key === STORAGE_KEYS.CUSTOMERS
+        || event?.detail?.key === STORAGE_KEYS.PROJECTS
+      ) {
+        refreshCustomers();
+      }
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refreshCustomers();
     };
 
     window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     window.addEventListener("focus", refreshCustomers);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("focus", refreshCustomers);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
