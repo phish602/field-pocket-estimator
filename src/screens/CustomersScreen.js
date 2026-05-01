@@ -597,7 +597,7 @@ export default function CustomersScreen({
       if (document.visibilityState === "visible") refresh();
     };
     const appEvents = [
-      "estipaid:navigate-estimates",
+      "estipaid:estimates-changed",
       "estipaid:invoices-changed",
     ];
 

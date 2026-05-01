@@ -416,7 +416,7 @@ export default function ProjectDetailScreen({
       }
     };
     const appEvents = [
-      "estipaid:navigate-estimates",
+      "estipaid:estimates-changed",
       "estipaid:invoices-changed",
     ];
     window.addEventListener("focus", refresh);

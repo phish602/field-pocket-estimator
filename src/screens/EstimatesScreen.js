@@ -1106,7 +1106,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       });
       localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
       try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
       } catch {}
     } catch {}
   };
@@ -1156,7 +1156,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       });
       localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
       try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
       } catch {}
     } catch {}
   };
@@ -1266,7 +1266,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       }
 
       try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
       } catch {}
     } catch {}
 
@@ -1354,7 +1354,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
       } catch {}
 
       try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
       } catch {}
 
       try {

@@ -2557,7 +2557,7 @@ const [spinTick, setSpinTick] = useState(0);
     window.addEventListener("focus", refresh);
     window.addEventListener("storage", onStorage);
     window.addEventListener("pe-localstorage", onLocalStorage);
-    window.addEventListener("estipaid:navigate-estimates", refresh);
+    window.addEventListener("estipaid:estimates-changed", refresh);
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibilityChange);
     }
@@ -2565,7 +2565,7 @@ const [spinTick, setSpinTick] = useState(0);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("pe-localstorage", onLocalStorage);
-      window.removeEventListener("estipaid:navigate-estimates", refresh);
+      window.removeEventListener("estipaid:estimates-changed", refresh);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       }
