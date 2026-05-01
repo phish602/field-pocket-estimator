@@ -179,6 +179,16 @@ function collectCustomerLookupNames(customer) {
   return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
 }
 
+function collectDocCustomerLookupNames(doc) {
+  const rawNames = [
+    doc?.customerName,
+    doc?.customer?.name,
+    doc?.customer?.companyName,
+    doc?.customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
 function collectProjectLookupNames(project, view) {
   const rawNames = [
     project?.customerName,
@@ -640,8 +650,18 @@ export default function CustomersScreen({
   const customerKpis = useMemo(() => {
     const docs = readSavedDocs();
     const byId = {};
+    const customerList = Array.isArray(list) ? list.filter(Boolean) : [];
+    const customerById = new Map(customerList.map((customer) => [String(customer?.id || "").trim(), customer]));
+    const customerNameEntries = customerList.flatMap((customer) => (
+      collectCustomerLookupNames(customer).map((name) => [name, customer])
+    ));
     for (const d of docs) {
-      const cid = String(d?.customerId || "");
+      const docCustomerId = String(d?.customerId || d?.customer?.id || "").trim();
+      const matchedCustomer = (docCustomerId ? customerById.get(docCustomerId) : null)
+        || collectDocCustomerLookupNames(d).reduce((found, name) => (
+          found || customerNameEntries.find(([customerName]) => customerName === name)?.[1] || null
+        ), null);
+      const cid = String(matchedCustomer?.id || "").trim();
       if (!cid) continue;
       const b = calcBreakdown(d || {});
       const isInvoice = String(d?.docType || "").toLowerCase() === "invoice";
