@@ -289,6 +289,41 @@ function loadSavedEstimates() {
   }
 }
 
+function readValidatedCreateEditTargets() {
+  let estimateEditTarget = "";
+  let invoiceEditTarget = "";
+
+  try {
+    estimateEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+    invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
+  } catch {
+    return { estimateEditTarget: "", invoiceEditTarget: "" };
+  }
+
+  if (estimateEditTarget) {
+    const estimates = loadSavedEstimates();
+    const hasEstimateTarget = estimates.some((entry) => {
+      const docType = String(entry?.docType || "estimate").toLowerCase();
+      return docType !== "invoice" && String(entry?.id || "").trim() === estimateEditTarget;
+    });
+    if (!hasEstimateTarget) {
+      estimateEditTarget = "";
+      try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+    }
+  }
+
+  if (invoiceEditTarget) {
+    const invoices = readStoredInvoices();
+    const hasInvoiceTarget = invoices.some((entry) => String(entry?.id || "").trim() === invoiceEditTarget);
+    if (!hasInvoiceTarget) {
+      invoiceEditTarget = "";
+      try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
+    }
+  }
+
+  return { estimateEditTarget, invoiceEditTarget };
+}
+
 function loadSavedCustomers() {
   try {
     const raw = localStorage.getItem(CUSTOMERS_KEY);
@@ -2228,11 +2263,8 @@ const [spinTick, setSpinTick] = useState(0);
 
     const nextTab = isBuilderTarget ? ROUTES.CREATE : tab;
     if (isBuilderTarget) {
-      try {
-        const estimateEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
-        const invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
-        if (estimateEditTarget || invoiceEditTarget) setCreateEditSessionActive(true);
-      } catch {}
+      const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
+      setCreateEditSessionActive(Boolean(estimateEditTarget || invoiceEditTarget));
     } else {
       setCreateEditSessionActive(false);
       setShowCreateFromEditModal(false);
@@ -2356,12 +2388,7 @@ const [spinTick, setSpinTick] = useState(0);
   }, [ESTIMATE_DRAFT_KEY, createFromEditIntent, navigateTo]);
 
   const onCreateButtonRoute = useCallback((intent = BUILDER_INTENTS.ESTIMATE) => {
-    let estimateEditTarget = "";
-    let invoiceEditTarget = "";
-    try {
-      estimateEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
-      invoiceEditTarget = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
-    } catch {}
+    const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
 
     const nextIntent = intent === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE;
     if (estimateEditTarget || invoiceEditTarget || createEditSessionActive) {
