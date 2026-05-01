@@ -622,10 +622,16 @@ export function resolveProjectPersistenceTarget(doc = {}, projects = [], options
       asText(entry?.id) === asText(candidate.id)
       || projectSignature(entry) === projectSignature(candidate)
     )) || null;
+  const existingStatus = normalizeProjectStatus(existing?.status);
+  const candidateStatus = normalizeProjectStatus(candidate?.status);
+  const shouldPreserveExistingStatus = MANUAL_LIFECYCLE_STATUSES.has(existingStatus) && candidateStatus === "active";
+  const project = existing
+    ? mergeProjectRecords(existing, shouldPreserveExistingStatus ? { ...candidate, status: existing.status } : candidate)
+    : candidate;
 
   return {
     projectId: asText(existing?.id || candidate.id),
-    project: existing ? mergeProjectRecords(existing, candidate) : candidate,
+    project,
     needsBackfill: !existing,
   };
 }
