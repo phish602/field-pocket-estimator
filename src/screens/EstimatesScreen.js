@@ -71,6 +71,30 @@ function readSavedEstimatesList() {
 }
 
 function readLegacyInvoiceEstimateRecords() {
+  const collectLegacyInvoiceIdentityKeys = (record) => {
+    const keys = new Set();
+    const id = String(record?.id || "").trim();
+    const invoiceNumber = String(
+      record?.invoiceNumber
+      || record?.job?.docNumber
+      || record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    const docNumber = String(
+      record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    if (id) keys.add(`id:${id}`);
+    if (invoiceNumber) keys.add(`invoiceNumber:${invoiceNumber}`);
+    if (docNumber) keys.add(`docNumber:${docNumber}`);
+    return keys;
+  };
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
@@ -78,10 +102,10 @@ function readLegacyInvoiceEstimateRecords() {
     const seen = new Set();
     return parsed.filter((record) => {
       if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
-      const key = String(record?.id || record?.invoiceNumber || record?.docNumber || record?.documentNumber || "").trim();
-      if (!key) return true;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const recordKeys = [...collectLegacyInvoiceIdentityKeys(record)];
+      if (!recordKeys.length) return true;
+      if (recordKeys.some((key) => seen.has(key))) return false;
+      recordKeys.forEach((key) => seen.add(key));
       return true;
     });
   } catch {
