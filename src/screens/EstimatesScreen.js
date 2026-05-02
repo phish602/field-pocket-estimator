@@ -1261,7 +1261,12 @@ export default function EstimatesScreen({
     const target = (Array.isArray(estimates) ? estimates : []).find(
       (estimate) => String(estimate?.id || "").trim() === requestedId
     );
-    if (!target) return;
+    if (!target) {
+      if (typeof onInvoiceComposerRequestHandled === "function") {
+        onInvoiceComposerRequestHandled();
+      }
+      return;
+    }
     openInvoiceComposer(target);
     if (typeof onInvoiceComposerRequestHandled === "function") {
       onInvoiceComposerRequestHandled();
