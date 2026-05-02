@@ -1509,6 +1509,7 @@ export default function EstimateForm(props) {
   const savePulseTimerRef = useRef(null);
   const pendingSpecialConditionsAutoCollapseRef = useRef(false);
   const seededProjectContextRef = useRef(null);
+  const editProjectContextRef = useRef(null);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -1563,19 +1564,20 @@ export default function EstimateForm(props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const clearStaleSeededProjectId = useCallback((nextCustomer = null) => {
-    if (isEditMode) return;
-    const seeded = seededProjectContextRef.current;
+  const clearStaleProjectIdForCustomerBoundary = useCallback((nextCustomer = null) => {
     const activeProjectId = String(state?.projectId || "").trim();
-    if (!seeded?.projectId || activeProjectId !== String(seeded.projectId || "").trim()) return;
-
     const nextCustomerId = String(nextCustomer?.id || "").trim();
     const nextCustomerName = String(nextCustomer?.name || "").trim().toLowerCase();
-    const seededCustomerId = String(seeded.customerId || "").trim();
-    const seededCustomerName = String(seeded.customerName || "").trim().toLowerCase();
-    const customerMatches = seededCustomerId
-      ? nextCustomerId === seededCustomerId
-      : (!!nextCustomerName && nextCustomerName === seededCustomerName);
+    const context = isEditMode
+      ? editProjectContextRef.current
+      : seededProjectContextRef.current;
+    if (!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) return;
+
+    const contextCustomerId = String(context.customerId || "").trim();
+    const contextCustomerName = String(context.customerName || "").trim().toLowerCase();
+    const customerMatches = contextCustomerId
+      ? nextCustomerId === contextCustomerId
+      : (!!nextCustomerName && nextCustomerName === contextCustomerName);
 
     if (!customerMatches) {
       patch("projectId", "");
@@ -1659,6 +1661,19 @@ export default function EstimateForm(props) {
       || match?.customer?.projectNumber
       || ""
     ).trim();
+    editProjectContextRef.current = String(match?.projectId || "").trim()
+      ? {
+          projectId: String(match?.projectId || "").trim(),
+          customerId: String(match?.customerId || match?.customer?.id || "").trim(),
+          customerName: String(
+            match?.customerName
+            || match?.customer?.name
+            || match?.customer?.companyName
+            || match?.customer?.fullName
+            || ""
+          ).trim(),
+        }
+      : null;
     const createdAt = Number(match?.createdAt || Date.now()) || Date.now();
     const hydrated = {
       ...match,
@@ -2442,7 +2457,7 @@ export default function EstimateForm(props) {
         const c = payload?.customer;
         if (!c || typeof c !== "object") return;
         const sid = String(payload?.id || c?.id || "");
-        clearStaleSeededProjectId({
+        clearStaleProjectIdForCustomerBoundary({
           id: sid,
           name: String(c.name || c.fullName || c.companyName || "").trim(),
         });
@@ -2472,7 +2487,7 @@ export default function EstimateForm(props) {
     return () => window.removeEventListener("estipaid:customer-use", apply);
   // patch is stable (setState-based), safe to omit from deps per React docs
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearStaleSeededProjectId]);
+  }, [clearStaleProjectIdForCustomerBoundary]);
 
   // Sync customer list when storage changes or same-tab customer flows update it
   useEffect(() => {
@@ -2798,7 +2813,7 @@ export default function EstimateForm(props) {
 
   function handleSelectCustomer(id) {
     if (id === CREATE_NEW_CUSTOMER_VALUE) {
-      clearStaleSeededProjectId(null);
+      clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
@@ -2825,7 +2840,7 @@ export default function EstimateForm(props) {
       return;
     }
     if (!id) {
-      clearStaleSeededProjectId(null);
+      clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
@@ -2842,7 +2857,7 @@ export default function EstimateForm(props) {
     setSearchCustomerText(customerDisplayName(c));
     const flat = flattenCustomerForEstimator(c);
     const payloadCustomer = { ...c, ...flat };
-    clearStaleSeededProjectId({
+    clearStaleProjectIdForCustomerBoundary({
       id,
       name: customerDisplayName(c),
     });
