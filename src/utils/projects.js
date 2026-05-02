@@ -129,6 +129,24 @@ function shouldMergeProjectsBySignature(existingProject = {}, nextProject = {}) 
   return projectSignature(existingProject) === projectSignature(nextProject);
 }
 
+function pickDeterministicSignatureOwner(projects = [], candidateProject = {}) {
+  const signature = projectSignature(candidateProject);
+  if (!signature) return null;
+  const matches = (Array.isArray(projects) ? projects : []).filter((project) => (
+    projectSignature(project) === signature
+  ));
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  // When unlinked legacy docs match multiple manual duplicate projects, pin them to one
+  // stable owner so they do not attach to every duplicate or route arbitrarily.
+  return matches.slice().sort((a, b) => {
+    const aCreatedAt = normalizeTimestamp(a?.createdAt || a?.savedAt || a?.updatedAt, Number.MAX_SAFE_INTEGER);
+    const bCreatedAt = normalizeTimestamp(b?.createdAt || b?.savedAt || b?.updatedAt, Number.MAX_SAFE_INTEGER);
+    if (aCreatedAt !== bCreatedAt) return aCreatedAt - bCreatedAt;
+    return asText(a?.id).localeCompare(asText(b?.id));
+  })[0];
+}
+
 function createManualProjectId(existingProjects = []) {
   const existingIds = new Set(
     (Array.isArray(existingProjects) ? existingProjects : []).map((project) => asText(project?.id)).filter(Boolean)
@@ -563,7 +581,8 @@ export function buildNormalizedProjectView({
           projectId: source?.projectId,
           nowTs: latestTimestampForDoc(source),
         });
-        return candidate.id === projectRecord.id || projectSignature(candidate) === projectSignature(projectRecord);
+        const owner = pickDeterministicSignatureOwner(projectList, candidate);
+        return asText(owner?.id) === projectRecord.id;
       })
       .map((doc) => ({ ...doc, projectId: projectRecord.id }))
       .sort(sortDocsByLatestActivity);
@@ -625,10 +644,7 @@ export function resolveProjectNavigationTarget(doc = {}, projects = []) {
   const fallbackProject = createProjectRecord(source);
   const existing = explicitProjectId
     ? null
-    : (projectList.find((entry) => (
-      asText(entry?.id) === asText(fallbackProject.id)
-      || shouldMergeProjectsBySignature(entry, fallbackProject)
-    )) || null);
+    : pickDeterministicSignatureOwner(projectList, fallbackProject);
 
   return {
     projectId: asText(existing?.id || fallbackProject.id),
