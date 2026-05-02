@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
-  createProjectRecord,
+  createManualProject,
   readStoredProjects,
   writeStoredProjects,
-  upsertProject,
 } from "../utils/projects";
 
 const PROJECT_STATUS_OPTIONS = [
@@ -39,22 +38,6 @@ function buildCustomerId() {
 
 function customerDisplayName(c) {
   return String(c?.name || c?.companyName || c?.fullName || "").trim();
-}
-
-function normalizeLookupValue(value) {
-  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function matchesCreatedProject(project, record) {
-  const projectCustomerId = normalizeLookupValue(project?.customerId || project?.customer?.id);
-  const recordCustomerId = normalizeLookupValue(record?.customerId || record?.customer?.id);
-  const projectCustomerName = normalizeLookupValue(project?.customerName || project?.customer?.name || project?.customer?.companyName || project?.customer?.fullName);
-  const recordCustomerName = normalizeLookupValue(record?.customerName || record?.customer?.name || record?.customer?.companyName || record?.customer?.fullName);
-  return (
-    (projectCustomerId || projectCustomerName) === (recordCustomerId || recordCustomerName)
-    && normalizeLookupValue(project?.projectName) === normalizeLookupValue(record?.projectName)
-    && normalizeLookupValue(project?.siteAddress) === normalizeLookupValue(record?.siteAddress)
-  );
 }
 
 export default function NewProjectScreen({ onBack, onSave }) {
@@ -182,7 +165,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
   const handleSave = useCallback(() => {
     if (!canSave) return;
     const now = Date.now();
-    const record = createProjectRecord({
+    const source = {
       customerId: selectedCustomer ? String(selectedCustomer?.id || "") : "",
       customerName: selectedCustomer ? customerDisplayName(selectedCustomer) : "",
       projectName: projectName.trim(),
@@ -191,14 +174,11 @@ export default function NewProjectScreen({ onBack, onSave }) {
       notes: notes.trim(),
       createdAt: now,
       updatedAt: now,
-    });
+    };
     const projects = readStoredProjects();
-    const next = upsertProject(projects, record);
-    const savedProjects = writeStoredProjects(next);
-    const persisted = savedProjects.find((project) => String(project?.id || "") === String(record.id || ""))
-      || savedProjects.find((project) => matchesCreatedProject(project, record))
-      || record;
-    if (onSave) onSave(persisted.id);
+    const { project, projects: next } = createManualProject(projects, source);
+    writeStoredProjects(next);
+    if (onSave) onSave(project.id);
   }, [canSave, selectedCustomerId, selectedCustomer, projectName, siteAddress, status, notes, onSave]);
 
   return (

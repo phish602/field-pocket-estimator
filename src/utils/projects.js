@@ -122,6 +122,17 @@ function sortProjectsByUpdatedAtDesc(a, b) {
   return asText(b?.projectName).localeCompare(asText(a?.projectName));
 }
 
+function createManualProjectId(existingProjects = []) {
+  const existingIds = new Set(
+    (Array.isArray(existingProjects) ? existingProjects : []).map((project) => asText(project?.id)).filter(Boolean)
+  );
+  let id = "";
+  do {
+    id = `proj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  } while (existingIds.has(id));
+  return id;
+}
+
 function projectSeedFromSource(source = {}) {
   const customer = source?.customer && typeof source.customer === "object" ? source.customer : {};
   return {
@@ -236,6 +247,18 @@ export function createProjectRecord(source = {}, options = {}) {
     createdAt: seed.createdAt,
     updatedAt: seed.updatedAt,
   }, options);
+}
+
+export function createManualProject(projects = [], source = {}, options = {}) {
+  const arr = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const project = createProjectRecord(source, {
+    ...options,
+    id: createManualProjectId(arr),
+  });
+  return {
+    project,
+    projects: [project, ...arr].sort(sortProjectsByUpdatedAtDesc),
+  };
 }
 
 function upsertProjectIntoList(projects = [], nextProject = {}) {
