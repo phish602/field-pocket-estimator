@@ -559,12 +559,14 @@ export default function CustomersScreen({
     const onStorage = (e) => {
       if (!e) return;
       if (e.key === CUSTOMERS_KEY) {
-        if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+          if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+          setRefreshSeq((value) => value + 1);
       }
     };
     const onLocalStorage = (event) => {
       if (event?.detail?.key === CUSTOMERS_KEY) {
-        if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+          if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+          setRefreshSeq((value) => value + 1);
       }
     };
     window.addEventListener("storage", onStorage);
@@ -578,7 +580,6 @@ export default function CustomersScreen({
   useEffect(() => {
     const relevantStorageKeys = new Set([
       STORAGE_KEYS.PROJECTS,
-      STORAGE_KEYS.CUSTOMERS,
       STORAGE_KEYS.ESTIMATES,
       STORAGE_KEYS.INVOICES,
     ]);
