@@ -1978,15 +1978,33 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
 
       <div ref={summaryRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-summary-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
-        {insight ? (
-          <div style={{ display: "grid", gap: 5 }}>
-            {insight.split(" • ").map((item, i) => (
-              <div key={i} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", color: "rgba(229,231,235,0.82)", lineHeight: 1.4 }}>
-                {item}
-              </div>
-            ))}
-          </div>
-        ) : (
+        {insight ? (() => {
+          const items = insight.split(" • ");
+          const rangePrefix = lang === "es" ? "Rango seleccionado: " : "Selected range: ";
+          const rangeIdx = items.findIndex((it) => it.startsWith(rangePrefix));
+          const allTimeItems = rangeIdx > 0 ? items.slice(0, rangeIdx) : items;
+          const rangeItems = rangeIdx >= 0
+            ? [items[rangeIdx].slice(rangePrefix.length), ...items.slice(rangeIdx + 1)].filter(Boolean)
+            : [];
+          const rowStyle = { fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", color: "rgba(229,231,235,0.82)", lineHeight: 1.4 };
+          const labelStyle = { fontSize: 10, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(229,231,235,0.35)", marginBottom: 4 };
+          return (
+            <div style={{ display: "grid", gap: 5 }}>
+              {allTimeItems.length > 0 && (
+                <>
+                  <div style={labelStyle}>{lang === "es" ? "Histórico" : "All-time"}</div>
+                  {allTimeItems.map((item, i) => <div key={`at-${i}`} style={rowStyle}>{item}</div>)}
+                </>
+              )}
+              {rangeItems.length > 0 && (
+                <>
+                  <div style={{ ...labelStyle, marginTop: allTimeItems.length > 0 ? 8 : 0 }}>{lang === "es" ? "Rango seleccionado" : "Selected range"}</div>
+                  {rangeItems.map((item, i) => <div key={`rng-${i}`} style={rowStyle}>{item}</div>)}
+                </>
+              )}
+            </div>
+          );
+        })() : (
           <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
         )}
       </div>
