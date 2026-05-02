@@ -584,7 +584,16 @@ function calcBreakdown(e) {
   };
 }
 
-export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOpenProjectDetail, spinTick = 0 }) {
+export default function EstimatesScreen({
+  lang,
+  t,
+  history,
+  onOpenEstimate,
+  onOpenProjectDetail,
+  spinTick = 0,
+  requestedInvoiceComposerEstimateId = "",
+  onInvoiceComposerRequestHandled,
+}) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -1245,6 +1254,19 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onOp
     setInvoiceComposerShowMore(false);
     return true;
   };
+
+  useEffect(() => {
+    const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
+    if (!requestedId) return;
+    const target = (Array.isArray(estimates) ? estimates : []).find(
+      (estimate) => String(estimate?.id || "").trim() === requestedId
+    );
+    if (!target) return;
+    openInvoiceComposer(target);
+    if (typeof onInvoiceComposerRequestHandled === "function") {
+      onInvoiceComposerRequestHandled();
+    }
+  }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
 
   const submitInvoiceComposer = () => {
     if (!invoiceComposerTarget) return false;

@@ -2115,6 +2115,7 @@ const [spinTick, setSpinTick] = useState(0);
   const [customerHistory, setCustomerHistory] = useState(() => loadSavedCustomers());
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
+  const [requestedInvoiceComposerEstimateId, setRequestedInvoiceComposerEstimateId] = useState("");
   const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
   const latestSavedEstimate = useMemo(() => selectLatestSavedEstimate(estimateHistory), [estimateHistory]);
   const latestSavedEstimateMeta = useMemo(() => {
@@ -3093,6 +3094,8 @@ const gated = false;
           t={shellT}
           spinTick={spinTick}
           history={estimateHistory}
+          requestedInvoiceComposerEstimateId={requestedInvoiceComposerEstimateId}
+          onInvoiceComposerRequestHandled={() => setRequestedInvoiceComposerEstimateId("")}
           onDone={() => navigateTo(ROUTES.HOME)}
           onOpenEstimate={() => {
             clearProjectDetailReturnTarget();
@@ -3202,7 +3205,21 @@ const gated = false;
     }
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
-    if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? <FinancialSnapshotScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
+      <FinancialSnapshotScreen
+        onCreateInvoiceFromEstimate={(estimate) => {
+          const estimateId = String(estimate?.id || "").trim();
+          if (!estimateId) return false;
+          try {
+            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+            localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+          } catch {}
+          setRequestedInvoiceComposerEstimateId(estimateId);
+          navigateTo(ROUTES.ESTIMATES);
+          return true;
+        }}
+      />
+    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
     if (activeTab === ROUTES.CREATE) {
       return (
         <CreateFlow

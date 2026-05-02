@@ -4,13 +4,11 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import { computeTotals } from "../estimator/engine";
 import {
   buildEstimateInvoiceSummary,
-  createInvoiceDraftFromEstimate,
   deriveInvoiceStatus,
   INVOICE_STATUSES,
   isInvoiceFinanciallyCommitted,
   isInvoiceReceivable,
   readStoredInvoices,
-  writeStoredInvoices,
 } from "../utils/invoices";
 import { readStoredProjects } from "../utils/projects";
 
@@ -19,9 +17,6 @@ const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const COMPANY_PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
-const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
-const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
-
 function safeParseJSON(raw, fallback) {
   try {
     const v = JSON.parse(raw);
@@ -778,7 +773,7 @@ function Bars({ data, height = 196, width = 320 }) {
   );
 }
 
-export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
+export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onCreateInvoiceFromEstimate = null }) {
   const [range, setRange] = useState("ytd");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -881,28 +876,10 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     if (!estimate || normalizeEstimateStatus(estimate?.status) !== "approved") {
       return false;
     }
-
-    const currentInvoices = readStoredInvoices();
-    const created = createInvoiceDraftFromEstimate(estimate, currentInvoices);
-    if (!created.ok || !created.draft) {
+    if (typeof onCreateInvoiceFromEstimate !== "function") {
       return false;
     }
-
-    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
-    setInvoices(nextInvoices);
-
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:invoices-changed"));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
-
-    return true;
+    return onCreateInvoiceFromEstimate(estimate) !== false;
   };
 
   const computed = useMemo(() => {
