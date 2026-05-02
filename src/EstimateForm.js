@@ -1508,6 +1508,7 @@ export default function EstimateForm(props) {
   const wasDirtyRef = useRef(false);
   const savePulseTimerRef = useRef(null);
   const pendingSpecialConditionsAutoCollapseRef = useRef(false);
+  const seededProjectContextRef = useRef(null);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -1545,13 +1546,41 @@ export default function EstimateForm(props) {
     if (seed.projectNumber) patch("customer.projectNumber", seed.projectNumber);
     if (seed.siteAddress) patch("customer.projectAddress", seed.siteAddress);
     if (seed.projectId) patch("projectId", seed.projectId);
+    seededProjectContextRef.current = seed.projectId
+      ? {
+          projectId: seed.projectId,
+          customerId: seed.customerId,
+          customerName: seed.customerName,
+        }
+      : null;
     setProjectSeedSummary({
+      projectId: seed.projectId,
+      customerId: seed.customerId,
       projectName: seed.projectName,
       customerName: seed.customerName,
       siteAddress: seed.siteAddress,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const clearStaleSeededProjectId = useCallback((nextCustomer = null) => {
+    if (isEditMode) return;
+    const seeded = seededProjectContextRef.current;
+    const activeProjectId = String(state?.projectId || "").trim();
+    if (!seeded?.projectId || activeProjectId !== String(seeded.projectId || "").trim()) return;
+
+    const nextCustomerId = String(nextCustomer?.id || "").trim();
+    const nextCustomerName = String(nextCustomer?.name || "").trim().toLowerCase();
+    const seededCustomerId = String(seeded.customerId || "").trim();
+    const seededCustomerName = String(seeded.customerName || "").trim().toLowerCase();
+    const customerMatches = seededCustomerId
+      ? nextCustomerId === seededCustomerId
+      : (!!nextCustomerName && nextCustomerName === seededCustomerName);
+
+    if (!customerMatches) {
+      patch("projectId", "");
+    }
+  }, [isEditMode, patch, state?.projectId]);
 
   useEffect(() => {
     if (!savePrompt) return undefined;
@@ -2413,6 +2442,10 @@ export default function EstimateForm(props) {
         const c = payload?.customer;
         if (!c || typeof c !== "object") return;
         const sid = String(payload?.id || c?.id || "");
+        clearStaleSeededProjectId({
+          id: sid,
+          name: String(c.name || c.fullName || c.companyName || "").trim(),
+        });
         if (sid) setSelectedCustomerId(sid);
         setSelectedCustomerProfile(c);
         const display = customerDisplayName(c) || String(c.name || "").trim();
@@ -2439,7 +2472,7 @@ export default function EstimateForm(props) {
     return () => window.removeEventListener("estipaid:customer-use", apply);
   // patch is stable (setState-based), safe to omit from deps per React docs
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [clearStaleSeededProjectId]);
 
   // Sync customer list when storage changes or same-tab customer flows update it
   useEffect(() => {
@@ -2765,6 +2798,7 @@ export default function EstimateForm(props) {
 
   function handleSelectCustomer(id) {
     if (id === CREATE_NEW_CUSTOMER_VALUE) {
+      clearStaleSeededProjectId(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
@@ -2791,6 +2825,7 @@ export default function EstimateForm(props) {
       return;
     }
     if (!id) {
+      clearStaleSeededProjectId(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
       setSelectedCustomerProfile(null);
@@ -2807,6 +2842,10 @@ export default function EstimateForm(props) {
     setSearchCustomerText(customerDisplayName(c));
     const flat = flattenCustomerForEstimator(c);
     const payloadCustomer = { ...c, ...flat };
+    clearStaleSeededProjectId({
+      id,
+      name: customerDisplayName(c),
+    });
     setSelectedCustomerProfile(payloadCustomer);
     setDropdownOpen(false);
     patch("customer.id", id);
