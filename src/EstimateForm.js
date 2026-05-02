@@ -1387,6 +1387,27 @@ export default function EstimateForm(props) {
   const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
   const homeLaunchSource = String(homeEstimateLaunch?.source || "").trim();
   const homeLaunchIsCleanSession = homeEstimateLaunch?.cleanSession !== false;
+  const hasKnownCleanCreateLaunch = homeLaunchIsCleanSession
+    && (homeLaunchSource === "home_ai_assist" || homeLaunchSource === "create_launcher_ai_assist");
+  const linkedSourceEstimateId = String(
+    state?.sourceEstimateId
+    || state?.sourceEstimateSnapshot?.estimateId
+    || ""
+  ).trim();
+  const hasLinkedSourceEstimate = guidedDocType === "invoice"
+    && (
+      !!linkedSourceEstimateId
+      || String(state?.invoiceMeta?.sourceType || "").trim() === "estimate"
+    );
+  const estimatorCoreIsBlank = useMemo(() => !hasCoreGuidedDraftState(state), [state]);
+  const canStartExistingProjectLinkingFromBlankSession = estimatorCoreIsBlank
+    && !String(state?.meta?.savedDocId || "").trim()
+    && !String(state?.projectId || "").trim()
+    && !String(state?.customer?.id || "").trim()
+    && !String(state?.customer?.name || "").trim()
+    && !String(state?.customer?.projectName || "").trim()
+    && !String(state?.customer?.projectNumber || "").trim()
+    && !String(state?.customer?.projectAddress || "").trim();
   // ──────────────────────────────────────────────────────────────────────────
   const lastHomeLaunchIdRef = useRef("");
   const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
@@ -1489,6 +1510,7 @@ export default function EstimateForm(props) {
   }, []);
 
   const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
   const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(() => (
     buildSelectedCustomerProfileFromDraft(
@@ -1561,6 +1583,7 @@ export default function EstimateForm(props) {
     if (seed.customerName) {
       patch("customer.name", seed.customerName);
       setSearchCustomerText(seed.customerName);
+      setCustomerSearchQuery("");
     }
     if (seed.customerId) {
       patch("customer.id", seed.customerId);
@@ -1620,14 +1643,57 @@ export default function EstimateForm(props) {
 
   const clearStaleProjectIdForCustomerBoundary = useCallback((nextCustomer = null) => {
     const activeProjectId = String(state?.projectId || "").trim();
+    if (!activeProjectId) {
+      if (!nextCustomer) {
+        clearSelectedExistingProjectLink();
+      }
+      return;
+    }
+
     const nextCustomerId = String(nextCustomer?.id || "").trim();
     const nextCustomerName = String(nextCustomer?.name || "").trim().toLowerCase();
+    const liveProject = (Array.isArray(allProjects) ? allProjects : []).find(
+      (project) => String(project?.id || "").trim() === activeProjectId
+    ) || null;
+    const liveProjectCustomerId = String(liveProject?.customerId || "").trim();
+    const liveProjectCustomerName = String(liveProject?.customerName || "").trim().toLowerCase();
+    const liveProjectMatches = liveProject
+      ? (
+        liveProjectCustomerId
+          ? liveProjectCustomerId === nextCustomerId
+          : (!!nextCustomerName && liveProjectCustomerName === nextCustomerName)
+      )
+      : false;
     const seededOrEditContext = isEditMode
       ? editProjectContextRef.current
       : seededProjectContextRef.current;
     const manualContext = seededOrEditContext ? null : selectedLinkedProjectContextRef.current;
     const context = seededOrEditContext || manualContext;
-    if (!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) return;
+    if ((!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) && liveProjectMatches) return;
+
+    if (manualContext && (!nextCustomer || !liveProjectMatches)) {
+      clearSelectedExistingProjectLink();
+      return;
+    }
+
+    if (!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) {
+      patch("projectId", "");
+      if (liveProject) {
+        const liveProjectName = String(liveProject?.projectName || "").trim();
+        const liveProjectNumber = String(liveProject?.projectNumber || "").trim();
+        const liveProjectAddress = String(liveProject?.siteAddress || "").trim();
+        if (liveProjectName && String(state?.customer?.projectName || "").trim() === liveProjectName) {
+          patch("customer.projectName", "");
+        }
+        if (liveProjectNumber && String(state?.customer?.projectNumber || "").trim() === liveProjectNumber) {
+          patch("customer.projectNumber", "");
+        }
+        if (liveProjectAddress && String(state?.customer?.projectAddress || "").trim() === liveProjectAddress) {
+          patch("customer.projectAddress", "");
+        }
+      }
+      return;
+    }
 
     const contextCustomerId = String(context.customerId || "").trim();
     const contextCustomerName = String(context.customerName || "").trim().toLowerCase();
@@ -1642,7 +1708,16 @@ export default function EstimateForm(props) {
       }
       patch("projectId", "");
     }
-  }, [clearSelectedExistingProjectLink, isEditMode, patch, state?.projectId]);
+  }, [
+    allProjects,
+    clearSelectedExistingProjectLink,
+    isEditMode,
+    patch,
+    state?.customer?.projectAddress,
+    state?.customer?.projectName,
+    state?.customer?.projectNumber,
+    state?.projectId,
+  ]);
 
   useEffect(() => {
     if (!savePrompt) return undefined;
@@ -1771,7 +1846,10 @@ export default function EstimateForm(props) {
       || match?.customer?.company
       || ""
     ).trim();
-    if (displayName) setSearchCustomerText(displayName);
+    if (displayName) {
+      setSearchCustomerText(displayName);
+      setCustomerSearchQuery("");
+    }
   }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
 
   useEffect(() => {
@@ -1812,10 +1890,14 @@ export default function EstimateForm(props) {
 
     if (!String(searchCustomerText || "").trim()) {
       const displayName = customerDisplayName(nextProfile) || String(nextProfile?.name || "").trim();
-      if (displayName) setSearchCustomerText(displayName);
+      if (displayName) {
+        setSearchCustomerText(displayName);
+        setCustomerSearchQuery("");
+      }
     }
   }, [
     allCustomers,
+    customerSearchQuery,
     isEditMode,
     searchCustomerText,
     selectedCustomerId,
@@ -2438,11 +2520,25 @@ export default function EstimateForm(props) {
   ]);
 
   useEffect(() => {
-    if (!homeLaunchId || isEditMode) return;
-    if (homeLaunchSource === "home_ai_assist" && homeLaunchIsCleanSession) {
+    if (allowExistingProjectLinking || isEditMode || projectSeedSummary || hasLinkedSourceEstimate) return;
+    if (homeLaunchId) {
+      if (hasKnownCleanCreateLaunch) {
+        setAllowExistingProjectLinking(true);
+      }
+      return;
+    }
+    if (canStartExistingProjectLinkingFromBlankSession) {
       setAllowExistingProjectLinking(true);
     }
-  }, [homeLaunchId, homeLaunchIsCleanSession, homeLaunchSource, isEditMode]);
+  }, [
+    allowExistingProjectLinking,
+    canStartExistingProjectLinkingFromBlankSession,
+    hasKnownCleanCreateLaunch,
+    hasLinkedSourceEstimate,
+    homeLaunchId,
+    isEditMode,
+    projectSeedSummary,
+  ]);
 
   function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
     if (String(state?.projectId || "").trim()) return;
@@ -2532,7 +2628,10 @@ export default function EstimateForm(props) {
         if (sid) setSelectedCustomerId(sid);
         setSelectedCustomerProfile(c);
         const display = customerDisplayName(c) || String(c.name || "").trim();
-        if (display) setSearchCustomerText(display);
+        if (display) {
+          setSearchCustomerText(display);
+          setCustomerSearchQuery("");
+        }
         patch("customer.id", sid);
         if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
         if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
@@ -2751,7 +2850,7 @@ export default function EstimateForm(props) {
     [allCustomers, recentCustomerIds]
   );
   const filteredCustomers = useMemo(() => {
-    const q = searchCustomerText.trim().toLowerCase();
+    const q = customerSearchQuery.trim().toLowerCase();
     const matches = allCustomers.filter((c) => {
       const name = customerDisplayName(c).toLowerCase();
       const company = String(c.companyName || "").toLowerCase();
@@ -2768,10 +2867,18 @@ export default function EstimateForm(props) {
       );
     });
     return matches.slice(0, MAX_SEARCH_RESULTS);
-  }, [allCustomers, searchCustomerText]);
-  const dropdownCustomers = searchCustomerText.trim()
-    ? filteredCustomers
-    : (recentCustomers.length ? recentCustomers : filteredCustomers);
+  }, [allCustomers, customerSearchQuery]);
+  const dropdownCustomers = useMemo(() => {
+    if (customerSearchQuery.trim()) return filteredCustomers;
+    const seen = new Set();
+    return [...recentCustomers, ...filteredCustomers].filter((customer) => {
+      const id = String(customer?.id || "").trim();
+      const key = id || customerDisplayName(customer).toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [customerSearchQuery, filteredCustomers, recentCustomers]);
   const selectedProfile = useMemo(() => {
     if (!selectedCustomerId || !selectedCustomerProfile) return null;
     const c = selectedCustomerProfile;
@@ -2795,9 +2902,9 @@ export default function EstimateForm(props) {
     return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
   const showExistingProjectSelector = allowExistingProjectLinking
-    && guidedDocType === "estimate"
     && !isEditMode
-    && !projectSeedSummary;
+    && !projectSeedSummary
+    && !hasLinkedSourceEstimate;
   const availableExistingProjects = useMemo(() => {
     if (!showExistingProjectSelector) return [];
 
@@ -2960,6 +3067,7 @@ export default function EstimateForm(props) {
       clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
+      setCustomerSearchQuery("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
       patch("customer.id", "");
@@ -2987,6 +3095,7 @@ export default function EstimateForm(props) {
       clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
+      setCustomerSearchQuery("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
       patch("customer.id", "");
@@ -2999,6 +3108,7 @@ export default function EstimateForm(props) {
     if (!c) return;
     setSelectedCustomerId(id);
     setSearchCustomerText(customerDisplayName(c));
+    setCustomerSearchQuery("");
     const flat = flattenCustomerForEstimator(c);
     const payloadCustomer = { ...c, ...flat };
     clearStaleProjectIdForCustomerBoundary({
@@ -4346,7 +4456,6 @@ export default function EstimateForm(props) {
     : styles.estimatorActionBarInner;
   const sectionBottomActionsStyle = styles.sectionFooterActions;
   const builderOverlayOpen = shellOverlayOpen || !!guided?.enabled;
-  const estimatorCoreIsBlank = useMemo(() => !hasCoreGuidedDraftState(state), [state]);
   const canonicalBlankGuidedDisplay = useMemo(() => {
     if (!estimatorCoreIsBlank) return null;
     return buildCanonicalBlankDisplayState({
@@ -4627,7 +4736,12 @@ export default function EstimateForm(props) {
               autoComplete="off"
               onFocus={() => setDropdownOpen(true)}
               onBlur={() => setTimeout(() => setDropdownOpen(false), DROPDOWN_BLUR_DELAY)}
-              onChange={(e) => { setSearchCustomerText(e.target.value); setDropdownOpen(true); }}
+              onChange={(e) => {
+                const nextValue = e.target.value;
+                setSearchCustomerText(nextValue);
+                setCustomerSearchQuery(nextValue);
+                setDropdownOpen(true);
+              }}
             />
             {dropdownOpen && dropdownRect.width > 0 && typeof document !== "undefined" && createPortal(
               <div style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
