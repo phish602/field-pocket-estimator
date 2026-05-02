@@ -400,7 +400,12 @@ function describeExplicitScopeAssistScaffoldMatch(scopeNotes) {
 }
 
 function readSavedCustomers() {
-  try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function summarizeGuidedShellText(value, max = 140) {
@@ -444,7 +449,11 @@ function traceEstiPaidGuidedRuntime(source, event, payload = {}) {
 }
 function customerDisplayName(c) {
   if (!c) return "";
-  return String(c.type === "commercial" ? (c.companyName || c.name || "") : (c.fullName || c.name || "")).trim();
+  const inferredType = String(c?.type || (c?.companyName ? "commercial" : "residential")).toLowerCase();
+  if (inferredType === "commercial") {
+    return String(c?.companyName || c?.name || c?.fullName || "").trim();
+  }
+  return String(c?.fullName || c?.name || c?.companyName || "").trim();
 }
 function readCustomerRecents() {
   try { return JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]") || []; } catch { return []; }
@@ -464,14 +473,29 @@ function flattenCustomerForEstimator(c) {
     const line2Full = [line2, String(a?.zip || "").trim()].filter(Boolean).join(" ");
     return [street, line2Full].filter(Boolean).join("\n");
   };
-  if (String(c.type || "") === "commercial") {
+  const inferredType = String(c?.type || (c?.companyName ? "commercial" : "residential")).toLowerCase();
+  if (inferredType === "commercial") {
     const job = c.jobsite || {};
     const bill = c.billSameAsJob ? (c.jobsite || {}) : (c.billing || {});
-    return { name: String(c.companyName || "").trim(), phone: String(c.comPhone || "").trim(), email: String(c.comEmail || "").trim(), attn: String(c.contactName || "").trim(), address: joinAddr(job), billingAddress: joinAddr(bill) };
+    return {
+      name: String(c.companyName || c.name || "").trim(),
+      phone: String(c.comPhone || c.phone || "").trim(),
+      email: String(c.comEmail || c.email || "").trim(),
+      attn: String(c.contactName || c.attn || "").trim(),
+      address: joinAddr(job) || String(c.address || "").trim(),
+      billingAddress: joinAddr(bill) || String(c.billingAddress || "").trim(),
+    };
   }
   const svc = c.resService || {};
   const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
-  return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
+  return {
+    name: String(c.fullName || c.name || c.companyName || "").trim(),
+    phone: String(c.resPhone || c.phone || "").trim(),
+    email: String(c.resEmail || c.email || c.comEmail || "").trim(),
+    attn: String(c.attn || "").trim(),
+    address: joinAddr(svc) || String(c.address || "").trim(),
+    billingAddress: joinAddr(bill) || String(c.billingAddress || "").trim(),
+  };
 }
 
 function buildSelectedCustomerProfileFromDraft(customerState, customerId = "", customerList = []) {
@@ -2661,16 +2685,26 @@ export default function EstimateForm(props) {
   );
   const filteredCustomers = useMemo(() => {
     const q = searchCustomerText.trim().toLowerCase();
-    if (!q) return [];
-    return allCustomers.filter((c) => {
+    const matches = allCustomers.filter((c) => {
       const name = customerDisplayName(c).toLowerCase();
       const company = String(c.companyName || "").toLowerCase();
+      const fullName = String(c.fullName || c.contactName || c.name || "").toLowerCase();
       const email = String(c.comEmail || c.resEmail || c.email || "").toLowerCase();
       const phone = String(c.comPhone || c.resPhone || c.phone || "").toLowerCase();
-      return name.includes(q) || company.includes(q) || email.includes(q) || phone.includes(q);
-    }).slice(0, MAX_SEARCH_RESULTS);
+      if (!q) return true;
+      return (
+        name.includes(q)
+        || company.includes(q)
+        || fullName.includes(q)
+        || email.includes(q)
+        || phone.includes(q)
+      );
+    });
+    return matches.slice(0, MAX_SEARCH_RESULTS);
   }, [allCustomers, searchCustomerText]);
-  const dropdownCustomers = searchCustomerText.trim() ? filteredCustomers : recentCustomers;
+  const dropdownCustomers = searchCustomerText.trim()
+    ? filteredCustomers
+    : (recentCustomers.length ? recentCustomers : filteredCustomers);
   const selectedProfile = useMemo(() => {
     if (!selectedCustomerId || !selectedCustomerProfile) return null;
     const c = selectedCustomerProfile;
