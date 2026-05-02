@@ -3410,6 +3410,7 @@ export default function EstimateForm(props) {
       const projectContext = {
         projectId: String(
           persistedState?.projectId
+          || state?.projectId
           || existingMatch?.projectId
           || linkedEstimateSnapshot?.projectId
           || ""
