@@ -762,6 +762,7 @@ function Bars({ data, height = 196, width = 320 }) {
           { color: SEG_COLORS.paid,    label: "Paid" },
           { color: SEG_COLORS.sent,    label: "Sent" },
           { color: SEG_COLORS.overdue, label: "Overdue" },
+          { color: SEG_COLORS.other,   label: "Other" },
         ].map(({ color, label }) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 9, height: 9, borderRadius: 3, background: color, display: "inline-block", flexShrink: 0 }} />
@@ -1586,15 +1587,6 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
                         <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>
                           {lang === "es" ? "Factura" : "Invoice"} {fmtMoney(row.invoiceTotal)}{row.amountPaid > 0 ? ` • ${lang === "es" ? "Pagado" : "Paid"} ${fmtMoney(row.amountPaid)}` : ""}
                         </div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
-                      <div className="pe-muted" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
-                        {row.email || (lang === "es" ? "Sin email" : "No email")}
-                      </div>
-                      <div className="pe-muted" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
-                        {row.phone || (lang === "es" ? "Sin teléfono" : "No phone")}
                       </div>
                     </div>
 
