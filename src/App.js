@@ -3584,12 +3584,6 @@ const gated = false;
           chromeVisible={isMobileChromeViewport ? mobileFooterChromeVisible : chromeVisible}
           mobileCreateChromeMotion={activeTab === ROUTES.CREATE && isMobileChromeViewport}
           setActive={(key) => {
-            if (
-              key === ROUTES.CUSTOMERS
-              && Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)
-            ) {
-              return;
-            }
             if (key === ROUTES.CREATE) {
               setCreateLauncherOpen(true);
               return;
