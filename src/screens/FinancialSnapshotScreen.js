@@ -1560,7 +1560,13 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
 
             <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Cuentas activas" : "Active receivables"}</div>
             <div style={{ display: "grid", gap: 10 }}>
-              {computed.arRows.map((row) => {
+              {(() => {
+                const atRiskIds = new Set(computed.atRiskRows.map((r) => r.id));
+                const remainingArRows = computed.arRows.filter((r) => !atRiskIds.has(r.id));
+                if (remainingArRows.length === 0) {
+                  return <div className="pe-muted">{lang === "es" ? "Todas las cuentas activas se muestran arriba." : "All active receivables are shown above."}</div>;
+                }
+                return remainingArRows.map((row) => {
                 const mailtoHref = row.email ? buildFollowUpMailto(row, companyProfile, lang) : "";
                 return (
                   <div key={row.id} style={{ padding: "12px", borderRadius: 12, background: row.daysLate > 0 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.03)", border: row.daysLate > 30 ? "1px solid rgba(239,68,68,0.22)" : "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
@@ -1614,7 +1620,8 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
                     </div>
                   </div>
                 );
-              })}
+              });
+              })()}
             </div>
           </>
         ) : (
@@ -1897,7 +1904,16 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
         <div style={{ display: "grid", gap: 8 }}>
           {computed.pipelineRows.length === 0 ? (
             <div className="pe-muted">{lang === "es" ? "Sin estimados en este rango" : "No estimates in this range"}</div>
-          ) : computed.pipelineRows.map((row) => {
+          ) : (() => {
+            const highlightedIds = new Set([
+              ...computed.approvedReadyRows.map((r) => r.id),
+              ...computed.pendingFollowUpRows.map((r) => r.id),
+            ]);
+            const remainingPipelineRows = computed.pipelineRows.filter((r) => !highlightedIds.has(r.id));
+            if (remainingPipelineRows.length === 0) {
+              return <div className="pe-muted">{lang === "es" ? "Todos los estimados relevantes se muestran arriba." : "All actionable estimates are shown above."}</div>;
+            }
+            return remainingPipelineRows.map((row) => {
             const followUpHref = row.email ? buildEstimateFollowUpMailto(row, companyProfile, lang) : "";
             const toneColor = row.statusKey === "approved"
               ? "rgba(34,197,94,0.95)"
@@ -1936,7 +1952,8 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
                 </div>
               </div>
             );
-          })}
+            });
+          })()}
         </div>
       </div>
 
