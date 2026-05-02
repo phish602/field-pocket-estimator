@@ -1385,10 +1385,6 @@ export default function EstimateForm(props) {
   const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
   const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
   const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
-  const homeLaunchSource = String(homeEstimateLaunch?.source || "").trim();
-  const homeLaunchIsCleanSession = homeEstimateLaunch?.cleanSession !== false;
-  const hasKnownCleanCreateLaunch = homeLaunchIsCleanSession
-    && (homeLaunchSource === "home_ai_assist" || homeLaunchSource === "create_launcher_ai_assist");
   const linkedSourceEstimateId = String(
     state?.sourceEstimateId
     || state?.sourceEstimateSnapshot?.estimateId
@@ -1400,14 +1396,6 @@ export default function EstimateForm(props) {
       || String(state?.invoiceMeta?.sourceType || "").trim() === "estimate"
     );
   const estimatorCoreIsBlank = useMemo(() => !hasCoreGuidedDraftState(state), [state]);
-  const canStartExistingProjectLinkingFromBlankSession = estimatorCoreIsBlank
-    && !String(state?.meta?.savedDocId || "").trim()
-    && !String(state?.projectId || "").trim()
-    && !String(state?.customer?.id || "").trim()
-    && !String(state?.customer?.name || "").trim()
-    && !String(state?.customer?.projectName || "").trim()
-    && !String(state?.customer?.projectNumber || "").trim()
-    && !String(state?.customer?.projectAddress || "").trim();
   // ──────────────────────────────────────────────────────────────────────────
   const lastHomeLaunchIdRef = useRef("");
   const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
@@ -1535,7 +1523,6 @@ export default function EstimateForm(props) {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
     return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
   });
-  const [allowExistingProjectLinking, setAllowExistingProjectLinking] = useState(false);
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
   const [allProjects, setAllProjects] = useState(() => readStoredProjects());
   const [newLaborLineIds, setNewLaborLineIds] = useState({});
@@ -2519,27 +2506,6 @@ export default function EstimateForm(props) {
     submitScopeAssist,
   ]);
 
-  useEffect(() => {
-    if (allowExistingProjectLinking || isEditMode || projectSeedSummary || hasLinkedSourceEstimate) return;
-    if (homeLaunchId) {
-      if (hasKnownCleanCreateLaunch) {
-        setAllowExistingProjectLinking(true);
-      }
-      return;
-    }
-    if (canStartExistingProjectLinkingFromBlankSession) {
-      setAllowExistingProjectLinking(true);
-    }
-  }, [
-    allowExistingProjectLinking,
-    canStartExistingProjectLinkingFromBlankSession,
-    hasKnownCleanCreateLaunch,
-    hasLinkedSourceEstimate,
-    homeLaunchId,
-    isEditMode,
-    projectSeedSummary,
-  ]);
-
   function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
     if (String(state?.projectId || "").trim()) return;
     const derivedProjectName = deriveProjectNameFromScopeFlow({
@@ -2901,9 +2867,7 @@ export default function EstimateForm(props) {
     const poRequired = !!c?.poRequired;
     return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
-  const showExistingProjectSelector = allowExistingProjectLinking
-    && !isEditMode
-    && !projectSeedSummary
+  const showExistingProjectSelector = !projectSeedSummary
     && !hasLinkedSourceEstimate;
   const availableExistingProjects = useMemo(() => {
     if (!showExistingProjectSelector) return [];
@@ -4920,12 +4884,12 @@ export default function EstimateForm(props) {
                 </select>
                 <div className="pe-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
                   {!selectedCustomerId
-                    ? "Choose a customer first to link this estimate to one of their existing projects."
+                    ? "Choose a customer first to link this document to one of their existing projects."
                     : selectedExistingProject
-                    ? "This estimate will stay linked to the selected existing project when you save."
+                    ? "This document will stay linked to the selected existing project when you save."
                     : availableExistingProjects.length === 0
                     ? "No saved projects are available for the selected customer yet."
-                    : "Optional: link this estimate to one existing project for the selected customer."}
+                    : "Optional: link this document to one existing project for the selected customer."}
                 </div>
               </div>
             ) : null}
