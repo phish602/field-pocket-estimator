@@ -1059,11 +1059,20 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     });
     const atRiskRows = arRows.filter((row) => row.daysLate > 15 || row.balanceDue >= 2500).slice(0, 5);
 
-    const pendingEstimates = estAll.filter((estimate) => normalizeEstimateStatus(estimate?.status) === "pending");
-    const approvedEstimates = estAll.filter((estimate) => normalizeEstimateStatus(estimate?.status) === "approved");
-    const estimatesInRange = estAll.filter((estimate) => inRange(getDocDate(estimate), start, end));
-    const pipelineEstimates = pendingEstimates.filter((estimate) => inRange(getDocDate(estimate), start, end));
-    const approvedInRange = approvedEstimates.filter((estimate) => inRange(getDocDate(estimate), start, end));
+    const estimateStatusEntries = estAll.map((estimate) => ({
+      estimate,
+      statusKey: normalizeEstimatePipelineStatus(estimate?.snapshotStatus || estimate?.status),
+      estimateDate: getDocDate(estimate),
+    }));
+    const estimatesInRange = estimateStatusEntries
+      .filter(({ estimateDate }) => inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
+    const pipelineEstimates = estimateStatusEntries
+      .filter(({ statusKey, estimateDate }) => statusKey === "pending" && inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
+    const approvedInRange = estimateStatusEntries
+      .filter(({ statusKey, estimateDate }) => statusKey === "approved" && inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
 
     const pipelineValue = pipelineEstimates.reduce((sum, estimate) => sum + calcRevenue(estimate), 0);
     const pipelineCount = pipelineEstimates.length;
