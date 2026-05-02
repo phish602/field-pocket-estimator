@@ -2425,15 +2425,19 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
   }, [createEditSessionActive, navigateTo, setHomeEstimateLaunch]);
 
+  const clearEstimateOpenCustomersGuard = useCallback(() => {
+    estimateOpenCustomersGuardUntilRef.current = 0;
+  }, []);
+
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
     const onNavCustomers = () => {
-      if (Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)) return;
+      clearEstimateOpenCustomersGuard();
       try { navigateTo(ROUTES.CUSTOMERS); } catch {}
     };
     window.addEventListener("estipaid:navigate-customers", onNavCustomers);
     return () => window.removeEventListener("estipaid:navigate-customers", onNavCustomers);
-  }, [navigateTo]);
+  }, [clearEstimateOpenCustomersGuard, navigateTo]);
 
   useEffect(() => {
     const onNavEstimates = () => {
@@ -2858,6 +2862,20 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     window.addEventListener("estipaid:estimate-open", armEstimateOpenCustomersGuard);
     return () => window.removeEventListener("estipaid:estimate-open", armEstimateOpenCustomersGuard);
   }, []);
+
+  useEffect(() => {
+    const clearOnUserInteraction = () => {
+      if (Date.now() < Number(estimateOpenCustomersGuardUntilRef.current || 0)) {
+        clearEstimateOpenCustomersGuard();
+      }
+    };
+    window.addEventListener("pointerdown", clearOnUserInteraction, true);
+    window.addEventListener("touchstart", clearOnUserInteraction, true);
+    return () => {
+      window.removeEventListener("pointerdown", clearOnUserInteraction, true);
+      window.removeEventListener("touchstart", clearOnUserInteraction, true);
+    };
+  }, [clearEstimateOpenCustomersGuard]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return undefined;
