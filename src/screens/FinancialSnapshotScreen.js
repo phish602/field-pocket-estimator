@@ -1345,68 +1345,51 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
   const title = lang === "es" ? "Resumen financiero" : "Financial Snapshot";
 
   const insight = useMemo(() => {
-    const parts = [];
-    if (computed.customerCount > 0) {
-      parts.push(
-        lang === "es"
-          ? `Clientes: ${computed.customerCount}`
-          : `Customers: ${computed.customerCount}`
-      );
-    }
-    if (computed.projectCounts.total > 0) {
-      parts.push(
-        lang === "es"
-          ? `Proyectos: ${computed.projectCounts.total} (${computed.projectCounts.active} activos, ${computed.projectCounts.completed} completados, ${computed.projectCounts.estimating} estimando, ${computed.projectCounts.draft} borrador)`
-          : `Projects: ${computed.projectCounts.total} (${computed.projectCounts.active} active, ${computed.projectCounts.completed} completed, ${computed.projectCounts.estimating} estimating, ${computed.projectCounts.draft} draft)`
-      );
-    }
-    if (computed.estimateCounts.total > 0) {
-      parts.push(
-        lang === "es"
-          ? `Estimados: ${computed.estimateCounts.total} (${computed.estimateCounts.approved} aprobados, ${computed.estimateCounts.pending} pendientes, ${computed.estimateCounts.draft} borrador, ${computed.estimateCounts.lost} perdidos)`
-          : `Estimates: ${computed.estimateCounts.total} (${computed.estimateCounts.approved} approved, ${computed.estimateCounts.pending} pending, ${computed.estimateCounts.draft} draft, ${computed.estimateCounts.lost} lost)`
-      );
-    }
-    if (computed.invoiceTotals.total > 0) {
-      parts.push(
-        lang === "es"
-          ? `Facturas: ${computed.invoiceTotals.total} (${computed.invoiceTotals.paid} pagadas, ${computed.invoiceTotals.sent} enviadas, ${computed.invoiceTotals.overdue} vencidas, ${computed.invoiceTotals.draft} borrador, ${computed.invoiceTotals.partial} parciales)`
-          : `Invoices: ${computed.invoiceTotals.total} (${computed.invoiceTotals.paid} paid, ${computed.invoiceTotals.sent} sent, ${computed.invoiceTotals.overdue} overdue, ${computed.invoiceTotals.draft} draft, ${computed.invoiceTotals.partial} partial)`
-      );
-    }
+    const allTimeLine = lang === "es"
+      ? `Registros históricos: ${computed.customerCount} clientes, ${computed.projectCounts.total} proyectos, ${computed.estimateCounts.total} estimados, ${computed.invoiceTotals.total} facturas`
+      : `All-time records: ${computed.customerCount} customers, ${computed.projectCounts.total} projects, ${computed.estimateCounts.total} estimates, ${computed.invoiceTotals.total} invoices`;
+
+    const rangeParts = [];
     if (computed.invCount === 0) {
-      parts.push(lang === "es" ? "Aún no hay facturas en este rango." : "No invoices in this range yet.");
+      rangeParts.push(lang === "es" ? "sin facturas comprometidas en este rango" : "no committed invoices in this range");
     } else {
-      parts.push((lang === "es" ? "Margen promedio: " : "Average margin: ") + fmtPct(computed.marginPct));
-      if (computed.arTotal > 0) parts.push((lang === "es" ? "Cuentas por cobrar: " : "Receivables: ") + fmtMoney(computed.arTotal));
-      if (computed.delinquentTotal > 0) parts.push((lang === "es" ? "Delincuencia: " : "Delinquent: ") + fmtMoney(computed.delinquentTotal));
-      if (computed.invoiceTotals.paidValue > 0) {
-        parts.push((lang === "es" ? "Cobrado: " : "Collected: ") + fmtMoney(computed.invoiceTotals.paidValue));
+      rangeParts.push((lang === "es" ? "ingresos " : "revenue ") + fmtMoney(computed.revenue));
+      if (computed.arTotal > 0) {
+        rangeParts.push((lang === "es" ? "cuentas por cobrar " : "receivables ") + fmtMoney(computed.arTotal));
       }
-      if (computed.invoiceTotals.overdueValue > 0) {
-        parts.push((lang === "es" ? "Vencido: " : "Overdue balance: ") + fmtMoney(computed.invoiceTotals.overdueValue));
-      }
-      if (computed.invoiceTotals.partial > 0) {
-        parts.push(
-          (lang === "es" ? "Parciales: " : "Partial invoices: ")
-          + `${computed.invoiceTotals.partial} (${fmtMoney(computed.invoiceTotals.partialValue)})`
-        );
-      }
+      rangeParts.push(
+        lang === "es"
+          ? `${computed.invCount} facturas activas`
+          : `${computed.invCount} active invoices`
+      );
       if (computed.statusCounts.sent > 0 || computed.statusCounts.overdue > 0 || computed.statusCounts.paid > 0) {
-        parts.push(
+        rangeParts.push(
           lang === "es"
-            ? `Facturas activas: ${computed.statusCounts.sent} enviadas, ${computed.statusCounts.overdue} vencidas, ${computed.statusCounts.paid} pagadas`
-            : `Active invoices: ${computed.statusCounts.sent} sent, ${computed.statusCounts.overdue} overdue, ${computed.statusCounts.paid} paid`
+            ? `${computed.statusCounts.sent} enviadas, ${computed.statusCounts.overdue} vencidas, ${computed.statusCounts.paid} pagadas`
+            : `${computed.statusCounts.sent} sent, ${computed.statusCounts.overdue} overdue, ${computed.statusCounts.paid} paid`
         );
+      }
+      rangeParts.push((lang === "es" ? "margen promedio " : "avg margin ") + fmtPct(computed.marginPct));
+      if (computed.delinquentTotal > 0) {
+        rangeParts.push((lang === "es" ? "vencido " : "delinquent ") + fmtMoney(computed.delinquentTotal));
       }
     }
     if (computed.approvedReadyValue > 0) {
-      parts.push(
-        (lang === "es" ? "Aprobadas por facturar: " : "Approved ready to invoice: ")
-        + fmtMoney(computed.approvedReadyValue)
+      rangeParts.push(
+        (lang === "es" ? "aprobadas por facturar " : "approved ready to invoice ")
+        + `${fmtMoney(computed.approvedReadyValue)} (${computed.approvedReadyCount})`
       );
     }
-    return parts.join(" • ");
+    if (computed.missingInvoiceDateCount > 0) {
+      rangeParts.push(
+        lang === "es"
+          ? `${computed.missingInvoiceDateCount} facturas sin fecha excluidas de los totales por fecha`
+          : `${computed.missingInvoiceDateCount} undated invoices excluded from date-based totals`
+      );
+    }
+
+    const rangeLine = (lang === "es" ? "Rango seleccionado: " : "Selected range: ") + rangeParts.join(" • ");
+    return `${allTimeLine} • ${rangeLine}`;
   }, [computed, lang]);
 
   return (
