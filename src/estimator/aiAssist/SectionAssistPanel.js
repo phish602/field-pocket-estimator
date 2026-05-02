@@ -714,16 +714,25 @@ function LaborLinesReview({ result, onAccept, onClose }) {
     <>
       <p style={S.reviewLabel}>Suggested labor lines</p>
       <div style={S.listWrap}>
-        {lines.map((line, index) => (
-          <div key={line.id || index} style={S.listRow}>
-            <div style={S.listRowHead}>
-              <span style={S.listRowLabel}>{line.label || line.role || "—"}</span>
-              <span style={S.listRowMeta}>
-                {line.hours} hrs · ${line.rate}/hr
-              </span>
+        {lines.map((line, index) => {
+          const qty = Number(line?.qty);
+          const qtyDisplay = Number.isFinite(qty) && qty > 1 ? `×${qty}` : null;
+          return (
+            <div key={line.id || index} style={S.listRow}>
+              <div style={S.listRowHead}>
+                <span style={S.listRowLabel}>{line.label || line.role || "—"}</span>
+                <span style={S.listRowMeta}>
+                  {line.hours} hrs · ${line.rate}/hr
+                </span>
+              </div>
+              {qtyDisplay ? (
+                <div style={S.listRowPriceRow}>
+                  <span style={S.listRowQtyTag}>{qtyDisplay}</span>
+                </div>
+              ) : null}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <div style={S.actionsRow}>
         <button style={S.cancelBtn} type="button" onClick={onClose}>
