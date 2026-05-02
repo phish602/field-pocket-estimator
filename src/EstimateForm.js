@@ -44,6 +44,7 @@ import {
   buildFinancialSummaryFromComputed,
   generateNextInvoiceNumber,
   normalizeInvoiceRecord,
+  readStoredInvoices,
   validateInvoiceAgainstEstimate,
   writeStoredInvoices,
 } from "./utils/invoices";
@@ -1609,8 +1610,7 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     if (!isEditMode || !editingRecordId) return;
-    const sourceKey = isInvoiceEditMode ? INVOICES_KEY : ESTIMATES_KEY;
-    const list = readSavedDocList(sourceKey);
+    const list = isInvoiceEditMode ? readStoredInvoices() : readSavedDocList(ESTIMATES_KEY);
     const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
     if (!match || typeof replaceState !== "function") {
       setSavePrompt({
@@ -3164,7 +3164,7 @@ export default function EstimateForm(props) {
     if (!ok) return;
     if (isInvoiceEditMode && state?.meta?.ephemeralDraft) {
       try {
-        const existingInvoices = readSavedDocList(INVOICES_KEY);
+        const existingInvoices = readStoredInvoices();
         const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
         if (nextInvoices.length !== existingInvoices.length) {
           writeStoredInvoices(nextInvoices);
@@ -3283,7 +3283,7 @@ export default function EstimateForm(props) {
       }
       const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
       const existingEstimates = readSavedDocList(ESTIMATES_KEY);
-      const existingInvoices = readSavedDocList(INVOICES_KEY);
+      const existingInvoices = readStoredInvoices();
       const docNumberRaw = String(
         state?.job?.docNumber
         || state?.invoiceNumber
