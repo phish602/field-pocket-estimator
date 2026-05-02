@@ -3469,6 +3469,18 @@ export default function EstimateForm(props) {
         || existingMatch?.customer?.fullName
         || ""
       ).trim().toLowerCase();
+      const linkedEstimateCustomerId = String(
+        linkedEstimateSnapshot?.customerId
+        || linkedEstimateSnapshot?.customer?.id
+        || ""
+      ).trim();
+      const linkedEstimateCustomerName = String(
+        linkedEstimateSnapshot?.customerName
+        || linkedEstimateSnapshot?.customer?.name
+        || linkedEstimateSnapshot?.customer?.companyName
+        || linkedEstimateSnapshot?.customer?.fullName
+        || ""
+      ).trim().toLowerCase();
       const currentCustomerNameKey = String(customerName || "").trim().toLowerCase();
       const shouldUseExistingMatchProjectId = !existingMatch?.projectId
         ? false
@@ -3477,12 +3489,19 @@ export default function EstimateForm(props) {
             ? liveCustomerId === existingMatchCustomerId
             : (!!currentCustomerNameKey && currentCustomerNameKey === existingMatchCustomerName)
         );
+      const shouldUseLinkedEstimateProjectId = !linkedEstimateSnapshot?.projectId
+        ? false
+        : (
+          linkedEstimateCustomerId
+            ? liveCustomerId === linkedEstimateCustomerId
+            : (!!currentCustomerNameKey && currentCustomerNameKey === linkedEstimateCustomerName)
+        );
       const projectContext = {
         projectId: String(
           persistedState?.projectId
           || state?.projectId
           || (shouldUseExistingMatchProjectId ? existingMatch?.projectId : "")
-          || linkedEstimateSnapshot?.projectId
+          || (shouldUseLinkedEstimateProjectId ? linkedEstimateSnapshot?.projectId : "")
           || ""
         ).trim(),
         customerId: liveCustomerId,
