@@ -128,6 +128,7 @@ const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
 const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
+const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 
 function safeParseJson(raw) {
   try {
@@ -2360,16 +2361,36 @@ const [spinTick, setSpinTick] = useState(0);
     const options = launchOptions && typeof launchOptions === "object" ? launchOptions : {};
     const prompt = String(roughPrompt || "").trim();
     const launchMode = String(options?.mode || "").trim() === "open_only" ? "open_only" : "";
+    const cleanSession = options?.cleanSession !== false;
     if (!ensureBuilderAccess()) return;
-    try {
-      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-    } catch {}
+    if (cleanSession) {
+      try {
+        localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+        localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+        localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+        localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+        localStorage.removeItem(STORAGE_KEYS.PENDING_CUSTOMER_USE);
+        localStorage.removeItem(STORAGE_KEYS.PENDING_CUSTOMER_CREATE);
+        localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+      } catch {}
+      setCreateEditSessionActive(false);
+      setShowCreateFromEditModal(false);
+      setCreateResetSeq((n) => n + 1);
+    } else {
+      try {
+        localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+        localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      } catch {}
+    }
     clearProjectDetailReturnTarget();
     if (prompt || launchMode === "open_only") {
       setHomeEstimateLaunch({
         id: `home-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         prompt: launchMode === "open_only" ? "" : prompt,
+        source: "home_ai_assist",
+        cleanSession,
         ...(launchMode ? { mode: launchMode } : {}),
         ts: Date.now(),
       });
