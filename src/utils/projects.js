@@ -410,15 +410,12 @@ export function backfillProjectCollections({
   const customerList = Array.isArray(customers) ? customers.filter(Boolean) : [];
   const customerById = new Map(customerList.map((customer) => [asText(customer?.id), customer]));
   const projectById = new Map(normalizeProjectList(projects).map((project) => [asText(project?.id), project]));
-  const projectBySignature = new Map(
-    [...projectById.values()].map((project) => [projectSignature(project), project])
-  );
   let changed = false;
 
   const upsertDerivedProject = (candidate) => {
     const normalized = normalizeProjectRecord(candidate);
     const byId = projectById.get(normalized.id);
-    const bySignature = projectBySignature.get(projectSignature(normalized));
+    const bySignature = byId ? null : pickDeterministicSignatureOwner([...projectById.values()], normalized);
     const existing = byId || bySignature || null;
     const preserveExistingStatus = MANUAL_LIFECYCLE_STATUSES.has(normalizeProjectStatus(existing?.status));
     const merged = existing
@@ -432,7 +429,6 @@ export function backfillProjectCollections({
       changed = true;
     }
     projectById.set(merged.id, merged);
-    projectBySignature.set(projectSignature(merged), merged);
     return merged;
   };
 
