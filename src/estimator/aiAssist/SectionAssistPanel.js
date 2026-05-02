@@ -524,13 +524,15 @@ function InputPhase({ config, initialInput, onSubmit, onClose, error, suggestedP
 
   const guardedSubmit = (text) => {
     const trimmed = String(text || "").trim();
-    if (!trimmed) return;
+    const sectionKey = String(config?.sectionKey || "").trim().toLowerCase();
+    const allowBlankSubmit = sectionKey === "labor";
+    if (!trimmed && !allowBlankSubmit) return;
     if (isRefineCommandText(trimmed)) {
       setCommandWarning(REFINE_COMMAND_MESSAGE);
       return;
     }
     setCommandWarning("");
-    onSubmit(trimmed);
+    onSubmit(allowBlankSubmit ? trimmed : trimmed);
   };
 
   const handleKeyDown = (e) => {
