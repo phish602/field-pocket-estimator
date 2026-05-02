@@ -637,12 +637,14 @@ export default function CustomersScreen({
     try {
       const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
       if (rawEditTarget) {
-        localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
         const payload = JSON.parse(rawEditTarget);
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
-          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true, builderIntent: payload?.builderIntent || payload?.intent }); }
+          if (c) {
+            startEdit(c, { returnToEstimator: true, autoUseOnSave: true, builderIntent: payload?.builderIntent || payload?.intent });
+            localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
+          }
         }
       }
     } catch {}
@@ -655,9 +657,11 @@ export default function CustomersScreen({
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id);
-          if (c) startEdit(c);
+          if (c) {
+            startEdit(c);
+            localStorage.removeItem(PENDING_CUSTOMER_EDIT_KEY);
+          }
         }
-        localStorage.removeItem(PENDING_CUSTOMER_EDIT_KEY);
       }
     } catch {}
 
