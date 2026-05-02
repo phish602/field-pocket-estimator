@@ -1644,7 +1644,34 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
         </div>
 
         {computed.customerMargins.length === 0 ? (
-          <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
+          computed.unknownCostCustomers.length > 0 ? (
+            <>
+              <div className="pe-muted" style={{ marginBottom: 10 }}>
+                {lang === "es" ? "Sin datos de margen confirmados — agrega costos para revisar márgenes." : "No confirmed margin data yet — add cost info to review margins."}
+              </div>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Costo pendiente / revisar" : "Needs cost review"}</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {computed.unknownCostCustomers.map((group) => (
+                  <div key={`unknown-${group.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.20)" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{group.customerName}</div>
+                        <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                          {group.unknownCostInvoiceCount} {lang === "es" ? (group.unknownCostInvoiceCount === 1 ? "factura sin costo confirmado" : "facturas sin costo confirmado") : (group.unknownCostInvoiceCount === 1 ? "invoice missing confirmed cost" : "invoices missing confirmed cost")}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(group.unknownRevenue)}</div>
+                        <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{lang === "es" ? "Margen no disponible" : "Margin unavailable"}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
+          )
         ) : (() => {
           const healthyCount = computed.customerMargins.filter((it) => it.tone === "healthy").length;
           const cautionCount = computed.customerMargins.filter((it) => it.tone === "caution").length;
