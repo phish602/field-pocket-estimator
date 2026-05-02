@@ -225,6 +225,34 @@ function getMarginTone(marginPct) {
   return "risk";
 }
 
+function hasKnownCost(doc) {
+  const directCost = doc?.financials?.totalCost ?? doc?.totals?.totalCost ?? doc?.totalCost;
+  if (directCost !== undefined && directCost !== null && String(directCost) !== "") return true;
+
+  const directGrossProfit = doc?.financials?.grossProfit ?? doc?.totals?.grossProfit ?? doc?.grossProfit;
+  if (directGrossProfit !== undefined && directGrossProfit !== null && String(directGrossProfit) !== "") return true;
+
+  const directInternalCost = doc?.financials?.internalCost ?? doc?.totals?.internalCost ?? doc?.internalCost;
+  if (directInternalCost !== undefined && directInternalCost !== null && String(directInternalCost) !== "") return true;
+
+  const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  if (laborLines.some((line) => {
+    const v = line?.trueRateInternal ?? line?.internalRate ?? line?.rateInternal;
+    return v !== undefined && v !== null && String(v) !== "";
+  })) return true;
+
+  const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  if (materialItems.some((item) => {
+    const v = item?.unitCostInternal ?? item?.costInternal ?? item?.internalCost ?? item?.internalEach ?? item?.internalPrice;
+    return v !== undefined && v !== null && String(v) !== "";
+  })) return true;
+
+  const blanketInternalCost = doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost;
+  if (blanketInternalCost !== undefined && blanketInternalCost !== null && String(blanketInternalCost) !== "") return true;
+
+  return false;
+}
+
 function buildFollowUpMailto(row, companyProfile, lang = "en") {
   const subject = `Invoice ${row.invoiceNumber || row.invoiceLabel} follow-up`;
   const detailsLines = [
@@ -1163,8 +1191,9 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       ).trim();
       const key = customerId || customerName.toLowerCase() || `unknown-${index}`;
       const revenue = calcRevenue(invoice);
-      const cost = calcCost(invoice);
-      const grossProfit = calcGrossProfit(invoice);
+      const knownCost = hasKnownCost(invoice);
+      const cost = knownCost ? calcCost(invoice) : 0;
+      const grossProfit = knownCost ? calcGrossProfit(invoice) : 0;
       const detail = {
         id: String(invoice?.id || `${key}-${index}`),
         invoiceNumber: String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim(),
@@ -1173,7 +1202,8 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         revenue,
         cost,
         grossProfit,
-        marginPct: calcMarginPct(invoice),
+        marginPct: knownCost ? calcMarginPct(invoice) : null,
+        knownCost,
       };
       if (!customerMarginMap.has(key)) {
         customerMarginMap.set(key, {
@@ -1184,17 +1214,25 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           cost: 0,
           grossProfit: 0,
           invoiceCount: 0,
+          knownCostInvoiceCount: 0,
+          unknownCostInvoiceCount: 0,
           details: [],
         });
       }
       const group = customerMarginMap.get(key);
-      group.revenue += revenue;
-      group.cost += cost;
-      group.grossProfit += grossProfit;
       group.invoiceCount += 1;
+      if (knownCost) {
+        group.revenue += revenue;
+        group.cost += cost;
+        group.grossProfit += grossProfit;
+        group.knownCostInvoiceCount += 1;
+      } else {
+        group.unknownCostInvoiceCount += 1;
+      }
       group.details.push(detail);
     });
     const customerMargins = [...customerMarginMap.values()]
+      .filter((group) => group.knownCostInvoiceCount > 0)
       .map((group) => ({
         ...group,
         marginPct: group.revenue > 0 ? (group.grossProfit / group.revenue) * 100 : 0,
@@ -1202,6 +1240,14 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         details: group.details.slice().sort((a, b) => b.revenue - a.revenue),
       }))
       .sort((a, b) => b.marginPct - a.marginPct);
+    const unknownCostCustomers = [...customerMarginMap.values()]
+      .filter((group) => group.knownCostInvoiceCount === 0 && group.unknownCostInvoiceCount > 0)
+      .map((group) => ({
+        ...group,
+        unknownRevenue: group.details.reduce((sum, detail) => sum + detail.revenue, 0),
+        details: group.details.slice().sort((a, b) => b.revenue - a.revenue),
+      }))
+      .sort((a, b) => b.unknownRevenue - a.unknownRevenue);
 
     const statusCounts = activeInvoices.reduce((counts, invoice) => {
       const status = deriveInvoiceStatus(invoice, now.getTime());
@@ -1290,6 +1336,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       approvedReadyValue,
       approvedReadyCount,
       customerMargins,
+      unknownCostCustomers,
       invCount: activeInvoices.length,
       statusCounts,
     };
@@ -1691,6 +1738,13 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.customerName}</div>
                           <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{group.invoiceCount} {lang === "es" ? (group.invoiceCount === 1 ? "factura/proyecto" : "facturas/proyectos") : (group.invoiceCount === 1 ? "invoice/job" : "invoices/jobs")}</div>
+                          {group.unknownCostInvoiceCount > 0 ? (
+                            <div className="pe-muted" style={{ fontSize: 11, marginTop: 2, color: "rgba(245,158,11,0.92)" }}>
+                              {lang === "es"
+                                ? `${group.unknownCostInvoiceCount} sin costo confirmado`
+                                : `${group.unknownCostInvoiceCount} missing confirmed cost`}
+                            </div>
+                          ) : null}
                         </div>
                         <div style={{ fontWeight: 900, opacity: 0.88 }}>{fmtMoney(group.revenue)}</div>
                         <div style={{ fontWeight: 950, color: toneColor }}>{fmtPct(group.marginPct)}</div>
@@ -1724,11 +1778,13 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
                                 </div>
                                 <div style={{ textAlign: "right" }}>
                                   <div style={{ fontSize: 12, fontWeight: 800 }}>{fmtMoney(detail.revenue)}</div>
-                                  <div className="pe-muted" style={{ fontSize: 11 }}>{fmtMoney(detail.cost)}</div>
+                                  <div className="pe-muted" style={{ fontSize: 11 }}>{detail.knownCost ? fmtMoney(detail.cost) : (lang === "es" ? "Costo pendiente" : "Cost pending")}</div>
                                 </div>
                                 <div style={{ textAlign: "right" }}>
-                                  <div style={{ fontSize: 12, fontWeight: 900 }}>{fmtMoney(detail.grossProfit)}</div>
-                                  <div style={{ fontSize: 11, fontWeight: 900, color: detail.marginPct >= 30 ? "rgba(34,197,94,0.95)" : detail.marginPct >= 20 ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)" }}>{fmtPct(detail.marginPct)}</div>
+                                  <div style={{ fontSize: 12, fontWeight: 900 }}>{detail.knownCost ? fmtMoney(detail.grossProfit) : "—"}</div>
+                                  <div style={{ fontSize: 11, fontWeight: 900, color: detail.knownCost ? (detail.marginPct >= 30 ? "rgba(34,197,94,0.95)" : detail.marginPct >= 20 ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)") : "rgba(245,158,11,0.95)" }}>
+                                    {detail.knownCost ? fmtPct(detail.marginPct) : (lang === "es" ? "Sin costo" : "Unknown cost")}
+                                  </div>
                                 </div>
                               </div>
                             ))}
@@ -1740,6 +1796,30 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
                   );
                 })}
               </div>
+
+              {computed.unknownCostCustomers.length > 0 ? (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Costo pendiente / revisar" : "Needs cost review"}</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {computed.unknownCostCustomers.map((group) => (
+                      <div key={`unknown-${group.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.20)" }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{group.customerName}</div>
+                            <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                              {group.unknownCostInvoiceCount} {lang === "es" ? (group.unknownCostInvoiceCount === 1 ? "factura sin costo confirmado" : "facturas sin costo confirmado") : (group.unknownCostInvoiceCount === 1 ? "invoice missing confirmed cost" : "invoices missing confirmed cost")}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(group.unknownRevenue)}</div>
+                            <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{lang === "es" ? "Margen no disponible" : "Margin unavailable"}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </>
           );
         })()}
