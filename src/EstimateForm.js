@@ -2896,6 +2896,62 @@ export default function EstimateForm(props) {
     patch("scopeNotes", String(template.scopeText || ""));
   }
 
+  function isMeaningfulLaborLine(line) {
+    if (!line || typeof line !== "object") return false;
+    const qty = normalizeLaborQtyValue(line?.qty);
+    const markup = normalizePercentInput(String(line?.markupPct ?? ""));
+    const normalizedDefaultMarkup = normalizePercentInput(String(globalDefaultMarkupPct ?? ""));
+    return Boolean(
+      String(line?.role || "").trim()
+      || String(line?.label || "").trim()
+      || String(line?.hours || "").trim()
+      || String(line?.rate || "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+      || qty !== 1
+      || (markup && markup !== normalizedDefaultMarkup)
+    );
+  }
+
+  function normalizeLaborAssistLines(lines = []) {
+    return (Array.isArray(lines) ? lines : [])
+      .map((line, index) => {
+        const label = String(line?.label || "").trim();
+        const role = String(line?.role || "").trim();
+        const hours = normalizeHoursInput(String(line?.hours ?? ""));
+        const rate = normalizeMoneyInput(String(line?.rate ?? ""));
+        const trueRateInternal = normalizeMoneyInput(String(line?.trueRateInternal ?? line?.internalRate ?? ""));
+        const qty = String(normalizeLaborQtyValue(line?.qty ?? line?.headcount ?? 1));
+        const markupPct = normalizePercentInput(String(line?.markupPct ?? globalDefaultMarkupPct));
+        if (!label || !hours || !rate) return null;
+        return {
+          id: `labor_ai_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+          role,
+          label,
+          hours,
+          rate,
+          trueRateInternal,
+          internalRate: trueRateInternal,
+          qty,
+          markupPct,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function applyAcceptedLaborAssist(writes = {}, action = null) {
+    const incomingLines = normalizeLaborAssistLines(writes?.laborLines);
+    if (!incomingLines.length) return;
+
+    const existingLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const hasMeaningfulExistingLines = existingLines.some((line) => isMeaningfulLaborLine(line));
+    const shouldReplace = action?.type === "replace" || !hasMeaningfulExistingLines;
+    const nextLines = shouldReplace ? incomingLines : [...existingLines, ...incomingLines];
+
+    patch("labor.lines", nextLines);
+    setLaborOpen(true);
+    laborAssist.close();
+  }
+
   function appendTradeStarterToScope(insertKey = "", insertText = "") {
     const text = String(insertText || "").trim();
     if (!text) return;
@@ -5907,10 +5963,8 @@ export default function EstimateForm(props) {
           config={laborAssistConfig}
           assistState={laborAssist.assistState}
           onSubmit={laborAssist.submit}
-          onAccept={(writes) => {
-            patch("labor.lines", writes.laborLines);
-            setLaborOpen(true);
-            laborAssist.close();
+          onAccept={(writes, action) => {
+            applyAcceptedLaborAssist(writes, action);
           }}
           onClose={laborAssist.close}
         />

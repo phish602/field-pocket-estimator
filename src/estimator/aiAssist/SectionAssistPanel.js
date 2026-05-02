@@ -730,9 +730,16 @@ function LaborLinesReview({ result, onAccept, onClose }) {
         <button
           style={S.acceptBtn}
           type="button"
-          onClick={() => onAccept(result.writes)}
+          onClick={() => onAccept(result.writes, { type: "append" })}
         >
-          Accept All
+          Append Lines
+        </button>
+        <button
+          style={S.generateBtn}
+          type="button"
+          onClick={() => onAccept(result.writes, { type: "replace" })}
+        >
+          Replace Existing
         </button>
       </div>
     </>
