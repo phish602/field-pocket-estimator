@@ -462,6 +462,12 @@ function normalizeDocStatusKey(doc = {}) {
 
 export function deriveProjectDisplayStatus({ project = null, estimates = [], invoices = [] } = {}) {
   const projectStatus = normalizeProjectDisplayStatusKey(project?.status || project?.projectStatus);
+  if (MANUAL_LIFECYCLE_STATUSES.has(projectStatus)) {
+    return {
+      key: projectStatus,
+      label: PROJECT_DISPLAY_STATUS_LABELS[projectStatus] || PROJECT_DISPLAY_STATUS_LABELS.draft,
+    };
+  }
   const estimateStatuses = Array.isArray(estimates) ? estimates.map((entry) => normalizeDocStatusKey(entry)) : [];
   const invoiceStatuses = Array.isArray(invoices) ? invoices.map((entry) => deriveInvoiceStatus(entry)) : [];
 
@@ -474,15 +480,7 @@ export function deriveProjectDisplayStatus({ project = null, estimates = [], inv
 
   let key = projectStatus || "draft";
 
-  if (projectStatus === "archived") {
-    key = "archived";
-  } else if (projectStatus === "completed") {
-    key = "completed";
-  } else if (projectStatus === "estimating") {
-    key = "estimating";
-  } else if (projectStatus === "draft") {
-    key = hasOpenEstimate ? "estimating" : "draft";
-  } else if (hasPaidInvoice && allInvoicesClosed && !hasOpenEstimate) {
+  if (hasPaidInvoice && allInvoicesClosed && !hasOpenEstimate) {
     key = "completed";
   } else if (hasOpenEstimate && !hasAnyInvoice && !hasApprovedEstimate) {
     key = "estimating";
