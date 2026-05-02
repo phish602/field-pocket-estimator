@@ -1959,7 +1959,17 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
 
       <div ref={summaryRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-summary-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
-        <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.35 }}>{insight}</div>
+        {insight ? (
+          <div style={{ display: "grid", gap: 5 }}>
+            {insight.split(" • ").map((item, i) => (
+              <div key={i} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", color: "rgba(229,231,235,0.82)", lineHeight: 1.4 }}>
+                {item}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
+        )}
       </div>
 
       <div className="pe-footer ep-section-gap-sm">{lang === "es" ? "Vista de solo lectura." : "Display-only view."}</div>
