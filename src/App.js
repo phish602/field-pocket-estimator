@@ -2362,6 +2362,7 @@ const [spinTick, setSpinTick] = useState(0);
     const prompt = String(roughPrompt || "").trim();
     const launchMode = String(options?.mode || "").trim() === "open_only" ? "open_only" : "";
     const cleanSession = options?.cleanSession !== false;
+    const launchSource = String(options?.source || "home_ai_assist").trim() || "home_ai_assist";
     if (!ensureBuilderAccess()) return;
     if (cleanSession) {
       try {
@@ -2389,7 +2390,7 @@ const [spinTick, setSpinTick] = useState(0);
       setHomeEstimateLaunch({
         id: `home-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         prompt: launchMode === "open_only" ? "" : prompt,
-        source: "home_ai_assist",
+        source: launchSource,
         cleanSession,
         ...(launchMode ? { mode: launchMode } : {}),
         ts: Date.now(),
@@ -3515,7 +3516,7 @@ const gated = false;
         onAction={(action) => {
           setCreateLauncherOpen(false);
           if (action === "getStarted") {
-            launchEstimateFromHome("", { mode: "open_only" });
+            launchEstimateFromHome("", { mode: "open_only", source: "create_launcher_ai_assist" });
             return;
           }
           if (action === "estimate") {
