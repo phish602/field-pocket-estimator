@@ -122,6 +122,13 @@ function sortProjectsByUpdatedAtDesc(a, b) {
   return asText(b?.projectName).localeCompare(asText(a?.projectName));
 }
 
+function shouldMergeProjectsBySignature(existingProject = {}, nextProject = {}) {
+  const existingId = asText(existingProject?.id || existingProject?.projectId);
+  const nextId = asText(nextProject?.id || nextProject?.projectId);
+  if (existingId && nextId && existingId !== nextId) return false;
+  return projectSignature(existingProject) === projectSignature(nextProject);
+}
+
 function createManualProjectId(existingProjects = []) {
   const existingIds = new Set(
     (Array.isArray(existingProjects) ? existingProjects : []).map((project) => asText(project?.id)).filter(Boolean)
@@ -266,7 +273,7 @@ function upsertProjectIntoList(projects = [], nextProject = {}) {
   const normalized = normalizeProjectRecord(nextProject);
   const matchIndex = arr.findIndex((item) => {
     const itemId = asText(item?.id);
-    return itemId === normalized.id || projectSignature(item) === projectSignature(normalized);
+    return itemId === normalized.id || shouldMergeProjectsBySignature(item, normalized);
   });
 
   if (matchIndex < 0) {
@@ -550,6 +557,8 @@ export function buildNormalizedProjectView({
     return arr
       .filter((doc) => {
         const source = doc && typeof doc === "object" ? doc : {};
+        const explicitDocProjectId = asText(source?.projectId);
+        if (explicitDocProjectId) return explicitDocProjectId === projectRecord.id;
         const candidate = resolveProjectForDocument(source, customer, {
           projectId: source?.projectId,
           nowTs: latestTimestampForDoc(source),
@@ -614,10 +623,12 @@ export function resolveProjectNavigationTarget(doc = {}, projects = []) {
   }
 
   const fallbackProject = createProjectRecord(source);
-  const existing = projectList.find((entry) => (
-    asText(entry?.id) === asText(fallbackProject.id)
-    || projectSignature(entry) === projectSignature(fallbackProject)
-  )) || null;
+  const existing = explicitProjectId
+    ? null
+    : (projectList.find((entry) => (
+      asText(entry?.id) === asText(fallbackProject.id)
+      || shouldMergeProjectsBySignature(entry, fallbackProject)
+    )) || null);
 
   return {
     projectId: asText(existing?.id || fallbackProject.id),
