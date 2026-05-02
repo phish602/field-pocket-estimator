@@ -494,7 +494,14 @@ function readLegacyEstimateInvoices() {
 function collectInvoiceIdentityKeys(invoice) {
   const keys = new Set();
   const id = asText(invoice?.id);
-  const invoiceNumber = asText(invoice?.invoiceNumber);
+  const invoiceNumber = asText(
+    invoice?.invoiceNumber
+    || invoice?.job?.docNumber
+    || invoice?.docNumber
+    || invoice?.documentNumber
+    || invoice?.documentNo
+    || invoice?.number
+  );
   const docNumber = asText(
     invoice?.docNumber
     || invoice?.documentNumber
