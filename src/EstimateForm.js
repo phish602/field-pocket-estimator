@@ -3461,11 +3461,27 @@ export default function EstimateForm(props) {
         }) || null
         : null;
       const liveCustomerId = String(liveSelectedCustomer?.id || "").trim();
+      const existingMatchCustomerId = String(existingMatch?.customerId || existingMatch?.customer?.id || "").trim();
+      const existingMatchCustomerName = String(
+        existingMatch?.customerName
+        || existingMatch?.customer?.name
+        || existingMatch?.customer?.companyName
+        || existingMatch?.customer?.fullName
+        || ""
+      ).trim().toLowerCase();
+      const currentCustomerNameKey = String(customerName || "").trim().toLowerCase();
+      const shouldUseExistingMatchProjectId = !existingMatch?.projectId
+        ? false
+        : (
+          existingMatchCustomerId
+            ? liveCustomerId === existingMatchCustomerId
+            : (!!currentCustomerNameKey && currentCustomerNameKey === existingMatchCustomerName)
+        );
       const projectContext = {
         projectId: String(
           persistedState?.projectId
           || state?.projectId
-          || existingMatch?.projectId
+          || (shouldUseExistingMatchProjectId ? existingMatch?.projectId : "")
           || linkedEstimateSnapshot?.projectId
           || ""
         ).trim(),
