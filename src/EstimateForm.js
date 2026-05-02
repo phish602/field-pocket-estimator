@@ -4673,6 +4673,35 @@ export default function EstimateForm(props) {
             ) : null}
           </div>
         ) : null}
+        {!isEditMode && !projectSeedSummary ? (() => {
+          const hasCustomer = Boolean(selectedCustomerId || String(state?.customer?.name || "").trim());
+          const hasProject = Boolean(String(state?.projectId || "").trim());
+          const hasScope = String(state?.scopeNotes || "").trim().length > 0;
+          const hasCosts = totalRevenue > 0 || laborBase > 0 || Number(materialsBilled || 0) > 0;
+          const canExport = hasCustomer && hasCosts;
+          const chips = [
+            { label: lang === "es" ? "Cliente" : "Customer",    status: hasCustomer ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasCustomer ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasCustomer ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasCustomer ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
+            { label: lang === "es" ? "Proyecto" : "Project",    status: hasProject ? (lang === "es" ? "Vinculado" : "Linked") : (lang === "es" ? "Opcional" : "Optional"), color: hasProject ? "rgba(99,179,237,0.92)"   : "rgba(229,231,235,0.28)", bg: hasProject ? "rgba(99,179,237,0.08)"   : "rgba(255,255,255,0.025)", border: hasProject ? "rgba(99,179,237,0.18)"   : "rgba(255,255,255,0.07)" },
+            { label: lang === "es" ? "Alcance" : "Scope",       status: hasScope   ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasScope   ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasScope   ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasScope   ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
+            { label: lang === "es" ? "Costos" : "Costs",        status: hasCosts   ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasCosts   ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasCosts   ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasCosts   ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
+            { label: lang === "es" ? "Guardar / Exportar" : "Save / Export", status: canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"), color: canExport ? "rgba(34,211,238,0.92)"   : "rgba(229,231,235,0.28)", bg: canExport ? "rgba(34,211,238,0.08)"   : "rgba(255,255,255,0.025)", border: canExport ? "rgba(34,211,238,0.18)"   : "rgba(255,255,255,0.07)" },
+          ];
+          return (
+            <div style={{ margin: "0 0 14px", padding: "12px 14px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(229,231,235,0.28)", marginBottom: 9 }}>
+                {lang === "es" ? "Por dónde empezar" : "Start here"}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {chips.map(({ label, status, color, bg, border }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 999, background: bg, border: `1px solid ${border}` }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(229,231,235,0.55)" }}>{label}</span>
+                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", color }}>{status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })() : null}
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
