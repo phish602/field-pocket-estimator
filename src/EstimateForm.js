@@ -2445,6 +2445,7 @@ export default function EstimateForm(props) {
   }, [homeLaunchId, homeLaunchIsCleanSession, homeLaunchSource, isEditMode]);
 
   function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
+    if (String(state?.projectId || "").trim()) return;
     const derivedProjectName = deriveProjectNameFromScopeFlow({
       scopeNotes: scopeNotesValue,
       userInput: sourceInput,
@@ -3175,8 +3176,6 @@ export default function EstimateForm(props) {
       role: preset?.key || "",
     });
   }
-
-      if (String(state?.projectId || "").trim()) return;
 
   function patchLineByIndex(i, patchObj) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
