@@ -12,8 +12,10 @@ import {
   normalizeInvoiceRecord,
   roundCurrency,
 } from "./invoices";
+import { createProjectRecord } from "./projects";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
+const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
@@ -22,6 +24,8 @@ const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
 const PENDING_CUSTOMER_EDIT_KEY = STORAGE_KEYS.PENDING_CUSTOMER_EDIT;
 const SELECTED_CUSTOMER_ID_KEY = STORAGE_KEYS.SELECTED_CUSTOMER_ID;
 const SELECTED_CUSTOMER_SNAP_KEY = STORAGE_KEYS.SELECTED_CUSTOMER_SNAP;
+const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
+const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
@@ -30,24 +34,40 @@ const SAMPLE_ID_PREFIX = "sample_";
 
 const SAMPLE_IDS = {
   customers: [
-    "sample_customer_olivia_camden",
-    "sample_customer_mesa_dental",
-    "sample_customer_alvarez_family",
-    "sample_customer_red_rock",
-    "sample_customer_palo_verde",
+    "sample_customer_desert_ridge_hospitality_group",
+    "sample_customer_marisol_vega",
+    "sample_customer_copper_state_property_management",
+    "sample_customer_titan_mechanical_pipe",
+    "sample_customer_sonoran_retail_plaza",
+    "sample_customer_north_valley_fitness_center",
+  ],
+  projects: [
+    "sample_project_hilton_guest_bath_refresh",
+    "sample_project_vega_water_heater_replacement",
+    "sample_project_copper_state_unit_turn_package",
+    "sample_project_titan_shop_safety_rail_welding",
+    "sample_project_sonoran_parking_lot_striping",
+    "sample_project_north_valley_locker_room_repairs",
   ],
   estimates: [
-    "sample_estimate_olivia_interior",
-    "sample_estimate_mesa_ti",
-    "sample_estimate_red_rock_exterior",
-    "sample_estimate_alvarez_exterior",
-    "sample_estimate_alvarez_guest_suite",
+    "sample_estimate_hilton_guest_bath_refresh_main",
+    "sample_estimate_hilton_guest_bath_refresh_corridor_alt",
+    "sample_estimate_vega_water_heater_replacement",
+    "sample_estimate_copper_state_unit_turn_package_phase_a",
+    "sample_estimate_copper_state_unit_turn_add_alt",
+    "sample_estimate_titan_shop_safety_rail_welding",
+    "sample_estimate_sonoran_parking_lot_striping",
+    "sample_estimate_north_valley_locker_room_repairs",
   ],
   invoices: [
-    "sample_invoice_mesa_deposit",
-    "sample_invoice_mesa_progress",
-    "sample_invoice_alvarez_final",
-    "sample_invoice_palo_verde_manual",
+    "sample_invoice_hilton_mobilization_deposit",
+    "sample_invoice_hilton_progress_draw",
+    "sample_invoice_hilton_final_punch_draft",
+    "sample_invoice_vega_final_payment",
+    "sample_invoice_copper_state_turn_cycle_one",
+    "sample_invoice_sonoran_mobilization",
+    "sample_invoice_sonoran_signage_add",
+    "sample_invoice_copper_state_after_hours_punch",
   ],
 };
 
@@ -421,10 +441,19 @@ function buildEstimateSnapshotWithFinancials(estimate) {
     estimateNumber: String(source?.estimateNumber || source?.job?.docNumber || "").trim(),
     estimateStatus: String(source?.status || "approved").trim(),
     status: String(source?.status || "approved").trim(),
+    projectId: String(source?.projectId || source?.customer?.projectId || "").trim(),
     customerId: String(source?.customerId || source?.customer?.id || "").trim(),
     customerName: String(source?.customerName || source?.customer?.name || "").trim(),
     projectName: String(source?.projectName || source?.customer?.projectName || "").trim(),
     projectNumber: String(source?.projectNumber || source?.customer?.projectNumber || "").trim(),
+    siteAddress: String(
+      source?.siteAddress
+      || source?.projectAddress
+      || source?.customer?.projectAddress
+      || source?.customer?.address
+      || source?.job?.location
+      || ""
+    ).trim(),
     poNumber: String(source?.poNumber || source?.job?.poNumber || "").trim(),
     estimateDate: String(source?.date || source?.job?.date || "").trim(),
     dueDate: String(source?.dueDate || source?.job?.due || "").trim(),
@@ -448,6 +477,8 @@ function buildEstimateRecord(config) {
   const flat = toEstimatorFlat(customer);
   const createdAt = atLocalTimestamp(config.date, 9, 30);
   const savedAt = atLocalTimestamp(config.date, 16, 15);
+  const projectId = String(config.projectId || "").trim();
+  const projectAddress = String(config.siteAddress || config.projectAddress || flat.address || "").trim();
   const state = deepClone(DEFAULT_STATE);
   const materialsMode = config?.materialsMode === "blanket" ? "blanket" : "itemized";
   const laborLines = Array.isArray(config?.laborLines) ? config.laborLines.map((line, index) => ({
@@ -478,9 +509,10 @@ function buildEstimateRecord(config) {
     address: flat.address,
     billingDiff: flat.billingAddress && flat.billingAddress !== flat.address,
     billingAddress: flat.billingAddress,
+    projectId,
     projectName: String(config.projectName || ""),
     projectNumber: String(config.projectNumber || ""),
-    projectAddress: flat.address,
+    projectAddress,
     projectSameAsCustomer: true,
   };
   state.job = {
@@ -488,7 +520,7 @@ function buildEstimateRecord(config) {
     date: String(config.date || ""),
     due: String(config.dueDate || ""),
     poNumber: String(config.poNumber || ""),
-    location: flat.address,
+    location: projectAddress,
     docNumber: String(config.estimateNumber || ""),
   };
   state.scopeNotes = String(config.scopeNotes || "");
@@ -539,10 +571,13 @@ function buildEstimateRecord(config) {
     name: String(config.projectName || ""),
     docType: "estimate",
     status: String(config.status || "pending"),
+    projectId,
     customerId: String(customer?.id || ""),
     customerName: flat.name,
     projectName: String(config.projectName || ""),
     projectNumber: String(config.projectNumber || ""),
+    siteAddress: projectAddress,
+    projectAddress,
     estimateNumber: String(config.estimateNumber || ""),
     invoiceNumber: "",
     date: String(config.date || ""),
@@ -568,6 +603,18 @@ function buildEstimateRecord(config) {
 function createLinkedInvoice(config, estimate, existingInvoices) {
   const createdAt = atLocalTimestamp(config.date, 10, 10);
   const savedAt = atLocalTimestamp(config.date, 15, 20);
+  const projectId = String(config.projectId || estimate?.projectId || "").trim();
+  const projectName = String(config.projectName || estimate?.projectName || "").trim();
+  const projectNumber = String(config.projectNumber || estimate?.projectNumber || "").trim();
+  const projectAddress = String(
+    config.siteAddress
+    || estimate?.siteAddress
+    || estimate?.projectAddress
+    || estimate?.customer?.projectAddress
+    || estimate?.customer?.address
+    || estimate?.job?.location
+    || ""
+  ).trim();
   const draftResult = createInvoiceDraftFromEstimate(estimate, existingInvoices, {
     invoiceType: config.invoiceType,
     requestedValue: config.requestedValue,
@@ -613,6 +660,11 @@ function createLinkedInvoice(config, estimate, existingInvoices) {
     id: config.id,
     invoiceNumber: String(config.invoiceNumber || draftResult.draft.invoiceNumber || ""),
     status: String(config.status || INVOICE_STATUSES.DRAFT),
+    projectId,
+    projectName,
+    projectNumber,
+    siteAddress: projectAddress,
+    projectAddress,
     date: String(config.date || ""),
     dueDate: String(config.dueDate || ""),
     additionalNotes: String(config.note || draftResult.draft.additionalNotes || ""),
@@ -620,6 +672,13 @@ function createLinkedInvoice(config, estimate, existingInvoices) {
     payments,
     ...invoiceFinancialSummary,
     sourceEstimateSnapshot: buildEstimateSnapshotWithFinancials(estimate),
+    customer: {
+      ...(draftResult.draft.customer || {}),
+      projectId,
+      projectName,
+      projectNumber,
+      projectAddress,
+    },
     materials: {
       ...(draftResult.draft.materials || {}),
       blanketCost: String(invoiceTotal),
@@ -655,6 +714,8 @@ function createManualInvoice(config) {
   const flat = toEstimatorFlat(customer);
   const createdAt = atLocalTimestamp(config.date, 11, 0);
   const savedAt = atLocalTimestamp(config.date, 16, 0);
+  const projectId = String(config.projectId || "").trim();
+  const projectAddress = String(config.siteAddress || config.projectAddress || flat.address || "").trim();
   const draft = createManualInvoiceDraft([], { invoiceDate: config.date, dueDate: config.dueDate, nowTs: createdAt });
   const paymentStatus = Array.isArray(config?.payments) && config.payments.length > 0 ? "partial" : "unpaid";
   const amountPaid = roundCurrency(
@@ -681,10 +742,13 @@ function createManualInvoice(config) {
     invoiceType: INVOICE_TYPES.MANUAL,
     invoiceNumber: String(config.invoiceNumber || ""),
     status: String(config.status || INVOICE_STATUSES.DRAFT),
+    projectId,
     customerId: String(customer?.id || ""),
     customerName: flat.name,
     projectName: String(config.projectName || ""),
     projectNumber: String(config.projectNumber || ""),
+    siteAddress: projectAddress,
+    projectAddress,
     invoiceTotal,
     total: invoiceTotal,
     amountPaid,
@@ -705,7 +769,7 @@ function createManualInvoice(config) {
       ...(draft.job || {}),
       date: String(config.date || ""),
       due: String(config.dueDate || ""),
-      location: flat.address,
+      location: projectAddress,
       docNumber: String(config.invoiceNumber || ""),
     },
     customer: {
@@ -719,8 +783,10 @@ function createManualInvoice(config) {
       netTermsDays: customer?.netTermsDays ?? "",
       address: flat.address,
       billingAddress: flat.billingAddress,
+      projectId,
       projectName: String(config.projectName || ""),
       projectNumber: String(config.projectNumber || ""),
+      projectAddress,
     },
     ui: {
       ...(draft.ui || {}),
@@ -756,316 +822,640 @@ function createManualInvoice(config) {
   });
 }
 
+function createSampleProject(config) {
+  const customer = config.customer;
+  const flat = toEstimatorFlat(customer);
+  return createProjectRecord({
+    id: String(config.id || "").trim(),
+    customerId: String(customer?.id || "").trim(),
+    customerName: flat.name,
+    projectNumber: String(config.projectNumber || "").trim(),
+    projectName: String(config.projectName || "").trim(),
+    siteAddress: String(config.siteAddress || flat.address || "").trim(),
+    status: String(config.status || "active").trim(),
+    notes: String(config.notes || "").trim(),
+    scopeSummary: String(config.scopeSummary || config.notes || "").trim(),
+    createdAt: atLocalTimestamp(config.createdOn || config.updatedOn || "2026-02-01", 8, 30),
+    updatedAt: atLocalTimestamp(config.updatedOn || config.createdOn || "2026-02-01", 15, 45),
+  });
+}
+
 function buildSampleCustomers() {
   return [
-    createResidentialCustomer({
-      id: "sample_customer_olivia_camden",
-      fullName: "Olivia Camden",
-      phone: "(480) 555-1128",
-      email: "olivia.camden@example.com",
-      service: {
-        street: "4217 E Desert Willow Dr",
-        city: "Phoenix",
-        state: "AZ",
-        zip: "85048",
-      },
-      updatedOn: "2026-03-03",
-    }),
     createCommercialCustomer({
-      id: "sample_customer_mesa_dental",
-      companyName: "Mesa Dental Group",
-      contactName: "Nicole Ramirez",
-      contactTitle: "Office Manager",
-      phone: "(480) 555-2674",
-      email: "nramirez@mesadentalgroup.com",
-      apEmail: "ap@mesadentalgroup.com",
+      id: "sample_customer_desert_ridge_hospitality_group",
+      companyName: "Desert Ridge Hospitality Group",
+      contactName: "Lena Ortiz",
+      contactTitle: "Regional Facilities Director",
+      phone: "(602) 555-4101",
+      email: "lortiz@desertridgehospitality.com",
+      apEmail: "ap@desertridgehospitality.com",
       netTermsType: "NET_30",
       poRequired: true,
       jobsite: {
-        street: "1830 S Val Vista Dr, Suite 104",
-        city: "Mesa",
-        state: "AZ",
-        zip: "85204",
-      },
-      billing: {
-        street: "PO Box 81047",
-        city: "Mesa",
-        state: "AZ",
-        zip: "85277",
-      },
-      billSameAsJob: false,
-      updatedOn: "2026-03-02",
-    }),
-    createResidentialCustomer({
-      id: "sample_customer_alvarez_family",
-      fullName: "Alvarez Family Trust",
-      phone: "(623) 555-4017",
-      email: "alvarez.home@example.com",
-      service: {
-        street: "9823 W Cedar Hollow Ct",
-        city: "Peoria",
-        state: "AZ",
-        zip: "85383",
-      },
-      updatedOn: "2026-03-06",
-    }),
-    createCommercialCustomer({
-      id: "sample_customer_red_rock",
-      companyName: "Red Rock Retail Center",
-      contactName: "Darren Lowe",
-      contactTitle: "Property Manager",
-      phone: "(602) 555-7742",
-      email: "dlowe@redrockretail.com",
-      apEmail: "billing@redrockretail.com",
-      netTermsType: "NET_CUSTOM",
-      netTermsDays: 21,
-      poRequired: true,
-      jobsite: {
-        street: "7300 N 7th St",
+        street: "7677 N 16th St",
         city: "Phoenix",
         state: "AZ",
         zip: "85020",
       },
       billing: {
-        street: "2550 E Camelback Rd, Floor 5",
+        street: "2400 E Missouri Ave, Suite 210",
         city: "Phoenix",
         state: "AZ",
         zip: "85016",
       },
       billSameAsJob: false,
-      updatedOn: "2026-02-26",
+      updatedOn: "2026-04-18",
+    }),
+    createResidentialCustomer({
+      id: "sample_customer_marisol_vega",
+      fullName: "Marisol Vega",
+      phone: "(602) 555-2284",
+      email: "marisol.vega@example.com",
+      service: {
+        street: "4139 W Julie Dr",
+        city: "Glendale",
+        state: "AZ",
+        zip: "85308",
+      },
+      updatedOn: "2026-04-02",
     }),
     createCommercialCustomer({
-      id: "sample_customer_palo_verde",
-      companyName: "Palo Verde HOA",
-      contactName: "Shannon Greer",
-      contactTitle: "Community Director",
-      phone: "(480) 555-9182",
-      email: "sgreer@paloverdehoa.com",
-      apEmail: "accountspayable@paloverdehoa.com",
+      id: "sample_customer_copper_state_property_management",
+      companyName: "Copper State Property Management",
+      contactName: "Trevor Hale",
+      contactTitle: "Turn Coordinator",
+      phone: "(480) 555-6672",
+      email: "thale@copperstatepm.com",
+      apEmail: "payables@copperstatepm.com",
       netTermsType: "NET_15",
+      poRequired: true,
+      jobsite: {
+        street: "2250 W Northern Ave",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85021",
+      },
+      billing: {
+        street: "4510 E Cotton Center Blvd, Suite 180",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85040",
+      },
+      billSameAsJob: false,
+      updatedOn: "2026-04-24",
+    }),
+    createCommercialCustomer({
+      id: "sample_customer_titan_mechanical_pipe",
+      companyName: "Titan Mechanical & Pipe",
+      contactName: "Derek Salas",
+      contactTitle: "Operations Superintendent",
+      phone: "(623) 555-9430",
+      email: "dsalas@titanmechanicalpipe.com",
+      apEmail: "ap@titanmechanicalpipe.com",
+      netTermsType: "NET_CUSTOM",
+      netTermsDays: 21,
+      poRequired: true,
+      jobsite: {
+        street: "601 S 54th Ave",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85043",
+      },
+      billing: {
+        street: "PO Box 43218",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85080",
+      },
+      billSameAsJob: false,
+      updatedOn: "2026-03-29",
+    }),
+    createCommercialCustomer({
+      id: "sample_customer_sonoran_retail_plaza",
+      companyName: "Sonoran Retail Plaza LLC",
+      contactName: "Avery Kim",
+      contactTitle: "Asset Manager",
+      phone: "(480) 555-7841",
+      email: "akim@sonoranretailplaza.com",
+      apEmail: "billing@sonoranretailplaza.com",
+      netTermsType: "NET_30",
+      poRequired: true,
+      jobsite: {
+        street: "13240 N 7th St",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85022",
+      },
+      billing: {
+        street: "2555 E Camelback Rd, Suite 410",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85016",
+      },
+      billSameAsJob: false,
+      updatedOn: "2026-04-21",
+    }),
+    createCommercialCustomer({
+      id: "sample_customer_north_valley_fitness_center",
+      companyName: "North Valley Fitness Center",
+      contactName: "Priya Shah",
+      contactTitle: "General Manager",
+      phone: "(623) 555-1908",
+      email: "priya@northvalleyfitness.com",
+      apEmail: "accounts@northvalleyfitness.com",
+      netTermsType: "DUE_UPON_RECEIPT",
       poRequired: false,
       jobsite: {
-        street: "1151 E Palo Verde Loop",
-        city: "Gilbert",
+        street: "18815 N 35th Ave",
+        city: "Phoenix",
         state: "AZ",
-        zip: "85298",
+        zip: "85027",
       },
-      updatedOn: "2026-03-05",
+      updatedOn: "2026-04-12",
     }),
   ];
 }
 
-function buildSampleEstimates(customersById) {
+function buildSampleProjects(customersById) {
+  return [
+    createSampleProject({
+      id: "sample_project_hilton_guest_bath_refresh",
+      customer: customersById["sample_customer_desert_ridge_hospitality_group"],
+      projectNumber: "DRHG-HILTON-2401",
+      projectName: "Hilton Guest Bath Refresh",
+      siteAddress: "7677 N 16th St, Phoenix, AZ 85020",
+      status: "active",
+      scopeSummary: "Wallpaper removal, moisture-tolerant paint, fixture swap coordination, and guest bath finish refresh across two room banks.",
+      notes: "Phased hotel turnover work on floors 4 and 5. Coordinate 9 AM room release list with housekeeping and keep one elevator padded for material traffic.",
+      createdOn: "2026-02-06",
+      updatedOn: "2026-04-25",
+    }),
+    createSampleProject({
+      id: "sample_project_vega_water_heater_replacement",
+      customer: customersById["sample_customer_marisol_vega"],
+      projectNumber: "VEGA-WH-2402",
+      projectName: "Vega Water Heater Replacement",
+      siteAddress: "4139 W Julie Dr, Glendale, AZ 85308",
+      status: "completed",
+      scopeSummary: "Residential gas water heater replacement with pan, vent correction, and garage wall patch/paint at removed stand.",
+      notes: "Final inspection passed. Homeowner requested shutoff labeling and photos of upgraded seismic strapping.",
+      createdOn: "2026-01-28",
+      updatedOn: "2026-03-18",
+    }),
+    createSampleProject({
+      id: "sample_project_copper_state_unit_turn_package",
+      customer: customersById["sample_customer_copper_state_property_management"],
+      projectNumber: "CSPM-TURN-2403",
+      projectName: "Copper State Unit Turn Package",
+      siteAddress: "2250 W Northern Ave, Phoenix, AZ 85021",
+      status: "active",
+      scopeSummary: "Drywall repair, texture blend, paint, base reset, punch carpentry, and lock change coordination for recurring turnover units.",
+      notes: "Rolling scope across Buildings B and D. Property team issues weekly vacancy list every Monday morning.",
+      createdOn: "2026-02-10",
+      updatedOn: "2026-04-27",
+    }),
+    createSampleProject({
+      id: "sample_project_titan_shop_safety_rail_welding",
+      customer: customersById["sample_customer_titan_mechanical_pipe"],
+      projectNumber: "TMP-RAIL-2404",
+      projectName: "Titan Shop Safety Rail Welding",
+      siteAddress: "601 S 54th Ave, Phoenix, AZ 85043",
+      status: "estimating",
+      scopeSummary: "Shop-fabricated safety rail, anchor layout verification, field weld install, primer, and industrial enamel topcoat.",
+      notes: "Waiting on revised mezzanine dimensions and forklift clearance confirmation before release.",
+      createdOn: "2026-03-12",
+      updatedOn: "2026-04-10",
+    }),
+    createSampleProject({
+      id: "sample_project_sonoran_parking_lot_striping",
+      customer: customersById["sample_customer_sonoran_retail_plaza"],
+      projectNumber: "SRP-STRIPE-2405",
+      projectName: "Sonoran Retail Parking Lot Striping",
+      siteAddress: "13240 N 7th St, Phoenix, AZ 85022",
+      status: "active",
+      scopeSummary: "Parking lot restripe, ADA stall refresh, fire lane curb stencil touchups, and directional signage resets.",
+      notes: "Night shift sequencing required to preserve Friday lunch traffic. Tenant notice window is 48 hours.",
+      createdOn: "2026-03-01",
+      updatedOn: "2026-04-23",
+    }),
+    createSampleProject({
+      id: "sample_project_north_valley_locker_room_repairs",
+      customer: customersById["sample_customer_north_valley_fitness_center"],
+      projectNumber: "NVFC-LR-2406",
+      projectName: "North Valley Locker Room Repairs",
+      siteAddress: "18815 N 35th Ave, Phoenix, AZ 85027",
+      status: "draft",
+      scopeSummary: "Locker room tile reset, moisture board patch, epoxy grout touchup, paint, and isolated plumbing trim repairs.",
+      notes: "Budget review pending membership season. Manager wants an alternate for overnight-only work.",
+      createdOn: "2026-04-04",
+      updatedOn: "2026-04-16",
+    }),
+  ];
+}
+
+function buildSampleEstimates(customersById, projectsById) {
   return [
     buildEstimateRecord({
-      id: "sample_estimate_olivia_interior",
-      customer: customersById["sample_customer_olivia_camden"],
-      status: "pending",
-      estimateNumber: "EST-2401",
-      projectName: "Primary Suite Interior Repaint",
-      projectNumber: "CAMDEN-PS-01",
-      date: "2026-03-02",
-      dueDate: "2026-03-16",
-      scopeNotes: "Prep and repaint the primary suite, including walls, ceiling, trim, and two closet interiors. Protect flooring, patch minor nail pops, and spot-prime repaired areas.",
-      additionalNotes: "Client requested low-odor products and a tight two-day schedule after flooring install.",
-      multiplier: 1.08,
-      laborLines: [
-        { role: "Painter", label: "Lead painter", qty: 1, hours: 18, rate: 80, trueRateInternal: 50 },
-        { role: "Painter", label: "Prep technician", qty: 1, hours: 10, rate: 64, trueRateInternal: 37 },
-      ],
-      materialItems: [
-        { desc: "Low-VOC wall paint", qty: 8, priceEach: 60, unitCostInternal: 42 },
-        { desc: "Ceiling flat paint", qty: 3, priceEach: 50, unitCostInternal: 34 },
-        { desc: "Masking film and paper", qty: 2, priceEach: 34, unitCostInternal: 22 },
-        { desc: "Patch compound and sundries", qty: 1, priceEach: 38, unitCostInternal: 26 },
-      ],
-      materialsMarkupPct: 0,
-    }),
-    buildEstimateRecord({
-      id: "sample_estimate_mesa_ti",
-      customer: customersById["sample_customer_mesa_dental"],
+      id: "sample_estimate_hilton_guest_bath_refresh_main",
+      customer: customersById["sample_customer_desert_ridge_hospitality_group"],
+      projectId: projectsById["sample_project_hilton_guest_bath_refresh"]?.id,
       status: "approved",
-      estimateNumber: "EST-2402",
-      projectName: "Operatories TI Repaint and Millwork Refresh",
-      projectNumber: "MDG-TI-24-04",
-      date: "2026-02-03",
-      dueDate: "2026-02-17",
-      poNumber: "MDG-8821",
-      scopeNotes: "Night work repaint for four operatories, sterilization corridor, and breakroom millwork. Includes wall prep, cabinet degreasing, epoxy floor line touchups, and weekend punch completion.",
-      additionalNotes: "Approved after-hours access window is 6:30 PM to 4:00 AM. Maintain dust containment around active treatment rooms.",
+      estimateNumber: "EST-2601",
+      projectName: "Hilton Guest Bath Refresh",
+      projectNumber: "DRHG-HILTON-2401",
+      siteAddress: "7677 N 16th St, Phoenix, AZ 85020",
+      date: "2026-02-08",
+      dueDate: "2026-02-20",
+      poNumber: "DRHG-7824",
+      scopeNotes: "Refresh twenty guest baths with wallpaper removal, moisture patching, satin wall repaint, vanity light swap coordination, and final silicone reset at tubs and splashes.",
+      additionalNotes: "Hotel requests room release in ten-room blocks and daily debris haul before 3 PM guest arrival window.",
+      multiplier: 1.08,
       hazardPct: 1,
       riskPct: 1,
+      laborLines: [
+        { role: "Foreman", label: "Hotel phase lead", qty: 1, hours: 30, rate: 98, trueRateInternal: 68 },
+        { role: "Painter", label: "Finish crew", qty: 2, hours: 52, rate: 78, trueRateInternal: 49 },
+        { role: "Punch tech", label: "Fixture and silicone tech", qty: 1, hours: 24, rate: 74, trueRateInternal: 45 },
+      ],
+      materialItems: [
+        { desc: "Bath-rated satin wall paint", qty: 24, priceEach: 68, unitCostInternal: 49 },
+        { desc: "Wallpaper removal gel and scrapers", qty: 12, priceEach: 34, unitCostInternal: 21 },
+        { desc: "Mildew-resistant primer", qty: 10, priceEach: 56, unitCostInternal: 38 },
+        { desc: "Caulk, silicone, and patch sundries", qty: 1, priceEach: 420, unitCostInternal: 270 },
+      ],
+      materialsMarkupPct: 0,
+    }),
+    buildEstimateRecord({
+      id: "sample_estimate_hilton_guest_bath_refresh_corridor_alt",
+      customer: customersById["sample_customer_desert_ridge_hospitality_group"],
+      projectId: projectsById["sample_project_hilton_guest_bath_refresh"]?.id,
+      status: "pending",
+      estimateNumber: "EST-2602",
+      projectName: "Hilton Guest Bath Refresh Corridor Alt",
+      projectNumber: "DRHG-HILTON-2401A",
+      siteAddress: "7677 N 16th St, Phoenix, AZ 85020",
+      date: "2026-02-12",
+      dueDate: "2026-02-24",
+      poNumber: "DRHG-7824-ALT",
+      scopeNotes: "Alternate to continue work into elevator lobby returns and guest corridor touch-up walls on the same floors as the bath refresh package.",
+      additionalNotes: "Hold as management option pending brand standards sign-off on color sheen.",
       multiplier: 1.06,
       laborLines: [
-        { role: "Foreman", label: "Night shift foreman", qty: 1, hours: 22, rate: 84, trueRateInternal: 59 },
-        { role: "Painter", label: "Painter crew", qty: 2, hours: 36, rate: 70, trueRateInternal: 48 },
-        { role: "Finish tech", label: "Cabinet finish tech", qty: 1, hours: 14, rate: 80, trueRateInternal: 57 },
+        { role: "Painter", label: "Night corridor crew", qty: 2, hours: 22, rate: 76, trueRateInternal: 47 },
+        { role: "Lead", label: "Access and logistics lead", qty: 1, hours: 10, rate: 90, trueRateInternal: 61 },
       ],
       materialItems: [
-        { desc: "Scrubbable wall finish", qty: 18, priceEach: 66, unitCostInternal: 50 },
-        { desc: "Cabinet urethane topcoat", qty: 6, priceEach: 80, unitCostInternal: 61 },
-        { desc: "Bonding primer", qty: 7, priceEach: 60, unitCostInternal: 44 },
-        { desc: "Containment plastic and zipper doors", qty: 4, priceEach: 48, unitCostInternal: 30 },
-        { desc: "Epoxy floor line kit", qty: 2, priceEach: 146, unitCostInternal: 118 },
+        { desc: "Low-odor corridor eggshell", qty: 10, priceEach: 64, unitCostInternal: 46 },
+        { desc: "Masking and floor protection", qty: 1, priceEach: 240, unitCostInternal: 146 },
       ],
       materialsMarkupPct: 0,
     }),
     buildEstimateRecord({
-      id: "sample_estimate_red_rock_exterior",
-      customer: customersById["sample_customer_red_rock"],
-      status: "lost",
-      estimateNumber: "EST-2403",
-      projectName: "North Elevation Stucco Repair and Repaint",
-      projectNumber: "RRRC-NORTH-03",
-      date: "2026-01-18",
-      dueDate: "2026-01-29",
-      poNumber: "RRC-553",
-      scopeNotes: "Repair cracked stucco at the north elevation, pressure wash, seal hairline fractures, and apply full elastomeric repaint to the north-facing storefront band.",
-      additionalNotes: "Competing bid selected. Keep for benchmark pricing and alternate proposal follow-up.",
-      materialsMode: "blanket",
+      id: "sample_estimate_vega_water_heater_replacement",
+      customer: customersById["sample_customer_marisol_vega"],
+      projectId: projectsById["sample_project_vega_water_heater_replacement"]?.id,
+      status: "approved",
+      estimateNumber: "EST-2603",
+      projectName: "Vega Water Heater Replacement",
+      projectNumber: "VEGA-WH-2402",
+      siteAddress: "4139 W Julie Dr, Glendale, AZ 85308",
+      date: "2026-02-01",
+      dueDate: "2026-02-05",
+      scopeNotes: "Remove failed 50-gallon gas heater, furnish/install Bradford White replacement, replace pan and flex lines, correct vent connector, and patch/paint wall board at removed shelf.",
+      additionalNotes: "Homeowner requested same-day hot water restoration and updated shutoff tags at garage manifold.",
       multiplier: 1.04,
       laborLines: [
-        { role: "Repair crew", label: "Stucco repair crew", qty: 2, hours: 20, rate: 74, trueRateInternal: 47 },
-        { role: "Painter", label: "Exterior painter", qty: 1, hours: 16, rate: 66, trueRateInternal: 42 },
-      ],
-      blanketCost: 3840,
-      blanketInternalCost: 3265,
-      materialsBlanketDescription: "Stucco patch, elastomeric coating, lifts, masking, and sundry exterior materials.",
-      materialsMarkupPct: 0,
-    }),
-    buildEstimateRecord({
-      id: "sample_estimate_alvarez_exterior",
-      customer: customersById["sample_customer_alvarez_family"],
-      status: "approved",
-      estimateNumber: "EST-2404",
-      projectName: "Exterior Repaint with Fascia and Gate Touchups",
-      projectNumber: "ALV-EXT-02",
-      date: "2026-02-20",
-      dueDate: "2026-03-06",
-      scopeNotes: "Full exterior repaint including stucco body, fascia, patio beams, courtyard gate, and detached casita trim. Pressure wash, caulk movement joints, and address sun-faded south exposure.",
-      additionalNotes: "Repeat customer. Homeowner asked for daily photo updates and gate hardware masking instead of removal.",
-      hazardPct: 1,
-      riskPct: 0,
-      multiplier: 1.08,
-      laborLines: [
-        { role: "Foreman", label: "Project lead", qty: 1, hours: 18, rate: 84, trueRateInternal: 56 },
-        { role: "Painter", label: "Exterior painter", qty: 2, hours: 32, rate: 74, trueRateInternal: 46 },
-        { role: "Prep", label: "Wash and prep", qty: 1, hours: 14, rate: 58, trueRateInternal: 34 },
+        { role: "Licensed plumber", label: "Install lead", qty: 1, hours: 8, rate: 132, trueRateInternal: 88 },
+        { role: "Helper", label: "Removal and haul-off", qty: 1, hours: 5, rate: 58, trueRateInternal: 34 },
       ],
       materialItems: [
-        { desc: "Elastomeric body paint", qty: 16, priceEach: 72, unitCostInternal: 52 },
-        { desc: "Trim enamel", qty: 7, priceEach: 62, unitCostInternal: 45 },
-        { desc: "Premium caulk and sealant", qty: 6, priceEach: 22, unitCostInternal: 14 },
-        { desc: "Masking and paper goods", qty: 4, priceEach: 30, unitCostInternal: 18 },
-        { desc: "Rust-inhibiting metal primer", qty: 2, priceEach: 42, unitCostInternal: 30 },
+        { desc: "50-gallon gas water heater", qty: 1, priceEach: 1980, unitCostInternal: 1495 },
+        { desc: "Pan, flexes, vent, and fittings", qty: 1, priceEach: 420, unitCostInternal: 278 },
+        { desc: "Patch and paint materials", qty: 1, priceEach: 110, unitCostInternal: 58 },
       ],
       materialsMarkupPct: 0,
     }),
     buildEstimateRecord({
-      id: "sample_estimate_alvarez_guest_suite",
-      customer: customersById["sample_customer_alvarez_family"],
+      id: "sample_estimate_copper_state_unit_turn_package_phase_a",
+      customer: customersById["sample_customer_copper_state_property_management"],
+      projectId: projectsById["sample_project_copper_state_unit_turn_package"]?.id,
       status: "pending",
-      estimateNumber: "EST-2405",
-      projectName: "Guest Suite Touch-Up and Cabinet Refresh",
-      projectNumber: "ALV-GUEST-03",
-      date: "2026-03-07",
-      dueDate: "2026-03-21",
-      scopeNotes: "Touch-up scuffs in the guest suite, refinish vanity cabinetry, repaint bath ceiling, and reset color consistency after plumbing wall access repairs.",
-      additionalNotes: "Homeowner wants scheduling coordinated with family visit on March 28. Include low-sheen finish sample before final approval.",
-      multiplier: 1.08,
+      estimateNumber: "EST-2604",
+      projectName: "Copper State Unit Turn Package",
+      projectNumber: "CSPM-TURN-2403",
+      siteAddress: "2250 W Northern Ave, Phoenix, AZ 85021",
+      date: "2026-03-09",
+      dueDate: "2026-03-18",
+      poNumber: "CSPM-4417",
+      scopeNotes: "Bundle pricing for four apartment turns including drywall patches, texture blend, full wall paint, base reset, hardware swap, and final punch list completion.",
+      additionalNotes: "Pricing assumes one mobilization per building and vacancy-ready access before 8 AM each day.",
+      multiplier: 1.07,
       laborLines: [
-        { role: "Painter", label: "Painter", qty: 1, hours: 14, rate: 76, trueRateInternal: 46 },
-        { role: "Finish tech", label: "Cabinet touch-up tech", qty: 1, hours: 8, rate: 84, trueRateInternal: 56 },
+        { role: "Superintendent", label: "Turn coordinator", qty: 1, hours: 12, rate: 88, trueRateInternal: 57 },
+        { role: "Painter", label: "Turn painters", qty: 2, hours: 34, rate: 68, trueRateInternal: 42 },
+        { role: "Punch tech", label: "Punch carpenter", qty: 1, hours: 18, rate: 72, trueRateInternal: 44 },
       ],
       materialItems: [
-        { desc: "Cabinet enamel", qty: 2, priceEach: 76, unitCostInternal: 52 },
-        { desc: "Ceiling paint", qty: 1, priceEach: 52, unitCostInternal: 34 },
-        { desc: "Patch and sanding kit", qty: 1, priceEach: 34, unitCostInternal: 20 },
+        { desc: "Unit-turn wall paint", qty: 14, priceEach: 54, unitCostInternal: 38 },
+        { desc: "Texture and patch materials", qty: 1, priceEach: 310, unitCostInternal: 190 },
+        { desc: "Base and hardware allowance", qty: 1, priceEach: 520, unitCostInternal: 348 },
+      ],
+      materialsMarkupPct: 0,
+    }),
+    buildEstimateRecord({
+      id: "sample_estimate_copper_state_unit_turn_add_alt",
+      customer: customersById["sample_customer_copper_state_property_management"],
+      projectId: projectsById["sample_project_copper_state_unit_turn_package"]?.id,
+      status: "draft",
+      estimateNumber: "EST-2605",
+      projectName: "Copper State Unit Turn Flooring and Appliance Alt",
+      projectNumber: "CSPM-TURN-2403-ALT",
+      siteAddress: "2250 W Northern Ave, Phoenix, AZ 85021",
+      date: "2026-03-12",
+      dueDate: "2026-03-24",
+      scopeNotes: "Draft alternate for LVP transitions, appliance reconnect coordination, and additional cabinet hinge replacements across the same turnover pool.",
+      additionalNotes: "Internal working draft only. Hold until vacancy count is confirmed for next board packet.",
+      materialsMode: "blanket",
+      multiplier: 1.05,
+      laborLines: [
+        { role: "Installer", label: "Flooring and punch installer", qty: 1, hours: 16, rate: 76, trueRateInternal: 49 },
+        { role: "Helper", label: "Appliance and debris helper", qty: 1, hours: 12, rate: 52, trueRateInternal: 31 },
+      ],
+      blanketCost: 3560,
+      blanketInternalCost: 2480,
+      materialsBlanketDescription: "Allowance for transitions, misc flooring materials, appliance reconnection parts, and finish hardware.",
+      materialsMarkupPct: 0,
+    }),
+    buildEstimateRecord({
+      id: "sample_estimate_titan_shop_safety_rail_welding",
+      customer: customersById["sample_customer_titan_mechanical_pipe"],
+      projectId: projectsById["sample_project_titan_shop_safety_rail_welding"]?.id,
+      status: "draft",
+      estimateNumber: "EST-2606",
+      projectName: "Titan Shop Safety Rail Welding",
+      projectNumber: "TMP-RAIL-2404",
+      siteAddress: "601 S 54th Ave, Phoenix, AZ 85043",
+      date: "2026-04-03",
+      dueDate: "2026-04-17",
+      poNumber: "TMP-RFI-17",
+      scopeNotes: "Fabricate and install forty-two linear feet of shop safety rail with field verification, base plate anchors, prime coat, and industrial safety yellow finish.",
+      additionalNotes: "Draft pricing pending confirmed mezzanine edge measurements and final anchor detail from engineer.",
+      multiplier: 1.08,
+      hazardPct: 2,
+      riskPct: 2,
+      laborLines: [
+        { role: "Welder", label: "Certified welder", qty: 1, hours: 22, rate: 118, trueRateInternal: 84 },
+        { role: "Ironworker", label: "Install hand", qty: 1, hours: 18, rate: 96, trueRateInternal: 68 },
+        { role: "Painter", label: "Industrial finish coat", qty: 1, hours: 10, rate: 74, trueRateInternal: 46 },
+      ],
+      materialItems: [
+        { desc: "Tube steel and plates", qty: 1, priceEach: 2680, unitCostInternal: 2015 },
+        { desc: "Anchors and drill consumables", qty: 1, priceEach: 360, unitCostInternal: 240 },
+        { desc: "Primer and safety yellow enamel", qty: 1, priceEach: 290, unitCostInternal: 176 },
+      ],
+      materialsMarkupPct: 0,
+    }),
+    buildEstimateRecord({
+      id: "sample_estimate_sonoran_parking_lot_striping",
+      customer: customersById["sample_customer_sonoran_retail_plaza"],
+      projectId: projectsById["sample_project_sonoran_parking_lot_striping"]?.id,
+      status: "approved",
+      estimateNumber: "EST-2607",
+      projectName: "Sonoran Retail Parking Lot Striping",
+      projectNumber: "SRP-STRIPE-2405",
+      siteAddress: "13240 N 7th St, Phoenix, AZ 85022",
+      date: "2026-03-15",
+      dueDate: "2026-03-28",
+      poNumber: "SRP-6214",
+      scopeNotes: "Restripe eighty-seven stalls, rework two ADA stalls, repaint fire lane curbs, replace directional arrows, and furnish/install updated stop and ADA signs.",
+      additionalNotes: "Retail center wants work split over two overnight closures with opening-ready layout by 7 AM.",
+      multiplier: 1.06,
+      laborLines: [
+        { role: "Striping foreman", label: "Layout and compliance lead", qty: 1, hours: 18, rate: 94, trueRateInternal: 66 },
+        { role: "Crew", label: "Striping crew", qty: 2, hours: 26, rate: 68, trueRateInternal: 41 },
+      ],
+      materialItems: [
+        { desc: "Traffic paint and beads", qty: 1, priceEach: 2640, unitCostInternal: 1930 },
+        { desc: "ADA signs and hardware", qty: 6, priceEach: 118, unitCostInternal: 84 },
+        { desc: "Stencils and masking materials", qty: 1, priceEach: 320, unitCostInternal: 186 },
+      ],
+      materialsMarkupPct: 0,
+    }),
+    buildEstimateRecord({
+      id: "sample_estimate_north_valley_locker_room_repairs",
+      customer: customersById["sample_customer_north_valley_fitness_center"],
+      projectId: projectsById["sample_project_north_valley_locker_room_repairs"]?.id,
+      status: "lost",
+      estimateNumber: "EST-2608",
+      projectName: "North Valley Locker Room Repairs",
+      projectNumber: "NVFC-LR-2406",
+      siteAddress: "18815 N 35th Ave, Phoenix, AZ 85027",
+      date: "2026-04-05",
+      dueDate: "2026-04-19",
+      scopeNotes: "Repair damaged locker room tile, patch wet wall framing access, repaint ceiling and upper walls, reset plumbing trim, and reseal benches after drying.",
+      additionalNotes: "Budget lost to in-house handyman package. Keep estimate for future reopening if tenant improvement allowance is restored.",
+      multiplier: 1.05,
+      laborLines: [
+        { role: "Tile setter", label: "Tile and grout reset", qty: 1, hours: 14, rate: 88, trueRateInternal: 58 },
+        { role: "Painter", label: "Moisture repair painter", qty: 1, hours: 12, rate: 72, trueRateInternal: 43 },
+        { role: "Plumber", label: "Trim reset allowance", qty: 1, hours: 5, rate: 126, trueRateInternal: 88 },
+      ],
+      materialItems: [
+        { desc: "Tile, grout, and setting materials", qty: 1, priceEach: 820, unitCostInternal: 545 },
+        { desc: "Moisture board and paint materials", qty: 1, priceEach: 360, unitCostInternal: 212 },
       ],
       materialsMarkupPct: 0,
     }),
   ];
 }
 
-function buildSampleInvoices(estimatesById, customersById) {
+function buildSampleInvoices(estimatesById, customersById, projectsById) {
   const invoices = [];
 
-  const mesaDeposit = createLinkedInvoice(
+  const hiltonDeposit = createLinkedInvoice(
     {
-      id: "sample_invoice_mesa_deposit",
-      invoiceNumber: "INV-2401",
+      id: "sample_invoice_hilton_mobilization_deposit",
+      invoiceNumber: "INV-2601",
+      projectId: projectsById["sample_project_hilton_guest_bath_refresh"]?.id,
+      projectName: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectName,
+      projectNumber: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectNumber,
+      siteAddress: projectsById["sample_project_hilton_guest_bath_refresh"]?.siteAddress,
       invoiceType: INVOICE_TYPES.DEPOSIT,
-      requestedValue: "25%",
-      date: "2026-02-10",
-      dueDate: "2026-02-17",
+      requestedValue: "20%",
+      date: "2026-02-22",
+      dueDate: "2026-03-01",
       status: INVOICE_STATUSES.PAID,
-      note: "Mobilization deposit covering after-hours setup, containment staging, and initial materials pull.",
+      note: "Mobilization billing for room-block setup, containment, and initial materials release.",
+    },
+    estimatesById["sample_estimate_hilton_guest_bath_refresh_main"],
+    invoices
+  );
+  invoices.push(normalizeInvoiceRecord({
+    ...hiltonDeposit,
+    payments: [
+      {
+        id: "sample_payment_hilton_mobilization_deposit",
+        amount: hiltonDeposit.invoiceTotal,
+        paidAt: "2026-02-28",
+        note: "ACH received from Desert Ridge Hospitality Group.",
+        method: "ach",
+        order: 0,
+      },
+    ],
+  }));
+
+  invoices.push(createLinkedInvoice(
+    {
+      id: "sample_invoice_hilton_progress_draw",
+      invoiceNumber: "INV-2602",
+      projectId: projectsById["sample_project_hilton_guest_bath_refresh"]?.id,
+      projectName: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectName,
+      projectNumber: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectNumber,
+      siteAddress: projectsById["sample_project_hilton_guest_bath_refresh"]?.siteAddress,
+      invoiceType: INVOICE_TYPES.PROGRESS,
+      requestedValue: "35%",
+      date: "2026-05-02",
+      dueDate: "2026-06-10",
+      status: INVOICE_STATUSES.SENT,
+      note: "Progress draw after floors four and five were turned over to housekeeping.",
+    },
+    estimatesById["sample_estimate_hilton_guest_bath_refresh_main"],
+    invoices
+  ));
+
+  invoices.push(createLinkedInvoice(
+    {
+      id: "sample_invoice_hilton_final_punch_draft",
+      invoiceNumber: "INV-2603",
+      projectId: projectsById["sample_project_hilton_guest_bath_refresh"]?.id,
+      projectName: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectName,
+      projectNumber: projectsById["sample_project_hilton_guest_bath_refresh"]?.projectNumber,
+      siteAddress: projectsById["sample_project_hilton_guest_bath_refresh"]?.siteAddress,
+      invoiceType: INVOICE_TYPES.FINAL,
+      requestedValue: "25%",
+      date: "2026-05-06",
+      dueDate: "2026-06-20",
+      status: INVOICE_STATUSES.DRAFT,
+      note: "Draft final punch invoice pending owner walk and reserve release.",
+    },
+    estimatesById["sample_estimate_hilton_guest_bath_refresh_main"],
+    invoices
+  ));
+
+  const vegaFinal = createLinkedInvoice(
+    {
+      id: "sample_invoice_vega_final_payment",
+      invoiceNumber: "INV-2604",
+      projectId: projectsById["sample_project_vega_water_heater_replacement"]?.id,
+      projectName: projectsById["sample_project_vega_water_heater_replacement"]?.projectName,
+      projectNumber: projectsById["sample_project_vega_water_heater_replacement"]?.projectNumber,
+      siteAddress: projectsById["sample_project_vega_water_heater_replacement"]?.siteAddress,
+      invoiceType: INVOICE_TYPES.FINAL,
+      requestedValue: "100%",
+      date: "2026-02-06",
+      dueDate: "2026-02-06",
+      status: INVOICE_STATUSES.PAID,
+      note: "Final homeowner billing after same-day install, vent correction, and haul-off.",
+    },
+    estimatesById["sample_estimate_vega_water_heater_replacement"],
+    invoices
+  );
+  invoices.push(normalizeInvoiceRecord({
+    ...vegaFinal,
+    payments: [
+      {
+        id: "sample_payment_vega_final_payment",
+        amount: vegaFinal.invoiceTotal,
+        paidAt: "2026-02-06",
+        note: "Card payment captured at completion.",
+        method: "card",
+        order: 0,
+      },
+    ],
+  }));
+
+  invoices.push(createManualInvoice({
+    id: "sample_invoice_copper_state_turn_cycle_one",
+    invoiceNumber: "INV-2605",
+    customer: customersById["sample_customer_copper_state_property_management"],
+    projectId: projectsById["sample_project_copper_state_unit_turn_package"]?.id,
+    projectName: projectsById["sample_project_copper_state_unit_turn_package"]?.projectName,
+    projectNumber: projectsById["sample_project_copper_state_unit_turn_package"]?.projectNumber,
+    siteAddress: projectsById["sample_project_copper_state_unit_turn_package"]?.siteAddress,
+    invoiceTotal: 4280,
+    internalCost: 2910,
+    date: "2026-03-26",
+    dueDate: "2026-04-08",
+    status: INVOICE_STATUSES.SENT,
+    note: "Manual billing for first completed turn cycle covering Units B-14 and D-07 while scope is still under rolling approval.",
+    materialsDescription: "Cycle one unit-turn labor, patch materials, paint, and lock/hardware allowance.",
+  }));
+
+  invoices.push(createLinkedInvoice(
+    {
+      id: "sample_invoice_sonoran_mobilization",
+      invoiceNumber: "INV-2606",
+      projectId: projectsById["sample_project_sonoran_parking_lot_striping"]?.id,
+      projectName: projectsById["sample_project_sonoran_parking_lot_striping"]?.projectName,
+      projectNumber: projectsById["sample_project_sonoran_parking_lot_striping"]?.projectNumber,
+      siteAddress: projectsById["sample_project_sonoran_parking_lot_striping"]?.siteAddress,
+      invoiceType: INVOICE_TYPES.DEPOSIT,
+      requestedValue: "30%",
+      date: "2026-03-29",
+      dueDate: "2026-04-09",
+      status: INVOICE_STATUSES.SENT,
+      note: "Mobilization and layout billing for overnight restripe setup and ADA sign procurement.",
+    },
+    estimatesById["sample_estimate_sonoran_parking_lot_striping"],
+    invoices
+  ));
+
+  invoices.push(createLinkedInvoice(
+    {
+      id: "sample_invoice_sonoran_signage_add",
+      invoiceNumber: "INV-2607",
+      projectId: projectsById["sample_project_sonoran_parking_lot_striping"]?.id,
+      projectName: projectsById["sample_project_sonoran_parking_lot_striping"]?.projectName,
+      projectNumber: projectsById["sample_project_sonoran_parking_lot_striping"]?.projectNumber,
+      siteAddress: projectsById["sample_project_sonoran_parking_lot_striping"]?.siteAddress,
+      invoiceType: INVOICE_TYPES.PROGRESS,
+      requestedValue: "40%",
+      date: "2026-05-04",
+      dueDate: "2026-06-18",
+      status: INVOICE_STATUSES.SENT,
+      note: "Second billing for signage install, ADA stall resets, and fire-lane curb repaint completion.",
       payments: [
         {
-          id: "sample_payment_mesa_deposit",
-          amount: 0,
-          paidAt: "2026-02-14",
-          note: "ACH deposit received from Mesa Dental Group.",
+          id: "sample_payment_sonoran_signage_add",
+          amount: 2600,
+          paidAt: "2026-05-09",
+          note: "Partial ACH received after signage delivery approval.",
           method: "ach",
+          order: 0,
         },
       ],
     },
-    estimatesById["sample_estimate_mesa_ti"],
+    estimatesById["sample_estimate_sonoran_parking_lot_striping"],
     invoices
-  );
-  mesaDeposit.payments = mesaDeposit.payments.map((payment) => ({
-    ...payment,
-    amount: mesaDeposit.invoiceTotal,
-  }));
-  invoices.push(normalizeInvoiceRecord(mesaDeposit));
+  ));
 
-  const mesaProgress = createLinkedInvoice(
-    {
-      id: "sample_invoice_mesa_progress",
-      invoiceNumber: "INV-2402",
-      invoiceType: INVOICE_TYPES.PROGRESS,
-      requestedValue: "35%",
-      date: "2026-02-24",
-      dueDate: "2026-03-01",
-      status: INVOICE_STATUSES.SENT,
-      note: "Second draw after cabinetry topcoat completion and operatory wall finish sign-off.",
-    },
-    estimatesById["sample_estimate_mesa_ti"],
-    invoices
-  );
-  invoices.push(mesaProgress);
-
-  const alvarezFinal = createLinkedInvoice(
-    {
-      id: "sample_invoice_alvarez_final",
-      invoiceNumber: "INV-2403",
-      invoiceType: INVOICE_TYPES.FINAL,
-      requestedValue: "4200",
-      date: "2026-03-08",
-      dueDate: "2026-03-22",
-      status: INVOICE_STATUSES.DRAFT,
-      note: "Draft final billing for exterior repaint after homeowner punch walk is scheduled.",
-    },
-    estimatesById["sample_estimate_alvarez_exterior"],
-    invoices
-  );
-  invoices.push(alvarezFinal);
-
-  const paloVerdeManual = createManualInvoice({
-    id: "sample_invoice_palo_verde_manual",
-    invoiceNumber: "INV-2404",
-    customer: customersById["sample_customer_palo_verde"],
-    projectName: "Clubhouse Hallway Emergency Spot Repair",
-    projectNumber: "PVH-CLUB-07",
-    invoiceTotal: 1860,
-    date: "2026-03-05",
-    dueDate: "2026-03-19",
+  invoices.push(createManualInvoice({
+    id: "sample_invoice_copper_state_after_hours_punch",
+    invoiceNumber: "INV-2608",
+    customer: customersById["sample_customer_copper_state_property_management"],
+    projectId: projectsById["sample_project_copper_state_unit_turn_package"]?.id,
+    projectName: "Copper State After-Hours Punch Work",
+    projectNumber: projectsById["sample_project_copper_state_unit_turn_package"]?.projectNumber,
+    siteAddress: projectsById["sample_project_copper_state_unit_turn_package"]?.siteAddress,
+    invoiceTotal: 1965,
+    internalCost: 1280,
+    date: "2026-05-07",
+    dueDate: "2026-06-24",
     status: INVOICE_STATUSES.SENT,
-    note: "Manual invoice for water-damage spot repair, weekend mobilization, and odor-blocking sealer application.",
-    materialsDescription: "Weekend spot repair invoice including labor, sealer, and containment.",
-  });
-  invoices.push(paloVerdeManual);
+    note: "After-hours punch billing for odor sealer, stairwell touch-up, and emergency board-up cleanup between tenant move-outs.",
+    materialsDescription: "After-hours punch and emergency turnover support.",
+  }));
 
   return invoices.map((invoice) => normalizeInvoiceRecord(invoice));
 }
@@ -1098,7 +1488,13 @@ function maybeRemoveJsonKey(key, ids) {
     const raw = localStorage.getItem(key);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    const targetId = String(parsed?.id || parsed?.editContext?.id || "").trim();
+    const targetId = String(
+      parsed?.id
+      || parsed?.projectId
+      || parsed?.editContext?.id
+      || parsed?.editContext?.projectId
+      || ""
+    ).trim();
     if (targetId && ids.has(targetId)) {
       localStorage.removeItem(key);
     }
@@ -1116,6 +1512,7 @@ function emitSeedEvents() {
 
 export function clearDevSampleData() {
   const existingCustomers = readArray(CUSTOMERS_KEY);
+  const existingProjects = readArray(PROJECTS_KEY);
   const existingEstimates = readArray(ESTIMATES_KEY);
   const existingInvoices = readArray(INVOICES_KEY);
   const registry = readRegistry();
@@ -1123,6 +1520,10 @@ export function clearDevSampleData() {
   const customerIds = collectSampleIds(existingCustomers, [
     ...SAMPLE_IDS.customers,
     ...(Array.isArray(registry?.customers) ? registry.customers : []),
+  ]);
+  const projectIds = collectSampleIds(existingProjects, [
+    ...(Array.isArray(SAMPLE_IDS.projects) ? SAMPLE_IDS.projects : []),
+    ...(Array.isArray(registry?.projects) ? registry.projects : []),
   ]);
   const estimateIds = collectSampleIds(existingEstimates, [
     ...SAMPLE_IDS.estimates,
@@ -1132,20 +1533,24 @@ export function clearDevSampleData() {
     ...SAMPLE_IDS.invoices,
     ...(Array.isArray(registry?.invoices) ? registry.invoices : []),
   ]);
-  const anyIds = new Set([...customerIds, ...estimateIds, ...invoiceIds]);
+  const anyIds = new Set([...customerIds, ...projectIds, ...estimateIds, ...invoiceIds]);
 
   const nextCustomers = filterByIds(existingCustomers, customerIds);
+  const nextProjects = filterByIds(existingProjects, projectIds);
   const nextEstimates = filterByIds(existingEstimates, estimateIds);
   const nextInvoices = filterByIds(existingInvoices, invoiceIds);
 
   writeArray(CUSTOMERS_KEY, nextCustomers);
+  writeArray(PROJECTS_KEY, nextProjects);
   writeArray(ESTIMATES_KEY, nextEstimates);
   writeArray(INVOICES_KEY, nextInvoices);
   clearRegistry();
 
+  maybeRemoveDirectKey(PROJECT_DETAIL_TARGET_KEY, projectIds);
   maybeRemoveDirectKey(EDIT_ESTIMATE_TARGET_KEY, estimateIds);
   maybeRemoveDirectKey(EDIT_INVOICE_TARGET_KEY, invoiceIds);
   maybeRemoveDirectKey(SELECTED_CUSTOMER_ID_KEY, customerIds);
+  maybeRemoveJsonKey(PROJECT_CREATE_SEED_KEY, projectIds);
   maybeRemoveJsonKey(CUSTOMER_EDIT_TARGET_KEY, customerIds);
   maybeRemoveJsonKey(PENDING_CUSTOMER_USE_KEY, customerIds);
   maybeRemoveJsonKey(PENDING_CUSTOMER_EDIT_KEY, customerIds);
@@ -1163,6 +1568,7 @@ export function clearDevSampleData() {
 
   return {
     clearedCustomers: Math.max(existingCustomers.length - nextCustomers.length, 0),
+    clearedProjects: Math.max(existingProjects.length - nextProjects.length, 0),
     clearedEstimates: Math.max(existingEstimates.length - nextEstimates.length, 0),
     clearedInvoices: Math.max(existingInvoices.length - nextInvoices.length, 0),
   };
@@ -1175,16 +1581,23 @@ export function buildDevSampleDataset() {
     return acc;
   }, {});
 
-  const estimates = buildSampleEstimates(customersById);
+  const projects = buildSampleProjects(customersById);
+  const projectsById = projects.reduce((acc, project) => {
+    acc[String(project.id)] = project;
+    return acc;
+  }, {});
+
+  const estimates = buildSampleEstimates(customersById, projectsById);
   const estimatesById = estimates.reduce((acc, estimate) => {
     acc[String(estimate.id)] = estimate;
     return acc;
   }, {});
 
-  const invoices = buildSampleInvoices(estimatesById, customersById);
+  const invoices = buildSampleInvoices(estimatesById, customersById, projectsById);
 
   return {
     customers,
+    projects,
     estimates,
     invoices,
   };
@@ -1193,18 +1606,21 @@ export function buildDevSampleDataset() {
 export function seedDevSampleData() {
   clearDevSampleData();
 
-  const { customers, estimates, invoices } = buildDevSampleDataset();
+  const { customers, projects, estimates, invoices } = buildDevSampleDataset();
 
   const mergedCustomers = [...customers, ...readArray(CUSTOMERS_KEY)];
+  const mergedProjects = [...projects, ...readArray(PROJECTS_KEY)];
   const mergedEstimates = [...estimates, ...readArray(ESTIMATES_KEY)];
   const mergedInvoices = [...invoices, ...readArray(INVOICES_KEY)];
 
   writeArray(CUSTOMERS_KEY, mergedCustomers);
+  writeArray(PROJECTS_KEY, mergedProjects);
   writeArray(ESTIMATES_KEY, mergedEstimates);
   writeArray(INVOICES_KEY, mergedInvoices);
   writeRegistry({
     seededAt: Date.now(),
     customers: customers.map((record) => String(record?.id || "").trim()).filter(Boolean),
+    projects: projects.map((record) => String(record?.id || "").trim()).filter(Boolean),
     estimates: estimates.map((record) => String(record?.id || "").trim()).filter(Boolean),
     invoices: invoices.map((record) => String(record?.id || "").trim()).filter(Boolean),
   });
@@ -1213,6 +1629,7 @@ export function seedDevSampleData() {
 
   return {
     customers: customers.length,
+    projects: projects.length,
     estimates: estimates.length,
     invoices: invoices.length,
   };
