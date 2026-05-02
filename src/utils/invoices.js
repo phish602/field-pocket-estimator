@@ -486,14 +486,73 @@ export function generateNextInvoiceNumber(invoices) {
   return `INV-${String(max + 1).padStart(4, "0")}`;
 }
 
+function readLegacyEstimateInvoices() {
+  return readStoredArray(STORAGE_KEYS.ESTIMATES)
+    .filter((entry) => asText(entry?.docType).toLowerCase() === "invoice");
+}
+
+function collectInvoiceIdentityKeys(invoice) {
+  const keys = new Set();
+  const id = asText(invoice?.id);
+  const invoiceNumber = asText(invoice?.invoiceNumber);
+  const docNumber = asText(
+    invoice?.docNumber
+    || invoice?.documentNumber
+    || invoice?.documentNo
+    || invoice?.number
+  );
+  if (id) keys.add(`id:${id}`);
+  if (invoiceNumber) keys.add(`invoiceNumber:${invoiceNumber}`);
+  if (docNumber) keys.add(`docNumber:${docNumber}`);
+  return keys;
+}
+
+function reconcileLegacyEstimateInvoices(nextInvoices) {
+  const estimateRecords = readStoredArray(STORAGE_KEYS.ESTIMATES);
+  if (!estimateRecords.length) return;
+
+  const legacyInvoices = estimateRecords.filter((entry) => asText(entry?.docType).toLowerCase() === "invoice");
+  if (!legacyInvoices.length) return;
+
+  const persistedInvoices = readStoredArray(INVOICES_KEY);
+  const previousRenderedInvoices = normalizeInvoiceList([
+    ...persistedInvoices,
+    ...legacyInvoices,
+  ]);
+  const nextRenderedInvoices = normalizeInvoiceList(nextInvoices);
+
+  const nextIdentityKeys = new Set(nextRenderedInvoices.flatMap((invoice) => [...collectInvoiceIdentityKeys(invoice)]));
+  const removedIdentityKeys = new Set();
+  previousRenderedInvoices.forEach((invoice) => {
+    const invoiceKeys = [...collectInvoiceIdentityKeys(invoice)];
+    const stillPresent = invoiceKeys.some((key) => nextIdentityKeys.has(key));
+    if (!stillPresent) {
+      invoiceKeys.forEach((key) => removedIdentityKeys.add(key));
+    }
+  });
+
+  const controlledIdentityKeys = new Set([
+    ...nextIdentityKeys,
+    ...removedIdentityKeys,
+  ]);
+
+  const reconciledEstimateRecords = estimateRecords.filter((entry) => {
+    if (asText(entry?.docType).toLowerCase() !== "invoice") return true;
+    const entryKeys = [...collectInvoiceIdentityKeys(entry)];
+    if (!entryKeys.length) return true;
+    return !entryKeys.some((key) => controlledIdentityKeys.has(key));
+  });
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify(reconciledEstimateRecords));
+}
+
 export function readStoredInvoices() {
   try {
     const parsed = readStoredArray(INVOICES_KEY);
     let merged = Array.isArray(parsed) ? parsed : [];
 
     try {
-      const legacyParsed = readStoredArray(STORAGE_KEYS.ESTIMATES);
-      const legacyInvoices = legacyParsed.filter((entry) => asText(entry?.docType).toLowerCase() === "invoice");
+      const legacyInvoices = readLegacyEstimateInvoices();
       if (legacyInvoices.length > 0) {
         merged = [...merged, ...legacyInvoices];
       }
@@ -517,6 +576,7 @@ export function writeStoredInvoices(invoices) {
     writeStoredProjects(sync.projects);
   }
   localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
+  reconcileLegacyEstimateInvoices(sync.invoices);
   return sync.invoices;
 }
 
