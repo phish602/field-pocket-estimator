@@ -40,6 +40,73 @@ function customerDisplayName(c) {
   return String(c?.name || c?.companyName || c?.fullName || "").trim();
 }
 
+function joinAddr(a) {
+  const street = String(a?.street || "").trim();
+  const city = String(a?.city || "").trim();
+  const state = String(a?.state || "").trim();
+  const zip = String(a?.zip || "").trim();
+  const line2 = [city, state].filter(Boolean).join(", ");
+  const line2Full = [line2, zip].filter(Boolean).join(" ");
+  return [street, line2Full].filter(Boolean).join("\n");
+}
+
+function toEstimatorFlat(c) {
+  const svc = c?.resService || {};
+  const bill = c?.resBillingSame ? (c?.resService || {}) : (c?.resBilling || {});
+  return {
+    name: String(c?.fullName || "").trim(),
+    phone: String(c?.resPhone || "").trim(),
+    email: String(c?.resEmail || "").trim(),
+    attn: "",
+    address: joinAddr(svc),
+    billingAddress: joinAddr(bill),
+    city: String(svc?.city || "").trim(),
+    state: String(svc?.state || "").trim(),
+    zip: String(svc?.zip || "").trim(),
+  };
+}
+
+function buildInlineResidentialCustomer({ id, name, phone, email, now }) {
+  const nextItem = {
+    id,
+    type: "residential",
+    fullName: name,
+    name,
+    resPhone: String(phone || "").trim(),
+    resEmail: String(email || "").trim(),
+    resService: { street: "", city: "", state: "", zip: "" },
+    resBillingSame: true,
+    resBilling: { street: "", city: "", state: "", zip: "" },
+    companyName: "",
+    contactName: "",
+    contactTitle: "",
+    comPhone: "",
+    comEmail: "",
+    apEmail: "",
+    netTermsType: "DUE_UPON_RECEIPT",
+    netTermsDays: null,
+    poRequired: false,
+    jobsite: { street: "", city: "", state: "", zip: "" },
+    billSameAsJob: true,
+    billing: { street: "", city: "", state: "", zip: "" },
+    createdAt: now,
+    updatedAt: now,
+  };
+  const flat = toEstimatorFlat(nextItem);
+  return {
+    ...nextItem,
+    name: flat.name,
+    phone: flat.phone,
+    email: flat.email,
+    attn: flat.attn,
+    address: flat.address,
+    billingAddress: flat.billingAddress,
+    city: flat.city,
+    state: flat.state,
+    zip: flat.zip,
+  };
+}
+
 export default function NewProjectScreen({ onBack, onSave }) {
   const [customers, setCustomers] = useState(() => readCustomers());
 
@@ -139,16 +206,13 @@ export default function NewProjectScreen({ onBack, onSave }) {
     if (!name) return;
     const id = buildCustomerId();
     const now = Date.now();
-    const newCustomer = {
+    const newCustomer = buildInlineResidentialCustomer({
       id,
-      type: "residential",
-      fullName: name,
       name,
-      resPhone: inlinePhone.trim(),
-      resEmail: inlineEmail.trim(),
-      createdAt: now,
-      updatedAt: now,
-    };
+      phone: inlinePhone,
+      email: inlineEmail,
+      now,
+    });
     const next = [...customers, newCustomer];
     writeCustomers(next);
     setCustomers(next);
