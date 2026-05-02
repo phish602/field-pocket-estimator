@@ -4612,8 +4612,8 @@ export default function EstimateForm(props) {
         </div>
         <div style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
           {lang === "es"
-            ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Trabajo."
-            : "Who you're billing — select an existing customer or create one. Job site details go in Job Info."}
+            ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Proyecto."
+            : "Who you're billing — select an existing customer or create one. Job site details go in Project Info."}
         </div>
 
         {/* Combo search/dropdown + Edit button */}
@@ -4759,7 +4759,7 @@ export default function EstimateForm(props) {
 
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <SectionTitleWithIcon icon={<IconJobInfo />} title="Project Info" styles={styles} stackStyle={{ marginBottom: 0 }} />
         <div style={styles.scopeSubtitle}>
           {lang === "es"
             ? "Nombre del trabajo, dirección del sitio y fecha — aparece en el encabezado del estimado, por separado del cliente."
