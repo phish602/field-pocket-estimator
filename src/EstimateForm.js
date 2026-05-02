@@ -1385,6 +1385,8 @@ export default function EstimateForm(props) {
   const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
   const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
   const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
+  const homeLaunchSource = String(homeEstimateLaunch?.source || "").trim();
+  const homeLaunchIsCleanSession = homeEstimateLaunch?.cleanSession !== false;
   // ──────────────────────────────────────────────────────────────────────────
   const lastHomeLaunchIdRef = useRef("");
   const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
@@ -1511,7 +1513,9 @@ export default function EstimateForm(props) {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
     return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
   });
+  const [allowExistingProjectLinking, setAllowExistingProjectLinking] = useState(false);
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
+  const [allProjects, setAllProjects] = useState(() => readStoredProjects());
   const [newLaborLineIds, setNewLaborLineIds] = useState({});
   const [newMaterialItemIds, setNewMaterialItemIds] = useState({});
   const [animateLaborBaseTotal, setAnimateLaborBaseTotal] = useState(false);
@@ -1534,6 +1538,7 @@ export default function EstimateForm(props) {
   const pendingSpecialConditionsAutoCollapseRef = useRef(false);
   const seededProjectContextRef = useRef(null);
   const editProjectContextRef = useRef(null);
+  const selectedLinkedProjectContextRef = useRef(null);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -1588,13 +1593,40 @@ export default function EstimateForm(props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const clearSelectedExistingProjectLink = useCallback(() => {
+    const context = selectedLinkedProjectContextRef.current;
+    if (!context) return;
+
+    const activeProjectId = String(state?.projectId || "").trim();
+    const autofilledProjectName = String(context.autofilledProjectName || "").trim();
+    const autofilledProjectNumber = String(context.autofilledProjectNumber || "").trim();
+    const autofilledProjectAddress = String(context.autofilledProjectAddress || "").trim();
+
+    if (activeProjectId && activeProjectId === String(context.projectId || "").trim()) {
+      patch("projectId", "");
+    }
+    if (autofilledProjectName && String(state?.customer?.projectName || "").trim() === autofilledProjectName) {
+      patch("customer.projectName", "");
+    }
+    if (autofilledProjectNumber && String(state?.customer?.projectNumber || "").trim() === autofilledProjectNumber) {
+      patch("customer.projectNumber", "");
+    }
+    if (autofilledProjectAddress && String(state?.customer?.projectAddress || "").trim() === autofilledProjectAddress) {
+      patch("customer.projectAddress", "");
+    }
+
+    selectedLinkedProjectContextRef.current = null;
+  }, [patch, state?.customer?.projectAddress, state?.customer?.projectName, state?.customer?.projectNumber, state?.projectId]);
+
   const clearStaleProjectIdForCustomerBoundary = useCallback((nextCustomer = null) => {
     const activeProjectId = String(state?.projectId || "").trim();
     const nextCustomerId = String(nextCustomer?.id || "").trim();
     const nextCustomerName = String(nextCustomer?.name || "").trim().toLowerCase();
-    const context = isEditMode
+    const seededOrEditContext = isEditMode
       ? editProjectContextRef.current
       : seededProjectContextRef.current;
+    const manualContext = seededOrEditContext ? null : selectedLinkedProjectContextRef.current;
+    const context = seededOrEditContext || manualContext;
     if (!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) return;
 
     const contextCustomerId = String(context.customerId || "").trim();
@@ -1604,9 +1636,13 @@ export default function EstimateForm(props) {
       : (!!nextCustomerName && nextCustomerName === contextCustomerName);
 
     if (!customerMatches) {
+      if (manualContext) {
+        clearSelectedExistingProjectLink();
+        return;
+      }
       patch("projectId", "");
     }
-  }, [isEditMode, patch, state?.projectId]);
+  }, [clearSelectedExistingProjectLink, isEditMode, patch, state?.projectId]);
 
   useEffect(() => {
     if (!savePrompt) return undefined;
@@ -2401,6 +2437,13 @@ export default function EstimateForm(props) {
     submitScopeAssist,
   ]);
 
+  useEffect(() => {
+    if (!homeLaunchId || isEditMode) return;
+    if (homeLaunchSource === "home_ai_assist" && homeLaunchIsCleanSession) {
+      setAllowExistingProjectLinking(true);
+    }
+  }, [homeLaunchId, homeLaunchIsCleanSession, homeLaunchSource, isEditMode]);
+
   function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
     const derivedProjectName = deriveProjectNameFromScopeFlow({
       scopeNotes: scopeNotesValue,
@@ -2535,6 +2578,29 @@ export default function EstimateForm(props) {
       window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("estipaid:customer-use", refreshCustomers);
       window.removeEventListener("focus", refreshCustomers);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshProjects = () => setAllProjects(readStoredProjects());
+    const onStorage = (e) => {
+      if (e.key === STORAGE_KEYS.PROJECTS) refreshProjects();
+    };
+    const onLocalStorage = (e) => {
+      if (e?.detail?.key === STORAGE_KEYS.PROJECTS) refreshProjects();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshProjects();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("focus", refreshProjects);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("focus", refreshProjects);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
@@ -2727,6 +2793,49 @@ export default function EstimateForm(props) {
     const poRequired = !!c?.poRequired;
     return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
+  const showExistingProjectSelector = allowExistingProjectLinking
+    && guidedDocType === "estimate"
+    && !isEditMode
+    && !projectSeedSummary;
+  const availableExistingProjects = useMemo(() => {
+    if (!showExistingProjectSelector) return [];
+
+    const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
+    const selectedNameKey = String(
+      selectedProfile?.displayName
+      || selectedProfile?.companyName
+      || state?.customer?.name
+      || ""
+    ).trim().toLowerCase();
+
+    if (!selectedId && !selectedNameKey) return [];
+
+    return (Array.isArray(allProjects) ? allProjects : [])
+      .filter((project) => {
+        const projectId = String(project?.id || "").trim();
+        if (!projectId) return false;
+
+        const projectCustomerId = String(project?.customerId || "").trim();
+        const projectCustomerName = String(project?.customerName || "").trim().toLowerCase();
+
+        if (selectedId && projectCustomerId) return projectCustomerId === selectedId;
+        return !!selectedNameKey && projectCustomerName === selectedNameKey;
+      })
+      .slice()
+      .sort((a, b) => {
+        const tsDiff = Number(b?.updatedAt || b?.createdAt || 0) - Number(a?.updatedAt || a?.createdAt || 0);
+        if (tsDiff !== 0) return tsDiff;
+        return String(a?.projectName || "").localeCompare(String(b?.projectName || ""));
+      });
+  }, [allProjects, selectedCustomerId, selectedProfile, showExistingProjectSelector, state?.customer?.id, state?.customer?.name]);
+  const selectedExistingProjectId = showExistingProjectSelector ? String(state?.projectId || "").trim() : "";
+  const selectedExistingProject = useMemo(() => {
+    if (!selectedExistingProjectId) return null;
+    return availableExistingProjects.find((project) => String(project?.id || "").trim() === selectedExistingProjectId)
+      || (Array.isArray(allProjects)
+        ? allProjects.find((project) => String(project?.id || "").trim() === selectedExistingProjectId) || null
+        : null);
+  }, [allProjects, availableExistingProjects, selectedExistingProjectId]);
   const guidedBuildContext = useMemo(() => ({
     customers: allCustomers,
     selectedCustomer: selectedCustomerProfile,
@@ -2911,6 +3020,81 @@ export default function EstimateForm(props) {
     } catch {}
   }
 
+  function handleSelectExistingProject(projectId) {
+    const nextProjectId = String(projectId || "").trim();
+    if (!nextProjectId) {
+      clearSelectedExistingProjectLink();
+      return;
+    }
+
+    const project = (Array.isArray(allProjects) ? allProjects : []).find(
+      (entry) => String(entry?.id || "").trim() === nextProjectId
+    );
+    if (!project) return;
+
+    const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
+    const selectedNameKey = String(
+      selectedProfile?.displayName
+      || selectedProfile?.companyName
+      || state?.customer?.name
+      || ""
+    ).trim().toLowerCase();
+    const projectCustomerId = String(project?.customerId || "").trim();
+    const projectCustomerName = String(project?.customerName || "").trim().toLowerCase();
+    const matchesSelectedCustomer = projectCustomerId
+      ? projectCustomerId === selectedId
+      : (!!selectedNameKey && projectCustomerName === selectedNameKey);
+    if (!matchesSelectedCustomer) return;
+
+    const previousContext = selectedLinkedProjectContextRef.current;
+    const currentProjectName = String(state?.customer?.projectName || "").trim();
+    const currentProjectNumber = String(state?.customer?.projectNumber || "").trim();
+    const currentProjectAddress = String(state?.customer?.projectAddress || "").trim();
+    const generatedProjectName = String(projectNameAutoStateRef.current.auto || "").trim();
+    const previousAutofilledProjectName = String(previousContext?.autofilledProjectName || "").trim();
+    const previousAutofilledProjectNumber = String(previousContext?.autofilledProjectNumber || "").trim();
+    const previousAutofilledProjectAddress = String(previousContext?.autofilledProjectAddress || "").trim();
+    const nextContext = {
+      projectId: nextProjectId,
+      customerId: projectCustomerId || selectedId,
+      customerName: String(project?.customerName || selectedProfile?.displayName || state?.customer?.name || "").trim(),
+      autofilledProjectName: "",
+      autofilledProjectNumber: "",
+      autofilledProjectAddress: "",
+    };
+
+    const projectName = String(project?.projectName || "").trim();
+    if (
+      projectName
+      && (!currentProjectName || currentProjectName === generatedProjectName || currentProjectName === previousAutofilledProjectName)
+    ) {
+      patch("customer.projectName", projectName);
+      projectNameAutoStateRef.current.auto = "";
+      nextContext.autofilledProjectName = projectName;
+    } else if (!projectName && previousAutofilledProjectName && currentProjectName === previousAutofilledProjectName) {
+      patch("customer.projectName", "");
+    }
+
+    const projectNumber = String(project?.projectNumber || "").trim();
+    if (projectNumber && (!currentProjectNumber || currentProjectNumber === previousAutofilledProjectNumber)) {
+      patch("customer.projectNumber", projectNumber);
+      nextContext.autofilledProjectNumber = projectNumber;
+    } else if (!projectNumber && previousAutofilledProjectNumber && currentProjectNumber === previousAutofilledProjectNumber) {
+      patch("customer.projectNumber", "");
+    }
+
+    const siteAddress = String(project?.siteAddress || "").trim();
+    if (siteAddress && (!currentProjectAddress || currentProjectAddress === previousAutofilledProjectAddress)) {
+      patch("customer.projectAddress", siteAddress);
+      nextContext.autofilledProjectAddress = siteAddress;
+    } else if (!siteAddress && previousAutofilledProjectAddress && currentProjectAddress === previousAutofilledProjectAddress) {
+      patch("customer.projectAddress", "");
+    }
+
+    patch("projectId", nextProjectId);
+    selectedLinkedProjectContextRef.current = nextContext;
+  }
+
   function handleCustomerDropdownOptionInteraction(event, id) {
     if (event?.preventDefault) event.preventDefault();
     if (event?.stopPropagation) event.stopPropagation();
@@ -2991,6 +3175,8 @@ export default function EstimateForm(props) {
       role: preset?.key || "",
     });
   }
+
+      if (String(state?.projectId || "").trim()) return;
 
   function patchLineByIndex(i, patchObj) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
@@ -4590,6 +4776,61 @@ export default function EstimateForm(props) {
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
+            {showExistingProjectSelector ? (
+              <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+                <label style={styles.label}>Link existing project</label>
+                <select
+                  className="pe-input"
+                  value={selectedExistingProjectId}
+                  onChange={(e) => handleSelectExistingProject(e.target.value)}
+                  disabled={!selectedCustomerId || availableExistingProjects.length === 0}
+                >
+                  <option value="">
+                    {!selectedCustomerId
+                      ? "Select customer first"
+                      : availableExistingProjects.length === 0
+                      ? "No saved projects for this customer"
+                      : "No linked project"}
+                  </option>
+                  {availableExistingProjects.map((project) => {
+                    const optionParts = [
+                      String(project?.projectName || "").trim() || "Untitled Project",
+                      String(project?.projectNumber || "").trim(),
+                      String(project?.siteAddress || "").trim(),
+                    ].filter(Boolean);
+                    return (
+                      <option key={String(project?.id || "")} value={String(project?.id || "")}>
+                        {optionParts.join(" • ")}
+                      </option>
+                    );
+                  })}
+                </select>
+                <div className="pe-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  {!selectedCustomerId
+                    ? "Choose a customer first to link this estimate to one of their existing projects."
+                    : selectedExistingProject
+                    ? "This estimate will stay linked to the selected existing project when you save."
+                    : availableExistingProjects.length === 0
+                    ? "No saved projects are available for the selected customer yet."
+                    : "Optional: link this estimate to one existing project for the selected customer."}
+                </div>
+              </div>
+            ) : null}
+
+            {showExistingProjectSelector && selectedExistingProject ? (
+              <div style={{ margin: "0 0 10px", padding: "6px 10px", background: "rgba(99,179,237,0.06)", borderRadius: 8, borderLeft: "2px solid rgba(99,179,237,0.32)", fontSize: 12, color: "rgba(220,235,245,0.65)", lineHeight: 1.6 }}>
+                <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.82)" }}>
+                  {String(selectedExistingProject?.projectName || "").trim() || "Untitled Project"}
+                </span>
+                {String(selectedExistingProject?.projectNumber || "").trim()
+                  ? ` • ${String(selectedExistingProject?.projectNumber || "").trim()}`
+                  : ""}
+                {String(selectedExistingProject?.siteAddress || "").trim()
+                  ? ` • ${String(selectedExistingProject?.siteAddress || "").trim()}`
+                  : ""}
+              </div>
+            ) : null}
+
             <div className={jobInfoTopGridClassName}>
               <div>
                 <label style={styles.label}>Project name{projectSeedSummary ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: "rgba(99,179,237,0.55)" }}>from project</span> : null}</label>
