@@ -10,7 +10,10 @@ import {
   isInvoiceReceivable,
   readStoredInvoices,
 } from "../utils/invoices";
+import { readStoredProjects } from "../utils/projects";
 
+const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
+const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 
@@ -229,8 +232,26 @@ function readSavedEstimates() {
     .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
     .map((entry) => ({
       ...entry,
+      snapshotStatus: String(entry?.status || "").trim().toLowerCase(),
       status: normalizeEstimateStatus(entry?.status),
     }));
+}
+
+function normalizeEstimateLifecycleStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  if (raw === "draft") return "draft";
+  return "pending";
+}
+
+function normalizeProjectLifecycleStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "completed" || raw === "complete") return "completed";
+  if (raw === "estimating") return "estimating";
+  if (raw === "draft") return "draft";
+  if (raw === "archived" || raw === "closed" || raw === "inactive") return "archived";
+  return "active";
 }
 
 function getTimeRangeStart(rangeKey) {
@@ -377,12 +398,16 @@ function Bars({ data, height = 120, width = 320 }) {
 }
 
 export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
-  const [range, setRange] = useState("30");
+  const [range, setRange] = useState("ytd");
+  const [customers, setCustomers] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [estimates, setEstimates] = useState([]);
   const [invoices, setInvoices] = useState([]);
 
   useEffect(() => {
     const refresh = () => {
+      setCustomers(loadArray(CUSTOMERS_KEY));
+      setProjects(readStoredProjects());
       setEstimates(readSavedEstimates());
       setInvoices(readStoredInvoices());
     };
@@ -390,19 +415,32 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
 
     const onStorage = (e) => {
       if (!e) return;
-      if (e.key === ESTIMATES_KEY || e.key === INVOICES_KEY) refresh();
+      if (
+        e.key === CUSTOMERS_KEY
+        || e.key === PROJECTS_KEY
+        || e.key === ESTIMATES_KEY
+        || e.key === INVOICES_KEY
+      ) refresh();
     };
     const onLocalStorage = (event) => {
       const key = String(event?.detail?.key || "").trim();
-      if (key === ESTIMATES_KEY || key === INVOICES_KEY) refresh();
+      if (
+        key === CUSTOMERS_KEY
+        || key === PROJECTS_KEY
+        || key === ESTIMATES_KEY
+        || key === INVOICES_KEY
+      ) refresh();
     };
+    const onEstimatesChanged = () => refresh();
     const onInvoicesChanged = () => refresh();
     window.addEventListener("storage", onStorage);
     window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:estimates-changed", onEstimatesChanged);
     window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:estimates-changed", onEstimatesChanged);
       window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
     };
   }, []);
@@ -412,6 +450,8 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
     const start = getTimeRangeStart(range === "ytd" ? "ytd" : range);
     const end = now;
 
+    const customerAll = (Array.isArray(customers) ? customers : []).filter(Boolean);
+    const projectAll = (Array.isArray(projects) ? projects : []).filter(Boolean);
     const invAll = (Array.isArray(invoices) ? invoices : []).filter(Boolean);
     const estAll = (Array.isArray(estimates) ? estimates : []).filter(Boolean);
 
@@ -478,7 +518,62 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       return counts;
     }, { total: 0, draft: 0, sent: 0, paid: 0, overdue: 0 });
 
+    const customerCount = customerAll.length;
+    const projectCounts = projectAll.reduce((counts, project) => {
+      counts.total += 1;
+      counts[normalizeProjectLifecycleStatus(project?.status)] += 1;
+      return counts;
+    }, { total: 0, active: 0, completed: 0, estimating: 0, draft: 0, archived: 0 });
+
+    const estimateCounts = estAll.reduce((counts, estimate) => {
+      counts.total += 1;
+      counts[normalizeEstimateLifecycleStatus(estimate?.snapshotStatus || estimate?.status)] += 1;
+      return counts;
+    }, { total: 0, approved: 0, pending: 0, draft: 0, lost: 0 });
+
+    const invoiceTotals = invAll.reduce((totals, invoice) => {
+      const status = deriveInvoiceStatus(invoice, now.getTime());
+      const invoiceTotal = calcRevenue(invoice);
+      const amountPaid = asNumber(invoice?.amountPaid);
+      const balanceRemaining = getReceivableAmount(invoice);
+      totals.total += 1;
+      totals.totalValue += invoiceTotal;
+      totals.paidValue += amountPaid;
+      totals.outstandingValue += balanceRemaining;
+      if (status === INVOICE_STATUSES.PAID) totals.paid += 1;
+      else if (status === INVOICE_STATUSES.OVERDUE) {
+        totals.overdue += 1;
+        totals.overdueValue += balanceRemaining;
+      } else if (status === INVOICE_STATUSES.SENT) totals.sent += 1;
+      else {
+        totals.draft += 1;
+        totals.draftValue += invoiceTotal;
+      }
+      if (amountPaid > 0 && balanceRemaining > 0) {
+        totals.partial += 1;
+        totals.partialValue += balanceRemaining;
+      }
+      return totals;
+    }, {
+      total: 0,
+      paid: 0,
+      sent: 0,
+      overdue: 0,
+      draft: 0,
+      partial: 0,
+      totalValue: 0,
+      paidValue: 0,
+      outstandingValue: 0,
+      overdueValue: 0,
+      draftValue: 0,
+      partialValue: 0,
+    });
+
     return {
+      customerCount,
+      projectCounts,
+      estimateCounts,
+      invoiceTotals,
       revenue,
       grossProfit,
       marginPct,
@@ -496,7 +591,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
       invCount: activeInvoices.length,
       statusCounts,
     };
-  }, [range, estimates, invoices]);
+  }, [range, customers, projects, estimates, invoices]);
 
   const donutSegments = useMemo(() => {
     const a = computed.aging;
@@ -517,12 +612,52 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
 
   const insight = useMemo(() => {
     const parts = [];
+    if (computed.customerCount > 0) {
+      parts.push(
+        lang === "es"
+          ? `Clientes: ${computed.customerCount}`
+          : `Customers: ${computed.customerCount}`
+      );
+    }
+    if (computed.projectCounts.total > 0) {
+      parts.push(
+        lang === "es"
+          ? `Proyectos: ${computed.projectCounts.total} (${computed.projectCounts.active} activos, ${computed.projectCounts.completed} completados, ${computed.projectCounts.estimating} estimando, ${computed.projectCounts.draft} borrador)`
+          : `Projects: ${computed.projectCounts.total} (${computed.projectCounts.active} active, ${computed.projectCounts.completed} completed, ${computed.projectCounts.estimating} estimating, ${computed.projectCounts.draft} draft)`
+      );
+    }
+    if (computed.estimateCounts.total > 0) {
+      parts.push(
+        lang === "es"
+          ? `Estimados: ${computed.estimateCounts.total} (${computed.estimateCounts.approved} aprobados, ${computed.estimateCounts.pending} pendientes, ${computed.estimateCounts.draft} borrador, ${computed.estimateCounts.lost} perdidos)`
+          : `Estimates: ${computed.estimateCounts.total} (${computed.estimateCounts.approved} approved, ${computed.estimateCounts.pending} pending, ${computed.estimateCounts.draft} draft, ${computed.estimateCounts.lost} lost)`
+      );
+    }
+    if (computed.invoiceTotals.total > 0) {
+      parts.push(
+        lang === "es"
+          ? `Facturas: ${computed.invoiceTotals.total} (${computed.invoiceTotals.paid} pagadas, ${computed.invoiceTotals.sent} enviadas, ${computed.invoiceTotals.overdue} vencidas, ${computed.invoiceTotals.draft} borrador, ${computed.invoiceTotals.partial} parciales)`
+          : `Invoices: ${computed.invoiceTotals.total} (${computed.invoiceTotals.paid} paid, ${computed.invoiceTotals.sent} sent, ${computed.invoiceTotals.overdue} overdue, ${computed.invoiceTotals.draft} draft, ${computed.invoiceTotals.partial} partial)`
+      );
+    }
     if (computed.invCount === 0) {
       parts.push(lang === "es" ? "Aún no hay facturas en este rango." : "No invoices in this range yet.");
     } else {
       parts.push((lang === "es" ? "Margen promedio: " : "Average margin: ") + fmtPct(computed.marginPct));
       if (computed.arTotal > 0) parts.push((lang === "es" ? "Cuentas por cobrar: " : "Receivables: ") + fmtMoney(computed.arTotal));
       if (computed.delinquentTotal > 0) parts.push((lang === "es" ? "Delincuencia: " : "Delinquent: ") + fmtMoney(computed.delinquentTotal));
+      if (computed.invoiceTotals.paidValue > 0) {
+        parts.push((lang === "es" ? "Cobrado: " : "Collected: ") + fmtMoney(computed.invoiceTotals.paidValue));
+      }
+      if (computed.invoiceTotals.overdueValue > 0) {
+        parts.push((lang === "es" ? "Vencido: " : "Overdue balance: ") + fmtMoney(computed.invoiceTotals.overdueValue));
+      }
+      if (computed.invoiceTotals.partial > 0) {
+        parts.push(
+          (lang === "es" ? "Parciales: " : "Partial invoices: ")
+          + `${computed.invoiceTotals.partial} (${fmtMoney(computed.invoiceTotals.partialValue)})`
+        );
+      }
       if (computed.statusCounts.sent > 0 || computed.statusCounts.overdue > 0 || computed.statusCounts.paid > 0) {
         parts.push(
           lang === "es"
