@@ -3071,8 +3071,6 @@ const gated = false;
             try {
               const id = String(p?.id || "");
               if (id) {
-                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_ID, id); } catch {}
-                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_SNAP, JSON.stringify(p?.customer || null)); } catch {}
                 try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p?.customer || null } })); } catch {}
               }
             } catch {}
