@@ -7290,24 +7290,52 @@ const AI_ASSIST_SECTIONS = {
     buildSystemPrompt() {
       return [
         "You are a professional trade estimator generating labor line items for a construction estimate.",
-        'Return ONLY valid JSON matching this exact schema: {"lines":[{"role":"string","hours":number,"rate":number}]}',
+        'Return ONLY valid JSON matching this exact schema: {"lines":[{"role":"string","hours":number,"rate":number,"qty":number}]}',
         "Rules:",
         "- role must be exactly one of: Foreman, Journeyman, Apprentice, General Laborer, Supervisor, Helper, Technician, Equipment Operator",
         "- hours must be a realistic positive number (whole or decimal, e.g. 8, 16, 4.5)",
-        "- rate must be a market hourly rate as a whole dollar amount (e.g. 45, 65, 85)",
+        "- rate must be a realistic contractor bill rate as a whole dollar amount (e.g. 45, 65, 85), not fake precision",
+        "- qty is optional and represents crew count / headcount for that line when the context supports it; otherwise use 1",
         "- Return 1 to 5 lines maximum",
-        "- Do NOT include totals, subtotals, markups, or internal cost rates",
+        "- Return draft suggested labor lines only",
+        "- Do NOT include totals, subtotals, markups, or internal cost rates in the JSON output",
         "- Do NOT use roles not in the list above",
-        "- Base your estimate on the scope description and trade type",
-        "- If user provides crew size or duration hints, use them",
+        "- Base your estimate on the current scope, job context, trade clues, job conditions, and any existing labor context provided",
+        "- Existing labor rows are reference context only; do not treat them as something to overwrite or restate unless they clearly support the suggestion",
+        "- If user or context provides crew size or duration hints, use them",
+        "- Distinguish crew count from total hours when the context supports it",
+        "- Use practical contractor-level assumptions and avoid invented detail or overly exact fractional rates",
+        "- Keep the output estimator-friendly and concise",
       ].join("\n");
     },
     buildUserPrompt({ userInput, context }) {
       const parts = [];
-      if (context?.tradeKey) parts.push(`Trade: ${context.tradeKey}`);
+      if (context?.tradeKey) parts.push(`Trade key: ${context.tradeKey}`);
+      if (context?.tradeLabel) parts.push(`Trade insert: ${context.tradeLabel}`);
+      if (context?.customerName) parts.push(`Customer: ${context.customerName}`);
+      if (context?.projectName) parts.push(`Project/job name: ${context.projectName}`);
+      if (context?.projectAddress) parts.push(`Project/site address: ${context.projectAddress}`);
       if (context?.scopeNotes) parts.push(`Scope: ${context.scopeNotes}`);
-      if (userInput) parts.push(`Additional notes: ${userInput}`);
-      if (!context?.tradeKey && !context?.scopeNotes && !userInput) {
+      if (context?.additionalNotes) parts.push(`Additional estimate notes: ${context.additionalNotes}`);
+      if (Array.isArray(context?.existingLaborLines) && context.existingLaborLines.length) {
+        parts.push(`Existing labor rows (reference only):\n${context.existingLaborLines.join("\n")}`);
+      }
+      if (Array.isArray(context?.laborPricingHints) && context.laborPricingHints.length) {
+        parts.push(`Current labor pricing hints: ${context.laborPricingHints.join(" | ")}`);
+      }
+      if (context?.laborConditions && typeof context.laborConditions === "object") {
+        const conditionParts = [];
+        if (Number(context.laborConditions?.hazardPct) > 0) conditionParts.push(`hazard ${Number(context.laborConditions.hazardPct)}%`);
+        if (Number(context.laborConditions?.riskPct) > 0) conditionParts.push(`risk ${Number(context.laborConditions.riskPct)}%`);
+        if (Number(context.laborConditions?.multiplier) > 0 && Number(context.laborConditions.multiplier) !== 1) {
+          conditionParts.push(`labor multiplier ${Number(context.laborConditions.multiplier)}`);
+        }
+        if (conditionParts.length) {
+          parts.push(`Job conditions context: ${conditionParts.join(" | ")}`);
+        }
+      }
+      if (userInput) parts.push(`User labor request: ${userInput}`);
+      if (!context?.tradeKey && !context?.tradeLabel && !context?.scopeNotes && !userInput) {
         parts.push("Generate general labor lines for a standard trade estimate.");
       }
       return parts.join("\n");
