@@ -2351,6 +2351,21 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(ROUTES.PROJECT_DETAIL);
   }, [activeTab, navigateTo, resolveProjectDetailBackRoute]);
 
+  const resetProjectDetailSeededBuilderSession = useCallback(() => {
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+    } catch {}
+    setCreateEditSessionActive(false);
+    setShowCreateFromEditModal(false);
+    setHomeEstimateLaunch(null);
+    setCreateResetSeq((n) => n + 1);
+  }, []);
+
   const launchNewProject = useCallback(() => {
     clearProjectDetailReturnTarget();
     setNewProjectReturnRoute(activeTab && activeTab !== ROUTES.NEW_PROJECT ? activeTab : ROUTES.PROJECTS);
@@ -3174,20 +3189,12 @@ const gated = false;
           }}
           onNewEstimate={() => {
             armProjectDetailReturnTarget();
-            try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
-            try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
-            setCreateEditSessionActive(false);
-            setHomeEstimateLaunch(null);
-            setCreateResetSeq((n) => n + 1);
+            resetProjectDetailSeededBuilderSession();
             navigateTo(ROUTES.ESTIMATE_BUILDER);
           }}
           onNewInvoice={() => {
             armProjectDetailReturnTarget();
-            try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
-            try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
-            setCreateEditSessionActive(false);
-            setHomeEstimateLaunch(null);
-            setCreateResetSeq((n) => n + 1);
+            resetProjectDetailSeededBuilderSession();
             navigateTo(ROUTES.INVOICE_BUILDER);
           }}
         />
