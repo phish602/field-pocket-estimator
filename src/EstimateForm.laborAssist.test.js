@@ -544,6 +544,78 @@ describe("EstimateForm labor AI assist writeback", () => {
     expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", expect.stringMatching(/complete the described scope/i));
   });
 
+  test("restores the prior scope review when a refine result is blocked as a generic summary wrapper", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    const blockedSummaryWrapperScope = "Scope includes labor, materials, equipment, cleanup, and completion of the requested work.";
+
+    mockRequestSectionAssist
+      .mockResolvedValueOnce({
+        writes: {
+          scopeNotes: "- Remove damaged ceiling tiles.\n- Install matching replacement ceiling tiles.\n- Dispose of debris.",
+        },
+        validation: { valid: true },
+      })
+      .mockRejectedValueOnce(Object.assign(new Error("Generated scope is too generic."), {
+        assistSafeMessage: "Generated scope is too generic.",
+        blockedScopeNotes: blockedSummaryWrapperScope,
+      }));
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: mockPatch,
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return buildIdleAssistReturn({
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        });
+      }
+      return buildIdleAssistReturn();
+    });
+
+    render(<EstimateForm />);
+    mockPatch.mockClear();
+
+    fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
+    fireEvent.change(screen.getByPlaceholderText(/describe the work.*interior repaint, 3 rooms, 2 coats, patch drywall near windows/i), {
+      target: { value: "replace ceiling tiles in two offices" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /generate scope/i }));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Remove damaged ceiling tiles.");
+      expect(screen.getByRole("button", { name: /accept draft/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /refine/i }));
+    fireEvent.click(screen.getByRole("button", { name: /shorter/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/generated scope is too generic\./i)).toBeInTheDocument();
+      expect(document.body.textContent).toContain("Remove damaged ceiling tiles.");
+      expect(screen.getByRole("button", { name: /accept draft/i })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText(new RegExp(blockedSummaryWrapperScope, "i"))).not.toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", blockedSummaryWrapperScope);
+  });
+
   test("preserves the first materials request when switching modes", async () => {
     const state = createState({ laborLines: [createBlankStarterLine()] });
     state.ui.materialsMode = "blanket";
