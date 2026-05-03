@@ -325,6 +325,7 @@ export async function requestSectionAssist({
   sectionKey,
   userInput,
   state,
+  laborRequestMode = "",
   mode = "initial",
   sourcePrompt = "",
   currentScope = "",
@@ -338,6 +339,10 @@ export async function requestSectionAssist({
   if (!config) throw new Error(`No AI Assist config for section: ${normalizedSectionKey || sectionKey}`);
 
   const scopeSection = normalizedSectionKey === "scope";
+  const laborSection = normalizedSectionKey === "labor";
+  const normalizedLaborRequestMode = laborSection && String(laborRequestMode || "").trim().toLowerCase() === "from_scope"
+    ? "from_scope"
+    : "";
   const normalizedMode = scopeSection ? normalizeScopeAssistMode(mode) : "initial";
   const normalizedSourcePrompt = scopeSection ? String(sourcePrompt || "").trim() : "";
   const normalizedCurrentScope = scopeSection
@@ -387,6 +392,9 @@ export async function requestSectionAssist({
   const requestContext = {
     ...(context || {}),
     currentSection: normalizedSectionKey || context?.currentSection || "",
+    ...(laborSection && normalizedLaborRequestMode ? {
+      laborRequestMode: normalizedLaborRequestMode,
+    } : {}),
     ...(scopeSection && normalizedMode === "initial" && canonicalScopePromptBasis ? {
       scopePromptBasis: canonicalScopePromptBasis,
       sourceScopePrompt: canonicalScopePromptBasis,
@@ -396,6 +404,9 @@ export async function requestSectionAssist({
   const requestBody = {
     sectionKey: normalizedSectionKey,
     userInput: normalizedUserInput,
+    ...(laborSection && normalizedLaborRequestMode ? {
+      laborRequestMode: normalizedLaborRequestMode,
+    } : {}),
     ...(scopeSection ? {
       mode: normalizedMode,
       sourcePrompt: normalizedMode === "initial" && canonicalScopePromptBasis

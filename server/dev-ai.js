@@ -7287,7 +7287,9 @@ const AI_ASSIST_SECTIONS = {
   },
 
   labor: {
-    buildSystemPrompt() {
+    buildSystemPrompt({ context } = {}) {
+      const laborRequestMode = String(context?.laborRequestMode || "").trim().toLowerCase();
+      const fromScopeRequest = laborRequestMode === "from_scope";
       return [
         "You are a professional trade estimator generating labor line items for a construction estimate.",
         'Return ONLY valid JSON matching this exact schema: {"lines":[{"role":"string","hours":number,"rate":number,"qty":number}]}',
@@ -7306,10 +7308,19 @@ const AI_ASSIST_SECTIONS = {
         "- Distinguish crew count from total hours when the context supports it",
         "- Use practical contractor-level assumptions and avoid invented detail or overly exact fractional rates",
         "- Keep the output estimator-friendly and concise",
+        ...(fromScopeRequest
+          ? [
+            "- This request mode is from_scope: build suggested labor rows from the provided scope and estimate context even if there is no user-entered labor sentence.",
+            "- Treat the scope and estimate context as the primary source of truth for the draft labor breakdown.",
+          ]
+          : []),
       ].join("\n");
     },
     buildUserPrompt({ userInput, context }) {
+      const laborRequestMode = String(context?.laborRequestMode || "").trim().toLowerCase();
+      const fromScopeRequest = laborRequestMode === "from_scope";
       const parts = [];
+      if (fromScopeRequest) parts.push("Labor request mode: from_scope");
       if (context?.tradeKey) parts.push(`Trade key: ${context.tradeKey}`);
       if (context?.tradeLabel) parts.push(`Trade insert: ${context.tradeLabel}`);
       if (context?.customerName) parts.push(`Customer: ${context.customerName}`);
@@ -7334,8 +7345,12 @@ const AI_ASSIST_SECTIONS = {
           parts.push(`Job conditions context: ${conditionParts.join(" | ")}`);
         }
       }
-      if (userInput) parts.push(`User labor request: ${userInput}`);
-      if (!context?.tradeKey && !context?.tradeLabel && !context?.scopeNotes && !userInput) {
+      if (fromScopeRequest) {
+        parts.push("Task: Build draft labor rows from the current scope and estimate context.");
+      } else if (userInput) {
+        parts.push(`User labor request: ${userInput}`);
+      }
+      if (!context?.tradeKey && !context?.tradeLabel && !context?.scopeNotes && !userInput && !fromScopeRequest) {
         parts.push("Generate general labor lines for a standard trade estimate.");
       }
       return parts.join("\n");
