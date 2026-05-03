@@ -88,6 +88,8 @@ export function useAiAssist(sectionKey, state) {
   }, []);
 
   const close = useCallback(() => {
+    submitSeqRef.current += 1;
+    inFlightScopeRefineRequestRef.current = null;
     setAssistState(IDLE);
   }, []);
 
