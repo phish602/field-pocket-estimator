@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
@@ -475,6 +475,198 @@ async function expectSeededBuilderUi({ builderTitle, staleMaterialDesc }) {
   expect(localStorage.getItem(PROJECT_CREATE_SEED_KEY)).toBeNull();
 }
 
+function createContinueCreateDraftState({
+  docType,
+  customerName,
+  projectName,
+  laborHours,
+  laborRate,
+  materialDesc = "",
+  blanketDescription = "",
+}) {
+  const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
+  const state = clone(DEFAULT_STATE);
+
+  state.ui = {
+    ...state.ui,
+    docType: normalizedDocType,
+    materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
+  };
+  state.customer = {
+    ...state.customer,
+    id: `${normalizedDocType}_continue_customer`,
+    name: customerName,
+    fullName: customerName,
+    displayName: customerName,
+    address: `${customerName} Address`,
+    city: "Phoenix",
+    state: "AZ",
+    zip: "85001",
+    projectName,
+    projectNumber: `${normalizedDocType.toUpperCase()}-CONTINUE`,
+    projectAddress: `${projectName} Address`,
+    projectSameAsCustomer: false,
+  };
+  state.job = {
+    ...state.job,
+    docNumber: normalizedDocType === "invoice" ? "INV-2201" : "EST-2201",
+    location: `${projectName} Site`,
+  };
+  state.projectId = `${normalizedDocType}_continue_project`;
+  state.scopeNotes = normalizedDocType === "invoice" ? "" : `${projectName} scope notes`;
+  state.tradeInsert = normalizedDocType === "invoice"
+    ? { key: "", text: "" }
+    : { key: "painting", text: "Painting" };
+  state.labor = {
+    ...state.labor,
+    hazardPct: 0,
+    riskPct: 0,
+    multiplier: 1,
+    lines: [
+      {
+        id: `${normalizedDocType}_continue_labor`,
+        role: "tech",
+        label: "Technician",
+        hours: laborHours,
+        rate: laborRate,
+        trueRateInternal: "55",
+        internalRate: "55",
+        qty: "1",
+        markupPct: "12",
+      },
+    ],
+  };
+
+  if (normalizedDocType === "invoice") {
+    state.invoiceNumber = "INV-2201";
+    state.estimateNumber = "EST-2101";
+    state.materials = {
+      ...state.materials,
+      items: [],
+      markupPct: 0,
+      blanketCost: "450",
+      blanketInternalCost: "300",
+      materialsBlanketDescription: blanketDescription,
+    };
+  } else {
+    state.materials = {
+      ...state.materials,
+      items: [
+        {
+          id: `${normalizedDocType}_continue_material`,
+          desc: materialDesc,
+          qty: "2",
+          unitCostInternal: "10",
+          costInternal: "20",
+          priceEach: "25",
+        },
+      ],
+      markupPct: 0,
+      blanketCost: "",
+      blanketInternalCost: "",
+      materialsBlanketDescription: "",
+    };
+  }
+
+  return state;
+}
+
+function seedContinueCreateDraft(draftState) {
+  const draftRaw = JSON.stringify(draftState);
+  const draftDocType = draftState?.ui?.docType === "invoice" ? "invoice" : "estimate";
+
+  localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+  localStorage.removeItem(STORAGE_KEYS.ESTIMATES);
+  localStorage.removeItem(STORAGE_KEYS.INVOICES);
+  localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+  localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+  localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+
+  if (draftDocType === "invoice") {
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([{ id: "saved_invoice_1", docType: "invoice" }]));
+    localStorage.setItem(EDIT_INVOICE_TARGET_KEY, "saved_invoice_1");
+    localStorage.setItem(ACTIVE_EDIT_CONTEXT_KEY, JSON.stringify({ type: "invoice", id: "saved_invoice_1" }));
+  } else {
+    localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([{ id: "saved_estimate_1", docType: "estimate" }]));
+    localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, "saved_estimate_1");
+    localStorage.setItem(ACTIVE_EDIT_CONTEXT_KEY, JSON.stringify({ type: "estimate", id: "saved_estimate_1" }));
+  }
+
+  localStorage.setItem(
+    STORAGE_KEYS.CUSTOMERS,
+    JSON.stringify([
+      {
+        id: draftState?.customer?.id || "",
+        name: draftState?.customer?.name || "",
+        fullName: draftState?.customer?.fullName || draftState?.customer?.name || "",
+        displayName: draftState?.customer?.displayName || draftState?.customer?.name || "",
+        address: draftState?.customer?.address || "",
+        city: draftState?.customer?.city || "",
+        state: draftState?.customer?.state || "",
+        zip: draftState?.customer?.zip || "",
+        projectName: draftState?.customer?.projectName || "",
+        projectNumber: draftState?.customer?.projectNumber || "",
+        projectAddress: draftState?.customer?.projectAddress || "",
+      },
+    ])
+  );
+
+  return draftRaw;
+}
+
+async function openContinueCreateFlow(intent = "estimate") {
+  render(<App />);
+
+  fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+  const startNewDialog = await screen.findByRole("dialog", { name: /start new/i });
+  fireEvent.click(
+    within(startNewDialog).getByRole("button", { name: intent === "invoice" ? /^invoice$/i : /^estimate$/i })
+  );
+
+  const continueDialog = await screen.findByRole("dialog", { name: /start new estimate/i });
+  fireEvent.click(within(continueDialog).getByRole("button", { name: /^continue$/i }));
+
+  await screen.findByText(intent === "invoice" ? "Invoice Builder" : "Estimate Builder");
+}
+
+function readStoredEstimatorState() {
+  const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE) || "";
+  return {
+    raw,
+    parsed: raw ? JSON.parse(raw) : null,
+  };
+}
+
+function readLastMountedBuilderState() {
+  const state = mockInitialBuilderStates[mockInitialBuilderStates.length - 1] || {};
+  return {
+    state,
+    raw: JSON.stringify(state),
+  };
+}
+
+async function expectBuilderFieldValues({ customerName, projectName, laborHours, laborRate }) {
+  await waitFor(() => {
+    expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customerName);
+    expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue(projectName);
+    expect(screen.getByPlaceholderText("Hours")).toHaveValue(laborHours);
+    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue(laborRate);
+  });
+}
+
+async function expectBlankBuilderFields() {
+  await waitFor(() => {
+    expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
+  });
+}
+
 describe("App Project Detail seeded new-document launches", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -545,5 +737,147 @@ describe("App Project Detail seeded new-document launches", () => {
       staleMaterialDesc: "Stale invoice material",
     });
     expectResetStorage("Stale invoice material");
+  });
+});
+
+describe("App Continue Create draft handoff", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+    mockInitialBuilderStates.length = 0;
+    projectDetailScreenModule.__resetProjectDetailTarget();
+  });
+
+  test("preserves an estimate-shaped draft when Continue Create reopens estimate intent", async () => {
+    const draftState = createContinueCreateDraftState({
+      docType: "estimate",
+      customerName: "Estimate Continue Customer",
+      projectName: "Estimate Continue Project",
+      laborHours: "7",
+      laborRate: "88",
+      materialDesc: "Estimate continue material",
+    });
+
+    const draftRaw = seedContinueCreateDraft(draftState);
+
+    await openContinueCreateFlow("estimate");
+    await expectBuilderFieldValues({
+      customerName: "Estimate Continue Customer",
+      projectName: "Estimate Continue Project",
+      laborHours: "7",
+      laborRate: "88",
+    });
+
+    expect(screen.getByText("Estimate continue material")).toBeInTheDocument();
+
+    const storedState = readStoredEstimatorState();
+    const mountedState = readLastMountedBuilderState();
+
+    expect(storedState.raw).toBe(draftRaw);
+    expect(storedState.parsed?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
+    expect(storedState.parsed?.customer?.name).toBe("Estimate Continue Customer");
+    expect(storedState.parsed?.customer?.projectName).toBe("Estimate Continue Project");
+    expect(storedState.parsed?.labor?.lines?.[0]?.hours).toBe("7");
+    expect(storedState.parsed?.labor?.lines?.[0]?.rate).toBe("88");
+    expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "estimate" }));
+    expect(mountedState.raw).toContain("Estimate Continue Customer");
+    expect(mountedState.raw).toContain("Estimate continue material");
+  });
+
+  test("preserves an invoice-shaped draft when Continue Create reopens invoice intent", async () => {
+    const draftState = createContinueCreateDraftState({
+      docType: "invoice",
+      customerName: "Invoice Continue Customer",
+      projectName: "Invoice Continue Project",
+      laborHours: "11",
+      laborRate: "145",
+      blanketDescription: "Invoice continue blanket",
+    });
+
+    const draftRaw = seedContinueCreateDraft(draftState);
+
+    await openContinueCreateFlow("invoice");
+    await expectBuilderFieldValues({
+      customerName: "Invoice Continue Customer",
+      projectName: "Invoice Continue Project",
+      laborHours: "11",
+      laborRate: "145",
+    });
+
+    const storedState = readStoredEstimatorState();
+    const mountedState = readLastMountedBuilderState();
+
+    expect(storedState.raw).toBe(draftRaw);
+    expect(storedState.parsed?.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
+    expect(storedState.parsed?.customer?.name).toBe("Invoice Continue Customer");
+    expect(storedState.parsed?.customer?.projectName).toBe("Invoice Continue Project");
+    expect(storedState.parsed?.labor?.lines?.[0]?.hours).toBe("11");
+    expect(storedState.parsed?.labor?.lines?.[0]?.rate).toBe("145");
+    expect(storedState.parsed?.materials?.materialsBlanketDescription).toBe("Invoice continue blanket");
+    expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
+    expect(mountedState.raw).toContain("Invoice Continue Customer");
+    expect(mountedState.raw).toContain("Invoice continue blanket");
+  });
+
+  test("replaces an estimate-shaped draft with a clean invoice-safe state when Continue Create requests invoice intent", async () => {
+    const draftState = createContinueCreateDraftState({
+      docType: "estimate",
+      customerName: "Cross Estimate Customer",
+      projectName: "Cross Estimate Project",
+      laborHours: "17",
+      laborRate: "88",
+      materialDesc: "Cross estimate material",
+    });
+
+    const draftRaw = seedContinueCreateDraft(draftState);
+
+    await openContinueCreateFlow("invoice");
+    await expectBlankBuilderFields();
+
+    expect(screen.queryByText("Cross estimate material")).not.toBeInTheDocument();
+
+    const storedState = readStoredEstimatorState();
+    const mountedState = readLastMountedBuilderState();
+
+    expect(storedState.raw).not.toBe(draftRaw);
+    expect(storedState.parsed?.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
+    expect(storedState.raw).not.toContain("Cross Estimate Customer");
+    expect(storedState.raw).not.toContain("Cross Estimate Project");
+    expect(storedState.raw).not.toContain("17");
+    expect(storedState.raw).not.toContain("88");
+    expect(storedState.raw).not.toContain("Cross estimate material");
+    expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
+    expect(mountedState.raw).not.toContain("Cross Estimate Customer");
+    expect(mountedState.raw).not.toContain("Cross estimate material");
+  });
+
+  test("replaces an invoice-shaped draft with a clean estimate-safe state when Continue Create requests estimate intent", async () => {
+    const draftState = createContinueCreateDraftState({
+      docType: "invoice",
+      customerName: "Cross Invoice Customer",
+      projectName: "Cross Invoice Project",
+      laborHours: "23",
+      laborRate: "144",
+      blanketDescription: "Cross invoice blanket",
+    });
+
+    const draftRaw = seedContinueCreateDraft(draftState);
+
+    await openContinueCreateFlow("estimate");
+    await expectBlankBuilderFields();
+
+    const storedState = readStoredEstimatorState();
+    const mountedState = readLastMountedBuilderState();
+
+    expect(storedState.raw).not.toBe(draftRaw);
+    expect(storedState.parsed?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
+    expect(storedState.raw).not.toContain("Cross Invoice Customer");
+    expect(storedState.raw).not.toContain("Cross Invoice Project");
+    expect(storedState.raw).not.toContain("23");
+    expect(storedState.raw).not.toContain("144");
+    expect(storedState.raw).not.toContain("Cross invoice blanket");
+    expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
+    expect(mountedState.raw).not.toContain("Cross Invoice Customer");
+    expect(mountedState.raw).not.toContain("Cross invoice blanket");
   });
 });
