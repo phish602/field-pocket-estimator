@@ -11510,7 +11510,9 @@ app.post("/api/ai-assist", async (req, res) => {
       scopeMode: normalizedScopeMode,
       traceId: _tid,
     });
-    const raw = String(assistResult?.raw || "");
+    const raw = typeof assistResult === "string"
+      ? assistResult
+      : String(assistResult?.raw || "");
     const parsed = assistResult?.parsed
       || (typeof sectionDef.parseResponse === "function"
         ? sectionDef.parseResponse(raw, { context: normalizedContext, userInput: String(userInput || "") })
