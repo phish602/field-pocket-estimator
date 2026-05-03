@@ -541,4 +541,146 @@ describe("EstimateForm labor AI assist writeback", () => {
       expect(mockSubmitMaterialsAssist).toHaveBeenCalledWith("3 toilets, wax rings, closet bolts, supply lines, caulk");
     });
   });
+
+  test("does not replay the materials request when a mode-switch review is kept current", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    state.ui.materialsMode = "blanket";
+    let currentMaterialsAssistState = {
+      phase: "review",
+      input: "3 toilets, wax rings, closet bolts, supply lines, caulk",
+      result: {
+        writes: {
+          modeMismatch: {
+            currentMode: "blanket",
+            recommendedMode: "itemized",
+            message: "This request fits the other materials mode better.",
+          },
+        },
+      },
+    };
+
+    mockCloseMaterialsAssist.mockImplementation(() => {
+      currentMaterialsAssistState = { phase: "idle", input: "" };
+    });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: (...args) => {
+        const [path, value] = args;
+        mockPatch(...args);
+        if (path === "ui.materialsMode") {
+          state.ui.materialsMode = value;
+        }
+      },
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return {
+          assistState: currentMaterialsAssistState,
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        };
+      }
+      return buildIdleAssistReturn();
+    });
+
+    const view = render(<EstimateForm />);
+    mockPatch.mockClear();
+    mockSubmitMaterialsAssist.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /keep current/i }));
+    view.rerender(<EstimateForm />);
+
+    await waitFor(() => {
+      expect(mockCloseMaterialsAssist).toHaveBeenCalledTimes(1);
+    });
+    expect(mockPatch).not.toHaveBeenCalledWith("ui.materialsMode", expect.anything());
+    expect(mockSubmitMaterialsAssist).not.toHaveBeenCalled();
+  });
+
+  test("does not replay the materials request when a mode-switch review is closed", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    state.ui.materialsMode = "blanket";
+    let currentMaterialsAssistState = {
+      phase: "review",
+      input: "3 toilets, wax rings, closet bolts, supply lines, caulk",
+      result: {
+        writes: {
+          modeMismatch: {
+            currentMode: "blanket",
+            recommendedMode: "itemized",
+            message: "This request fits the other materials mode better.",
+          },
+        },
+      },
+    };
+
+    mockCloseMaterialsAssist.mockImplementation(() => {
+      currentMaterialsAssistState = { phase: "idle", input: "" };
+    });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: (...args) => {
+        const [path, value] = args;
+        mockPatch(...args);
+        if (path === "ui.materialsMode") {
+          state.ui.materialsMode = value;
+        }
+      },
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return {
+          assistState: currentMaterialsAssistState,
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        };
+      }
+      return buildIdleAssistReturn();
+    });
+
+    const view = render(<EstimateForm />);
+    mockPatch.mockClear();
+    mockSubmitMaterialsAssist.mockClear();
+
+    fireEvent.click(screen.getByLabelText(/close/i));
+    view.rerender(<EstimateForm />);
+
+    await waitFor(() => {
+      expect(mockCloseMaterialsAssist).toHaveBeenCalledTimes(1);
+    });
+    expect(mockPatch).not.toHaveBeenCalledWith("ui.materialsMode", expect.anything());
+    expect(mockSubmitMaterialsAssist).not.toHaveBeenCalled();
+  });
 });
