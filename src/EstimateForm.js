@@ -1422,6 +1422,9 @@ export default function EstimateForm(props) {
   // ── Section AI Assist ──────────────────────────────────────────────────────
   const laborAssist = useAiAssist("labor", state);
   const materialsAssist = useAiAssist("materials", state);
+  const handleSuggestLaborFromScope = useCallback(() => {
+    laborAssist.submit("", { laborRequestMode: "from_scope" });
+  }, [laborAssist]);
   const scopeAssistConfig = getAssistConfig("scope");
   const laborAssistConfig = getAssistConfig("labor");
   const materialsAssistConfig = getAssistConfig("materials");
@@ -5457,6 +5460,15 @@ export default function EstimateForm(props) {
               title="AI Assist — suggest labor lines from scope"
             >
               ✦ AI Assist
+            </button>
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              style={styles.aiAssistBtn}
+              onClick={handleSuggestLaborFromScope}
+              title="Suggest labor lines from the current scope and job context"
+            >
+              Suggest Labor from Scope
             </button>
             {!laborOpen && (
               <button
