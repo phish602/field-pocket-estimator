@@ -6183,8 +6183,11 @@ function mergeExactDuplicateLaborLines(payload) {
 
     const eligibleForMerge = Boolean(roleKey)
       && Number.isFinite(hours)
+      && hours > 0
       && Number.isFinite(rate)
-      && Number.isFinite(qty);
+      && rate > 0
+      && Number.isFinite(qty)
+      && qty >= 1;
 
     if (!eligibleForMerge) {
       mergedLines.push(line);
@@ -6207,7 +6210,7 @@ function mergeExactDuplicateLaborLines(payload) {
     }
 
     const existingHours = Number(existingLine.hours);
-    if (!Number.isFinite(existingHours)) {
+    if (!Number.isFinite(existingHours) || existingHours <= 0) {
       mergedLines.push(line);
       return;
     }
