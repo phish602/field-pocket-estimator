@@ -2503,6 +2503,28 @@ export default function EstimateForm(props) {
         return result;
       }
 
+      if (result?.validation?.valid === false) {
+        const validationErrorMessage = String(result?.validation?.error || "").trim() || "Could not generate a result. Try adding more detail.";
+        if (traceId) {
+          logFinalDecision("rejected_validation", {
+            blocked: false,
+            excerpt: scopeNotesValue,
+            result,
+            validationError: validationErrorMessage,
+          });
+        }
+        if (restorePreviousReviewForBlockedRefine(validationErrorMessage)) {
+          return result;
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: validationErrorMessage,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+
       if (traceId) {
         logFinalDecision("accepted_review", {
           backendValidated: result?.validation?.valid === true,
@@ -2529,11 +2551,6 @@ export default function EstimateForm(props) {
           expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
           serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
         });
-        if (result?.validation && result.validation.valid === false) {
-          console.log(`[ai-assist:${traceId}] scope_backend_validation_ignored`, {
-            reason: String(result?.validation?.error || "").slice(0, 120),
-          });
-        }
       }
 
       setScopeAssistState({ phase: "review", input: normalizedInput, result, runtime: runtimeMeta });

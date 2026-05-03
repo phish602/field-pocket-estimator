@@ -473,6 +473,62 @@ describe("EstimateForm labor AI assist writeback", () => {
     expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", expect.anything());
   });
 
+  test("fails closed when returned invalid scope validation has non-empty scope text", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    const invalidSummaryWrapperScope = "Scope includes labor, materials, equipment, cleanup, and completion of the requested work.";
+    mockRequestSectionAssist.mockResolvedValue({
+      writes: {
+        scopeNotes: invalidSummaryWrapperScope,
+      },
+      validation: { valid: false, error: "Generated scope is too generic." },
+    });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: mockPatch,
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return buildIdleAssistReturn({
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        });
+      }
+      return buildIdleAssistReturn();
+    });
+
+    render(<EstimateForm />);
+    mockPatch.mockClear();
+
+    fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
+    fireEvent.change(screen.getByPlaceholderText(/describe the work.*interior repaint, 3 rooms, 2 coats, patch drywall near windows/i), {
+      target: { value: "replace ceiling tiles in two offices" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /generate scope/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/generated scope is too generic\./i)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /accept draft/i })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(invalidSummaryWrapperScope);
+    expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", invalidSummaryWrapperScope);
+  });
+
   test("restores the prior scope review when a refine result is blocked as scaffold", async () => {
     const state = createState({ laborLines: [createBlankStarterLine()] });
     mockRequestSectionAssist
@@ -555,10 +611,12 @@ describe("EstimateForm labor AI assist writeback", () => {
         },
         validation: { valid: true },
       })
-      .mockRejectedValueOnce(Object.assign(new Error("Generated scope is too generic."), {
-        assistSafeMessage: "Generated scope is too generic.",
-        blockedScopeNotes: blockedSummaryWrapperScope,
-      }));
+      .mockResolvedValueOnce({
+        writes: {
+          scopeNotes: blockedSummaryWrapperScope,
+        },
+        validation: { valid: false, error: "Generated scope is too generic." },
+      });
 
     mockUseEstimatorState.mockImplementation(() => ({
       state,
