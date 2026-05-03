@@ -9,6 +9,7 @@ const IDLE = { phase: "idle" };
 const DEV = process.env.NODE_ENV === "development";
 const AI_ASSIST_BUSY_MESSAGE = "AI assist is temporarily busy. Please wait a few seconds and try again.";
 const AI_ASSIST_GENERIC_MESSAGE = "AI assist couldn’t complete that request right now. Please try again.";
+const LABOR_AI_ASSIST_GUIDANCE_MESSAGE = "I could not build labor rows from that. Add the trade, crew role, hours, or rate and try again.";
 
 function looksLikeBusyAssistError(value) {
   const text = String(value || "").trim();
@@ -55,6 +56,25 @@ function toSafeAssistErrorMessage(error, fallbackMessage = AI_ASSIST_GENERIC_MES
   if (looksLikeBusyAssistError(rawMessage)) return AI_ASSIST_BUSY_MESSAGE;
   if (looksLikeUnsafeAssistError(rawMessage)) return fallbackMessage;
   return rawMessage.length > 220 ? `${rawMessage.slice(0, 219)}...` : rawMessage;
+}
+
+function resolveLaborAssistErrorMessage(error, fallbackMessage = LABOR_AI_ASSIST_GUIDANCE_MESSAGE) {
+  const rawMessage = String(error?.message || error || "").trim();
+  if (looksLikeBusyAssistError(rawMessage)) {
+    return toSafeAssistErrorMessage(error, AI_ASSIST_BUSY_MESSAGE);
+  }
+  if (looksLikeUnsafeAssistError(rawMessage)) {
+    return fallbackMessage;
+  }
+  if (
+    !rawMessage
+    || /no labor lines were generated/i.test(rawMessage)
+    || /some lines are missing role, hours, or rate/i.test(rawMessage)
+    || /could not generate a result/i.test(rawMessage)
+  ) {
+    return fallbackMessage;
+  }
+  return toSafeAssistErrorMessage(error, fallbackMessage);
 }
 
 export function useAiAssist(sectionKey, state) {
@@ -105,10 +125,15 @@ export function useAiAssist(sectionKey, state) {
             setAssistState({
               phase: "error",
               input: userInput,
-              error: toSafeAssistErrorMessage(
-                { message: result.validation.error || "" },
-                "Could not generate a result. Try adding more detail."
-              ),
+              error: sectionKey === "labor"
+                ? resolveLaborAssistErrorMessage(
+                    { message: result.validation.error || "" },
+                    LABOR_AI_ASSIST_GUIDANCE_MESSAGE
+                  )
+                : toSafeAssistErrorMessage(
+                    { message: result.validation.error || "" },
+                    "Could not generate a result. Try adding more detail."
+                  ),
             });
             return;
           }
@@ -124,7 +149,9 @@ export function useAiAssist(sectionKey, state) {
           setAssistState({
             phase: "error",
             input: userInput,
-            error: toSafeAssistErrorMessage(e),
+            error: sectionKey === "labor"
+              ? resolveLaborAssistErrorMessage(e, LABOR_AI_ASSIST_GUIDANCE_MESSAGE)
+              : toSafeAssistErrorMessage(e),
           });
         }
       })();
