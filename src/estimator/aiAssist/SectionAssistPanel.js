@@ -734,6 +734,9 @@ function LaborLinesReview({ result, onAccept, onClose }) {
           );
         })}
       </div>
+      <p style={{ ...S.helpText, fontSize: 12, color: "rgba(230,241,248,0.38)", marginTop: -4 }}>
+        Append Lines keeps your current rows and adds these below. Replace Existing clears your current rows and uses only these suggestions.
+      </p>
       <div style={S.actionsRow}>
         <button style={S.cancelBtn} type="button" onClick={onClose}>
           Cancel
