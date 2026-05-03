@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockPatch = jest.fn();
 const mockUseEstimatorState = jest.fn();
@@ -11,6 +11,7 @@ const mockCloseMaterialsAssist = jest.fn();
 const mockSubmitMaterialsAssist = jest.fn();
 const mockOpenMaterialsAssist = jest.fn();
 const EXPECTED_DEFAULT_MARKUP_PCT = "12";
+const mockRequestSectionAssist = jest.fn();
 
 jest.mock("./estimator/useEstimatorState", () => ({
   __esModule: true,
@@ -20,6 +21,10 @@ jest.mock("./estimator/useEstimatorState", () => ({
 
 jest.mock("./estimator/aiAssist/useAiAssist", () => ({
   useAiAssist: (...args) => mockUseAiAssist(...args),
+}));
+
+jest.mock("./estimator/aiAssist/service", () => ({
+  requestSectionAssist: (...args) => mockRequestSectionAssist(...args),
 }));
 
 jest.mock("./estimator/guided/useGuidedBuild", () => ({
@@ -182,6 +187,11 @@ function buildIdleAssistReturn({ open, close, submit } = {}) {
 }
 
 function setup({ state, laborWrites }) {
+  mockRequestSectionAssist.mockResolvedValue({
+    writes: { scopeNotes: "Replace existing ceiling tiles and dispose of debris." },
+    validation: { valid: true },
+  });
+
   mockUseEstimatorState.mockImplementation(() => ({
     state,
     patch: mockPatch,
@@ -407,5 +417,128 @@ describe("EstimateForm labor AI assist writeback", () => {
 
     expect(mockPatch.mock.calls.filter(([path]) => path === "labor.lines")).toHaveLength(0);
     expect(mockCloseLaborAssist).not.toHaveBeenCalled();
+  });
+
+  test("blocks explicit scaffold scope output before review", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    mockRequestSectionAssist.mockResolvedValue({
+      writes: {
+        scopeNotes: "Complete the described scope and clean up the work area.",
+      },
+      validation: { valid: true },
+    });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: mockPatch,
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return buildIdleAssistReturn({
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        });
+      }
+      return buildIdleAssistReturn();
+    });
+
+    render(<EstimateForm />);
+    mockPatch.mockClear();
+
+    fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
+    fireEvent.change(screen.getByPlaceholderText(/describe the work.*interior repaint, 3 rooms, 2 coats, patch drywall near windows/i), {
+      target: { value: "replace ceiling tiles in two offices" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /generate scope/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/scope draft was too generic\. add more job detail and try again\./i)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /accept draft/i })).not.toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", expect.anything());
+  });
+
+  test("preserves the first materials request when switching modes", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    state.ui.materialsMode = "blanket";
+    let currentMaterialsAssistState = {
+      phase: "review",
+      input: "3 toilets, wax rings, closet bolts, supply lines, caulk",
+      result: {
+        writes: {
+          modeMismatch: {
+            currentMode: "blanket",
+            recommendedMode: "itemized",
+            message: "This request fits the other materials mode better.",
+          },
+        },
+      },
+    };
+
+    mockCloseMaterialsAssist.mockImplementation(() => {
+      currentMaterialsAssistState = { phase: "idle", input: "" };
+    });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: (...args) => {
+        const [path, value] = args;
+        mockPatch(...args);
+        if (path === "ui.materialsMode") {
+          state.ui.materialsMode = value;
+        }
+      },
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return {
+          assistState: currentMaterialsAssistState,
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        };
+      }
+      return buildIdleAssistReturn();
+    });
+
+    const view = render(<EstimateForm />);
+    mockPatch.mockClear();
+    mockSubmitMaterialsAssist.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /switch to itemized/i }));
+    view.rerender(<EstimateForm />);
+
+    await waitFor(() => {
+      expect(mockSubmitMaterialsAssist).toHaveBeenCalledWith("3 toilets, wax rings, closet bolts, supply lines, caulk");
+    });
   });
 });

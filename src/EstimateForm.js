@@ -159,6 +159,7 @@ const SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS = 38000;
 const SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE = "AI assist took too long to respond. Please try again.";
 const SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE = "AI assist could not reach the local AI server.";
 const SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE = "AI assist hit an internal error. Please try again.";
+const SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE = "Scope draft was too generic. Add more job detail and try again.";
 
 function readAndConsumeProjectCreateSeed() {
   try {
@@ -1448,6 +1449,7 @@ export default function EstimateForm(props) {
   const scopeAssistSubmitSeqRef = useRef(0);
   const scopeRefineInFlightRef = useRef(null);
   const [scopeAssistState, setScopeAssistState] = useState({ phase: "idle" });
+  const pendingMaterialsModeSwitchRequestRef = useRef(null);
   const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
   const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
   const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
@@ -2447,6 +2449,22 @@ export default function EstimateForm(props) {
           _scopeOutcome: String(runtimeMeta?.outcome || ""),
           _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
         });
+      }
+      if (explicitScaffoldBlocked) {
+        if (traceId) {
+          logFinalDecision("rejected_explicit_scaffold", {
+            blocked: true,
+            excerpt: scopeNotesValue,
+            result,
+          });
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE,
+          runtime: runtimeMeta,
+        });
+        return result;
       }
 
       if (!localClassification.valid) {
@@ -4378,6 +4396,14 @@ export default function EstimateForm(props) {
       }
     }
   };
+  useEffect(() => {
+    const pending = pendingMaterialsModeSwitchRequestRef.current;
+    if (!pending) return;
+    if (materialsAssist.assistState.phase !== "idle") return;
+    if (materialsMode !== pending.mode) return;
+    pendingMaterialsModeSwitchRequestRef.current = null;
+    materialsAssist.submit(pending.input);
+  }, [materialsAssist, materialsAssist.assistState.phase, materialsMode]);
   const materialsCost = String(state?.materials?.blanketCost ?? "");
   const setMaterialsCost = (v) => patch("materials.blanketCost", v);
   const materialsMarkupPct = String(state?.materials?.markupPct ?? "");
@@ -5989,6 +6015,10 @@ export default function EstimateForm(props) {
           onSubmit={materialsAssist.submit}
           onAccept={(writes, action) => {
             if (action?.type === "switchMode") {
+              pendingMaterialsModeSwitchRequestRef.current = {
+                mode: action.mode === "itemized" ? "itemized" : "blanket",
+                input: String(materialsAssist.assistState?.input || ""),
+              };
               setMaterialsMode(action.mode);
               if (action.mode === "itemized") setMaterialsOpen(true);
               materialsAssist.close();
