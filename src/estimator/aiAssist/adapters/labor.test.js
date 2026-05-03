@@ -207,4 +207,32 @@ describe("labor assist adapter", () => {
       error: "Some lines are missing role, hours, or rate.",
     });
   });
+
+  test("rejects rows with negative hours before review", () => {
+    const writes = laborAssistConfig.localAdapter({
+      lines: [
+        { role: "Foreman", hours: -4, rate: 65 },
+      ],
+    });
+
+    expect(writes).toBeNull();
+    expect(laborAssistConfig.validationRules(writes)).toEqual({
+      valid: false,
+      error: "No labor lines were generated.",
+    });
+  });
+
+  test("rejects rows with negative rate before review", () => {
+    const writes = laborAssistConfig.localAdapter({
+      lines: [
+        { role: "Foreman", hours: 8, rate: -65 },
+      ],
+    });
+
+    expect(writes).toBeNull();
+    expect(laborAssistConfig.validationRules(writes)).toEqual({
+      valid: false,
+      error: "No labor lines were generated.",
+    });
+  });
 });

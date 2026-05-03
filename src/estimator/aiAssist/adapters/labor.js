@@ -139,8 +139,10 @@ export const laborAssistConfig = {
       .slice(0, 6)
       .map((line, i) => {
         const { role, label } = resolveRoleFromLabel(line?.role || line?.label || line?.roleLabel);
-        const hours = String(Number(line?.hours) || "").trim();
-        const rate = String(Number(line?.rate) || "").trim();
+        const rawHours = Number(line?.hours);
+        const rawRate = Number(line?.rate);
+        const hours = Number.isFinite(rawHours) && rawHours > 0 ? String(rawHours).trim() : "";
+        const rate = Number.isFinite(rawRate) && rawRate > 0 ? String(rawRate).trim() : "";
         const qty = normalizeQty(line?.qty ?? line?.headcount);
         return {
           id: makeLineId(i),
