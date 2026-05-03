@@ -67,6 +67,8 @@ const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
 const CUSTOM_TRADE_STARTERS_KEY = STORAGE_KEYS.SCOPE_TRADE_STARTERS || "estipaid-scope-trade-starters-v1";
 const CREATE_CUSTOM_TRADE_STARTER_VALUE = "__create_custom_trade_starter__";
+const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
+const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
 const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
 const I18N = {
   en: {
@@ -775,6 +777,82 @@ const LABOR_PRESETS = [
   { key: "technician", label: "Technician" },
   { key: "operator", label: "Equipment Operator" },
 ];
+
+function normalizeLaborRoleLabel(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLaborRoleLabelKey(value) {
+  return normalizeLaborRoleLabel(value).toLowerCase();
+}
+
+const LABOR_PRESET_BY_NORMALIZED_LABEL = LABOR_PRESETS.reduce((map, preset) => {
+  map.set(normalizeLaborRoleLabelKey(preset.label), preset);
+  return map;
+}, new Map());
+
+function findLaborPresetByLabel(label = "") {
+  return LABOR_PRESET_BY_NORMALIZED_LABEL.get(normalizeLaborRoleLabelKey(label)) || null;
+}
+
+function normalizeCustomLaborRoleList(records = []) {
+  const seen = new Set();
+  const next = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const rawLabel = typeof record === "string" ? record : record?.label;
+    const label = normalizeLaborRoleLabel(rawLabel);
+    const labelKey = normalizeLaborRoleLabelKey(label);
+    if (!labelKey || seen.has(labelKey) || LABOR_PRESET_BY_NORMALIZED_LABEL.has(labelKey)) continue;
+    seen.add(labelKey);
+    next.push(label);
+  }
+  return next;
+}
+
+function readStoredCustomLaborRoles() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_LABOR_ROLES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return normalizeCustomLaborRoleList(parsed);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredCustomLaborRoles(labels = []) {
+  const next = normalizeCustomLaborRoleList(labels);
+  try {
+    const value = JSON.stringify(next);
+    localStorage.setItem(CUSTOM_LABOR_ROLES_KEY, value);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: CUSTOM_LABOR_ROLES_KEY, value } }));
+    }
+  } catch {}
+  return next;
+}
+
+function findSavedCustomLaborRoleLabel(label = "", customLaborRoles = []) {
+  const labelKey = normalizeLaborRoleLabelKey(label);
+  if (!labelKey) return "";
+  return customLaborRoles.find((savedLabel) => normalizeLaborRoleLabelKey(savedLabel) === labelKey) || "";
+}
+
+function getLegacyLaborRoleLabel(label = "", customLaborRoles = []) {
+  const rawLabel = String(label || "").trim();
+  const labelKey = normalizeLaborRoleLabelKey(rawLabel);
+  if (!labelKey) return "";
+  if (LABOR_PRESET_BY_NORMALIZED_LABEL.has(labelKey)) return "";
+  if (findSavedCustomLaborRoleLabel(rawLabel, customLaborRoles)) return "";
+  return rawLabel;
+}
+
+function resolveLaborRoleSelectValue(label = "", customLaborRoles = []) {
+  const legacyLabel = getLegacyLaborRoleLabel(label, customLaborRoles);
+  if (legacyLabel) return legacyLabel;
+  const preset = findLaborPresetByLabel(label);
+  if (preset) return preset.label;
+  return findSavedCustomLaborRoleLabel(label, customLaborRoles) || String(label || "").trim();
+}
 
 // TEMPLATE ADD-ONS (TRADE INSERTS)
 const SCOPE_TRADE_INSERTS = [
@@ -1585,6 +1663,24 @@ export default function EstimateForm(props) {
     };
   }, []);
 
+  useEffect(() => {
+    const refreshCustomLaborRoles = (e) => {
+      if (e?.key && e.key !== CUSTOM_LABOR_ROLES_KEY) return;
+      setCustomLaborRoles(readStoredCustomLaborRoles());
+    };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === CUSTOM_LABOR_ROLES_KEY) {
+        setCustomLaborRoles(readStoredCustomLaborRoles());
+      }
+    };
+    window.addEventListener("storage", refreshCustomLaborRoles);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", refreshCustomLaborRoles);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
+  }, []);
+
   const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
@@ -1628,6 +1724,7 @@ export default function EstimateForm(props) {
   const [projectSeedSummary, setProjectSeedSummary] = useState(null);
   const [scopeTemplates, setScopeTemplates] = useState(() => readStoredScopeTemplates());
   const [customTradeStarters, setCustomTradeStarters] = useState(() => readStoredCustomTradeStarters());
+  const [customLaborRoles, setCustomLaborRoles] = useState(() => readStoredCustomLaborRoles());
   const [customTradeStarterEditorOpen, setCustomTradeStarterEditorOpen] = useState(false);
   const [customTradeStarterName, setCustomTradeStarterName] = useState("");
   const [customTradeStarterText, setCustomTradeStarterText] = useState("");
@@ -3478,11 +3575,72 @@ export default function EstimateForm(props) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines[i];
     if (!ln) return;
-    const preset = LABOR_PRESETS.find((p) => p.label === label);
+    const preset = findLaborPresetByLabel(label);
     patchLineByIndex(i, {
-      label: label || "",
+      label: preset?.label || label || "",
       role: preset?.key || "",
     });
+  }
+
+  function buildLaborRoleOptions(lineLabel = "") {
+    const legacyLabel = getLegacyLaborRoleLabel(lineLabel, customLaborRoles);
+    const options = [];
+    if (legacyLabel) {
+      options.push({ value: legacyLabel, label: legacyLabel });
+    }
+    LABOR_PRESETS.forEach((preset) => {
+      options.push({ value: preset.label, label: preset.label });
+    });
+    customLaborRoles.forEach((savedLabel) => {
+      if (findLaborPresetByLabel(savedLabel)) return;
+      options.push({ value: savedLabel, label: savedLabel });
+    });
+    options.push({
+      value: CREATE_NEW_LABOR_ROLE_VALUE,
+      label: lang === "es" ? "Crear nuevo rol…" : "Create new role…",
+    });
+    return options;
+  }
+
+  function handleCreateCustomLaborRole(i) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const currentLabel = lines[i]?.label;
+    const defaultLabel = getLegacyLaborRoleLabel(currentLabel, customLaborRoles) || normalizeLaborRoleLabel(currentLabel);
+    const enteredLabel = window.prompt(
+      lang === "es" ? "Nombra este rol de mano de obra:" : "Name this labor role:",
+      defaultLabel
+    );
+    if (enteredLabel === null) return;
+
+    const nextLabel = normalizeLaborRoleLabel(enteredLabel);
+    if (!nextLabel) {
+      window.alert(lang === "es" ? "Ingresa un nombre de rol antes de guardarlo." : "Enter a role name before saving it.");
+      return;
+    }
+
+    const preset = findLaborPresetByLabel(nextLabel);
+    if (preset) {
+      applyLaborPresetByLabel(i, preset.label);
+      return;
+    }
+
+    const existingCustomLabel = findSavedCustomLaborRoleLabel(nextLabel, customLaborRoles);
+    if (existingCustomLabel) {
+      applyLaborPresetByLabel(i, existingCustomLabel);
+      return;
+    }
+
+    const nextCustomLaborRoles = writeStoredCustomLaborRoles([...customLaborRoles, nextLabel]);
+    setCustomLaborRoles(nextCustomLaborRoles);
+    applyLaborPresetByLabel(i, findSavedCustomLaborRoleLabel(nextLabel, nextCustomLaborRoles) || nextLabel);
+  }
+
+  function handleLaborRoleSelection(i, label) {
+    if (label === CREATE_NEW_LABOR_ROLE_VALUE) {
+      handleCreateCustomLaborRole(i);
+      return;
+    }
+    applyLaborPresetByLabel(i, label);
   }
 
   function patchLineByIndex(i, patchObj) {
@@ -5560,8 +5718,8 @@ export default function EstimateForm(props) {
               : "Use \"Suggest Labor from Scope\" to auto-draft rows from your current scope. \"✦ AI Assist\" lets you add specifics first — crew size, hours, or rates. You can also add lines manually: select a preset to load reference rates, then enter hours."}
           </div>
           {laborLines.map((l, i) => {
-            const presetLabels = LABOR_PRESETS.map((p) => p.label);
-            const hasLegacyLabel = l.label && !presetLabels.includes(l.label);
+            const roleOptions = buildLaborRoleOptions(l.label);
+            const selectedRoleValue = resolveLaborRoleSelectValue(l.label, customLaborRoles);
 
               return (
                 <div
@@ -5574,16 +5732,15 @@ export default function EstimateForm(props) {
                     <div style={styles.label}>{lang === "es" ? "Rol" : "Role"}</div>
                     <select
                       className="pe-input"
-                      value={l.label || ""}
-                      onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
+                      value={selectedRoleValue}
+                      onChange={(e) => handleLaborRoleSelection(i, e.target.value)}
                       title={lang === "es" ? "Rol" : "Role"}
                       style={{ width: "100%" }}
                     >
                       <option value="">{t("selectRole")}</option>
-                      {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
-                      {LABOR_PRESETS.map((p) => (
-                        <option key={p.key} value={p.label}>
-                          {p.label}
+                      {roleOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
                     </select>

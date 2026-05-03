@@ -94,6 +94,7 @@ jest.mock("./utils/settings", () => {
 
 import EstimateForm from "./EstimateForm";
 import { DEFAULT_STATE } from "./estimator/defaultState";
+import { STORAGE_KEYS } from "./constants/storageKeys";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -218,6 +219,58 @@ function setup({ state, laborWrites }) {
   const view = render(<EstimateForm />);
   mockPatch.mockClear();
   return view;
+}
+
+function setupManualLaborEditor({ state, updateLaborLine = jest.fn() }) {
+  mockRequestSectionAssist.mockResolvedValue({
+    writes: { scopeNotes: "Replace existing ceiling tiles and dispose of debris." },
+    validation: { valid: true },
+  });
+
+  mockUseEstimatorState.mockImplementation(() => ({
+    state,
+    patch: mockPatch,
+    dupLaborLine: jest.fn(),
+    removeLaborLine: jest.fn(),
+    updateLaborLine,
+    clearAll: jest.fn(),
+    saveNow: jest.fn(),
+    replaceState: jest.fn(),
+  }));
+
+  mockUseAiAssist.mockImplementation((sectionKey) => {
+    if (sectionKey === "labor") {
+      return buildIdleAssistReturn({
+        open: mockOpenLaborAssist,
+        close: mockCloseLaborAssist,
+        submit: mockSubmitLaborAssist,
+      });
+    }
+    if (sectionKey === "materials") {
+      return buildIdleAssistReturn({
+        open: mockOpenMaterialsAssist,
+        close: mockCloseMaterialsAssist,
+        submit: mockSubmitMaterialsAssist,
+      });
+    }
+    return buildIdleAssistReturn();
+  });
+
+  const view = render(<EstimateForm />);
+  mockPatch.mockClear();
+  return { ...view, updateLaborLine };
+}
+
+function getLaborRoleSelects() {
+  return screen.getAllByTitle(/role/i);
+}
+
+function getSelectOptionLabels(select) {
+  return Array.from(select.querySelectorAll("option")).map((option) => String(option.textContent || ""));
+}
+
+function getOptionValueByLabel(select, matcher) {
+  return Array.from(select.querySelectorAll("option")).find((option) => matcher.test(String(option.textContent || "")))?.value || "";
 }
 
 function getLaborLinesPatchArg() {
@@ -417,6 +470,150 @@ describe("EstimateForm labor AI assist writeback", () => {
 
     expect(mockPatch.mock.calls.filter(([path]) => path === "labor.lines")).toHaveLength(0);
     expect(mockCloseLaborAssist).not.toHaveBeenCalled();
+  });
+
+  test("falls back cleanly when custom labor role storage is malformed", () => {
+    localStorage.setItem(STORAGE_KEYS.CUSTOM_LABOR_ROLES, "{");
+
+    setupManualLaborEditor({ state: createState({ laborLines: [createBlankStarterLine()] }) });
+
+    const labels = getSelectOptionLabels(getLaborRoleSelects()[0]);
+    expect(labels).toContain("Foreman");
+    expect(labels[labels.length - 1]).toMatch(/create new role/i);
+    expect(labels).not.toContain("Pool Maintenance Technician");
+  });
+
+  test("dedupes saved custom labor roles by normalized label and keeps them after built-ins", () => {
+    localStorage.setItem(
+      STORAGE_KEYS.CUSTOM_LABOR_ROLES,
+      JSON.stringify([
+        "Pool Maintenance Technician",
+        { label: " pool   maintenance technician " },
+        "",
+        { label: " " },
+        "Foreman",
+      ])
+    );
+
+    setupManualLaborEditor({ state: createState({ laborLines: [createBlankStarterLine()] }) });
+
+    const labels = getSelectOptionLabels(getLaborRoleSelects()[0]);
+    expect(labels.filter((label) => label === "Pool Maintenance Technician")).toHaveLength(1);
+    expect(labels.filter((label) => label === "Foreman")).toHaveLength(1);
+    expect(labels.indexOf("Equipment Operator")).toBeLessThan(labels.indexOf("Pool Maintenance Technician"));
+    expect(labels[labels.length - 1]).toMatch(/create new role/i);
+  });
+
+  test("creates a custom labor role from the dropdown and makes it available to other rows", async () => {
+    const blankLine = createBlankStarterLine();
+    const manualLine = createManualLaborLine({ id: "manual_2", role: "helper", label: "Helper" });
+    const updateLaborLine = jest.fn();
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("Pool Maintenance Technician");
+
+    try {
+      setupManualLaborEditor({
+        state: createState({ laborLines: [blankLine, manualLine] }),
+        updateLaborLine,
+      });
+
+      const [firstRoleSelect] = getLaborRoleSelects();
+      fireEvent.change(firstRoleSelect, {
+        target: { value: getOptionValueByLabel(firstRoleSelect, /create new role/i) },
+      });
+
+      expect(updateLaborLine).toHaveBeenCalledWith(blankLine.id, {
+        label: "Pool Maintenance Technician",
+        role: "",
+      });
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOM_LABOR_ROLES))).toEqual([
+        "Pool Maintenance Technician",
+      ]);
+
+      await waitFor(() => {
+        expect(getSelectOptionLabels(getLaborRoleSelects()[1])).toContain("Pool Maintenance Technician");
+      });
+    } finally {
+      promptSpy.mockRestore();
+    }
+  });
+
+  test("applies saved custom labor roles without overwriting pricing fields", () => {
+    localStorage.setItem(
+      STORAGE_KEYS.CUSTOM_LABOR_ROLES,
+      JSON.stringify(["Pool Maintenance Technician"])
+    );
+
+    const manualLine = createManualLaborLine({
+      id: "manual_custom_1",
+      role: "",
+      label: "",
+      hours: "8",
+      rate: "62",
+      trueRateInternal: "38",
+      internalRate: "38",
+      qty: "2",
+      markupPct: "25",
+    });
+    const updateLaborLine = jest.fn();
+
+    setupManualLaborEditor({
+      state: createState({ laborLines: [manualLine] }),
+      updateLaborLine,
+    });
+
+    fireEvent.change(getLaborRoleSelects()[0], {
+      target: { value: "Pool Maintenance Technician" },
+    });
+
+    expect(updateLaborLine).toHaveBeenCalledTimes(1);
+    expect(updateLaborLine).toHaveBeenCalledWith(manualLine.id, {
+      label: "Pool Maintenance Technician",
+      role: "",
+    });
+  });
+
+  test("keeps built-in labor preset selection behavior unchanged", () => {
+    const manualLine = createManualLaborLine({
+      id: "manual_builtin_1",
+      role: "",
+      label: "",
+    });
+    const updateLaborLine = jest.fn();
+
+    setupManualLaborEditor({
+      state: createState({ laborLines: [manualLine] }),
+      updateLaborLine,
+    });
+
+    fireEvent.change(getLaborRoleSelects()[0], {
+      target: { value: "Foreman" },
+    });
+
+    expect(updateLaborLine).toHaveBeenCalledWith(manualLine.id, {
+      label: "Foreman",
+      role: "foreman",
+    });
+  });
+
+  test("keeps row-specific legacy labor labels local until explicitly saved", () => {
+    const legacyLine = createManualLaborLine({
+      id: "legacy_row_1",
+      role: "",
+      label: "Pool Maintenance Technician",
+    });
+    const manualLine = createManualLaborLine({ id: "manual_2", role: "helper", label: "Helper" });
+
+    setupManualLaborEditor({
+      state: createState({ laborLines: [legacyLine, manualLine] }),
+    });
+
+    const [legacySelect, otherSelect] = getLaborRoleSelects();
+    const legacyLabels = getSelectOptionLabels(legacySelect);
+    const otherLabels = getSelectOptionLabels(otherSelect);
+
+    expect(legacyLabels[1]).toBe("Pool Maintenance Technician");
+    expect(otherLabels).not.toContain("Pool Maintenance Technician");
+    expect(localStorage.getItem(STORAGE_KEYS.CUSTOM_LABOR_ROLES)).toBeNull();
   });
 
   test("blocks explicit scaffold scope output before review", async () => {
