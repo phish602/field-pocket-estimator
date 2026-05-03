@@ -6156,6 +6156,74 @@ function buildSectionAssistFailure(reason, payload = {}) {
   };
 }
 
+function normalizeLaborDuplicateRoleKey(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function mergeExactDuplicateLaborLines(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.lines)) return payload;
+
+  const mergedLines = [];
+  const mergeIndexByKey = new Map();
+
+  payload.lines.forEach((line) => {
+    if (!line || typeof line !== "object") {
+      mergedLines.push(line);
+      return;
+    }
+
+    const roleText = String(line.role || line.label || "").trim();
+    const roleKey = normalizeLaborDuplicateRoleKey(roleText);
+    const hours = Number(line.hours);
+    const rate = Number(line.rate);
+    const qtyValue = Object.prototype.hasOwnProperty.call(line, "qty")
+      ? line.qty
+      : (Object.prototype.hasOwnProperty.call(line, "headcount") ? line.headcount : 1);
+    const qty = Number(qtyValue);
+
+    const eligibleForMerge = Boolean(roleKey)
+      && Number.isFinite(hours)
+      && Number.isFinite(rate)
+      && Number.isFinite(qty);
+
+    if (!eligibleForMerge) {
+      mergedLines.push(line);
+      return;
+    }
+
+    const mergeKey = `${roleKey}__${rate}__${qty}`;
+    const existingIndex = mergeIndexByKey.get(mergeKey);
+
+    if (existingIndex === undefined) {
+      mergeIndexByKey.set(mergeKey, mergedLines.length);
+      mergedLines.push(line);
+      return;
+    }
+
+    const existingLine = mergedLines[existingIndex];
+    if (!existingLine || typeof existingLine !== "object") {
+      mergedLines.push(line);
+      return;
+    }
+
+    const existingHours = Number(existingLine.hours);
+    if (!Number.isFinite(existingHours)) {
+      mergedLines.push(line);
+      return;
+    }
+
+    mergedLines[existingIndex] = {
+      ...existingLine,
+      hours: existingHours + hours,
+    };
+  });
+
+  return {
+    ...payload,
+    lines: mergedLines,
+  };
+}
+
 function parseRetryAfterMs(value) {
   const raw = String(value || "").trim();
   if (!raw) return 0;
@@ -11532,7 +11600,11 @@ app.post("/api/ai-assist", async (req, res) => {
       return res.json(sectionDef.fallback("groq returned unparseable response"));
     }
 
-    return respondScopeAssist(200, parsed, "ok", "success");
+    const finalizedPayload = normalizedSectionKey === "labor"
+      ? mergeExactDuplicateLaborLines(parsed)
+      : parsed;
+
+    return respondScopeAssist(200, finalizedPayload, "ok", "success");
   } catch (e) {
     if (normalizedSectionKey === "scope") {
       const failure = normalizeScopeAssistFailure(e);
