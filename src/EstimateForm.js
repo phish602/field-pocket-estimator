@@ -5488,10 +5488,10 @@ export default function EstimateForm(props) {
           className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
           style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
-          <div className="pe-muted" style={{ marginTop: 10, marginBottom: 2 }}>
+          <div className="pe-muted" style={{ marginTop: 10, marginBottom: 6 }}>
             {lang === "es"
-              ? "Agrega una línea por rol — selecciona un rol para cargar tarifas de referencia, luego ingresa las horas. + / − ajusta la cantidad en esa línea."
-              : "Add a line per role — select a preset to load reference rates, then enter hours. Use + / − to adjust headcount per line."}
+              ? "Usa \"Sugerir Mano de Obra\" para generar líneas automáticamente desde tu alcance. \"✦ AI Assist\" te permite agregar notas específicas primero — tamaño del equipo, horas o tarifas. También puedes agregar líneas manualmente: selecciona un rol para cargar tarifas de referencia, luego ingresa las horas."
+              : "Use \"Suggest Labor from Scope\" to auto-draft rows from your current scope. \"✦ AI Assist\" lets you add specifics first — crew size, hours, or rates. You can also add lines manually: select a preset to load reference rates, then enter hours."}
           </div>
           {laborLines.map((l, i) => {
             const presetLabels = LABOR_PRESETS.map((p) => p.label);
