@@ -1494,6 +1494,7 @@ export default function EstimateForm(props) {
     saveNow,
     replaceState,
   } = hook({ persistDraft: !isEditMode });
+  const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
   const additionalNotes = String(state?.additionalNotes || "");
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
@@ -1560,6 +1561,10 @@ export default function EstimateForm(props) {
   useEffect(() => {
     isEditModeRef.current = isEditMode;
   }, [isEditMode]);
+
+  useEffect(() => {
+    replaceStateRef.current = replaceState;
+  }, [replaceState]);
 
   useEffect(() => {
     if (!isEditMode) {
@@ -1955,7 +1960,8 @@ export default function EstimateForm(props) {
     if (!isEditMode || !editingRecordId) return;
     const list = isInvoiceEditMode ? readStoredInvoices() : readSavedDocList(ESTIMATES_KEY);
     const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
-    if (!match || typeof replaceState !== "function") {
+    const applyHydratedState = replaceStateRef.current;
+    if (!match || typeof applyHydratedState !== "function") {
       setSavePrompt({
         tone: "error",
         message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Switched to new mode.`,
@@ -1999,7 +2005,7 @@ export default function EstimateForm(props) {
         savedDocCreatedAt: createdAt,
       },
     };
-    replaceState(hydrated, { persistNow: false, persistDraft: false });
+    applyHydratedState(hydrated, { persistNow: false, persistDraft: false });
     const hydratedHazardSelection = deriveSteppedPercentSelection(hydrated?.labor?.hazardPct);
     const hydratedRiskSelection = deriveSteppedPercentSelection(hydrated?.labor?.riskPct);
     setSpecialConditionsOpen(!isSpecialConditionsSectionComplete(
@@ -2027,7 +2033,7 @@ export default function EstimateForm(props) {
       setSearchCustomerText(displayName);
       setCustomerSearchQuery("");
     }
-  }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
+  }, [editingRecordId, isEditMode, isInvoiceEditMode]);
 
   useEffect(() => {
     if (isEditMode) return;
