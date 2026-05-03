@@ -325,6 +325,42 @@ describe("EstimateForm labor AI assist writeback", () => {
     );
   });
 
+  test("preserves specialized free-form labor labels through accept writeback", () => {
+    setup({
+      state: createState({ laborLines: [createBlankStarterLine()] }),
+      laborWrites: {
+        laborLines: [
+          {
+            id: "ai_pool_1",
+            role: "",
+            label: "Pool Maintenance Technician",
+            hours: "7",
+            rate: "95",
+            qty: "1",
+          },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /append lines/i }));
+
+    const nextLines = getLaborLinesPatchArg();
+    expect(nextLines).toHaveLength(1);
+    expect(nextLines[0]).toEqual(
+      expect.objectContaining({
+        id: expect.stringMatching(/^labor_ai_/),
+        role: "",
+        label: "Pool Maintenance Technician",
+        hours: "7",
+        rate: "95",
+        qty: "1",
+        markupPct: EXPECTED_DEFAULT_MARKUP_PCT,
+        trueRateInternal: "0",
+        internalRate: "0",
+      })
+    );
+  });
+
   test("replaces existing manual labor rows only when Replace Existing is chosen", () => {
     const manualLine = createManualLaborLine();
 
