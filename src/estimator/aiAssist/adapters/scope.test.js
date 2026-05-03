@@ -3685,6 +3685,17 @@ describe("scope assist adapter", () => {
     });
   });
 
+  test("rejects generic scope-summary wrapper output at the shared validation contract", () => {
+    const writes = {
+      scopeNotes: "Scope includes painting the house.",
+    };
+
+    expect(scopeAssistConfig.validationRules(writes)).toEqual({
+      valid: false,
+      error: "Generated scope is too generic.",
+    });
+  });
+
   test.each([
     {
       userInput: "replace electrical circuit breakers",

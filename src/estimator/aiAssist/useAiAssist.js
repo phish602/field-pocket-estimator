@@ -118,11 +118,6 @@ export function useAiAssist(sectionKey, state) {
             return;
           }
           if (!result.validation.valid) {
-            if (sectionKey === "scope" && typeof result?.writes?.scopeNotes === "string" && String(result.writes.scopeNotes || "").trim()) {
-              if (DEV) console.log(`[ai-assist:${traceId}] scope_validation_ignored`, { seq: mySeq, error: result.validation.error });
-              setAssistState({ phase: "review", input: userInput, result });
-              return;
-            }
             if (DEV) console.log(`[ai-assist:${traceId}] validation_failed`, { seq: mySeq, error: result.validation.error });
             setAssistState({
               phase: "error",

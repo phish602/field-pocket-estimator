@@ -121,3 +121,59 @@ describe("useAiAssist close-request invalidation", () => {
     expect(result.current.assistState).toEqual({ phase: "idle" });
   });
 });
+
+describe("useAiAssist shared scope validation", () => {
+  beforeEach(() => {
+    mockRequestSectionAssist.mockReset();
+  });
+
+  test("keeps invalid non-empty scaffold scope output out of review", async () => {
+    mockRequestSectionAssist.mockResolvedValueOnce({
+      writes: {
+        scopeNotes: "Complete the described scope and clean up the work area.",
+      },
+      validation: { valid: false, error: "Generated scope is too generic." },
+    });
+
+    const { result } = renderHook(() => useAiAssist("scope", {}));
+
+    await act(async () => {
+      result.current.open();
+    });
+
+    await act(async () => {
+      await result.current.submit("replace ceiling tiles");
+    });
+
+    await waitFor(() => {
+      expect(result.current.assistState.phase).toBe("error");
+      expect(result.current.assistState.input).toBe("replace ceiling tiles");
+      expect(result.current.assistState.error).toBe("Generated scope is too generic.");
+    });
+  });
+
+  test("still sends valid scope output into review", async () => {
+    mockRequestSectionAssist.mockResolvedValueOnce({
+      writes: {
+        scopeNotes: "Remove damaged ceiling tiles, install matching replacement tiles, and dispose of debris.",
+      },
+      validation: { valid: true },
+    });
+
+    const { result } = renderHook(() => useAiAssist("scope", {}));
+
+    await act(async () => {
+      result.current.open();
+    });
+
+    await act(async () => {
+      await result.current.submit("replace ceiling tiles");
+    });
+
+    await waitFor(() => {
+      expect(result.current.assistState.phase).toBe("review");
+      expect(result.current.assistState.input).toBe("replace ceiling tiles");
+      expect(result.current.assistState.result?.writes?.scopeNotes).toContain("Remove damaged ceiling tiles");
+    });
+  });
+});

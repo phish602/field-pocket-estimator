@@ -7653,6 +7653,12 @@ export const scopeAssistConfig = {
     }
     const normalizedScope = sanitizeScopeAssistText(writes.scopeNotes);
     if (!normalizedScope) return { valid: false, error: "No scope text was generated." };
+    if (
+      hasGenericScopeScaffold(normalizedScope)
+      || GENERIC_SCOPE_SUMMARY_PREFIX_REGEX.test(normalizedScope)
+    ) {
+      return { valid: false, error: "Generated scope is too generic." };
+    }
     return { valid: true };
   },
 };
