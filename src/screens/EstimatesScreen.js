@@ -6,6 +6,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   buildEstimateInvoiceSummary,
   INVOICE_TYPES,
+  createInvoiceBuilderDraftFromEstimate,
   createInvoiceDraftFromEstimate,
   readStoredInvoices,
   roundCurrency,
@@ -21,6 +22,7 @@ import {
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
@@ -1255,6 +1257,54 @@ export default function EstimatesScreen({
     return true;
   };
 
+  const resolveApprovedEstimateForInvoiceLaunch = (estimate) => {
+    const targetIdentity = estimateIdentity(estimate);
+    const targetId = String(estimate?.id || "").trim();
+    const liveEstimate = (Array.isArray(estimates) ? estimates : []).find((entry) => {
+      if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
+      return String(entry?.id || "").trim() === targetId;
+    }) || null;
+    const persistedEstimate = liveEstimate
+      ? null
+      : readSavedEstimatesList().find((entry) => {
+        if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
+        return String(entry?.id || "").trim() === targetId;
+      }) || null;
+    const resolved = liveEstimate || persistedEstimate || estimate || null;
+    if (!resolved || normalizeEstimateStatus(resolved?.status) !== STATUS_APPROVED) return null;
+    return resolved;
+  };
+
+  const openInvoiceBuilderFromEstimate = (estimate) => {
+    const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
+    if (!target) return false;
+
+    const currentInvoices = readStoredInvoices();
+    const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+    if (!created.ok || !created.draft) {
+      return false;
+    }
+
+    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+    setInvoices(nextInvoices);
+    closeInvoiceComposer();
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
+      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+    return true;
+  };
+
   useEffect(() => {
     const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
     if (!requestedId) return;
@@ -1311,7 +1361,7 @@ export default function EstimatesScreen({
     const target = invoicePromptTarget;
     setInvoicePromptTarget(null);
     if (!target) return;
-    openInvoiceComposer(target);
+    openInvoiceBuilderFromEstimate(target);
   };
 
   const onConfirmDelete = () => {
@@ -2540,7 +2590,6 @@ export default function EstimatesScreen({
                           type="button"
                           onClick={() => {
                             setEstimateStatus(e, STATUS_APPROVED);
-                            setInvoicePromptTarget(e);
                           }}
                         >
                           {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
@@ -2574,7 +2623,7 @@ export default function EstimatesScreen({
                           <button
                             className="pe-btn"
                             type="button"
-                            onClick={() => openInvoiceComposer(e)}
+                            onClick={() => openInvoiceBuilderFromEstimate(e)}
                             disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
                           >
                             {lang === "es" ? "Crear factura" : "Create Invoice"}

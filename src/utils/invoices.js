@@ -1075,6 +1075,113 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   };
 }
 
+export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, options = {}) {
+  const source = estimate && typeof estimate === "object" ? deepClone(estimate) : {};
+  const status = asText(source?.status).toLowerCase();
+  if (status !== "approved") {
+    return { ok: false, message: "Only approved estimates can create child invoices." };
+  }
+
+  const summary = buildEstimateInvoiceSummary(source, invoices);
+  if (summary.remainingToInvoice <= 0) {
+    return { ok: false, message: "This estimate has no remaining amount to invoice." };
+  }
+
+  const now = Number(options?.nowTs) || Date.now();
+  const invoiceNumber = asText(options?.invoiceNumber) || generateNextInvoiceNumber(invoices);
+  const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
+  const dueDate = normalizeIsoDate(options?.dueDate || source?.job?.due);
+  const snapshot = buildEstimateInvoiceSnapshot(source);
+  const customerId = asText(source?.customerId || source?.customer?.id || snapshot?.customerId);
+  const customerName = asText(source?.customerName || source?.customer?.name || snapshot?.customerName);
+  const projectName = asText(source?.projectName || source?.customer?.projectName || snapshot?.projectName);
+  const projectNumber = asText(source?.projectNumber || source?.customer?.projectNumber || snapshot?.projectNumber);
+  const projectId = asText(source?.projectId || snapshot?.projectId);
+  const materialsMode = asText(source?.ui?.materialsMode || source?.materialsMode).toLowerCase() === "itemized"
+    ? "itemized"
+    : "blanket";
+  const invoiceTotal = roundCurrency(
+    source?.invoiceTotal
+    ?? source?.totalRevenue
+    ?? source?.grandTotal
+    ?? source?.total
+    ?? snapshot?.approvedTotal
+    ?? 0
+  );
+
+  const draft = normalizeInvoiceRecord({
+    ...source,
+    id: "",
+    docType: "invoice",
+    status: INVOICE_STATUSES.DRAFT,
+    invoiceType: source?.invoiceType || INVOICE_TYPES.CUSTOM,
+    invoiceNumber,
+    estimateNumber: snapshot.estimateNumber,
+    docNumber: invoiceNumber,
+    documentNumber: invoiceNumber,
+    documentNo: invoiceNumber,
+    number: invoiceNumber,
+    sourceEstimateId: snapshot.estimateId,
+    sourceEstimateSnapshot: snapshot,
+    projectId,
+    customerId,
+    customerName,
+    projectName,
+    projectNumber,
+    invoiceTotal,
+    total: invoiceTotal,
+    amountPaid: 0,
+    balanceRemaining: invoiceTotal,
+    paymentStatus: PAYMENT_STATUSES.UNPAID,
+    payments: [],
+    date: invoiceDate,
+    dueDate,
+    ui: {
+      ...(source?.ui || {}),
+      docType: "invoice",
+      materialsMode,
+    },
+    customer: {
+      ...(source?.customer || {}),
+      id: customerId,
+      name: customerName,
+      projectName,
+      projectNumber,
+    },
+    job: {
+      ...(source?.job || {}),
+      date: invoiceDate,
+      due: dueDate,
+      docNumber: invoiceNumber,
+    },
+    invoiceMeta: {
+      ...(source?.invoiceMeta || {}),
+      sourceType: "estimate",
+      approvedTotalAtCreation: summary.approvedTotal,
+      remainingToInvoiceAtCreation: summary.remainingToInvoice,
+      createdFromEstimateAt: now,
+      financialSource: "estimate-full-builder",
+    },
+    meta: {
+      ...(source?.meta || {}),
+      savedDocId: "",
+      savedDocCreatedAt: now,
+      lastSavedAt: 0,
+      ephemeralDraft: true,
+    },
+    createdAt: now,
+    updatedAt: now,
+    savedAt: now,
+    ts: now,
+  });
+
+  return {
+    ok: true,
+    draft,
+    summary,
+  };
+}
+
 export function duplicateInvoiceDraft(invoice, invoices, options = {}) {
   const source = normalizeInvoiceRecord(invoice);
   const now = Number(options?.nowTs) || Date.now();
