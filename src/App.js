@@ -13,6 +13,7 @@ import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
+import { DEFAULT_STATE } from "./estimator/defaultState";
 import { requireCompanyProfile } from "./utils/guards";
 import { migrateLegacyStorageNamespace } from "./utils/storage";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
@@ -136,6 +137,28 @@ function safeParseJson(raw) {
   } catch {
     return null;
   }
+}
+
+function buildCleanContinueCreateState(docType = "estimate") {
+  const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
+  let nextState = {};
+
+  try {
+    nextState = JSON.parse(JSON.stringify(DEFAULT_STATE)) || {};
+  } catch {
+    nextState = { ...(DEFAULT_STATE || {}) };
+  }
+
+  nextState.ui = {
+    ...(nextState.ui || {}),
+    docType: normalizedDocType,
+    materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
+  };
+  nextState.scopeNotes = normalizedDocType === "invoice" ? "" : String(nextState.scopeNotes || "");
+  nextState.tradeInsert = { key: "", text: "" };
+  nextState.meta = { lastSavedAt: 0 };
+
+  return nextState;
 }
 
 function normalizeEditContext(value) {
@@ -2438,8 +2461,20 @@ const [spinTick, setSpinTick] = useState(0);
       draftRaw = String(localStorage.getItem(ESTIMATE_DRAFT_KEY) || "");
     } catch {}
 
+    const desiredDocType = createFromEditIntent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
+    let nextEstimatorStateRaw = "";
+
     if (draftRaw) {
-      try { localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw); } catch {}
+      const parsedDraft = safeParseJson(draftRaw);
+      const hasObjectDraft = parsedDraft && typeof parsedDraft === "object" && !Array.isArray(parsedDraft);
+      const draftDocType = parsedDraft?.ui?.docType === "invoice" ? "invoice" : "estimate";
+      nextEstimatorStateRaw = hasObjectDraft && draftDocType === desiredDocType
+        ? draftRaw
+        : JSON.stringify(buildCleanContinueCreateState(desiredDocType));
+    }
+
+    if (nextEstimatorStateRaw) {
+      try { localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, nextEstimatorStateRaw); } catch {}
     } else {
       try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
     }
