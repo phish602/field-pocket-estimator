@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import "./EstimateForm.css";
 
-import { BUILD_TAG, STORAGE_KEY } from "./estimator/defaultState";
+import { BUILD_TAG, DEFAULT_STATE, STORAGE_KEY } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
@@ -744,6 +744,28 @@ function clearPendingEditTarget(type) {
     if (!type || type === "estimate") localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
     if (!type || type === "invoice") localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
   } catch {}
+}
+
+function buildCleanBuilderState(docType = "estimate") {
+  const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
+  let next = {};
+
+  try {
+    next = JSON.parse(JSON.stringify(DEFAULT_STATE)) || {};
+  } catch {
+    next = { ...(DEFAULT_STATE || {}) };
+  }
+
+  next.ui = {
+    ...(next.ui || {}),
+    docType: normalizedDocType,
+    materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
+  };
+  next.scopeNotes = normalizedDocType === "invoice" ? "" : String(next.scopeNotes || "");
+  next.tradeInsert = { key: "", text: "" };
+  next.meta = { lastSavedAt: 0 };
+
+  return next;
 }
 
 function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
@@ -1962,6 +1984,23 @@ export default function EstimateForm(props) {
     const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
     const applyHydratedState = replaceStateRef.current;
     if (!match || typeof applyHydratedState !== "function") {
+      if (isInvoiceEditMode && typeof applyHydratedState === "function") {
+        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        clearPendingEditTarget("invoice");
+        editProjectContextRef.current = null;
+        selectedLinkedProjectContextRef.current = null;
+        projectNameAutoStateRef.current = { manual: false, auto: "" };
+        setSelectedCustomerId("");
+        setSelectedCustomerProfile(null);
+        setSearchCustomerText("");
+        setCustomerSearchQuery("");
+        setProjectSeedSummary(null);
+        applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
+        setSpecialConditionsOpen(false);
+        setActiveSpecialConditionsCustomField("");
+        setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+        pendingSpecialConditionsAutoCollapseRef.current = false;
+      }
       setSavePrompt({
         tone: "error",
         message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Switched to new mode.`,
@@ -2034,6 +2073,55 @@ export default function EstimateForm(props) {
       setCustomerSearchQuery("");
     }
   }, [editingRecordId, isEditMode, isInvoiceEditMode]);
+
+  useEffect(() => {
+    if (isEditMode) return;
+    if (guidedDocType !== "invoice") return;
+
+    const savedDocId = String(state?.meta?.savedDocId || "").trim();
+    const invoiceNumber = String(state?.invoiceNumber || state?.job?.docNumber || "").trim();
+    if (!savedDocId && !invoiceNumber) return;
+
+    const invoices = readStoredInvoices();
+    const matchesSavedInvoice = invoices.some((entry) => {
+      const entryId = String(entry?.id || "").trim();
+      const entryInvoiceNumber = String(entry?.invoiceNumber || entry?.job?.docNumber || "").trim();
+      return (savedDocId && entryId === savedDocId)
+        || (invoiceNumber && entryInvoiceNumber === invoiceNumber);
+    });
+    if (!matchesSavedInvoice) return;
+
+    const applyHydratedState = replaceStateRef.current;
+    if (typeof applyHydratedState !== "function") return;
+
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    clearPendingEditTarget("invoice");
+    openedEditIdRef.current = "";
+    openedDocNumberRef.current = "";
+    editProjectContextRef.current = null;
+    selectedLinkedProjectContextRef.current = null;
+    projectNameAutoStateRef.current = { manual: false, auto: "" };
+    setSelectedCustomerId("");
+    setSelectedCustomerProfile(null);
+    setSearchCustomerText("");
+    setCustomerSearchQuery("");
+    setProjectSeedSummary(null);
+    applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
+    setSpecialConditionsOpen(false);
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+    setSavePrompt({
+      tone: "error",
+      message: "Invoice not found. Switched to new mode.",
+    });
+  }, [
+    guidedDocType,
+    isEditMode,
+    state?.invoiceNumber,
+    state?.job?.docNumber,
+    state?.meta?.savedDocId,
+  ]);
 
   useEffect(() => {
     if (isEditMode) return;
