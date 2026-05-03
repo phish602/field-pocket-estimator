@@ -185,6 +185,94 @@ describe("labor assist adapter", () => {
     expect(laborAssistConfig.validationRules(writes)).toEqual({ valid: true });
   });
 
+  test("keeps exact built-in labor labels mapped to built-in roles", () => {
+    const writes = laborAssistConfig.localAdapter({
+      lines: [
+        { role: "Technician", hours: 8, rate: 85 },
+        { role: "Equipment Operator", hours: 8, rate: 95 },
+        { role: "General Laborer", hours: 8, rate: 45 },
+      ],
+    });
+
+    expect(writes?.laborLines).toEqual([
+      expect.objectContaining({
+        role: "technician",
+        label: "Technician",
+        hours: "8",
+        rate: "85",
+      }),
+      expect.objectContaining({
+        role: "operator",
+        label: "Equipment Operator",
+        hours: "8",
+        rate: "95",
+      }),
+      expect.objectContaining({
+        role: "laborer",
+        label: "General Laborer",
+        hours: "8",
+        rate: "45",
+      }),
+    ]);
+  });
+
+  test("preserves specialized labor labels as free-form labels instead of genericizing them", () => {
+    const rawLabels = [
+      "Pool Technician",
+      "Pool Maintenance Technician",
+      "Service Technician",
+      "Maintenance Technician",
+      "Door Hardware Technician",
+      "Heavy Equipment Operator",
+    ];
+
+    const writes = laborAssistConfig.localAdapter({
+      lines: rawLabels.map((role, index) => ({
+        role,
+        hours: index + 1,
+        rate: 50 + index,
+      })),
+    });
+
+    expect(writes?.laborLines).toEqual(
+      rawLabels.map((label, index) =>
+        expect.objectContaining({
+          role: "",
+          label,
+          hours: String(index + 1),
+          rate: String(50 + index),
+        })
+      )
+    );
+  });
+
+  test("preserves additional specialized labels as free-form labels when they survive adapter truncation", () => {
+    const rawLabels = [
+      "Wallcovering Installer",
+      "Finish Carpenter",
+      "Striping Technician",
+    ];
+
+    const writes = laborAssistConfig.localAdapter({
+      lines: rawLabels.map((role, index) => ({
+        role,
+        hours: index + 7,
+        rate: 56 + index,
+      })),
+    });
+
+    expect(writes?.laborLines).toEqual(
+      rawLabels.map((label, index) =>
+        expect.objectContaining({
+          role: "",
+          label,
+          hours: String(index + 7),
+          rate: String(56 + index),
+        })
+      )
+    );
+  });
+
   test("rejects empty or malformed generated rows through existing validation behavior", () => {
     const writes = laborAssistConfig.localAdapter({
       lines: [

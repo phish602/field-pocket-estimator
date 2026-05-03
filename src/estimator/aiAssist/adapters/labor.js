@@ -68,11 +68,6 @@ function resolveRoleFromLabel(raw) {
   // Exact label match ("Foreman")
   const byLabel = LABOR_ROLE_OPTIONS.find((o) => o.label.toLowerCase() === lower);
   if (byLabel) return { role: byLabel.value, label: byLabel.label };
-  // Partial match — label contains the text or vice versa
-  const partial = LABOR_ROLE_OPTIONS.find(
-    (o) => o.label.toLowerCase().includes(lower) || lower.includes(o.label.toLowerCase())
-  );
-  if (partial) return { role: partial.value, label: partial.label };
   // Unrecognized — pass through as free-form label (form allows custom labels)
   return { role: "", label: text };
 }
