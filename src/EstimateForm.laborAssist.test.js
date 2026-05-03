@@ -221,6 +221,48 @@ describe("EstimateForm labor AI assist writeback", () => {
     jest.clearAllMocks();
   });
 
+  test("sends labor-from-scope requests through laborAssist.submit with the from_scope discriminator", () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: mockPatch,
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return buildIdleAssistReturn({
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        });
+      }
+      return buildIdleAssistReturn();
+    });
+
+    render(<EstimateForm />);
+    mockPatch.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /suggest labor from scope/i }));
+
+    expect(mockSubmitLaborAssist).toHaveBeenCalledTimes(1);
+    expect(mockSubmitLaborAssist).toHaveBeenCalledWith("", { laborRequestMode: "from_scope" });
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
   test("replaces the lone blank starter row when Append Lines is accepted", () => {
     setup({
       state: createState({ laborLines: [createBlankStarterLine()] }),
