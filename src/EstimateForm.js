@@ -1449,6 +1449,8 @@ export default function EstimateForm(props) {
   const scopeAssistSubmitSeqRef = useRef(0);
   const scopeRefineInFlightRef = useRef(null);
   const [scopeAssistState, setScopeAssistState] = useState({ phase: "idle" });
+  const scopeAssistLatestResultRef = useRef(null);
+  scopeAssistLatestResultRef.current = scopeAssistState?.result || null;
   const pendingMaterialsModeSwitchRequestRef = useRef(null);
   const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
   const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
@@ -2011,7 +2013,7 @@ export default function EstimateForm(props) {
       : "";
     const normalizedInput = String(userInput || "").trim();
 
-    const previousResult = isRefineRequest ? (scopeAssistState?.result || null) : null;
+    const previousResult = isRefineRequest ? (scopeAssistLatestResultRef.current || null) : null;
     scopeAssistRequestStartedAtRef.current = Date.now();
     scopeRuntimeMetaRef.current = {
       build: "",
@@ -2051,6 +2053,21 @@ export default function EstimateForm(props) {
     if (traceId) {
       console.log(`[ai-assist:${traceId}] scope_submit_start`, { inputLen: normalizedInput.length });
     }
+
+    const restorePreviousReviewForBlockedRefine = (message) => {
+      if (!isRefineRequest || !previousResult) return false;
+      setScopeAssistState({
+        phase: "review",
+        input: normalizedInput,
+        result: previousResult,
+        refineError: resolveScopeAssistDisplayError(
+          message,
+          Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+        ),
+        runtime: runtimeMeta,
+      });
+      return true;
+    };
 
     const shouldCaptureScopeRuntime = typeof window !== "undefined"
       && typeof window.fetch === "function";
@@ -2458,6 +2475,9 @@ export default function EstimateForm(props) {
             result,
           });
         }
+        if (restorePreviousReviewForBlockedRefine(SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE)) {
+          return result;
+        }
         setScopeAssistState({
           phase: "error",
           input: normalizedInput,
@@ -2470,6 +2490,9 @@ export default function EstimateForm(props) {
       if (!localClassification.valid) {
         if (traceId) {
           logFinalDecision(localClassification.reason, { blocked: false, excerpt: scopeNotesValue, result });
+        }
+        if (restorePreviousReviewForBlockedRefine(localClassification.message)) {
+          return result;
         }
         setScopeAssistState({
           phase: "error",

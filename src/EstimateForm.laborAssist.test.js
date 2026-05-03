@@ -473,6 +473,77 @@ describe("EstimateForm labor AI assist writeback", () => {
     expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", expect.anything());
   });
 
+  test("restores the prior scope review when a refine result is blocked as scaffold", async () => {
+    const state = createState({ laborLines: [createBlankStarterLine()] });
+    mockRequestSectionAssist
+      .mockResolvedValueOnce({
+        writes: {
+          scopeNotes: "- Remove damaged ceiling tiles.\n- Install matching replacement ceiling tiles.\n- Dispose of debris.",
+        },
+        validation: { valid: true },
+      })
+      .mockResolvedValueOnce({
+        writes: {
+          scopeNotes: "Complete the described scope and clean up the work area.",
+        },
+        validation: { valid: true },
+      });
+
+    mockUseEstimatorState.mockImplementation(() => ({
+      state,
+      patch: mockPatch,
+      dupLaborLine: jest.fn(),
+      removeLaborLine: jest.fn(),
+      updateLaborLine: jest.fn(),
+      clearAll: jest.fn(),
+      saveNow: jest.fn(),
+      replaceState: jest.fn(),
+    }));
+
+    mockUseAiAssist.mockImplementation((sectionKey) => {
+      if (sectionKey === "labor") {
+        return buildIdleAssistReturn({
+          open: mockOpenLaborAssist,
+          close: mockCloseLaborAssist,
+          submit: mockSubmitLaborAssist,
+        });
+      }
+      if (sectionKey === "materials") {
+        return buildIdleAssistReturn({
+          open: mockOpenMaterialsAssist,
+          close: mockCloseMaterialsAssist,
+          submit: mockSubmitMaterialsAssist,
+        });
+      }
+      return buildIdleAssistReturn();
+    });
+
+    render(<EstimateForm />);
+    mockPatch.mockClear();
+
+    fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
+    fireEvent.change(screen.getByPlaceholderText(/describe the work.*interior repaint, 3 rooms, 2 coats, patch drywall near windows/i), {
+      target: { value: "replace ceiling tiles in two offices" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /generate scope/i }));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Remove damaged ceiling tiles.");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /refine/i }));
+    fireEvent.click(screen.getByRole("button", { name: /shorter/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/scope draft was too generic\. add more job detail and try again\./i)).toBeInTheDocument();
+      expect(document.body.textContent).toContain("Remove damaged ceiling tiles.");
+      expect(screen.getByRole("button", { name: /accept draft/i })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText(/complete the described scope and clean up the work area/i)).not.toBeInTheDocument();
+    expect(mockPatch).not.toHaveBeenCalledWith("scopeNotes", expect.stringMatching(/complete the described scope/i));
+  });
+
   test("preserves the first materials request when switching modes", async () => {
     const state = createState({ laborLines: [createBlankStarterLine()] });
     state.ui.materialsMode = "blanket";
