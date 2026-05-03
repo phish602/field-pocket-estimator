@@ -593,13 +593,14 @@ export function buildNormalizedProjectView({
   const estimateTotal = roundMoney(nextEstimates.reduce((sum, estimate) => (
     sum + roundMoney(estimate?.approvedTotal ?? estimate?.total ?? estimate?.grandTotal ?? 0)
   ), 0));
-  const invoiceTotal = roundMoney(nextInvoices.reduce((sum, invoice) => (
+  const moneyRollupInvoices = nextInvoices.filter((invoice) => deriveInvoiceStatus(invoice) !== INVOICE_STATUSES.VOID);
+  const invoiceTotal = roundMoney(moneyRollupInvoices.reduce((sum, invoice) => (
     sum + roundMoney(invoice?.invoiceTotal ?? invoice?.total ?? 0)
   ), 0));
-  const amountPaid = roundMoney(nextInvoices.reduce((sum, invoice) => (
+  const amountPaid = roundMoney(moneyRollupInvoices.reduce((sum, invoice) => (
     sum + roundMoney(invoice?.amountPaid ?? 0)
   ), 0));
-  const balanceRemaining = roundMoney(nextInvoices.reduce((sum, invoice) => (
+  const balanceRemaining = roundMoney(moneyRollupInvoices.reduce((sum, invoice) => (
     sum + roundMoney(invoice?.balanceRemaining ?? 0)
   ), 0));
 
