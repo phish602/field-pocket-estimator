@@ -298,7 +298,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
     <div style={S.container}>
       <div style={S.header}>
         <div style={S.title}>Projects</div>
-        <div style={S.countBadge}>{allData.length} project{allData.length !== 1 ? "s" : ""}</div>
+        <div style={S.countBadge}>{chipCounts.all} project{chipCounts.all !== 1 ? "s" : ""}</div>
       </div>
 
       <div style={S.filterRow}>
