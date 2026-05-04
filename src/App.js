@@ -2606,8 +2606,15 @@ const [spinTick, setSpinTick] = useState(0);
 
         try {
           if (editContext?.type === "invoice") {
-            localStorage.setItem(EDIT_INVOICE_TARGET_KEY, editContext.id);
-            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+            const invoices = readStoredInvoices();
+            const invoiceRecord = invoices.find((inv) => String(inv?.id || "").trim() === editContext.id);
+            if (invoiceRecord && deriveInvoiceStatus(invoiceRecord) !== INVOICE_STATUSES.VOID) {
+              localStorage.setItem(EDIT_INVOICE_TARGET_KEY, editContext.id);
+              localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+            } else {
+              localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+              localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+            }
           } else if (editContext?.type === "estimate") {
             localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, editContext.id);
             localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
