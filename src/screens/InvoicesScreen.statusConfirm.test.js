@@ -123,3 +123,78 @@ describe("InvoicesScreen status confirm dialog", () => {
     expect(Array.isArray(invoice.payments) && invoice.payments.length > 0).toBe(true);
   });
 });
+
+describe("InvoicesScreen void invoice Open button guard", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("Open button is disabled for a void invoice", () => {
+    seedInvoices([
+      createPaidInvoice({
+        id: "inv_void_open_guard",
+        invoiceNumber: "INV-VOID-1",
+        status: "void",
+        paymentStatus: "void",
+        amountPaid: 0,
+        balanceRemaining: 0,
+        payments: [],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+
+    const openBtn = screen.getByRole("button", { name: /^Open$/i });
+    expect(openBtn).toBeDisabled();
+  });
+
+  test("Details button still opens for a void invoice", () => {
+    seedInvoices([
+      createPaidInvoice({
+        id: "inv_void_details_check",
+        invoiceNumber: "INV-VOID-2",
+        projectName: "Void Project",
+        status: "void",
+        paymentStatus: "void",
+        amountPaid: 0,
+        balanceRemaining: 0,
+        payments: [],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+
+    // Details button toggles the panel — clicking it should not throw and should show content
+    const detailsBtn = screen.getByRole("button", { name: /^Details$/i });
+    expect(detailsBtn).not.toBeDisabled();
+    fireEvent.click(detailsBtn);
+
+    // Panel is now open; "Hide" replaces "Details"
+    expect(screen.getByRole("button", { name: /^Hide$/i })).toBeInTheDocument();
+  });
+
+  test("Open button is enabled for a non-void invoice", () => {
+    seedInvoices([
+      createPaidInvoice({
+        id: "inv_sent_open_check",
+        invoiceNumber: "INV-SENT-1",
+        status: "sent",
+        paymentStatus: "unpaid",
+        amountPaid: 0,
+        balanceRemaining: 500,
+        payments: [],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+
+    const openBtn = screen.getByRole("button", { name: /^Open$/i });
+    expect(openBtn).not.toBeDisabled();
+  });
+});

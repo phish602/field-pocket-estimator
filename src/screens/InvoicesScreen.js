@@ -1135,6 +1135,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           <button
                             className="pe-btn"
                             type="button"
+                            disabled={derivedStatus === INVOICE_STATUSES.VOID}
                             onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
                             onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
                             onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "open", () => openInvoice(invoice))}
