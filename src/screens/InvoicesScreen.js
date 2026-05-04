@@ -316,6 +316,64 @@ function moneyUSD(value) {
   }
 }
 
+const PROTECTED_DELETE_PAYMENT_STATUSES = new Set([
+  PAYMENT_STATUSES.PAID,
+  PAYMENT_STATUSES.PARTIAL,
+  PAYMENT_STATUSES.VOID,
+]);
+
+function hasSourceEstimateHistory(invoice) {
+  if (!invoice || typeof invoice !== "object") return false;
+  if (String(invoice?.sourceEstimateId || "").trim()) return true;
+  const snapshot = invoice?.sourceEstimateSnapshot;
+  if (!snapshot || typeof snapshot !== "object") return false;
+  return Boolean(
+    String(
+      snapshot?.estimateId
+      || snapshot?.estimateNumber
+      || snapshot?.projectId
+      || snapshot?.projectName
+      || snapshot?.customerId
+      || snapshot?.customerName
+      || ""
+    ).trim()
+  );
+}
+
+function hasProjectHistory(invoice) {
+  if (!invoice || typeof invoice !== "object") return false;
+  const projectId = String(invoice?.projectId || invoice?.project?.id || "").trim();
+  if (!projectId) return false;
+  return Boolean(
+    String(
+      invoice?.projectName
+      || invoice?.project?.name
+      || invoice?.projectNumber
+      || invoice?.siteAddress
+      || invoice?.job?.location
+      || invoice?.customerId
+      || invoice?.customerName
+      || invoice?.customer?.projectAddress
+      || invoice?.customer?.address
+      || ""
+    ).trim()
+  );
+}
+
+function canHardDeleteInvoice(invoice) {
+  const derivedStatus = deriveInvoiceStatus(invoice);
+  const storedStatus = String(invoice?.status || "").trim().toLowerCase();
+  const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
+  const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+
+  if (hasSourceEstimateHistory(invoice) || hasProjectHistory(invoice)) return false;
+  if (derivedStatus !== INVOICE_STATUSES.DRAFT) return false;
+  if (storedStatus && storedStatus !== INVOICE_STATUSES.DRAFT) return false;
+  if (PROTECTED_DELETE_PAYMENT_STATUSES.has(paymentStatus)) return false;
+  if (amountPaid > 0) return false;
+  return true;
+}
+
 function formatDateTime(value) {
   const raw = Number(value || 0) || Date.parse(String(value || ""));
   if (!raw) return "";
@@ -712,6 +770,14 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   };
 
   const removeInvoice = (invoice) => {
+    if (!canHardDeleteInvoice(invoice)) {
+      window.alert(
+        lang === "es"
+          ? "Esta factura forma parte del historial financiero del proyecto y no se puede eliminar."
+          : "This invoice is part of project/financial history and cannot be deleted."
+      );
+      return;
+    }
     const ok = window.confirm(lang === "es" ? "¿Eliminar esta factura del historial?" : "Delete this invoice from history?");
     if (!ok) return;
     const invoiceId = String(invoice?.id || "").trim();
