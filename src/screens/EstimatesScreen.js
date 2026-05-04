@@ -1133,7 +1133,7 @@ export default function EstimatesScreen({
 
     if (estimate?.status === STATUS_APPROVED && normalized !== STATUS_APPROVED) {
       const summary = buildEstimateInvoiceSummary(estimate, readStoredInvoices());
-      if (summary.linkedInvoiceCount > 0) {
+      if (summary.activeInvoiceCount > 0) {
         window.alert("Cannot revert approved estimate with linked invoices to another status.");
         return;
       }

@@ -170,4 +170,57 @@ describe("EstimatesScreen status reversion guard", () => {
     const stored = readStoredEstimates();
     expect(stored[0].status).toBe("approved");
   });
+
+  test("approved estimate with only void linked invoices can be reverted to pending", () => {
+    const estimate = createEstimate({ status: "approved" });
+    const voidInvoice = createLinkedInvoice("est_test", {
+      id: "inv_void",
+      invoiceNumber: "INV-VOID-ONLY",
+      status: "void",
+      paymentStatus: "void",
+      amountPaid: 0,
+      balanceRemaining: 0,
+    });
+    seedEstimates([estimate]);
+    seedInvoices([voidInvoice]);
+
+    renderEstimatesScreen([estimate]);
+    expandCard();
+    clickStatusButton("pending");
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    const stored = readStoredEstimates();
+    expect(stored[0].status).toBe("pending");
+  });
+
+  test("approved estimate with mixed void and active linked invoices cannot be reverted", () => {
+    const estimate = createEstimate({ status: "approved" });
+    const voidInvoice = createLinkedInvoice("est_test", {
+      id: "inv_void_mix",
+      invoiceNumber: "INV-VOID-MIX",
+      status: "void",
+      paymentStatus: "void",
+      amountPaid: 0,
+      balanceRemaining: 0,
+    });
+    const activeInvoice = createLinkedInvoice("est_test", {
+      id: "inv_active_mix",
+      invoiceNumber: "INV-ACTIVE-MIX",
+      status: "sent",
+      paymentStatus: "unpaid",
+      amountPaid: 0,
+      balanceRemaining: 500,
+    });
+    seedEstimates([estimate]);
+    seedInvoices([voidInvoice, activeInvoice]);
+
+    renderEstimatesScreen([estimate]);
+    expandCard();
+    clickStatusButton("pending");
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toMatch(/Cannot revert/i);
+    const stored = readStoredEstimates();
+    expect(stored[0].status).toBe("approved");
+  });
 });
