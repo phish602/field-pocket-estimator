@@ -119,7 +119,10 @@ export default function EditProjectScreen({ onBack, onSave }) {
       status,
       notes: notes.trim(),
     });
-    if (updated && onSave) onSave(projectId);
+    if (updated) {
+      window.dispatchEvent(new Event("estipaid:projects-changed"));
+      if (onSave) onSave(projectId);
+    }
   }, [canSave, projectId, projectName, siteAddress, status, notes, onSave]);
 
   if (!project) {
