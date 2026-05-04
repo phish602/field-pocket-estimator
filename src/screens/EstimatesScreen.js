@@ -1138,7 +1138,7 @@ export default function EstimatesScreen({
 
     setExpanded({});
 
-    if (normalized === STATUS_APPROVED) {
+    if (normalized === STATUS_APPROVED && shouldShowApprovalInvoicePrompt(estimate)) {
       setTimeout(() => {
         setInvoicePromptTarget(estimate);
       }, 0);
@@ -1171,6 +1171,15 @@ export default function EstimatesScreen({
     } catch {}
   };
 
+  const shouldShowApprovalInvoicePrompt = (estimate) => {
+    if (!estimate || typeof estimate !== "object") return false;
+
+    const summary = buildEstimateInvoiceSummary(estimate, readStoredInvoices());
+    if (summary.remainingToInvoice > 0) return true;
+    if (summary.linkedInvoiceCount > 0) return false;
+    return true;
+  };
+
   const moveEstimateToStatus = (estimateId, status) => {
     const draggedId = String(estimateId || "").trim();
     const movedEstimate = (estimates || []).find(
@@ -1189,7 +1198,7 @@ export default function EstimatesScreen({
 
     setExpanded({});
 
-    if (normalized === STATUS_APPROVED && movedEstimate) {
+    if (normalized === STATUS_APPROVED && movedEstimate && shouldShowApprovalInvoicePrompt(movedEstimate)) {
       setTimeout(() => {
         setInvoicePromptTarget(movedEstimate);
       }, 0);

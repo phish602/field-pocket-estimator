@@ -312,11 +312,73 @@ function createEstimate({
   };
 }
 
-function seedEstimateSession({ estimate, customer }) {
+function createLinkedInvoice({
+  id,
+  invoiceNumber,
+  estimate,
+  customer,
+  invoiceTotal,
+  status = "draft",
+}) {
+  const siteAddress = customer.projectAddress || customer.address || "";
+  const total = invoiceTotal ?? estimate.total;
+  const timestamp = 1714694400000;
+
+  return {
+    id,
+    docType: "invoice",
+    status,
+    invoiceNumber,
+    invoiceTotal: total,
+    total,
+    customerId: customer.id,
+    customerName: customer.name,
+    projectId: estimate.projectId,
+    projectName: customer.projectName,
+    projectNumber: customer.projectNumber,
+    sourceEstimateId: estimate.id,
+    sourceEstimateSnapshot: {
+      estimateId: estimate.id,
+      estimateNumber: estimate.estimateNumber,
+      customerId: customer.id,
+      customerName: customer.name,
+      projectId: estimate.projectId,
+      projectName: customer.projectName,
+      projectNumber: customer.projectNumber,
+      approvedTotal: estimate.total,
+      siteAddress,
+    },
+    customer: {
+      ...customer,
+      id: customer.id,
+      name: customer.name,
+      projectName: customer.projectName,
+      projectNumber: customer.projectNumber,
+      projectAddress: siteAddress,
+      address: customer.address || siteAddress,
+    },
+    job: {
+      docNumber: invoiceNumber,
+      date: "2026-05-03",
+      due: "2026-05-17",
+      location: siteAddress,
+    },
+    ui: {
+      docType: "invoice",
+      materialsMode: estimate?.ui?.materialsMode === "blanket" ? "blanket" : "itemized",
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    savedAt: timestamp,
+    ts: timestamp,
+  };
+}
+
+function seedEstimateSession({ estimate, customer, invoices = [] }) {
   localStorage.clear();
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([estimate]));
-  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(invoices));
   localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
   localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
   localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
@@ -328,6 +390,16 @@ function seedEstimateSession({ estimate, customer }) {
 function readStoredInvoices() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.INVOICES);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredEstimates() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -674,6 +746,165 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
     expect(readStoredInvoices()).toEqual([]);
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+    expectEditInvoiceTargetWasNotSet(setItemSpy);
+  });
+
+  test("marking approved suppresses the prompt when linked invoices already cover the estimate", async () => {
+    const customer = createCustomer({
+      id: "cust_covered",
+      name: "Covered Customer",
+      projectName: "Covered Project",
+      projectNumber: "P-4304",
+      address: "100 Covered Way",
+    });
+    const estimate = createEstimate({
+      id: "est_covered",
+      status: "pending",
+      estimateNumber: "EST-4304",
+      projectId: "proj_covered",
+      customer,
+      scopeNotes: "Replace the damaged storefront glazing.",
+      materialsMode: "itemized",
+      total: 750,
+      laborLine: {
+        id: "labor_covered_1",
+        role: "glazier",
+        label: "Glazier",
+        qty: "1",
+        hours: "5",
+        rate: "90",
+        trueRateInternal: "55",
+        internalRate: "55",
+        markupPct: "12",
+      },
+      materialItem: {
+        id: "material_covered_1",
+        desc: "Tempered glass panel",
+        qty: "1",
+        unitCostInternal: "220",
+        costInternal: "220",
+        priceEach: "300",
+        markupPct: "0",
+      },
+      blanketMaterials: {
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+        markupPct: 0,
+        item: { id: "blanket_placeholder", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" },
+      },
+    });
+    const linkedInvoice = createLinkedInvoice({
+      id: "inv_covered_full",
+      invoiceNumber: "INV-4304",
+      estimate,
+      customer,
+      invoiceTotal: 750,
+    });
+
+    seedEstimateSession({ estimate, customer, invoices: [linkedInvoice] });
+    await renderAppOnEstimates(customer.projectName);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    await screen.findByRole("button", { name: /Mark Approved/i });
+
+    setItemSpy.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Create Invoice?")).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
+      expect(readStoredEstimates()).toEqual([
+        expect.objectContaining({ id: estimate.id, status: "approved" }),
+      ]);
+    });
+
+    expect(readStoredInvoices()).toEqual([linkedInvoice]);
+    expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+    expectEditInvoiceTargetWasNotSet(setItemSpy);
+  });
+
+  test("marking approved still prompts when linked invoices leave a remaining balance", async () => {
+    const customer = createCustomer({
+      id: "cust_remaining",
+      name: "Remaining Customer",
+      projectName: "Remaining Balance Project",
+      projectNumber: "P-4305",
+      address: "200 Remaining Ave",
+    });
+    const estimate = createEstimate({
+      id: "est_remaining",
+      status: "pending",
+      estimateNumber: "EST-4305",
+      projectId: "proj_remaining",
+      customer,
+      scopeNotes: "Install new lobby lighting and patch the ceiling.",
+      materialsMode: "itemized",
+      total: 900,
+      laborLine: {
+        id: "labor_remaining_1",
+        role: "electrician",
+        label: "Electrician",
+        qty: "1",
+        hours: "6",
+        rate: "95",
+        trueRateInternal: "60",
+        internalRate: "60",
+        markupPct: "12",
+      },
+      materialItem: {
+        id: "material_remaining_1",
+        desc: "LED fixture kit",
+        qty: "3",
+        unitCostInternal: "75",
+        costInternal: "225",
+        priceEach: "100",
+        markupPct: "0",
+      },
+      blanketMaterials: {
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+        markupPct: 0,
+        item: { id: "blanket_placeholder", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" },
+      },
+    });
+    const linkedInvoice = createLinkedInvoice({
+      id: "inv_remaining_partial",
+      invoiceNumber: "INV-4305",
+      estimate,
+      customer,
+      invoiceTotal: 300,
+    });
+
+    seedEstimateSession({ estimate, customer, invoices: [linkedInvoice] });
+    await renderAppOnEstimates(customer.projectName);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    await screen.findByRole("button", { name: /Mark Approved/i });
+
+    setItemSpy.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
+
+    await screen.findByText("Create Invoice?");
+
+    expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual([linkedInvoice]);
+
+    fireEvent.click(screen.getByRole("button", { name: /No, Later/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Create Invoice?")).not.toBeInTheDocument();
+      expect(readStoredEstimates()).toEqual([
+        expect.objectContaining({ id: estimate.id, status: "approved" }),
+      ]);
+    });
+
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
     expectEditInvoiceTargetWasNotSet(setItemSpy);
   });
