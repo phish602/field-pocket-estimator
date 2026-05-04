@@ -556,24 +556,24 @@ export default function CustomersScreen({
   }, []);
 
   useEffect(() => {
+    const refresh = () => {
+      if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+      setRefreshSeq((value) => value + 1);
+    };
     const onStorage = (e) => {
       if (!e) return;
-      if (e.key === CUSTOMERS_KEY) {
-          if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
-          setRefreshSeq((value) => value + 1);
-      }
+      if (e.key === CUSTOMERS_KEY) refresh();
     };
     const onLocalStorage = (event) => {
-      if (event?.detail?.key === CUSTOMERS_KEY) {
-          if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
-          setRefreshSeq((value) => value + 1);
-      }
+      if (event?.detail?.key === CUSTOMERS_KEY) refresh();
     };
     window.addEventListener("storage", onStorage);
     window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customers-changed", refresh);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customers-changed", refresh);
     };
   }, [customers]);
 
@@ -1014,6 +1014,7 @@ export default function CustomersScreen({
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
+    window.dispatchEvent(new Event("estipaid:customers-changed"));
   }
 
   function useCustomer(c) {

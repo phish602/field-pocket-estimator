@@ -215,6 +215,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     });
     const next = [...customers, newCustomer];
     writeCustomers(next);
+    window.dispatchEvent(new Event("estipaid:customers-changed"));
     setCustomers(next);
     setSelectedCustomerId(id);
     setCustomerSearch(name);
@@ -242,6 +243,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     const projects = readStoredProjects();
     const { project, projects: next } = createManualProject(projects, source);
     writeStoredProjects(next);
+    window.dispatchEvent(new Event("estipaid:projects-changed"));
     if (onSave) onSave(project.id);
   }, [canSave, selectedCustomerId, selectedCustomer, projectName, siteAddress, status, notes, onSave]);
 
