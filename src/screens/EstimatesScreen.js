@@ -645,6 +645,12 @@ export default function EstimatesScreen({
   }, [history]);
 
   useEffect(() => {
+    const refresh = () => setEstimates(normalizeEstimateList(readSavedEstimatesList()));
+    window.addEventListener("estipaid:estimates-changed", refresh);
+    return () => window.removeEventListener("estipaid:estimates-changed", refresh);
+  }, []);
+
+  useEffect(() => {
     const refresh = () => setInvoices(readStoredInvoices());
     refresh();
     const onStorage = (event) => {
