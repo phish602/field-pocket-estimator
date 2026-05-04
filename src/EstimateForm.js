@@ -5132,24 +5132,26 @@ export default function EstimateForm(props) {
                 <h1 className="pe-title pe-builder-title screenTitle">
                   <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
                 </h1>
-                <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-                  <button
-                    type="button"
-                    className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("estimate")}
-                    style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Estimate
-                  </button>
-                  <button
-                    type="button"
-                    className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("invoice")}
-                    style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Invoice
-                  </button>
-                </div>
+                {uiDocType === "estimate" ? (
+                  <div className="pe-builder-mode" style={styles.builderModeSegmented}>
+                    <button
+                      type="button"
+                      className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                      onClick={() => setDocType("estimate")}
+                      style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                    >
+                      Estimate
+                    </button>
+                    <button
+                      type="button"
+                      className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                      onClick={() => setDocType("invoice")}
+                      style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
+                    >
+                      Invoice
+                    </button>
+                  </div>
+                ) : null}
               </>
             )}
           </div>

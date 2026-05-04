@@ -367,6 +367,39 @@ describe("EstimateForm invoice edit fallback", () => {
     mockInitialState = null;
   });
 
+  test("hides the top document toggle in new invoice mode but keeps it in new estimate mode", async () => {
+    const invoiceState = clone(DEFAULT_STATE);
+    invoiceState.ui = {
+      ...(invoiceState.ui || {}),
+      docType: "invoice",
+      materialsMode: "blanket",
+    };
+    mockInitialState = invoiceState;
+
+    const { unmount } = render(<EstimateForm />);
+
+    await screen.findByText("Invoice Builder");
+
+    expect(screen.queryByRole("button", { name: /^Estimate$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Invoice$/i })).not.toBeInTheDocument();
+
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    mockInitialState = estimateState;
+
+    unmount();
+    render(<EstimateForm />);
+
+    await screen.findByText("Estimate Builder");
+
+    expect(screen.getByRole("button", { name: /^Estimate$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Invoice$/i })).toBeInTheDocument();
+  });
+
   test("clears retained invoice-shaped draft state when invoice builder opens without a valid edit target", async () => {
     const customer = createCustomer();
     const savedInvoice = createSavedInvoice();
