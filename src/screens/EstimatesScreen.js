@@ -2276,7 +2276,7 @@ export default function EstimatesScreen({
 
               const panel = {
                 overflow: "hidden",
-                maxHeight: isOpen ? 2600 : 0,
+                maxHeight: isOpen ? 9999 : 0,
                 opacity: isOpen ? 1 : 0,
                 transform: isOpen ? "translateY(0px)" : "translateY(-4px)",
                 transition: "max-height 320ms ease, opacity 220ms ease, transform 220ms ease",
