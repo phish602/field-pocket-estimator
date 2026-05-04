@@ -188,6 +188,23 @@ function readAndConsumeProjectCreateSeed() {
     const projectId = String(parsed.projectId || "").trim();
     const customerId = String(parsed.customerId || "").trim();
     if (!projectId && !customerId) return null;
+
+    if (projectId) {
+      const storedProjects = readStoredProjects();
+      const projectExists = storedProjects.some((p) => String(p?.id || "").trim() === projectId);
+      if (!projectExists) {
+        return null;
+      }
+    }
+
+    if (customerId) {
+      const storedCustomers = readSavedCustomers();
+      const customerExists = storedCustomers.some((c) => String(c?.id || "").trim() === customerId);
+      if (!customerExists) {
+        return null;
+      }
+    }
+
     return {
       projectId,
       customerId,
