@@ -686,12 +686,13 @@ export default function ProjectDetailScreen({
             const invDerivedStatus = deriveInvoiceStatus(inv);
             const invStatusStr = invStatusLabel(invDerivedStatus);
             const invStatusKey = String(invDerivedStatus || "").toLowerCase();
+            const isVoidInv = invDerivedStatus === INVOICE_STATUSES.VOID;
             return (
               <button
                 key={inv?.id || i}
                 type="button"
-                style={{ ...S.docCard, ...S.docActionCard }}
-                onClick={() => onOpenInvoice && onOpenInvoice(inv)}
+                style={{ ...S.docCard, ...S.docActionCard, ...(isVoidInv ? { opacity: 0.55, cursor: "default" } : {}) }}
+                onClick={() => !isVoidInv && onOpenInvoice && onOpenInvoice(inv)}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                   <div style={S.docTitle}>{invNum ? `Invoice #${invNum}` : (inv?.customerName || "Invoice")}</div>
