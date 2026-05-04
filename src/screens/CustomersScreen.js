@@ -974,6 +974,39 @@ export default function CustomersScreen({
     const sid = String(id || "");
     const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
     const nm = target ? displayName(target) : sid;
+
+    if (target) {
+      const currentList = Array.isArray(list) ? list : [];
+      const allProjects = readStoredProjects();
+      const allDocs = readSavedDocs();
+      const allEstimates = allDocs.filter((d) => String(d?.docType || "estimate").toLowerCase() !== "invoice");
+      const allInvoices = allDocs.filter((d) => String(d?.docType || "").toLowerCase() === "invoice");
+
+      const linkedProjects = findLinkedProjectsForCustomer(target, allProjects, currentList, allEstimates, allInvoices);
+
+      const custId = String(target?.id || "").trim();
+      const targetNames = new Set(collectCustomerLookupNames(target));
+      const isDocLinked = (d) => {
+        const docCustId = String(d?.customerId || d?.customer?.id || "").trim();
+        if (custId && docCustId === custId) return true;
+        return collectDocCustomerLookupNames(d).some((name) => targetNames.has(name));
+      };
+      const linkedEstimates = allEstimates.filter(isDocLinked);
+      const linkedInvoices = allInvoices.filter(isDocLinked);
+
+      if (linkedProjects.length > 0 || linkedEstimates.length > 0 || linkedInvoices.length > 0) {
+        const parts = [];
+        if (linkedProjects.length > 0) parts.push(`${linkedProjects.length} project${linkedProjects.length === 1 ? "" : "s"}`);
+        if (linkedEstimates.length > 0) parts.push(`${linkedEstimates.length} estimate${linkedEstimates.length === 1 ? "" : "s"}`);
+        if (linkedInvoices.length > 0) parts.push(`${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"}`);
+        window.alert(label(
+          `Cannot delete ${nm}. This customer is linked to ${parts.join(", ")} and cannot be removed.`,
+          `No se puede eliminar ${nm}. Este cliente está vinculado a ${parts.join(", ")} y no se puede eliminar.`,
+        ));
+        return;
+      }
+    }
+
     const ok = window.confirm(label(`Delete customer: ${nm}? This cannot be undone.`, `¿Eliminar cliente: ${nm}? Esto no se puede deshacer.`));
     if (!ok) return;
     const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
