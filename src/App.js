@@ -361,8 +361,8 @@ function readValidatedCreateEditTargets() {
 
   if (invoiceEditTarget) {
     const invoices = readStoredInvoices();
-    const hasInvoiceTarget = invoices.some((entry) => String(entry?.id || "").trim() === invoiceEditTarget);
-    if (!hasInvoiceTarget) {
+    const invoiceRecord = invoices.find((entry) => String(entry?.id || "").trim() === invoiceEditTarget);
+    if (!invoiceRecord || deriveInvoiceStatus(invoiceRecord) === INVOICE_STATUSES.VOID) {
       invoiceEditTarget = "";
       try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
     }
