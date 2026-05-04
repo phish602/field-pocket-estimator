@@ -407,6 +407,22 @@ function seedCustomerDirectory() {
       },
     ])
   );
+  localStorage.setItem(
+    STORAGE_KEYS.PROJECTS,
+    JSON.stringify([
+      {
+        id: mockProjectSeed.projectId,
+        customerId: mockProjectSeed.customerId,
+        customerName: mockProjectSeed.customerName,
+        projectName: mockProjectSeed.projectName,
+        projectNumber: mockProjectSeed.projectNumber,
+        siteAddress: mockProjectSeed.siteAddress,
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ])
+  );
 }
 
 async function openProjectDetail() {

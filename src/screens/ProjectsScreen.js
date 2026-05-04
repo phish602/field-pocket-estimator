@@ -208,6 +208,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
     window.addEventListener("focus", refresh);
     window.addEventListener("estipaid:estimates-changed", refresh);
     window.addEventListener("estipaid:invoices-changed", refresh);
+    window.addEventListener("estipaid:projects-changed", refresh);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.removeEventListener("storage", onStorage);
@@ -216,6 +217,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("estipaid:estimates-changed", refresh);
       window.removeEventListener("estipaid:invoices-changed", refresh);
+      window.removeEventListener("estipaid:projects-changed", refresh);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);

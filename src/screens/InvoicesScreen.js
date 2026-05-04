@@ -1163,6 +1163,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 if (target?.needsBackfill && target?.project) {
                                   const nextProjects = upsertProject(currentProjects, target.project);
                                   writeStoredProjects(nextProjects);
+                                  window.dispatchEvent(new Event("estipaid:projects-changed"));
                                 }
                                 if (target?.projectId) onOpenProjectDetail(target.projectId);
                               })}
