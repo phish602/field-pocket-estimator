@@ -134,9 +134,16 @@ describe("EstimatesScreen delete guard", () => {
     expect(readStoredInvoices()).toEqual([invoice]);
   });
 
-  test("estimate linked to a void invoice is also blocked by default", () => {
+  test("estimate linked only to void invoices can be deleted", () => {
     const estimate = createEstimate();
-    const voidInvoice = createLinkedInvoice("est_test", { status: "void" });
+    const voidInvoice = createLinkedInvoice("est_test", {
+      id: "inv_void_only",
+      invoiceNumber: "INV-VOID-ONLY",
+      status: "void",
+      paymentStatus: "void",
+      amountPaid: 0,
+      balanceRemaining: 0,
+    });
     seedEstimates([estimate]);
     seedInvoices([voidInvoice]);
 
@@ -145,8 +152,60 @@ describe("EstimatesScreen delete guard", () => {
     clickPanelDelete();
     confirmDelete();
 
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(readStoredEstimates()).toEqual([]);
+  });
+
+  test("void-only linked invoice storage is not mutated when estimate is deleted", () => {
+    const estimate = createEstimate();
+    const voidInvoice = createLinkedInvoice("est_test", {
+      id: "inv_void_nomutate",
+      invoiceNumber: "INV-VOID-NOMUTATE",
+      status: "void",
+      paymentStatus: "void",
+      amountPaid: 0,
+      balanceRemaining: 0,
+    });
+    seedEstimates([estimate]);
+    seedInvoices([voidInvoice]);
+
+    renderEstimatesScreen([estimate]);
+    expandCard();
+    clickPanelDelete();
+    confirmDelete();
+
+    expect(readStoredInvoices()).toEqual([voidInvoice]);
+  });
+
+  test("estimate linked to mixed void and active invoices cannot be deleted", () => {
+    const estimate = createEstimate();
+    const voidInvoice = createLinkedInvoice("est_test", {
+      id: "inv_void_mix",
+      invoiceNumber: "INV-VOID-MIX",
+      status: "void",
+      paymentStatus: "void",
+      amountPaid: 0,
+      balanceRemaining: 0,
+    });
+    const activeInvoice = createLinkedInvoice("est_test", {
+      id: "inv_active_mix",
+      invoiceNumber: "INV-ACTIVE-MIX",
+      status: "sent",
+      paymentStatus: "unpaid",
+      amountPaid: 0,
+      balanceRemaining: 500,
+    });
+    seedEstimates([estimate]);
+    seedInvoices([voidInvoice, activeInvoice]);
+
+    renderEstimatesScreen([estimate]);
+    expandCard();
+    clickPanelDelete();
+    confirmDelete();
+
     expect(alertSpy).toHaveBeenCalledTimes(1);
     expect(alertSpy.mock.calls[0][0]).toMatch(/Cannot delete/i);
+    expect(alertSpy.mock.calls[0][0]).toMatch(/invoice/i);
     expect(readStoredEstimates()).toEqual([estimate]);
   });
 });

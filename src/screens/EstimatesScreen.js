@@ -1398,15 +1398,13 @@ export default function EstimatesScreen({
     const deletedId = String(target?.id || "").trim();
 
     if (deletedId) {
-      const linkedInvoices = readStoredInvoices().filter((inv) => {
-        const invSourceId = String(inv?.sourceEstimateId || inv?.sourceEstimateSnapshot?.estimateId || "").trim();
-        return invSourceId && invSourceId === deletedId;
-      });
-      if (linkedInvoices.length > 0) {
+      const summary = buildEstimateInvoiceSummary(target, readStoredInvoices());
+      if (summary.activeInvoiceCount > 0) {
+        const count = summary.activeInvoiceCount;
         window.alert(
           lang === "es"
-            ? `No se puede eliminar esta estimación. Tiene ${linkedInvoices.length} factura${linkedInvoices.length === 1 ? "" : "s"} vinculada${linkedInvoices.length === 1 ? "" : "s"} y no puede ser eliminada.`
-            : `Cannot delete this estimate. It has ${linkedInvoices.length} linked invoice${linkedInvoices.length === 1 ? "" : "s"} and cannot be removed.`
+            ? `No se puede eliminar esta estimación. Tiene ${count} factura${count === 1 ? "" : "s"} vinculada${count === 1 ? "" : "s"} y no puede ser eliminada.`
+            : `Cannot delete this estimate. It has ${count} linked invoice${count === 1 ? "" : "s"} and cannot be removed.`
         );
         onCancelDelete();
         return;
