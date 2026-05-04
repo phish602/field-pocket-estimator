@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const FIXED_TIMESTAMP = 1770000000000;
 
@@ -288,6 +289,63 @@ function createSavedInvoice(overrides = {}) {
   };
 }
 
+function createSavedEstimate(overrides = {}) {
+  const customer = createCustomer();
+
+  return {
+    id: "est_manual_verify",
+    docType: "estimate",
+    estimateNumber: "EST-2001",
+    customerId: customer.id,
+    customerName: customer.name,
+    projectId: "proj_estimate_verify",
+    projectName: customer.projectName,
+    status: "pending",
+    total: 420,
+    grandTotal: 420,
+    totalRevenue: 420,
+    scopeNotes: "Patch drywall and repaint the front lobby.",
+    customer: {
+      ...customer,
+      projectSameAsCustomer: false,
+    },
+    job: {
+      date: "2026-05-03",
+      due: "2026-05-17",
+      poNumber: "PO-EST-1",
+      docNumber: "EST-2001",
+      location: "123 Main St",
+    },
+    labor: {
+      lines: [createLaborLine()],
+      hazardPct: 0,
+      riskPct: 0,
+      multiplier: 1,
+    },
+    materials: {
+      items: [],
+      markupPct: 0,
+      blanketCost: "120",
+      blanketInternalCost: "80",
+      materialsBlanketDescription: "Estimate allowance",
+    },
+    ui: {
+      docType: "estimate",
+      materialsMode: "blanket",
+    },
+    meta: {
+      savedDocId: "est_manual_verify",
+      savedDocCreatedAt: FIXED_TIMESTAMP - 1000,
+      lastSavedAt: FIXED_TIMESTAMP,
+    },
+    createdAt: FIXED_TIMESTAMP - 1000,
+    updatedAt: FIXED_TIMESTAMP,
+    savedAt: FIXED_TIMESTAMP,
+    ts: FIXED_TIMESTAMP,
+    ...overrides,
+  };
+}
+
 function createRetainedInvoiceDraft() {
   const state = clone(DEFAULT_STATE);
   const customer = createCustomer();
@@ -360,6 +418,23 @@ function seedInvoiceStorage({ invoice, customer, estimatorState, editInvoiceTarg
   }
 }
 
+function seedEstimateStorage({ estimate, customer, estimatorState, editEstimateTargetId = "" }) {
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([estimate]));
+
+  if (estimatorState) {
+    localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(estimatorState));
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+  }
+
+  if (editEstimateTargetId) {
+    localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, editEstimateTargetId);
+  } else {
+    localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+  }
+}
+
 describe("EstimateForm invoice edit fallback", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -367,7 +442,7 @@ describe("EstimateForm invoice edit fallback", () => {
     mockInitialState = null;
   });
 
-  test("hides the top document toggle in new invoice mode but keeps it in new estimate mode", async () => {
+  test("uses invoice-specific Start Here guidance while keeping the invoice toggle hidden and estimate mode unchanged", async () => {
     const invoiceState = clone(DEFAULT_STATE);
     invoiceState.ui = {
       ...(invoiceState.ui || {}),
@@ -380,8 +455,13 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Invoice Builder");
 
+    expect(screen.getByText("Start here")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Estimate$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Invoice$/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Project / Job")).toBeInTheDocument();
+    expect(screen.getByText("Amounts / Lines")).toBeInTheDocument();
+    expect(screen.queryByText(/^Scope$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Scope of Work")).not.toBeInTheDocument();
 
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
@@ -396,8 +476,30 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Estimate Builder");
 
+    expect(screen.getByText("Start here")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Estimate$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Invoice$/i })).toBeInTheDocument();
+    expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
+    expect(screen.getByText("Scope of Work")).toBeInTheDocument();
+  });
+
+  test("shows Start Here in estimate edit mode while invoice edit mode stays unchanged", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate();
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    render(<EstimateForm />);
+
+    await screen.findByText("EDIT ESTIMATE");
+
+    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
   });
 
   test("clears retained invoice-shaped draft state when invoice builder opens without a valid edit target", async () => {
@@ -458,6 +560,8 @@ describe("EstimateForm invoice edit fallback", () => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
       expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Invoice Verify Project");
     });
+
+    expect(screen.queryByText("Start here")).not.toBeInTheDocument();
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};

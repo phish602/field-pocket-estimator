@@ -5169,19 +5169,80 @@ export default function EstimateForm(props) {
             ) : null}
           </div>
         ) : null}
-        {!isEditMode && !projectSeedSummary ? (() => {
+        {(!projectSeedSummary && (!isEditMode || !isInvoiceEditMode)) ? (() => {
           const hasCustomer = Boolean(selectedCustomerId || String(state?.customer?.name || "").trim());
           const hasProject = Boolean(String(state?.projectId || "").trim());
+          const hasProjectOrJobContext = hasProject || Boolean(
+            String(
+              state?.projectName
+              || state?.customer?.projectName
+              || state?.job?.location
+              || ""
+            ).trim()
+          );
           const hasScope = String(state?.scopeNotes || "").trim().length > 0;
           const hasCosts = totalRevenue > 0 || laborBase > 0 || Number(materialsBilled || 0) > 0;
           const canExport = hasCustomer && hasCosts;
-          const chips = [
-            { label: lang === "es" ? "Cliente" : "Customer",    status: hasCustomer ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasCustomer ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasCustomer ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasCustomer ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
-            { label: lang === "es" ? "Proyecto" : "Project",    status: hasProject ? (lang === "es" ? "Vinculado" : "Linked") : (lang === "es" ? "Opcional" : "Optional"), color: hasProject ? "rgba(99,179,237,0.92)"   : "rgba(229,231,235,0.28)", bg: hasProject ? "rgba(99,179,237,0.08)"   : "rgba(255,255,255,0.025)", border: hasProject ? "rgba(99,179,237,0.18)"   : "rgba(255,255,255,0.07)" },
-            { label: lang === "es" ? "Alcance" : "Scope",       status: hasScope   ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasScope   ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasScope   ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasScope   ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
-            { label: lang === "es" ? "Costos" : "Costs",        status: hasCosts   ? (lang === "es" ? "Listo" : "Ready")    : (lang === "es" ? "Falta" : "Missing"), color: hasCosts   ? "rgba(52,211,153,0.92)"  : "rgba(245,158,11,0.92)",  bg: hasCosts   ? "rgba(52,211,153,0.08)"  : "rgba(245,158,11,0.08)",  border: hasCosts   ? "rgba(52,211,153,0.18)"  : "rgba(245,158,11,0.18)"  },
-            { label: lang === "es" ? "Guardar / Exportar" : "Save / Export", status: canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"), color: canExport ? "rgba(34,211,238,0.92)"   : "rgba(229,231,235,0.28)", bg: canExport ? "rgba(34,211,238,0.08)"   : "rgba(255,255,255,0.025)", border: canExport ? "rgba(34,211,238,0.18)"   : "rgba(255,255,255,0.07)" },
-          ];
+          const readyTone = { color: "rgba(52,211,153,0.92)", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.18)" };
+          const warnTone = { color: "rgba(245,158,11,0.92)", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.18)" };
+          const infoTone = { color: "rgba(99,179,237,0.92)", bg: "rgba(99,179,237,0.08)", border: "rgba(99,179,237,0.18)" };
+          const neutralTone = { color: "rgba(229,231,235,0.28)", bg: "rgba(255,255,255,0.025)", border: "rgba(255,255,255,0.07)" };
+          const reviewTone = canExport
+            ? { color: "rgba(34,211,238,0.92)", bg: "rgba(34,211,238,0.08)", border: "rgba(34,211,238,0.18)" }
+            : neutralTone;
+          const buildChip = (label, status, tone) => ({ label, status, ...tone });
+          const chips = uiDocType === "invoice"
+            ? [
+                buildChip(
+                  lang === "es" ? "Cliente" : "Customer",
+                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCustomer ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Proyecto / trabajo" : "Project / Job",
+                  hasProject
+                    ? (lang === "es" ? "Vinculado" : "Linked")
+                    : (hasProjectOrJobContext ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Opcional" : "Optional")),
+                  hasProjectOrJobContext ? infoTone : neutralTone
+                ),
+                buildChip(
+                  lang === "es" ? "Montos / líneas" : "Amounts / Lines",
+                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCosts ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
+                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  reviewTone
+                ),
+              ]
+            : [
+                buildChip(
+                  lang === "es" ? "Cliente" : "Customer",
+                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCustomer ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Proyecto" : "Project",
+                  hasProject ? (lang === "es" ? "Vinculado" : "Linked") : (lang === "es" ? "Opcional" : "Optional"),
+                  hasProject ? infoTone : neutralTone
+                ),
+                buildChip(
+                  lang === "es" ? "Alcance" : "Scope",
+                  hasScope ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasScope ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Costos" : "Costs",
+                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCosts ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
+                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  reviewTone
+                ),
+              ];
           return (
             <div style={{ margin: "0 0 14px", padding: "12px 14px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
               <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(229,231,235,0.28)", marginBottom: 9 }}>
