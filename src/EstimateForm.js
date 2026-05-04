@@ -4456,6 +4456,9 @@ export default function EstimateForm(props) {
           invoiceNumber: "",
         };
         writeStoredProjects(nextProjects);
+        try {
+          window.dispatchEvent(new Event("estipaid:projects-changed"));
+        } catch {}
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         writeStoredEstimatesLocal(nextEstimates);
 

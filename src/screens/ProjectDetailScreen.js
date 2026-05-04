@@ -562,7 +562,10 @@ export default function ProjectDetailScreen({
                   }}
                   onClick={() => {
                     const updated = updateProjectStoredStatus(project.id, option.key);
-                    if (updated) setRefreshSeq((value) => value + 1);
+                    if (updated) {
+                      setRefreshSeq((value) => value + 1);
+                      window.dispatchEvent(new Event("estipaid:projects-changed"));
+                    }
                   }}
                 >
                   {option.label}
