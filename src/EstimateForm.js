@@ -608,6 +608,61 @@ function readSavedDocList(key) {
   }
 }
 
+function resolveExportMaterialsMode(candidateState, fallbackMode = "blanket") {
+  const explicitMode = String(
+    candidateState?.ui?.materialsMode
+    || candidateState?.materialsMode
+    || ""
+  ).trim().toLowerCase();
+  if (explicitMode === "itemized" || explicitMode === "blanket") return explicitMode;
+  const hasItemizedMaterials = Array.isArray(candidateState?.materials?.items)
+    && candidateState.materials.items.some((item) => String(item?.desc || "").trim());
+  return hasItemizedMaterials ? "itemized" : fallbackMode;
+}
+
+function hasMeaningfulInvoiceExportData(candidateState, candidateComputed) {
+  const documentNumber = String(
+    candidateState?.job?.docNumber
+    || candidateState?.invoiceNumber
+    || candidateState?.customer?.projectNumber
+    || ""
+  ).trim();
+  const customerName = String(candidateState?.customer?.name || "").trim();
+  const projectName = String(candidateState?.customer?.projectName || "").trim();
+  const totalRevenue = Number(candidateComputed?.totals?.grandTotal ?? candidateComputed?.grandTotal ?? 0);
+  const hasLaborRows = Array.isArray(candidateComputed?.labor?.normalized)
+    && candidateComputed.labor.normalized.some((line) => {
+      const label = String(line?.label || line?.role || "").trim();
+      return Boolean(label || Number(line?.hours || 0) || Number(line?.rate || line?.effectiveRate || 0));
+    });
+  const hasMaterialRows = Array.isArray(candidateComputed?.materials?.normalized)
+    && candidateComputed.materials.normalized.some((item) => {
+      const desc = String(item?.desc || "").trim();
+      return Boolean(desc || Number(item?.qty || 0) || Number(item?.priceEach || item?.effectivePriceEach || 0));
+    });
+
+  return Boolean(documentNumber || customerName || projectName || totalRevenue || hasLaborRows || hasMaterialRows);
+}
+
+function findStoredInvoiceForExport(editingId, candidateState) {
+  const matchId = String(editingId || candidateState?.meta?.savedDocId || "").trim();
+  const matchDocNumber = String(
+    candidateState?.job?.docNumber
+    || candidateState?.invoiceNumber
+    || ""
+  ).trim();
+
+  if (!matchId && !matchDocNumber) return null;
+
+  const invoices = readStoredInvoices();
+  return invoices.find((entry) => {
+    const entryId = String(entry?.id || "").trim();
+    const entryDocNumber = String(entry?.job?.docNumber || entry?.invoiceNumber || "").trim();
+    return (matchId && entryId === matchId)
+      || (matchDocNumber && entryDocNumber === matchDocNumber);
+  }) || null;
+}
+
 function writeStoredEstimatesLocal(nextEstimates) {
   const collectLegacyInvoiceIdentityKeys = (record) => {
     const keys = new Set();
@@ -4548,27 +4603,49 @@ export default function EstimateForm(props) {
     const companyProfile = companyGate.profile || loadCompanyProfile();
 
     try {
-      const docNoRaw = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const savedInvoiceExportRecord = uiDocType === "invoice"
+        ? findStoredInvoiceForExport(editingRecordId, state)
+        : null;
+      const liveInvoiceLooksIncomplete = uiDocType === "invoice"
+        && !hasMeaningfulInvoiceExportData(state, computed);
+      const exportState = savedInvoiceExportRecord && liveInvoiceLooksIncomplete
+        ? savedInvoiceExportRecord
+        : state;
+      const exportComputed = exportState === state
+        ? computed
+        : computeTotals(exportState, { settings: settingsSnapshot });
+      const exportMaterialsMode = exportState === state
+        ? materialsMode
+        : resolveExportMaterialsMode(exportState, "blanket");
+      const exportResolvedProjectAddress = exportState === state
+        ? String(resolvedProjectAddress || "").trim()
+        : String(
+          exportState?.job?.projectAddress
+          || exportState?.customer?.projectAddress
+          || exportState?.customer?.address
+          || ""
+        ).trim();
+      const docNoRaw = String(exportState?.job?.docNumber || exportState?.customer?.projectNumber || "").trim();
       const documentNumber = sanitizePdfToken(docNoRaw, "Draft");
       const filename = `${uiDocType === "invoice" ? "Invoice" : "Estimate"}-${documentNumber}.pdf`;
 
-      const customerName = String(state?.customer?.name || "").trim() || "-";
-      const customerAttn = String(state?.customer?.attn || "").trim();
-      const customerAddress = String(state?.customer?.address || "").trim();
-      const billingAddress = state?.customer?.billingDiff
-        ? String(state?.customer?.billingAddress || "").trim()
+      const customerName = String(exportState?.customer?.name || "").trim() || "-";
+      const customerAttn = String(exportState?.customer?.attn || "").trim();
+      const customerAddress = String(exportState?.customer?.address || "").trim();
+      const billingAddress = exportState?.customer?.billingDiff
+        ? String(exportState?.customer?.billingAddress || "").trim()
         : customerAddress;
-      const resolvedProject = String(resolvedProjectAddress || "").trim();
-      const projectName = String(state?.customer?.projectName || "").trim();
-      const projectNumber = String(state?.customer?.projectNumber || "").trim();
-      const poNumber = String(state?.job?.poNumber || "").trim();
-      const docDate = String(state?.job?.date || "").trim();
+      const resolvedProject = exportResolvedProjectAddress;
+      const projectName = String(exportState?.customer?.projectName || "").trim();
+      const projectNumber = String(exportState?.customer?.projectNumber || "").trim();
+      const poNumber = String(exportState?.job?.poNumber || "").trim();
+      const docDate = String(exportState?.job?.date || "").trim();
       const includeNotes = uiDocType === "estimate";
-      const additionalNotesText = String(state?.additionalNotes || "").trim();
-      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
-      const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
+      const additionalNotesText = String(exportState?.additionalNotes || "").trim();
+      const materialsBlanketDescription = String(exportState?.materials?.materialsBlanketDescription || "").trim();
+      const tradeBlocks = extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text);
       const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
-      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks) : "";
+      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(exportState?.scopeNotes, tradeBlocks) : "";
       const companyAddressLine1 = String(companyProfile?.addressLine1 || "").trim();
       const companyAddressLine2 = String(companyProfile?.addressLine2 || "").trim();
       const companyCity = String(companyProfile?.city || "").trim();
@@ -4581,7 +4658,7 @@ export default function EstimateForm(props) {
         ? companyAddressLines.join("\n")
         : String(companyProfile?.address || "").trim();
 
-      const laborRows = (computed?.labor?.normalized || []).map((ln) => {
+      const laborRows = (exportComputed?.labor?.normalized || []).map((ln) => {
         const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
         const label = String(ln?.label || roleLabel || "").trim() || "-";
         const qty = Math.max(1, Number(ln?.qty) || 1);
@@ -4592,14 +4669,14 @@ export default function EstimateForm(props) {
       });
 
       const materialsRows = (() => {
-        if (materialsMode === "itemized") {
+        if (exportMaterialsMode === "itemized") {
           const materialNotesById = new Map(
-            (Array.isArray(state?.materials?.items) ? state.materials.items : []).map((item, index) => [
+            (Array.isArray(exportState?.materials?.items) ? exportState.materials.items : []).map((item, index) => [
               String(item?.id || `idx_${index}`),
               String(item?.note || "").trim(),
             ])
           );
-          const rows = (computed?.materials?.normalized || [])
+          const rows = (exportComputed?.materials?.normalized || [])
             .filter((it) => String(it?.desc || "").trim())
             .map((it) => {
               const desc = String(it?.desc || "").trim();
@@ -4620,19 +4697,26 @@ export default function EstimateForm(props) {
         return [[
           "Blanket Materials",
           "1",
-          money.format(Number(materialsBilled) || 0),
-          money.format(Number(materialsBilled) || 0),
+          money.format(Number(exportComputed?.materials?.totalCharge) || 0),
+          money.format(Number(exportComputed?.materials?.totalCharge) || 0),
         ]];
       })();
 
-      const summarySubtotal = Number(totalRevenue) - Number(hazardFee || 0) - Number(riskFee || 0);
+      const adjustedLabor = Number(exportComputed?.laborAfterMultiplier) || 0;
+      const materialsBilled = Number(exportComputed?.materials?.totalCharge) || 0;
+      const hazardPctNormalized = Number(normalizePercentInput(exportComputed?.hazardPct ?? exportState?.labor?.hazardPct));
+      const riskPctNormalized = Number(normalizePercentInput(exportComputed?.riskPct ?? exportState?.labor?.riskPct));
+      const hazardFee = Number(exportComputed?.hazardAmount) || 0;
+      const riskFee = Number(exportComputed?.riskAmount) || 0;
+      const totalRevenue = Number(exportComputed?.grandTotal) || 0;
+      const summarySubtotal = totalRevenue - hazardFee - riskFee;
       const summaryRows = [
-        ["Labor", money.format(Number(adjustedLabor) || 0)],
-        ["Materials", money.format(Number(materialsBilled) || 0)],
+        ["Labor", money.format(adjustedLabor)],
+        ["Materials", money.format(materialsBilled)],
         ["Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
-        [`Hazard (${Number(hazardPctNormalized) || 0}%)`, money.format(Number(hazardFee) || 0)],
-        [`Risk (${Number(riskPctNormalized) || 0}%)`, money.format(Number(riskFee) || 0)],
-        ["Grand Total", money.format(Number(totalRevenue) || 0)],
+        [`Hazard (${hazardPctNormalized}%)`, money.format(hazardFee)],
+        [`Risk (${riskPctNormalized}%)`, money.format(riskFee)],
+        ["Grand Total", money.format(totalRevenue)],
       ];
       await exportPdf({
         docType: uiDocType,
@@ -4649,12 +4733,12 @@ export default function EstimateForm(props) {
           attn: customerAttn,
           address: customerAddress,
           billingAddress,
-          netTermsType: String(state?.customer?.netTermsType || "").trim(),
+          netTermsType: String(exportState?.customer?.netTermsType || "").trim(),
           netTermsDays:
-            state?.customer?.netTermsDays === null || state?.customer?.netTermsDays === undefined
+            exportState?.customer?.netTermsDays === null || exportState?.customer?.netTermsDays === undefined
               ? ""
-              : String(state?.customer?.netTermsDays),
-          netTermsLabel: String(selectedProfile?.netTermsLabel || "").trim(),
+              : String(exportState?.customer?.netTermsDays),
+          netTermsLabel: String(getNetTermsLabel(exportState?.customer || {}) || selectedProfile?.netTermsLabel || "").trim(),
         },
         job: {
           date: docDate,
@@ -4675,8 +4759,8 @@ export default function EstimateForm(props) {
         tradeInsertText: tradeRawForPdf,
         laborRows,
         materialRows: materialsRows,
-        materialsMode,
-        materialsBlanketDescription: materialsMode === "blanket" ? materialsBlanketDescription : "",
+        materialsMode: exportMaterialsMode,
+        materialsBlanketDescription: exportMaterialsMode === "blanket" ? materialsBlanketDescription : "",
         summaryRows,
         scopeNotes: includeNotes ? scopeWithoutTrade : "",
         additionalNotes: additionalNotesText,

@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -9,7 +9,9 @@ const FIXED_TIMESTAMP = 1770000000000;
 const mockPatch = jest.fn();
 const mockReplaceState = jest.fn();
 const mockSaveNow = jest.fn();
+const mockExportPdf = jest.fn(() => Promise.resolve());
 let mockInitialState = null;
+let mockSuppressReplaceState = false;
 
 jest.mock("./estimator/useEstimatorState", () => {
   const React = require("react");
@@ -71,6 +73,7 @@ jest.mock("./estimator/useEstimatorState", () => {
 
     const replaceState = React.useCallback((nextState, options = {}) => {
       mockReplaceState(nextState, options);
+      if (mockSuppressReplaceState) return;
       setState(normalizeState(nextState || {}));
     }, []);
 
@@ -155,8 +158,15 @@ jest.mock("./components/estimator/InlineCustomNumberField", () => {
 });
 
 jest.mock("./components/estimator/PdfPromptModal", () => {
-  return function MockPdfPromptModal() {
-    return null;
+  return function MockPdfPromptModal({ open, onDownload, onView, onShare }) {
+    if (!open) return null;
+    return (
+      <div data-testid="pdf-prompt-modal">
+        <button type="button" onClick={onView}>View PDF</button>
+        <button type="button" onClick={onDownload}>Download PDF</button>
+        <button type="button" onClick={onShare}>Share PDF</button>
+      </div>
+    );
   };
 });
 
@@ -186,6 +196,50 @@ jest.mock("./utils/settings", () => {
     loadSettings: () => settings,
   };
 });
+
+jest.mock("./utils/storage", () => {
+  const actual = jest.requireActual("./utils/storage");
+  return {
+    ...actual,
+    loadCompanyProfile: () => ({
+      legalName: "EstiPaid Test Company",
+      addressLine1: "123 Builder Way",
+      city: "Phoenix",
+      state: "AZ",
+      zip: "85001",
+      phone: "6025550100",
+    }),
+    normalizeCompanyProfile: (profile) => ({
+      ...actual.normalizeCompanyProfile({
+        legalName: "EstiPaid Test Company",
+        addressLine1: "123 Builder Way",
+        city: "Phoenix",
+        state: "AZ",
+        zip: "85001",
+        phone: "6025550100",
+      }),
+      ...(profile || {}),
+    }),
+  };
+});
+
+jest.mock("./utils/guards", () => ({
+  requireCompanyProfile: ({ profile }) => ({
+    allowed: true,
+    profile: profile || {
+      legalName: "EstiPaid Test Company",
+      addressLine1: "123 Builder Way",
+      city: "Phoenix",
+      state: "AZ",
+      zip: "85001",
+      phone: "6025550100",
+    },
+  }),
+}));
+
+jest.mock("./pdf", () => ({
+  exportPdf: (...args) => mockExportPdf(...args),
+}));
 
 import EstimateForm from "./EstimateForm";
 import { DEFAULT_STATE } from "./estimator/defaultState";
@@ -485,6 +539,7 @@ describe("EstimateForm invoice edit fallback", () => {
     localStorage.clear();
     jest.clearAllMocks();
     mockInitialState = null;
+    mockSuppressReplaceState = false;
   });
 
   test("uses invoice-specific Start Here guidance while keeping the invoice toggle hidden and estimate mode unchanged", async () => {
@@ -636,4 +691,90 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(hydratedState.meta).toEqual(expect.objectContaining({ savedDocId: savedInvoice.id }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
   });
+
+  test("exports saved paid invoice data when edit-mode invoice state is blank", async () => {
+    const customer = createCustomer();
+    const savedInvoice = createSavedInvoice({
+      status: "paid",
+      paymentStatus: "paid",
+      amountPaid: 300,
+      balanceRemaining: 0,
+      additionalNotes: "Paid in full by ACH.",
+      materials: {
+        items: [
+          {
+            id: "mat_paid_1",
+            desc: "Finish materials",
+            note: "Primer and paint",
+            qty: "3",
+            priceEach: "100",
+          },
+        ],
+        markupPct: 0,
+        materialsBlanketDescription: "",
+      },
+      ui: {
+        docType: "invoice",
+        materialsMode: "itemized",
+      },
+      payments: [
+        {
+          id: "pay_1",
+          amount: 300,
+          method: "ach",
+          receivedAt: "2026-05-10",
+        },
+      ],
+    });
+    const blankInvoiceState = clone(DEFAULT_STATE);
+    blankInvoiceState.ui = {
+      ...(blankInvoiceState.ui || {}),
+      docType: "invoice",
+      materialsMode: "blanket",
+    };
+    blankInvoiceState.meta = {
+      ...(blankInvoiceState.meta || {}),
+      savedDocId: savedInvoice.id,
+    };
+    mockInitialState = blankInvoiceState;
+    mockSuppressReplaceState = true;
+
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+
+    fireEvent.click(screen.getByRole("button", { name: /export pdf/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /download pdf/i }));
+
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+
+    const [payload, mode] = mockExportPdf.mock.calls[0];
+    const summaryValues = Object.fromEntries(payload.summaryRows || []);
+
+    expect(mode).toBe("download");
+    expect(payload.docType).toBe("invoice");
+    expect(payload.documentNumber).toBe("INV-1001");
+    expect(payload.customer).toEqual(expect.objectContaining({ name: "Invoice Verify Customer" }));
+    expect(payload.job).toEqual(expect.objectContaining({
+      projectName: "Invoice Verify Project",
+      poNumber: "PO-INV-1",
+    }));
+    expect(payload.additionalNotes).toBe("Paid in full by ACH.");
+    expect(payload.materialsMode).toBe("itemized");
+    expect(payload.materialRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        desc: "Finish materials",
+        note: "Primer and paint",
+        total: "$300.00",
+      }),
+    ]));
+    expect(summaryValues["Grand Total"]).toBe("$1,407.00");
+    expect(summaryValues.Materials).toBe("$300.00");
+  }, 15000);
 });

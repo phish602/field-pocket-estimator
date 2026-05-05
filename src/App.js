@@ -2712,6 +2712,61 @@ const [spinTick, setSpinTick] = useState(0);
   }, []);
 
   useEffect(() => {
+    if (activeTab !== ROUTES.INVOICES) return undefined;
+
+    // Some invoice-card "Open" interactions can reach the builder without preserving
+    // the intended edit target. Seed it from the clicked card before navigation.
+    const seedInvoiceEditTargetFromCard = (event) => {
+      const eventTarget = event?.target;
+      if (!(eventTarget instanceof Element)) return;
+
+      const button = eventTarget.closest("button");
+      if (!button) return;
+
+      const label = String(button.textContent || "").trim().toLowerCase();
+      if (label !== "open" && label !== "abrir") return;
+
+      const cardText = String(button.closest(".pe-card")?.textContent || "").trim().toLowerCase();
+      if (!cardText) return;
+
+      const matchingInvoices = (Array.isArray(invoiceHistory) ? invoiceHistory : []).filter((invoice) => {
+        if (deriveInvoiceStatus(invoice) === INVOICE_STATUSES.VOID) return false;
+
+        const candidates = [
+          invoice?.invoiceNumber,
+          invoice?.job?.docNumber,
+          invoice?.projectName,
+          invoice?.customerName,
+          invoice?.estimateNumber,
+          invoice?.customer?.projectName,
+          invoice?.customer?.name,
+        ]
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter(Boolean);
+
+        return candidates.some((value) => cardText.includes(value));
+      });
+
+      if (matchingInvoices.length !== 1) return;
+
+      const matchedId = String(matchingInvoices[0]?.id || "").trim();
+      if (!matchedId) return;
+
+      try {
+        localStorage.setItem(EDIT_INVOICE_TARGET_KEY, matchedId);
+        localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      } catch {}
+    };
+
+    document.addEventListener("pointerdown", seedInvoiceEditTargetFromCard, true);
+    document.addEventListener("click", seedInvoiceEditTargetFromCard, true);
+    return () => {
+      document.removeEventListener("pointerdown", seedInvoiceEditTargetFromCard, true);
+      document.removeEventListener("click", seedInvoiceEditTargetFromCard, true);
+    };
+  }, [activeTab, invoiceHistory]);
+
+  useEffect(() => {
     const refresh = () => setProjectHistory(readStoredProjects());
     refresh();
     const onStorage = (e) => {
