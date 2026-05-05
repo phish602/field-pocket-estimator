@@ -760,6 +760,8 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(mode).toBe("download");
     expect(payload.docType).toBe("invoice");
     expect(payload.documentNumber).toBe("INV-1001");
+    expect(payload.invoiceStatus).toBe("paid");
+    expect(payload.paymentStatus).toBe("paid");
     expect(payload.customer).toEqual(expect.objectContaining({ name: "Invoice Verify Customer" }));
     expect(payload.job).toEqual(expect.objectContaining({
       projectName: "Invoice Verify Project",

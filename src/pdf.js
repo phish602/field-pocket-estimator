@@ -571,6 +571,37 @@ function buildInvoicePaymentTermsText(payload) {
   return "Payment Terms: Full payment is due within 30 days of receipt of this invoice, unless otherwise agreed to in writing.";
 }
 
+function titleCaseStatus(value) {
+  return String(value || "")
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function resolveInvoiceStatusText(payload) {
+  if (payload?.docType !== "invoice") return "";
+
+  const invoiceStatus = asText(payload?.invoiceStatus, asText(payload?.status)).toLowerCase();
+  const paymentStatus = asText(payload?.paymentStatus).toLowerCase();
+
+  if (invoiceStatus === "void") return "Void";
+  if (invoiceStatus === "paid" || paymentStatus === "paid") return "Paid";
+  if (invoiceStatus === "overdue") return "Overdue";
+  if (
+    paymentStatus === "partial"
+    || paymentStatus === "partially_paid"
+    || paymentStatus === "partial_paid"
+  ) {
+    return "Partially Paid";
+  }
+  if (invoiceStatus === "sent") return "Sent";
+  if (invoiceStatus === "draft") return "Draft";
+  if (invoiceStatus) return titleCaseStatus(invoiceStatus);
+  if (paymentStatus) return titleCaseStatus(paymentStatus);
+  return "";
+}
+
 function buildPdfDoc(payload) {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -606,6 +637,7 @@ function buildPdfDoc(payload) {
   const footerLine = buildFooterLine(company);
   const footerCompanyName = asText(company?.companyName);
   const footerDetails = buildFooterDetails(company);
+  const invoiceStatusText = resolveInvoiceStatusText(payload);
   const invoicePaymentTermsText = payload?.docType === "invoice" ? buildInvoicePaymentTermsText(payload) : "";
   const billToText = buildBillToText(customer);
   const customerText = buildCustomerText(customer);
@@ -830,6 +862,15 @@ function buildPdfDoc(payload) {
   doc.text(estimateNumber, metaCenters[0], valueCenterY, { align: "center", baseline: "middle" });
   doc.text(date, metaCenters[1], valueCenterY, { align: "center", baseline: "middle" });
   doc.text(po, metaCenters[2], valueCenterY, { align: "center", baseline: "middle" });
+
+  if (invoiceStatusText) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.1);
+    doc.text(`STATUS: ${invoiceStatusText}`, RIGHT, META_Y + META_BOX_HEIGHT + 6.2, {
+      align: "right",
+      baseline: "middle",
+    });
+  }
 
   autoTable(doc, {
     startY: CLIENT_Y,

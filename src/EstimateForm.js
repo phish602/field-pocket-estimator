@@ -4761,6 +4761,8 @@ export default function EstimateForm(props) {
         materialRows: materialsRows,
         materialsMode: exportMaterialsMode,
         materialsBlanketDescription: exportMaterialsMode === "blanket" ? materialsBlanketDescription : "",
+        invoiceStatus: uiDocType === "invoice" ? String(exportState?.status || "").trim() : "",
+        paymentStatus: uiDocType === "invoice" ? String(exportState?.paymentStatus || "").trim() : "",
         summaryRows,
         scopeNotes: includeNotes ? scopeWithoutTrade : "",
         additionalNotes: additionalNotesText,
