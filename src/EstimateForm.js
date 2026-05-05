@@ -5189,7 +5189,7 @@ export default function EstimateForm(props) {
             ) : null}
           </div>
         ) : null}
-        {(!projectSeedSummary && (!isEditMode || !isInvoiceEditMode)) ? (() => {
+        {((!isInvoiceEditMode) && (!projectSeedSummary || uiDocType === "estimate")) ? (() => {
           const hasCustomer = Boolean(selectedCustomerId || String(state?.customer?.name || "").trim());
           const hasProject = Boolean(String(state?.projectId || "").trim());
           const hasProjectOrJobContext = hasProject || Boolean(

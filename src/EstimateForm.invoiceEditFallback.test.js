@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const FIXED_TIMESTAMP = 1770000000000;
 
 const mockPatch = jest.fn();
@@ -189,6 +190,7 @@ jest.mock("./utils/settings", () => {
 import EstimateForm from "./EstimateForm";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { ROUTES } from "./constants/routes";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -208,6 +210,19 @@ function createCustomer() {
     city: "Phoenix",
     state: "AZ",
     zip: "85001",
+  };
+}
+
+function createProject(overrides = {}) {
+  const customer = createCustomer();
+  return {
+    id: "proj_invoice_verify",
+    customerId: customer.id,
+    customerName: customer.name,
+    projectName: customer.projectName,
+    siteAddress: customer.projectAddress,
+    status: "estimating",
+    ...overrides,
   };
 }
 
@@ -435,6 +450,28 @@ function seedEstimateStorage({ estimate, customer, estimatorState, editEstimateT
   }
 }
 
+function seedProjectCreateSeed({ project, customer }) {
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
+  localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
+  localStorage.setItem(
+    "estipaid-project-detail-return-target-v1",
+    JSON.stringify({
+      route: ROUTES.PROJECT_DETAIL,
+      projectId: project.id,
+    }),
+  );
+  localStorage.setItem(
+    PROJECT_CREATE_SEED_KEY,
+    JSON.stringify({
+      projectId: project.id,
+      customerId: customer.id,
+      projectName: project.projectName,
+      customerName: customer.name,
+      siteAddress: project.siteAddress,
+    }),
+  );
+}
+
 describe("EstimateForm invoice edit fallback", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -481,6 +518,27 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(screen.getByRole("button", { name: /^Invoice$/i })).toBeInTheDocument();
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
     expect(screen.getByText("Scope of Work")).toBeInTheDocument();
+  });
+
+  test("shows Start Here for seeded new estimate flow while keeping project and customer context linked", async () => {
+    const customer = createCustomer();
+    const project = createProject();
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedProjectCreateSeed({ project, customer });
+
+    render(<EstimateForm />);
+
+    await screen.findByText("Estimate Builder");
+
+    expect(screen.getByText("New estimate for", { exact: false })).toBeInTheDocument();
+    expect(screen.getAllByText(project.projectName).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(customer.name).length).toBeGreaterThan(0);
+    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByText(/^Project$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Linked customer:/i)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(project.projectName)).toBeInTheDocument();
   });
 
   test("shows Start Here in estimate edit mode while invoice edit mode stays unchanged", async () => {
