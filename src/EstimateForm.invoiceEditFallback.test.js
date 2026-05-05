@@ -196,6 +196,14 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function renderEstimateFormInStrictMode() {
+  return render(
+    <React.StrictMode>
+      <EstimateForm />
+    </React.StrictMode>
+  );
+}
+
 function createCustomer() {
   return {
     id: "cust_invoice_verify",
@@ -552,7 +560,7 @@ describe("EstimateForm invoice edit fallback", () => {
       editEstimateTargetId: savedEstimate.id,
     });
 
-    render(<EstimateForm />);
+    renderEstimateFormInStrictMode();
 
     await screen.findByText("EDIT ESTIMATE");
 
@@ -609,7 +617,7 @@ describe("EstimateForm invoice edit fallback", () => {
       editInvoiceTargetId: savedInvoice.id,
     });
 
-    render(<EstimateForm />);
+    renderEstimateFormInStrictMode();
 
     await screen.findByText("EDIT INVOICE");
 
@@ -620,6 +628,7 @@ describe("EstimateForm invoice edit fallback", () => {
     });
 
     expect(screen.queryByText("Start here")).not.toBeInTheDocument();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};

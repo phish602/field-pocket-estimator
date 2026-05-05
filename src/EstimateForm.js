@@ -741,19 +741,29 @@ function readPendingEditTarget() {
   try {
     const invoiceId = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
     if (invoiceId) {
-      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       return { type: "invoice", id: invoiceId };
     }
     const estimateId = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
     if (estimateId) {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       return { type: "estimate", id: estimateId };
     }
     return null;
   } catch {
     return null;
   }
+}
+
+function consumePendingEditTarget(type) {
+  try {
+    if (type === "invoice") {
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return;
+    }
+    if (type === "estimate") {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    }
+  } catch {}
 }
 
 function clearPendingEditTarget(type) {
@@ -1615,6 +1625,14 @@ export default function EstimateForm(props) {
       openedEditIdRef.current = editingRecordId;
     }
   }, [editingRecordId, isEditMode]);
+
+  useEffect(() => {
+    if (!editingRecordId || !editingTargetType) return undefined;
+    const timer = window.setTimeout(() => {
+      consumePendingEditTarget(editingTargetType);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [editingRecordId, editingTargetType]);
 
   useEffect(() => {
     try {
