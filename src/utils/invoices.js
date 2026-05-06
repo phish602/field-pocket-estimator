@@ -445,6 +445,11 @@ function normalizePayments(payments) {
     note: asText(payment?.note),
     method: asText(payment?.method) || "manual",
     order: Number.isFinite(Number(payment?.order)) ? Number(payment.order) : index,
+    stripeSessionId: asText(payment?.stripeSessionId || payment?.sessionId),
+    stripePaymentIntentId: asText(payment?.stripePaymentIntentId || payment?.paymentIntentId),
+    stripeAccountId: asText(payment?.stripeAccountId),
+    stripeEventId: asText(payment?.stripeEventId),
+    stripeSyncKey: asText(payment?.stripeSyncKey),
   }));
 }
 
@@ -1361,6 +1366,114 @@ export function addManualInvoicePayment(invoice, paymentInput = {}, options = {}
 
   return {
     ok: true,
+    invoice: normalizeInvoiceRecord({
+      ...source,
+      status: isPaidInFull ? INVOICE_STATUSES.PAID : source.status,
+      payments: [...payments, nextPayment],
+      updatedAt: now,
+      savedAt: now,
+      ts: now,
+    }),
+  };
+}
+
+export function appendStripeInvoicePayment(invoice, paymentInput = {}, options = {}) {
+  const source = normalizeInvoiceRecord(invoice);
+  const now = Number(options?.nowTs) || Date.now();
+  const derivedStatus = deriveInvoiceStatus(source, now);
+
+  if (derivedStatus === INVOICE_STATUSES.DRAFT) {
+    return {
+      ok: false,
+      code: "invoice_not_billable",
+      message: "Payments can only be recorded on sent or overdue invoices.",
+    };
+  }
+
+  if (derivedStatus === INVOICE_STATUSES.VOID || source.paymentStatus === PAYMENT_STATUSES.VOID) {
+    return {
+      ok: false,
+      code: "invoice_void",
+      message: "Void invoices cannot accept payments.",
+    };
+  }
+
+  if (derivedStatus === INVOICE_STATUSES.PAID || source.paymentStatus === PAYMENT_STATUSES.PAID) {
+    return {
+      ok: false,
+      code: "invoice_paid",
+      message: "This invoice is already fully paid.",
+    };
+  }
+
+  const amount = roundCurrency(paymentInput?.amount);
+  if (amount <= 0) {
+    return {
+      ok: false,
+      code: "invalid_amount",
+      message: "Payment amount must be greater than $0.",
+    };
+  }
+
+  const balanceRemaining = roundCurrency(source.balanceRemaining);
+  if (amount > balanceRemaining + EPSILON) {
+    return {
+      ok: false,
+      code: "amount_exceeds_balance",
+      message: "Stripe payment exceeds the remaining balance.",
+    };
+  }
+
+  const payments = normalizePayments(source.payments);
+  const stripeSessionId = asText(paymentInput?.stripeSessionId || paymentInput?.sessionId);
+  const stripePaymentIntentId = asText(paymentInput?.stripePaymentIntentId || paymentInput?.paymentIntentId);
+  const stripeAccountId = asText(paymentInput?.stripeAccountId);
+  const stripeEventId = asText(paymentInput?.stripeEventId);
+  const stripeSyncKey = asText(paymentInput?.stripeSyncKey || stripePaymentIntentId || stripeSessionId);
+
+  if (stripePaymentIntentId && payments.some((payment) => asText(payment?.stripePaymentIntentId) === stripePaymentIntentId)) {
+    return {
+      ok: false,
+      code: "duplicate_payment_intent",
+      message: "This Stripe payment is already synced.",
+    };
+  }
+
+  if (stripeSessionId && payments.some((payment) => asText(payment?.stripeSessionId) === stripeSessionId)) {
+    return {
+      ok: false,
+      code: "duplicate_session",
+      message: "This Stripe payment is already synced.",
+    };
+  }
+
+  if (!stripeSessionId && !stripePaymentIntentId) {
+    return {
+      ok: false,
+      code: "missing_stripe_reference",
+      message: "Missing Stripe payment reference.",
+    };
+  }
+
+  const nextPayment = {
+    id: createPaymentId(),
+    amount,
+    paidAt: normalizeIsoDate(paymentInput?.paidAt || paymentInput?.date, todayParts(new Date(now))),
+    note: asText(paymentInput?.note) || "Stripe Checkout",
+    method: "stripe",
+    order: payments.length,
+    stripeSessionId,
+    stripePaymentIntentId,
+    stripeAccountId,
+    stripeEventId,
+    stripeSyncKey,
+  };
+  const nextAmountPaid = roundCurrency(source.amountPaid + amount);
+  const isPaidInFull = nextAmountPaid >= source.invoiceTotal - EPSILON;
+
+  return {
+    ok: true,
+    payment: nextPayment,
     invoice: normalizeInvoiceRecord({
       ...source,
       status: isPaidInFull ? INVOICE_STATUSES.PAID : source.status,

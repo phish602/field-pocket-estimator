@@ -149,4 +149,55 @@ describe("dev-ai Stripe Connect checkout guards", () => {
     expect(response.status).toBe(500);
     expect(response.json).toEqual({ error: "Stripe is not configured." });
   });
+
+  test("retrieve-checkout-session rejects invalid sessionId with safe 400", async () => {
+    port = 5964;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "sk_test_connect_phase3a",
+    });
+    await waitForServer(port);
+
+    const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
+      sessionId: "bad_session",
+      stripeAccountId: "acct_test_123",
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.json).toEqual({ error: "Invalid sessionId." });
+  });
+
+  test("retrieve-checkout-session rejects invalid stripeAccountId with safe 400", async () => {
+    port = 5965;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "sk_test_connect_phase3a",
+    });
+    await waitForServer(port);
+
+    const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
+      sessionId: "cs_test_123",
+      stripeAccountId: "bad_account",
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.json).toEqual({ error: "Invalid stripeAccountId." });
+  });
+
+  test("retrieve-checkout-session returns safe 500 when Stripe is not configured", async () => {
+    port = 5966;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "",
+    });
+    await waitForServer(port);
+
+    const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
+      sessionId: "cs_test_456",
+      stripeAccountId: "acct_test_missing_secret",
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.json).toEqual({ error: "Stripe is not configured." });
+  });
 });

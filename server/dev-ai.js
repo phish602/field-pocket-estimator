@@ -11935,6 +11935,50 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
   }
 });
 
+app.post("/api/stripe/retrieve-checkout-session", async (req, res) => {
+  try {
+    if (!STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Stripe is not configured." });
+    }
+
+    const sessionId = asText(req.body?.sessionId);
+    const stripeAccountId = asText(req.body?.stripeAccountId);
+    if (!/^cs_/i.test(sessionId)) {
+      return res.status(400).json({ error: "Invalid sessionId." });
+    }
+    if (!/^acct_/i.test(stripeAccountId)) {
+      return res.status(400).json({ error: "Invalid stripeAccountId." });
+    }
+
+    const stripe = getStripeClient();
+    const session = await stripe.checkout.sessions.retrieve(
+      sessionId,
+      { expand: ["payment_intent"] },
+      { stripeAccount: stripeAccountId },
+    );
+    const paymentIntent = session?.payment_intent && typeof session.payment_intent === "object"
+      ? session.payment_intent
+      : null;
+    const paidAtTs = Number(paymentIntent?.created || 0) || Number(session?.created || 0) || Math.floor(Date.now() / 1000);
+
+    return res.json({
+      ok: true,
+      sessionId,
+      stripeAccountId,
+      paymentStatus: asText(session?.payment_status),
+      status: asText(session?.status),
+      amountTotal: Number(session?.amount_total || 0) || 0,
+      amountSubtotal: Number(session?.amount_subtotal || 0) || 0,
+      currency: asText(session?.currency),
+      customerEmail: asText(session?.customer_details?.email || session?.customer_email),
+      paymentIntentId: asText(paymentIntent?.id),
+      paidAt: paidAtTs ? new Date(paidAtTs * 1000).toISOString() : "",
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to retrieve Stripe checkout session." });
+  }
+});
+
 app.get("/", (req, res) => res.send("OK"));
 
 app.get("/api/dev-ai-identity", (req, res) => {

@@ -54,6 +54,14 @@ function seedCompanyProfile(overrides = {}) {
   );
 }
 
+function seedStripeCheckoutSessions(entries) {
+  localStorage.setItem(STORAGE_KEYS.STRIPE_CHECKOUT_SESSIONS, JSON.stringify(entries || []));
+}
+
+function readStripeCheckoutSessions() {
+  return JSON.parse(localStorage.getItem(STORAGE_KEYS.STRIPE_CHECKOUT_SESSIONS) || "[]");
+}
+
 function renderInvoicesScreen() {
   render(<InvoicesScreen lang="en" t={(k) => k} />);
   act(() => {
@@ -539,6 +547,18 @@ describe("InvoicesScreen Stripe checkout action", () => {
       "noopener,noreferrer"
     );
     expect(readStoredInvoices()).toEqual(before);
+    expect(readStripeCheckoutSessions()).toEqual([
+      expect.objectContaining({
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_test_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/test-session",
+        amount: 775,
+        currency: "usd",
+        status: "pending",
+      }),
+    ]);
   });
 
   test("shows Stripe action for unpaid sent invoice with no payments and stored balanceRemaining 0", () => {
@@ -776,6 +796,17 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     expect(invoice.amountPaid).toBe(0);
     expect(invoice.paymentStatus).toBe("unpaid");
     expect(invoice.status).toBe("sent");
+    expect(readStripeCheckoutSessions()).toEqual([
+      expect.objectContaining({
+        invoiceId: "inv_copy_link_test",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_copy_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/copy-session",
+        amount: 800,
+        currency: "usd",
+        status: "pending",
+      }),
+    ]);
   });
 
   test("Copy Payment Link clipboard fallback shows URL in alert without mutating storage", async () => {
@@ -850,5 +881,435 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     expect(invoice.payments).toHaveLength(0);
     expect(invoice.amountPaid).toBe(0);
     expect(invoice.status).toBe("sent");
+  });
+});
+
+describe("InvoicesScreen Stripe payment sync", () => {
+  const originalFetch = global.fetch;
+  const originalOpen = window.open;
+  const originalAlert = window.alert;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    global.fetch = jest.fn();
+    window.open = jest.fn(() => ({}));
+    window.alert = jest.fn();
+  });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    global.fetch = originalFetch;
+    window.open = originalOpen;
+    window.alert = originalAlert;
+    jest.useRealTimers();
+  });
+
+  test("Check / Sync Stripe Payment calls backend and does not mutate invoice when session is still unpaid", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_pending_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/pending",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_pending_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "unpaid",
+        status: "open",
+        amountTotal: 50000,
+        currency: "usd",
+        paymentIntentId: "",
+        paidAt: "",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/stripe/retrieve-checkout-session",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+      sessionId: "cs_pending_123",
+      stripeAccountId: "acct_test_connected_123",
+    });
+    expect(readStoredInvoices()).toEqual(before);
+    expect(window.alert).toHaveBeenCalledWith("This Stripe payment has not completed yet.");
+  });
+
+  test("paid Stripe session appends one stripe payment and normalizes invoice totals", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_paid_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/paid",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_paid_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 20000,
+        currency: "usd",
+        paymentIntentId: "pi_paid_123",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({
+      method: "stripe",
+      note: "Stripe Checkout",
+      amount: 200,
+      stripeSessionId: "cs_paid_123",
+      stripePaymentIntentId: "pi_paid_123",
+      stripeAccountId: "acct_test_connected_123",
+    }));
+    expect(invoice.amountPaid).toBe(200);
+    expect(invoice.balanceRemaining).toBe(300);
+    expect(invoice.paymentStatus).toBe("partial");
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_paid_123",
+      status: "synced",
+      paymentIntentId: "pi_paid_123",
+    }));
+  });
+
+  test("manual and Stripe payments coexist and final Stripe payoff marks invoice paid without double-counting", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_manual_1",
+            amount: 125,
+            paidAt: "2026-05-05",
+            note: "Deposit",
+            method: "cash",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_payoff_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/payoff",
+        amount: 375,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_payoff_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 37500,
+        currency: "usd",
+        paymentIntentId: "pi_payoff_123",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(2);
+    expect(invoice.amountPaid).toBe(500);
+    expect(invoice.balanceRemaining).toBe(0);
+    expect(invoice.paymentStatus).toBe("paid");
+    expect(invoice.status).toBe("paid");
+  });
+
+  test("duplicate sync is blocked by matching stripePaymentIntentId", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 200,
+        balanceRemaining: 300,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_stripe_existing",
+            amount: 200,
+            paidAt: "2026-05-05",
+            note: "Stripe Checkout",
+            method: "stripe",
+            order: 0,
+            stripeSessionId: "cs_old",
+            stripePaymentIntentId: "pi_duplicate",
+            stripeAccountId: "acct_test_connected_123",
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_duplicate_new",
+        checkoutUrl: "https://checkout.stripe.com/pay/duplicate",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_duplicate_new",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 20000,
+        currency: "usd",
+        paymentIntentId: "pi_duplicate",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(1);
+    expect(window.alert).toHaveBeenCalledWith("This Stripe payment is already synced.");
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_duplicate_new",
+      status: "synced",
+    }));
+  });
+
+  test("duplicate sync is blocked by matching stripeSessionId", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 200,
+        balanceRemaining: 300,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_stripe_existing_session",
+            amount: 200,
+            paidAt: "2026-05-05",
+            note: "Stripe Checkout",
+            method: "stripe",
+            order: 0,
+            stripeSessionId: "cs_duplicate_session",
+            stripePaymentIntentId: "pi_existing",
+            stripeAccountId: "acct_test_connected_123",
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_duplicate_session",
+        checkoutUrl: "https://checkout.stripe.com/pay/duplicate-session",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_duplicate_session",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 20000,
+        currency: "usd",
+        paymentIntentId: "pi_new_duplicate_session",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(1);
+    expect(window.alert).toHaveBeenCalledWith("This Stripe payment is already synced.");
+  });
+
+  test("stale-balance overpayment is blocked without invoice mutation and session is marked review", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 450,
+        balanceRemaining: 50,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_manual_2",
+            amount: 450,
+            paidAt: "2026-05-05",
+            note: "Large deposit",
+            method: "cash",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_review_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/review",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_review_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 20000,
+        currency: "usd",
+        paymentIntentId: "pi_review_123",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    expect(readStoredInvoices()).toEqual(before);
+    expect(window.alert).toHaveBeenCalledWith("The Stripe payment exceeds the current remaining balance. Review it manually before recording it.");
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_review_123",
+      status: "review",
+      paymentIntentId: "pi_review_123",
+    }));
+  });
+
+  test("void still clears synced Stripe and manual payments", () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 500,
+        balanceRemaining: 0,
+        paymentStatus: "paid",
+        status: "paid",
+        payments: [
+          {
+            id: "pay_manual_3",
+            amount: 125,
+            paidAt: "2026-05-05",
+            note: "Deposit",
+            method: "cash",
+            order: 0,
+          },
+          {
+            id: "pay_stripe_3",
+            amount: 375,
+            paidAt: "2026-05-06",
+            note: "Stripe Checkout",
+            method: "stripe",
+            order: 1,
+            stripeSessionId: "cs_void_123",
+            stripePaymentIntentId: "pi_void_123",
+            stripeAccountId: "acct_test_connected_123",
+          },
+        ],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
+    const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.status).toBe("void");
+    expect(invoice.paymentStatus).toBe("void");
+    expect(invoice.amountPaid).toBe(0);
+    expect(invoice.balanceRemaining).toBe(0);
+    expect(invoice.payments).toEqual([]);
   });
 });
