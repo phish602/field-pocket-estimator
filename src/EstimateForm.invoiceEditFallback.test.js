@@ -694,7 +694,14 @@ describe("EstimateForm invoice edit fallback", () => {
 
   test("hydrates saved invoice labor into invoice edit mode", async () => {
     const customer = createCustomer();
-    const savedInvoice = createSavedInvoice();
+    const savedInvoice = createSavedInvoice({
+      labor: {
+        lines: [createLaborLine({ role: "carpenter", label: "Carpenter", qty: "2", hours: "5", rate: "72" })],
+        hazardPct: 5,
+        riskPct: 3,
+        multiplier: 1.15,
+      },
+    });
     mockInitialState = clone(DEFAULT_STATE);
 
     seedInvoiceStorage({
@@ -715,17 +722,17 @@ describe("EstimateForm invoice edit fallback", () => {
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};
     expect(hydratedState.labor).toEqual(expect.objectContaining({
-      hazardPct: 0,
-      riskPct: 0,
-      multiplier: 1,
+      hazardPct: 5,
+      riskPct: 3,
+      multiplier: 1.15,
       lines: [
         expect.objectContaining({
-          role: "foreman",
-          label: "Foreman",
-          hours: "9",
-          rate: "123",
+          role: "carpenter",
+          label: "Carpenter",
+          hours: "5",
+          rate: "72",
           trueRateInternal: "77",
-          qty: "1",
+          qty: "2",
         }),
       ],
     }));
