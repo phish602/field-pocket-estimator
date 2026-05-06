@@ -22,7 +22,9 @@ import {
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 
 function loadSavedEstimates() {
   try {
@@ -730,6 +732,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const id = String(invoice?.id || "").trim();
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
       if (id) localStorage.setItem(EDIT_INVOICE_TARGET_KEY, id);
       else localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}

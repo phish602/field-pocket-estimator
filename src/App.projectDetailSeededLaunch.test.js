@@ -633,6 +633,95 @@ function seedContinueCreateDraft(draftState) {
   return draftRaw;
 }
 
+function createSavedInvoiceRecord({
+  id = "saved_invoice_open_1",
+  customerName = "Saved Invoice Customer",
+  projectName = "Saved Invoice Project",
+  projectId = "saved_invoice_project_1",
+  invoiceNumber = "INV-7001",
+  laborHours = "9",
+  laborRate = "125",
+  materialDesc = "Saved invoice material",
+} = {}) {
+  const now = Date.now();
+  return {
+    id,
+    docType: "invoice",
+    invoiceType: "manual",
+    invoiceNumber,
+    status: "sent",
+    paymentStatus: "unpaid",
+    total: 875,
+    invoiceTotal: 875,
+    amountPaid: 0,
+    balanceRemaining: 875,
+    projectId,
+    projectName,
+    customerId: `cust_${id}`,
+    customerName,
+    customer: {
+      id: `cust_${id}`,
+      name: customerName,
+      fullName: customerName,
+      displayName: customerName,
+      projectName,
+      projectNumber: "PRJ-7001",
+      projectAddress: "100 Saved Invoice Way",
+    },
+    job: {
+      date: "2026-05-06",
+      due: "2026-05-20",
+      location: "Saved Invoice Site",
+      poNumber: "PO-7001",
+      docNumber: invoiceNumber,
+    },
+    scopeNotes: "Saved invoice scope notes",
+    additionalNotes: "Saved invoice additional notes",
+    labor: {
+      hazardPct: 0,
+      riskPct: 0,
+      multiplier: 1,
+      lines: [
+        {
+          id: `${id}_labor_1`,
+          role: "tech",
+          label: "Technician",
+          hours: laborHours,
+          rate: laborRate,
+          trueRateInternal: "55",
+          internalRate: "55",
+          qty: "1",
+          markupPct: "12",
+        },
+      ],
+    },
+    materials: {
+      items: [
+        {
+          id: `${id}_material_1`,
+          desc: materialDesc,
+          qty: "2",
+          unitCostInternal: "20",
+          costInternal: "40",
+          priceEach: "55",
+        },
+      ],
+      markupPct: 0,
+      blanketCost: "",
+      blanketInternalCost: "",
+      materialsBlanketDescription: "",
+    },
+    ui: {
+      docType: "invoice",
+      materialsMode: "itemized",
+    },
+    createdAt: now,
+    updatedAt: now,
+    savedAt: now,
+    ts: now,
+  };
+}
+
 async function openContinueCreateFlow(intent = "estimate") {
   render(<App />);
 
@@ -895,5 +984,81 @@ describe("App Continue Create draft handoff", () => {
     expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
     expect(mountedState.raw).not.toContain("Cross Invoice Customer");
     expect(mountedState.raw).not.toContain("Cross invoice blanket");
+  });
+
+  test("opening an existing invoice from Invoices clears a stale invoice create session before edit hydration", async () => {
+    const staleState = createStaleBuilderState({
+      docType: "invoice",
+      customerName: "Stale Blank Invoice Customer",
+      projectName: "Stale Blank Invoice Project",
+      laborHours: "23",
+      laborRate: "144",
+      materialDesc: "Stale blank invoice material",
+    });
+    const savedInvoice = createSavedInvoiceRecord({
+      id: "saved_invoice_open_existing",
+      customerName: "Open Existing Customer",
+      projectName: "Open Existing Project",
+      invoiceNumber: "INV-OPEN-7001",
+      laborHours: "5",
+      laborRate: "72",
+      materialDesc: "Open existing material",
+    });
+
+    localStorage.clear();
+    jest.clearAllMocks();
+    mockInitialBuilderStates.length = 0;
+
+    localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(staleState));
+    localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, JSON.stringify(staleState));
+    localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([savedInvoice]));
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^invoices$/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+    await screen.findByRole("heading", { name: /EDIT INVOICE/i });
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Open Existing Customer");
+      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Open Existing Project");
+      expect(screen.queryByText("Stale blank invoice material")).not.toBeInTheDocument();
+      expect(screen.getByText("Open existing material")).toBeInTheDocument();
+    });
+
+    expect(mockReplaceState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          name: "Open Existing Customer",
+          projectName: "Open Existing Project",
+        }),
+        labor: expect.objectContaining({
+          lines: expect.arrayContaining([
+            expect.objectContaining({
+              hours: "5",
+              rate: "72",
+            }),
+          ]),
+        }),
+        materials: expect.objectContaining({
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              desc: "Open existing material",
+            }),
+          ]),
+        }),
+      }),
+      expect.any(Object)
+    );
+
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(JSON.stringify({ ui: { docType: "invoice" } }));
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBeNull();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+    expect(localStorage.getItem(ACTIVE_EDIT_CONTEXT_KEY)).toEqual(
+      JSON.stringify({ type: "invoice", id: "saved_invoice_open_existing" })
+    );
   });
 });
