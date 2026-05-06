@@ -1498,3 +1498,82 @@ export function appendStripeInvoicePayment(invoice, paymentInput = {}, options =
     }),
   };
 }
+
+export function backfillStripeInvoicePaymentDetails(invoice, paymentInput = {}) {
+  const source = normalizeInvoiceRecord(invoice);
+  const payments = normalizePayments(source.payments);
+  const stripeSessionId = asText(paymentInput?.stripeSessionId || paymentInput?.sessionId);
+  const stripePaymentIntentId = asText(paymentInput?.stripePaymentIntentId || paymentInput?.paymentIntentId);
+
+  if (!stripeSessionId && !stripePaymentIntentId) {
+    return {
+      ok: false,
+      code: "missing_stripe_reference",
+      message: "Missing Stripe payment reference.",
+    };
+  }
+
+  const matchIndex = payments.findIndex((payment) => {
+    const method = asText(payment?.method).toLowerCase();
+    if (method !== "stripe") return false;
+    const paymentSessionId = asText(payment?.stripeSessionId || payment?.sessionId);
+    const paymentIntentId = asText(payment?.stripePaymentIntentId || payment?.paymentIntentId);
+    return (
+      (stripePaymentIntentId && paymentIntentId && paymentIntentId === stripePaymentIntentId)
+      || (stripeSessionId && paymentSessionId && paymentSessionId === stripeSessionId)
+    );
+  });
+
+  if (matchIndex < 0) {
+    return {
+      ok: false,
+      code: "payment_not_found",
+      message: "This Stripe payment is not recorded in EstiPaid.",
+    };
+  }
+
+  const existingPayment = payments[matchIndex];
+  const mergedPayment = {
+    ...existingPayment,
+    paymentMethodType: asText(paymentInput?.paymentMethodType) || asText(existingPayment?.paymentMethodType),
+    cardBrand: asText(paymentInput?.cardBrand) || asText(existingPayment?.cardBrand),
+    cardLast4: asText(paymentInput?.cardLast4) || asText(existingPayment?.cardLast4),
+    receiptEmail: asText(paymentInput?.receiptEmail) || asText(existingPayment?.receiptEmail),
+    receiptUrl: asText(paymentInput?.receiptUrl) || asText(existingPayment?.receiptUrl),
+    stripePaymentStatus: asText(paymentInput?.stripePaymentStatus) || asText(existingPayment?.stripePaymentStatus),
+    currency: asText(paymentInput?.currency) || asText(existingPayment?.currency),
+  };
+
+  const changed = (
+    mergedPayment.paymentMethodType !== asText(existingPayment?.paymentMethodType)
+    || mergedPayment.cardBrand !== asText(existingPayment?.cardBrand)
+    || mergedPayment.cardLast4 !== asText(existingPayment?.cardLast4)
+    || mergedPayment.receiptEmail !== asText(existingPayment?.receiptEmail)
+    || mergedPayment.receiptUrl !== asText(existingPayment?.receiptUrl)
+    || mergedPayment.stripePaymentStatus !== asText(existingPayment?.stripePaymentStatus)
+    || mergedPayment.currency !== asText(existingPayment?.currency)
+  );
+
+  if (!changed) {
+    return {
+      ok: true,
+      changed: false,
+      payment: existingPayment,
+      invoice: source,
+    };
+  }
+
+  const nextPayments = payments.map((payment, index) => (
+    index === matchIndex ? mergedPayment : payment
+  ));
+
+  return {
+    ok: true,
+    changed: true,
+    payment: mergedPayment,
+    invoice: normalizeInvoiceRecord({
+      ...source,
+      payments: nextPayments,
+    }),
+  };
+}

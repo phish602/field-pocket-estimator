@@ -73,6 +73,11 @@ function openInvoiceDetails() {
   fireEvent.click(screen.getByRole("button", { name: /Details/i }));
 }
 
+function setInvoiceStatusFilter(value) {
+  const [statusSelect] = screen.getAllByRole("combobox");
+  fireEvent.change(statusSelect, { target: { value } });
+}
+
 function createSentInvoice(overrides = {}) {
   return createPaidInvoice({
     id: "inv_sent_payment",
@@ -1128,6 +1133,8 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(invoice.balanceRemaining).toBe(300);
     expect(invoice.paymentStatus).toBe("partial");
     expect(screen.getByText(/Stripe payment recorded successfully\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Stripe payment synced successfully\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open synced invoice/i })).toBeInTheDocument();
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Stripe$/i)).toBeInTheDocument();
     expect(screen.getByText("Visa •••• 4242")).toBeInTheDocument();
@@ -1261,7 +1268,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(1);
-    expect(screen.getByText(/This Stripe payment is already recorded in EstiPaid\./i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Payment details were refreshed\./i).length).toBeGreaterThan(0);
     expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
       sessionId: "cs_duplicate_new",
       status: "synced",
@@ -1323,7 +1330,141 @@ describe("InvoicesScreen Stripe payment sync", () => {
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(1);
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
+  });
+
+  test("duplicate sync backfills safe Stripe payment details without changing invoice accounting", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 500,
+        balanceRemaining: 0,
+        paymentStatus: "paid",
+        status: "paid",
+        payments: [
+          {
+            id: "pay_stripe_backfill",
+            amount: 500,
+            paidAt: "2026-05-06T12:00:00.000Z",
+            note: "Stripe Checkout",
+            method: "stripe",
+            order: 0,
+            stripeSessionId: "cs_backfill_123",
+            stripePaymentIntentId: "pi_backfill_123",
+            stripeAccountId: "acct_test_connected_123",
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_backfill_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/backfill",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "synced",
+        paymentIntentId: "pi_backfill_123",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_backfill_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 50000,
+        currency: "usd",
+        receiptEmail: "payer@example.com",
+        receiptUrl: "https://pay.stripe.com/receipts/acct_123/ch_backfill",
+        paymentIntentId: "pi_backfill_123",
+        paymentMethodType: "card",
+        cardBrand: "visa",
+        cardLast4: "4242",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.amountPaid).toBe(500);
+    expect(invoice.balanceRemaining).toBe(0);
+    expect(invoice.paymentStatus).toBe("paid");
+    expect(invoice.status).toBe("paid");
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({
+      paymentMethodType: "card",
+      cardBrand: "visa",
+      cardLast4: "4242",
+      receiptEmail: "payer@example.com",
+      receiptUrl: "https://pay.stripe.com/receipts/acct_123/ch_backfill",
+      stripePaymentStatus: "paid",
+      currency: "usd",
+    }));
+    expect(screen.getAllByText(/Payment details were refreshed\./i).length).toBeGreaterThan(0);
+    expect(screen.getByText("Visa •••• 4242")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View Stripe receipt/i })).toHaveAttribute("href", "https://pay.stripe.com/receipts/acct_123/ch_backfill");
+  });
+
+  test("final Stripe sync keeps confirmation visible and reveals the invoice in Paid on demand", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_paid_full_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/full",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_paid_full_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 50000,
+        currency: "usd",
+        paymentIntentId: "pi_paid_full_123",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    setInvoiceStatusFilter("sent");
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    expect(screen.getByText(/Payment synced\. Invoice moved to Paid\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /View in Paid/i })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /View in Paid/i }));
+    });
+
+    const [statusSelect] = screen.getAllByRole("combobox");
+    expect(statusSelect).toHaveValue("paid");
+    expect(screen.getByRole("button", { name: /^Hide$/i })).toBeInTheDocument();
+    expect(screen.getByText(/Stripe payment recorded and invoice is now paid\./i)).toBeInTheDocument();
   });
 
   test("manual payment ledger rendering stays unchanged without Stripe-only details", () => {
@@ -1483,7 +1624,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
 
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.getByText(/already been recorded in EstiPaid/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
     expect(readStoredInvoices()).toEqual(beforeInvoices);
     expect(readStripeCheckoutSessions()).toEqual(beforeSessions);

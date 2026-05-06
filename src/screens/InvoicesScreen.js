@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   addManualInvoicePayment,
   appendStripeInvoicePayment,
+  backfillStripeInvoicePaymentDetails,
   INVOICE_STATUSES,
   PAYMENT_STATUSES,
   createManualInvoiceDraft,
@@ -83,6 +84,23 @@ function hasMatchingStripeLedgerPayment(invoice, sessionRef) {
       || (targetPaymentIntentId && paymentIntentId && paymentIntentId === targetPaymentIntentId)
     );
   });
+}
+
+function getMatchingStripeLedgerPayment(invoice, sessionRef) {
+  const targetSessionId = String(sessionRef?.sessionId || "").trim();
+  const targetPaymentIntentId = String(sessionRef?.paymentIntentId || "").trim();
+  const payments = Array.isArray(invoice?.payments) ? invoice.payments : [];
+  if (!targetSessionId && !targetPaymentIntentId) return null;
+  return payments.find((payment) => {
+    const method = String(payment?.method || "").trim().toLowerCase();
+    if (method !== "stripe") return false;
+    const paymentSessionId = String(payment?.stripeSessionId || payment?.sessionId || "").trim();
+    const paymentIntentId = String(payment?.stripePaymentIntentId || payment?.paymentIntentId || "").trim();
+    return (
+      (targetSessionId && paymentSessionId && paymentSessionId === targetSessionId)
+      || (targetPaymentIntentId && paymentIntentId && paymentIntentId === targetPaymentIntentId)
+    );
+  }) || null;
 }
 
 function getStripeSessionDisplayState(sessionRef, invoice, nowTs = Date.now()) {
@@ -626,6 +644,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [stripeAccountId, setStripeAccountId] = useState(() => readCompanyStripeAccountId());
   const [stripeCheckoutSessions, setStripeCheckoutSessions] = useState(() => readStoredStripeCheckoutSessions());
   const [stripeInlineNoticeByInvoice, setStripeInlineNoticeByInvoice] = useState(() => ({}));
+  const [stripeSyncOutcome, setStripeSyncOutcome] = useState(null);
   const [paymentForm, setPaymentForm] = useState(() => ({
     amount: "",
     paidAt: todayISO(),
@@ -949,6 +968,57 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       const next = {};
       if (!prev[invoiceId]) next[invoiceId] = true;
       return next;
+    });
+  };
+
+  const revealInvoiceOnBoard = (invoiceId, preferredStatus = "") => {
+    const normalizedInvoiceId = String(invoiceId || "").trim();
+    if (!normalizedInvoiceId) return;
+    const currentInvoices = readStoredInvoices();
+    const targetInvoice = currentInvoices.find((entry) => String(entry?.id || "").trim() === normalizedInvoiceId);
+    if (!targetInvoice) return;
+    const targetStatus = String(preferredStatus || deriveInvoiceStatus(targetInvoice) || "").trim().toLowerCase();
+    const currentFilter = String(statusFilter || "all").trim().toLowerCase();
+    setQ("");
+    if (targetStatus && currentFilter !== "all" && currentFilter !== targetStatus) {
+      setStatusFilter(targetStatus);
+    }
+    setExpanded({ [normalizedInvoiceId]: true });
+  };
+
+  const showStripeSyncOutcome = (invoiceRecord, options = {}) => {
+    const normalizedInvoiceId = String(invoiceRecord?.id || "").trim();
+    if (!normalizedInvoiceId) return;
+    const invoiceStatus = String(deriveInvoiceStatus(invoiceRecord) || "").trim().toLowerCase();
+    const movedToPaid = Boolean(options?.movedToPaid);
+    const detailBackfilled = Boolean(options?.detailBackfilled);
+    const alreadyRecorded = Boolean(options?.alreadyRecorded);
+    let message = "";
+    if (movedToPaid) {
+      message = lang === "es"
+        ? "Pago sincronizado. La factura se movió a Pagadas."
+        : "Payment synced. Invoice moved to Paid.";
+    } else if (detailBackfilled) {
+      message = lang === "es"
+        ? "Pago de Stripe ya registrado. Los detalles del pago se actualizaron."
+        : "Stripe payment already recorded. Payment details were refreshed.";
+    } else if (alreadyRecorded) {
+      message = lang === "es"
+        ? "Pago de Stripe ya registrado. Puedes abrir la factura sincronizada para confirmarlo."
+        : "Stripe payment already recorded. Open the synced invoice to confirm it.";
+    } else {
+      message = lang === "es"
+        ? "Pago de Stripe sincronizado correctamente."
+        : "Stripe payment synced successfully.";
+    }
+    setStripeSyncOutcome({
+      tone: options?.tone || "success",
+      message,
+      invoiceId: normalizedInvoiceId,
+      targetStatus: invoiceStatus,
+      actionLabel: movedToPaid
+        ? (lang === "es" ? "Ver en Pagadas" : "View in Paid")
+        : (lang === "es" ? "Abrir factura sincronizada" : "Open synced invoice"),
     });
   };
 
@@ -1465,7 +1535,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const syncStripePayment = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
+    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoice)
+      || getLatestStripeCheckoutSessionForInvoice(invoiceId);
     if (!invoiceId || !sessionRef || stripeSyncBusyId === invoiceId) return;
 
     setStripeSyncBusyId(invoiceId);
@@ -1538,16 +1609,61 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         stripePaymentStatus: String(payload?.paymentStatus || "").trim(),
         currency: String(payload?.currency || "").trim(),
       });
+      const matchingSyncedPayment = getMatchingStripeLedgerPayment(targetInvoice, {
+        sessionId: String(payload?.sessionId || sessionRef?.sessionId || "").trim(),
+        paymentIntentId: String(payload?.paymentIntentId || "").trim(),
+      });
 
       if (!result?.ok || !result?.invoice) {
-        if (result?.code === "duplicate_payment_intent" || result?.code === "duplicate_session") {
+        if (
+          result?.code === "duplicate_payment_intent"
+          || result?.code === "duplicate_session"
+          || (result?.code === "invoice_paid" && !!matchingSyncedPayment)
+        ) {
+          const backfillResult = backfillStripeInvoicePaymentDetails(targetInvoice, {
+            stripeSessionId: String(payload?.sessionId || sessionRef?.sessionId || "").trim(),
+            stripePaymentIntentId: String(payload?.paymentIntentId || "").trim(),
+            paymentMethodType: String(payload?.paymentMethodType || "").trim(),
+            cardBrand: String(payload?.cardBrand || "").trim(),
+            cardLast4: String(payload?.cardLast4 || "").trim(),
+            receiptEmail: String(payload?.receiptEmail || "").trim(),
+            receiptUrl: String(payload?.receiptUrl || "").trim(),
+            stripePaymentStatus: String(payload?.paymentStatus || "").trim(),
+            currency: String(payload?.currency || "").trim(),
+          });
           updateStripeCheckoutSessionRef(sessionRef.sessionId, {
             status: "synced",
             paymentIntentId: String(payload?.paymentIntentId || "").trim(),
             paidAt: String(payload?.paidAt || "").trim(),
             lastCheckedAt: Date.now(),
           });
+          if (backfillResult?.ok && backfillResult?.changed && backfillResult?.invoice) {
+            const nextInvoices = currentInvoices.map((entry) => (
+              String(entry?.id || "").trim() === invoiceId ? backfillResult.invoice : entry
+            ));
+            persistInvoices(
+              nextInvoices,
+              lang === "es" ? "Detalles de Stripe actualizados" : "Stripe details refreshed"
+            );
+            setExpanded((current) => ({ ...current, [invoiceId]: true }));
+            setStripeInlineNotice(
+              invoiceId,
+              "success",
+              lang === "es"
+                ? "Este pago de Stripe ya estaba registrado. Se actualizaron los detalles visibles del pago."
+                : "This Stripe payment was already recorded. Visible payment details were refreshed."
+            );
+            showStripeSyncOutcome(backfillResult.invoice, {
+              detailBackfilled: true,
+              tone: "success",
+            });
+            return;
+          }
           setStripeInlineNotice(invoiceId, "info", lang === "es" ? "Este pago de Stripe ya se registró en EstiPaid." : "This Stripe payment is already recorded in EstiPaid.");
+          showStripeSyncOutcome(targetInvoice, {
+            alreadyRecorded: true,
+            tone: "info",
+          });
           return;
         }
         if (result?.code === "amount_exceeds_balance") {
@@ -1583,6 +1699,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         paidAt: String(payload?.paidAt || "").trim(),
         lastCheckedAt: Date.now(),
       });
+      setExpanded((current) => ({ ...current, [invoiceId]: true }));
       setStripeInlineNotice(
         invoiceId,
         "success",
@@ -1590,6 +1707,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           ? (lang === "es" ? "Pago de Stripe registrado y factura liquidada." : "Stripe payment recorded and invoice is now paid.")
           : (lang === "es" ? "Pago de Stripe registrado correctamente." : "Stripe payment recorded successfully.")
       );
+      showStripeSyncOutcome(result.invoice, {
+        movedToPaid: String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID,
+        tone: "success",
+      });
     } catch (_error) {
       setStripeInlineNotice(invoiceId, "error", lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.");
     } finally {
@@ -1701,6 +1822,47 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 {lang === "es" ? "Limpiar" : "Clear"}
               </button>
             </div>
+            {stripeSyncOutcome?.message ? (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  background: stripeSyncOutcome?.tone === "info"
+                    ? "rgba(59,130,246,0.10)"
+                    : "rgba(34,197,94,0.10)",
+                  padding: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ fontSize: 13, lineHeight: 1.45, fontWeight: 700 }}>
+                  {stripeSyncOutcome.message}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {stripeSyncOutcome?.invoiceId ? (
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => revealInvoiceOnBoard(stripeSyncOutcome.invoiceId, stripeSyncOutcome.targetStatus)}
+                    >
+                      {stripeSyncOutcome.actionLabel || (lang === "es" ? "Abrir factura sincronizada" : "Open synced invoice")}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={() => setStripeSyncOutcome(null)}
+                  >
+                    {lang === "es" ? "Cerrar" : "Dismiss"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
@@ -1753,8 +1915,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
                 const stripeNotice = stripeInlineNoticeByInvoice[invoiceId] || null;
                 const canSyncStripeSession = derivedStatus !== INVOICE_STATUSES.VOID
-                  && derivedStatus !== INVOICE_STATUSES.PAID
-                  && !!latestActionableStripeSession;
+                  && !!latestStripeSession;
                 const canCopyExistingStripeLink = !!latestActionableStripeSession?.checkoutUrl
                   && getStripeSessionDisplayState(latestActionableStripeSession, invoice) === "pending";
                 const dueDate = formatDateOnly(invoice?.dueDate);
