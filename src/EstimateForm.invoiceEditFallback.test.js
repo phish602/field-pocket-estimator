@@ -692,6 +692,45 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
   });
 
+  test("hydrates saved invoice labor into invoice edit mode", async () => {
+    const customer = createCustomer();
+    const savedInvoice = createSavedInvoice();
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Invoice Verify Project");
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
+    });
+
+    const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
+    const hydratedState = replaceStateCall[0] || {};
+    expect(hydratedState.labor).toEqual(expect.objectContaining({
+      hazardPct: 0,
+      riskPct: 0,
+      multiplier: 1,
+      lines: [
+        expect.objectContaining({
+          role: "foreman",
+          label: "Foreman",
+          hours: "9",
+          rate: "123",
+          trueRateInternal: "77",
+          qty: "1",
+        }),
+      ],
+    }));
+  });
+
   test("exports saved paid invoice data when edit-mode invoice state is blank", async () => {
     const customer = createCustomer();
     const savedInvoice = createSavedInvoice({

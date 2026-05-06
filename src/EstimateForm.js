@@ -2165,6 +2165,32 @@ export default function EstimateForm(props) {
   }, [editingRecordId, isEditMode, isInvoiceEditMode]);
 
   useEffect(() => {
+    if (!isInvoiceEditMode || !editingRecordId) return;
+
+    const liveLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    if (liveLines.some((line) => isMeaningfulLaborLine(line))) return;
+
+    const storedInvoice = readStoredInvoices().find(
+      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
+    );
+    const storedLabor = storedInvoice?.labor && typeof storedInvoice.labor === "object"
+      ? storedInvoice.labor
+      : null;
+    const storedLines = Array.isArray(storedLabor?.lines) ? storedLabor.lines : [];
+    if (!storedLines.some((line) => isMeaningfulLaborLine(line))) return;
+
+    patch("labor.lines", storedLines.map((line) => ({ ...line })));
+    patch("labor.hazardPct", storedLabor?.hazardPct ?? 0);
+    patch("labor.riskPct", storedLabor?.riskPct ?? 0);
+    patch("labor.multiplier", storedLabor?.multiplier ?? 1);
+  }, [
+    editingRecordId,
+    isInvoiceEditMode,
+    patch,
+    state?.labor?.lines,
+  ]);
+
+  useEffect(() => {
     if (isEditMode) return;
     if (guidedDocType !== "invoice") return;
 
