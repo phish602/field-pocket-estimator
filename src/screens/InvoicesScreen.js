@@ -62,6 +62,20 @@ function normalizeStripeCheckoutSessionRef(entry) {
   };
 }
 
+function isStripeSessionExpired(sessionRef, nowTs = Date.now()) {
+  const expiresAt = Number(sessionRef?.expiresAt || 0) || 0;
+  if (!expiresAt) return false;
+  return nowTs >= expiresAt * 1000;
+}
+
+function getStripeSessionDisplayState(sessionRef, nowTs = Date.now()) {
+  const storedStatus = String(sessionRef?.status || "").trim().toLowerCase();
+  if (storedStatus === "synced") return "synced";
+  if (storedStatus === "review") return "review";
+  if (isStripeSessionExpired(sessionRef, nowTs)) return "expired";
+  return "pending";
+}
+
 function readStoredStripeCheckoutSessions() {
   try {
     const raw = localStorage.getItem(STRIPE_CHECKOUT_SESSIONS_KEY);
@@ -358,6 +372,7 @@ function formatPaymentStatus(paymentStatus, lang) {
 
 function formatPaymentMethod(method, lang) {
   const raw = String(method || "manual").trim().toLowerCase();
+  if (raw === "stripe") return "Stripe";
   if (raw === "cash") return lang === "es" ? "Efectivo" : "Cash";
   if (raw === "check") return lang === "es" ? "Cheque" : "Check";
   if (raw === "card") return lang === "es" ? "Tarjeta" : "Card";
@@ -564,6 +579,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [stripeSyncBusyId, setStripeSyncBusyId] = useState("");
   const [stripeAccountId, setStripeAccountId] = useState(() => readCompanyStripeAccountId());
   const [stripeCheckoutSessions, setStripeCheckoutSessions] = useState(() => readStoredStripeCheckoutSessions());
+  const [stripeInlineNoticeByInvoice, setStripeInlineNoticeByInvoice] = useState(() => ({}));
   const [paymentForm, setPaymentForm] = useState(() => ({
     amount: "",
     paidAt: todayISO(),
@@ -958,15 +974,84 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     return persistStripeCheckoutSessions(nextSessions);
   };
 
-  const getLatestStripeCheckoutSessionForInvoice = (invoiceId) => {
+  const setStripeInlineNotice = (invoiceId, tone, message) => {
+    const normalizedInvoiceId = String(invoiceId || "").trim();
+    if (!normalizedInvoiceId) return;
+    setStripeInlineNoticeByInvoice((current) => ({
+      ...current,
+      [normalizedInvoiceId]: {
+        tone: String(tone || "info").trim() || "info",
+        message: String(message || "").trim(),
+      },
+    }));
+  };
+
+  const copyCheckoutUrlWithFallback = async (checkoutUrl, customerEmail, options = {}) => {
+    const normalizedUrl = String(checkoutUrl || "").trim();
+    if (!normalizedUrl) return false;
+    const normalizedEmail = String(customerEmail || "").trim();
+    const mailtoHref = normalizedEmail
+      ? `mailto:${encodeURIComponent(normalizedEmail)}?subject=${encodeURIComponent("Your payment link")}&body=${encodeURIComponent("Please use the link below to pay your invoice:\n\n" + normalizedUrl + "\n\nNote: This link expires. Please pay promptly or request a new link.")}`
+      : null;
+
+    let copied = false;
+    if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(normalizedUrl);
+        copied = true;
+      } catch (_clipErr) {
+        copied = false;
+      }
+    }
+
+    if (copied) {
+      window.alert(
+        (options?.successMessage
+          || (lang === "es"
+            ? "Enlace de pago copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
+            : "Payment link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms."))
+        + (mailtoHref ? "\n\n" + normalizedUrl : "")
+      );
+      if (mailtoHref && options?.openMailto !== false) {
+        const openedMailto = typeof window !== "undefined" && typeof window.open === "function"
+          ? window.open(mailtoHref, "_blank", "noopener,noreferrer")
+          : null;
+        if (!openedMailto && typeof window !== "undefined") {
+          window.location.assign(mailtoHref);
+        }
+      }
+      return true;
+    }
+
+    window.alert(
+      (options?.fallbackMessage
+        || (lang === "es"
+          ? "No se pudo copiar automáticamente. Copia este enlace y envíaselo al cliente:\n\n"
+          : "Could not copy automatically. Copy this link and send it to your customer:\n\n"))
+      + normalizedUrl
+      + "\n\n"
+      + (lang === "es"
+        ? "Recuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
+        : "Reminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
+    );
+    return false;
+  };
+
+  const getStripeSessionsForInvoice = (invoiceId) => {
+    const targetInvoiceId = String(invoiceId || "").trim();
+    if (!targetInvoiceId) return [];
+    return stripeCheckoutSessions
+      .filter((entry) => String(entry?.invoiceId || "").trim() === targetInvoiceId)
+      .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0));
+  };
+
+  const getLatestStripeCheckoutSessionForInvoice = (invoiceId) => getStripeSessionsForInvoice(invoiceId)[0] || null;
+
+  const getLatestActionableStripeCheckoutSessionForInvoice = (invoiceId) => {
     const targetInvoiceId = String(invoiceId || "").trim();
     if (!targetInvoiceId) return null;
-    return stripeCheckoutSessions
-      .filter((entry) => (
-        String(entry?.invoiceId || "").trim() === targetInvoiceId
-        && String(entry?.status || "").trim().toLowerCase() !== "synced"
-      ))
-      .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))[0] || null;
+    return getStripeSessionsForInvoice(targetInvoiceId)
+      .find((entry) => String(entry?.status || "").trim().toLowerCase() !== "synced") || null;
   };
 
   const createManualInvoice = () => {
@@ -1258,49 +1343,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         expiresAt: Number(payload?.expiresAt || 0) || null,
         status: "pending",
       });
-      const customerEmail = getInvoiceCustomerEmail(invoice);
-      const mailtoHref = customerEmail
-        ? `mailto:${encodeURIComponent(customerEmail)}?subject=${encodeURIComponent("Your payment link")}&body=${encodeURIComponent("Please use the link below to pay your invoice:\n\n" + checkoutUrl + "\n\nNote: This link expires. Please pay promptly or request a new link.")}`
-        : null;
-
-      let copied = false;
-      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        try {
-          await navigator.clipboard.writeText(checkoutUrl);
-          copied = true;
-        } catch (_clipErr) {
-          // fall through to alert
-        }
-      }
-
-      if (copied) {
-        window.alert(
-          (lang === "es"
-            ? "Enlace de pago copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
-            : "Payment link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
-          + (mailtoHref ? "\n\n" + checkoutUrl : "")
-        );
-        if (mailtoHref) {
-          const openedMailto = typeof window !== "undefined" && typeof window.open === "function"
-            ? window.open(mailtoHref, "_blank", "noopener,noreferrer")
-            : null;
-          if (!openedMailto && typeof window !== "undefined") {
-            window.location.assign(mailtoHref);
-          }
-        }
-      } else {
-        // Clipboard unavailable — show URL so user can copy manually
-        window.alert(
-          (lang === "es"
-            ? "No se pudo copiar automáticamente. Copia este enlace y envíaselo al cliente:\n\n"
-            : "Could not copy automatically. Copy this link and send it to your customer:\n\n")
-          + checkoutUrl
-          + "\n\n"
-          + (lang === "es"
-            ? "Recuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
-            : "Reminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
-        );
-      }
+      await copyCheckoutUrlWithFallback(checkoutUrl, getInvoiceCustomerEmail(invoice));
     } catch (_error) {
       window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe payment link.");
     } finally {
@@ -1308,9 +1351,26 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     }
   };
 
+  const copyExistingStripeLink = async (invoice) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+    if (!invoiceId || !sessionRef?.checkoutUrl || stripeCopyBusyId === invoiceId) return;
+
+    setStripeCopyBusyId(invoiceId);
+    try {
+      await copyCheckoutUrlWithFallback(String(sessionRef.checkoutUrl || "").trim(), getInvoiceCustomerEmail(invoice), {
+        successMessage: lang === "es"
+          ? "Enlace de Stripe existente copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
+          : "Existing Stripe link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.",
+      });
+    } finally {
+      setStripeCopyBusyId("");
+    }
+  };
+
   const syncStripePayment = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    const sessionRef = getLatestStripeCheckoutSessionForInvoice(invoiceId);
+    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
     if (!invoiceId || !sessionRef || stripeSyncBusyId === invoiceId) return;
 
     setStripeSyncBusyId(invoiceId);
@@ -1327,7 +1387,11 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        window.alert(payload?.error || (lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment."));
+        setStripeInlineNotice(
+          invoiceId,
+          "error",
+          payload?.error || (lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.")
+        );
         return;
       }
 
@@ -1339,10 +1403,18 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
       if (paymentStatus !== "paid") {
         if (sessionStatus === "expired") {
-          window.alert(lang === "es" ? "La sesión de Stripe expiró. Genera un enlace nuevo antes de volver a intentar." : "This Stripe session expired. Generate a new payment link before trying again.");
+          setStripeInlineNotice(
+            invoiceId,
+            "warning",
+            lang === "es" ? "La sesión de Stripe expiró. Genera un enlace nuevo antes de volver a intentar." : "This Stripe session expired. Generate a fresh payment link before trying again."
+          );
           return;
         }
-        window.alert(lang === "es" ? "El pago de Stripe todavía no se completó." : "This Stripe payment has not completed yet.");
+        setStripeInlineNotice(
+          invoiceId,
+          "info",
+          lang === "es" ? "El pago de Stripe todavía no se completó. Revisa de nuevo después de que Stripe confirme el cobro." : "This Stripe payment has not completed yet. Check again after Stripe confirms the charge."
+        );
         return;
       }
 
@@ -1351,7 +1423,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         (entry) => String(entry?.id || "").trim() === invoiceId
       );
       if (!targetInvoice) {
-        window.alert(lang === "es" ? "No se encontró la factura para sincronizar." : "Unable to find the invoice to sync.");
+        setStripeInlineNotice(invoiceId, "error", lang === "es" ? "No se encontró la factura para sincronizar." : "Unable to find the invoice to sync.");
         return;
       }
 
@@ -1373,7 +1445,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
             paidAt: String(payload?.paidAt || "").trim(),
             lastCheckedAt: Date.now(),
           });
-          window.alert(lang === "es" ? "Este pago de Stripe ya se sincronizó." : "This Stripe payment is already synced.");
+          setStripeInlineNotice(invoiceId, "info", lang === "es" ? "Este pago de Stripe ya se registró en EstiPaid." : "This Stripe payment is already recorded in EstiPaid.");
           return;
         }
         if (result?.code === "amount_exceeds_balance") {
@@ -1383,10 +1455,14 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
             paidAt: String(payload?.paidAt || "").trim(),
             lastCheckedAt: Date.now(),
           });
-          window.alert(lang === "es" ? "El monto pagado en Stripe supera el saldo actual. Revísalo manualmente antes de registrarlo." : "The Stripe payment exceeds the current remaining balance. Review it manually before recording it.");
+          setStripeInlineNotice(
+            invoiceId,
+            "warning",
+            lang === "es" ? "El monto pagado en Stripe supera el saldo actual. Revísalo manualmente antes de registrarlo." : "The Stripe amount exceeds the current remaining balance. Review it manually before recording it."
+          );
           return;
         }
-        window.alert(result?.message || (lang === "es" ? "No se pudo sincronizar el pago de Stripe." : "Unable to sync Stripe payment."));
+        setStripeInlineNotice(invoiceId, "error", result?.message || (lang === "es" ? "No se pudo sincronizar el pago de Stripe." : "Unable to sync Stripe payment."));
         return;
       }
 
@@ -1405,8 +1481,15 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         paidAt: String(payload?.paidAt || "").trim(),
         lastCheckedAt: Date.now(),
       });
+      setStripeInlineNotice(
+        invoiceId,
+        "success",
+        String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID
+          ? (lang === "es" ? "Pago de Stripe registrado y factura liquidada." : "Stripe payment recorded and invoice is now paid.")
+          : (lang === "es" ? "Pago de Stripe registrado correctamente." : "Stripe payment recorded successfully.")
+      );
     } catch (_error) {
-      window.alert(lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.");
+      setStripeInlineNotice(invoiceId, "error", lang === "es" ? "No se pudo revisar el pago de Stripe." : "Unable to check Stripe payment.");
     } finally {
       setStripeSyncBusyId("");
     }
@@ -1563,10 +1646,15 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   : [];
                 const canTakePayment = canRecordManualPayment(invoice);
                 const canUseStripe = canTakePayment && !!stripeAccountId;
-                const latestStripeSession = getLatestStripeCheckoutSessionForInvoice(invoiceId);
+                const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+                const latestStripeSession = latestActionableStripeSession || getLatestStripeCheckoutSessionForInvoice(invoiceId);
+                const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession) : "";
+                const stripeNotice = stripeInlineNoticeByInvoice[invoiceId] || null;
                 const canSyncStripeSession = derivedStatus !== INVOICE_STATUSES.VOID
                   && derivedStatus !== INVOICE_STATUSES.PAID
-                  && !!latestStripeSession;
+                  && !!latestActionableStripeSession;
+                const canCopyExistingStripeLink = !!latestActionableStripeSession?.checkoutUrl
+                  && getStripeSessionDisplayState(latestActionableStripeSession) === "pending";
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const projectLabel = displayMeta.projectName || invoice?.projectName || "";
@@ -1829,6 +1917,18 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 : (lang === "es" ? "Copiar enlace de pago" : "Copy Payment Link")}
                             </button>
                           ) : null}
+                          {canCopyExistingStripeLink ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onClick={() => copyExistingStripeLink(invoice)}
+                              disabled={stripeCopyBusyId === invoiceId}
+                            >
+                              {stripeCopyBusyId === invoiceId
+                                ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
+                                : (lang === "es" ? "Copiar enlace de Stripe existente" : "Copy Existing Stripe Link")}
+                            </button>
+                          ) : null}
                           {canSyncStripeSession ? (
                             <button
                               className="pe-btn pe-btn-ghost"
@@ -1886,11 +1986,110 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               : "Stripe links expire. Generate a fresh link if the customer pays later. Payment must still be reconciled in EstiPaid after Stripe confirms."}
                           </div>
                         ) : null}
+                        {latestStripeSession ? (
+                          <div
+                            style={{
+                              borderRadius: 12,
+                              border: "1px solid rgba(255,255,255,0.10)",
+                              background: stripeSessionState === "review"
+                                ? "rgba(248,113,113,0.08)"
+                                : stripeSessionState === "synced"
+                                  ? "rgba(34,197,94,0.08)"
+                                  : "rgba(255,255,255,0.04)",
+                              padding: 10,
+                              display: "grid",
+                              gap: 8,
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                              <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
+                                {lang === "es" ? "Sesión de Stripe" : "Stripe session"}
+                              </div>
+                              <div style={{
+                                fontSize: 11.5,
+                                fontWeight: 800,
+                                borderRadius: 999,
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                padding: "3px 9px",
+                                background: stripeSessionState === "review"
+                                  ? "rgba(248,113,113,0.14)"
+                                  : stripeSessionState === "synced"
+                                    ? "rgba(34,197,94,0.14)"
+                                    : stripeSessionState === "expired"
+                                      ? "rgba(250,204,21,0.14)"
+                                      : "rgba(59,130,246,0.12)",
+                              }}>
+                                {stripeSessionState === "review"
+                                  ? (lang === "es" ? "Revisión" : "Review")
+                                  : stripeSessionState === "synced"
+                                    ? (lang === "es" ? "Sincronizada" : "Synced")
+                                    : stripeSessionState === "expired"
+                                      ? (lang === "es" ? "Expirada" : "Expired")
+                                      : (lang === "es" ? "Pendiente" : "Pending")}
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                                <div style={{ opacity: 0.72 }}>{lang === "es" ? "Monto" : "Amount"}</div>
+                                <div style={{ fontWeight: 800 }}>{moneyUSD(latestStripeSession.amount)}</div>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                                <div style={{ opacity: 0.72 }}>{lang === "es" ? "Creada" : "Created"}</div>
+                                <div style={{ fontWeight: 700 }}>{formatDateTime(latestStripeSession.createdAt) || "—"}</div>
+                              </div>
+                              {latestStripeSession.expiresAt ? (
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                                  <div style={{ opacity: 0.72 }}>{lang === "es" ? "Expira" : "Expires"}</div>
+                                  <div style={{ fontWeight: 700 }}>{formatDateTime(Number(latestStripeSession.expiresAt || 0) * 1000) || "—"}</div>
+                                </div>
+                              ) : null}
+                            </div>
+                            <div style={{ fontSize: 11.5, opacity: 0.78, lineHeight: 1.45 }}>
+                              {stripeSessionState === "review"
+                                ? (lang === "es"
+                                  ? "Stripe reportó un pago que no se pudo registrar automáticamente. Revísalo manualmente antes de agregarlo."
+                                  : "Stripe reported a payment that could not be safely recorded automatically. Review it manually before adding it.")
+                                : stripeSessionState === "synced"
+                                  ? (lang === "es"
+                                    ? "Este pago de Stripe ya se registró en EstiPaid."
+                                    : "This Stripe payment has already been recorded in EstiPaid.")
+                                  : stripeSessionState === "expired"
+                                    ? (lang === "es"
+                                      ? "Este enlace de Stripe expiró. Genera un enlace nuevo si el cliente todavía necesita pagar."
+                                      : "This Stripe link expired. Generate a fresh link if the customer still needs to pay.")
+                                    : (lang === "es"
+                                      ? "Pendiente significa que se generó un enlace de Stripe, pero el pago todavía no se registró en EstiPaid."
+                                      : "Pending means a Stripe link was generated, but the payment has not been recorded in EstiPaid yet.")}
+                            </div>
+                          </div>
+                        ) : null}
                         {canSyncStripeSession ? (
                           <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
                             {lang === "es"
                               ? "Usa Revisar / sincronizar pago de Stripe después de confirmar el cobro en Stripe para registrar el pago de forma segura."
                               : "Use Check / Sync Stripe Payment after Stripe confirms the charge to record it safely in EstiPaid."}
+                          </div>
+                        ) : null}
+                        {stripeNotice?.message ? (
+                          <div
+                            role="status"
+                            aria-live="polite"
+                            style={{
+                              borderRadius: 12,
+                              border: "1px solid rgba(255,255,255,0.10)",
+                              background: stripeNotice?.tone === "error"
+                                ? "rgba(248,113,113,0.10)"
+                                : stripeNotice?.tone === "warning"
+                                  ? "rgba(250,204,21,0.10)"
+                                  : stripeNotice?.tone === "success"
+                                    ? "rgba(34,197,94,0.10)"
+                                    : "rgba(59,130,246,0.08)",
+                              padding: "9px 10px",
+                              fontSize: 12.5,
+                              lineHeight: 1.45,
+                            }}
+                          >
+                            {stripeNotice.message}
                           </div>
                         ) : null}
                         {paymentLedger.length ? (
@@ -1922,8 +2121,23 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 >
                                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
                                     <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
-                                    <div style={{ fontSize: 12, opacity: 0.76 }}>
-                                      {formatDateOnly(payment?.paidAt) || "—"}{" • "}{formatPaymentMethod(payment?.method, lang)}
+                                    <div style={{ fontSize: 12, opacity: 0.76, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                      <span>{formatDateOnly(payment?.paidAt) || "—"}</span>
+                                      {String(payment?.method || "").trim().toLowerCase() === "stripe" ? (
+                                        <span style={{
+                                          borderRadius: 999,
+                                          border: "1px solid rgba(59,130,246,0.18)",
+                                          background: "rgba(59,130,246,0.10)",
+                                          padding: "2px 8px",
+                                          fontSize: 11,
+                                          fontWeight: 800,
+                                          letterSpacing: "0.3px",
+                                        }}>
+                                          Stripe
+                                        </span>
+                                      ) : (
+                                        <span>{formatPaymentMethod(payment?.method, lang)}</span>
+                                      )}
                                     </div>
                                   </div>
                                   {payment?.note ? (

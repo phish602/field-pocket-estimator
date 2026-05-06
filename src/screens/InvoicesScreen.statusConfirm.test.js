@@ -888,6 +888,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
   const originalFetch = global.fetch;
   const originalOpen = window.open;
   const originalAlert = window.alert;
+  const originalClipboard = navigator.clipboard;
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -896,6 +897,11 @@ describe("InvoicesScreen Stripe payment sync", () => {
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: jest.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
   });
 
   afterEach(() => {
@@ -905,10 +911,15 @@ describe("InvoicesScreen Stripe payment sync", () => {
     global.fetch = originalFetch;
     window.open = originalOpen;
     window.alert = originalAlert;
+    Object.defineProperty(navigator, "clipboard", {
+      value: originalClipboard,
+      writable: true,
+      configurable: true,
+    });
     jest.useRealTimers();
   });
 
-  test("Check / Sync Stripe Payment calls backend and does not mutate invoice when session is still unpaid", async () => {
+  test("pending session shows Stripe session panel and Check / Sync does not mutate invoice when unpaid", async () => {
     seedInvoices([createSentInvoice()]);
     seedStripeCheckoutSessions([
       {
@@ -941,6 +952,11 @@ describe("InvoicesScreen Stripe payment sync", () => {
     renderInvoicesScreen();
     openInvoiceDetails();
 
+    expect(screen.getByText(/Stripe session/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Pending$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Pending means a Stripe link was generated/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Copy Existing Stripe Link/i })).toBeInTheDocument();
+
     const before = readStoredInvoices();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
@@ -958,7 +974,41 @@ describe("InvoicesScreen Stripe payment sync", () => {
       stripeAccountId: "acct_test_connected_123",
     });
     expect(readStoredInvoices()).toEqual(before);
-    expect(window.alert).toHaveBeenCalledWith("This Stripe payment has not completed yet.");
+    expect(screen.getByText(/This Stripe payment has not completed yet\./i)).toBeInTheDocument();
+  });
+
+  test("Copy Existing Stripe Link copies stored checkoutUrl without creating a new session", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_existing_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/existing-link",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Existing Stripe Link/i }));
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/existing-link");
+    expect(readStripeCheckoutSessions()).toEqual([
+      expect.objectContaining({
+        sessionId: "cs_existing_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/existing-link",
+        status: "pending",
+      }),
+    ]);
   });
 
   test("paid Stripe session appends one stripe payment and normalizes invoice totals", async () => {
@@ -1011,6 +1061,10 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(invoice.amountPaid).toBe(200);
     expect(invoice.balanceRemaining).toBe(300);
     expect(invoice.paymentStatus).toBe("partial");
+    expect(screen.getByText(/Stripe payment recorded successfully\./i)).toBeInTheDocument();
+    expect(screen.getByText(/^Stripe$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/pi_paid_123/i)).toBeNull();
+    expect(screen.queryByText(/cs_paid_123/i)).toBeNull();
     expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
       sessionId: "cs_paid_123",
       status: "synced",
@@ -1137,7 +1191,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(1);
-    expect(window.alert).toHaveBeenCalledWith("This Stripe payment is already synced.");
+    expect(screen.getByText(/This Stripe payment is already recorded in EstiPaid\./i)).toBeInTheDocument();
     expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
       sessionId: "cs_duplicate_new",
       status: "synced",
@@ -1202,7 +1256,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(1);
-    expect(window.alert).toHaveBeenCalledWith("This Stripe payment is already synced.");
+    expect(screen.getByText(/This Stripe payment is already recorded in EstiPaid\./i)).toBeInTheDocument();
   });
 
   test("stale-balance overpayment is blocked without invoice mutation and session is marked review", async () => {
@@ -1260,12 +1314,81 @@ describe("InvoicesScreen Stripe payment sync", () => {
     });
 
     expect(readStoredInvoices()).toEqual(before);
-    expect(window.alert).toHaveBeenCalledWith("The Stripe payment exceeds the current remaining balance. Review it manually before recording it.");
+    expect(screen.getByText(/The Stripe amount exceeds the current remaining balance\. Review it manually before recording it\./i)).toBeInTheDocument();
     expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
       sessionId: "cs_review_123",
       status: "review",
       paymentIntentId: "pi_review_123",
     }));
+  });
+
+  test("synced session state remains visible in the Stripe session panel", () => {
+    seedInvoices([createSentInvoice({ amountPaid: 200, balanceRemaining: 300, paymentStatus: "partial" })]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_synced_panel",
+        checkoutUrl: "https://checkout.stripe.com/pay/synced-panel",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "synced",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
+    expect(screen.getByText(/already been recorded in EstiPaid/i)).toBeInTheDocument();
+  });
+
+  test("review session state remains visible in the Stripe session panel", () => {
+    seedInvoices([createSentInvoice({ amountPaid: 200, balanceRemaining: 300, paymentStatus: "partial" })]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_review_panel",
+        checkoutUrl: "https://checkout.stripe.com/pay/review-panel",
+        amount: 200,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "review",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByText(/^Review$/i)).toBeInTheDocument();
+    expect(screen.getByText(/could not be safely recorded automatically/i)).toBeInTheDocument();
+  });
+
+  test("expired session shows expired state and fresh-link guidance", () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_expired_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/expired",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 1714694400,
+        status: "pending",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    expect(screen.getByText(/^Expired$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Generate a fresh link if the customer still needs to pay\./i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
   });
 
   test("void still clears synced Stripe and manual payments", () => {
