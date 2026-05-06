@@ -518,6 +518,79 @@ describe("InvoicesScreen Stripe checkout action", () => {
     expect(readStoredInvoices()).toEqual(before);
   });
 
+  test("shows Stripe action for unpaid sent invoice with no payments and stored balanceRemaining 0", () => {
+    // Simulates a fresh invoice created by the UI where balanceRemaining is initialised to 0
+    // even though no payment has been recorded.
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_fresh_no_payments",
+        invoiceTotal: 500,
+        total: 500,
+        amountPaid: 0,
+        balanceRemaining: 0,
+        paymentStatus: "unpaid",
+        payments: [],
+      }),
+    ]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByRole("button", { name: /Pay Online with Stripe/i })).toBeInTheDocument();
+  });
+
+  test("shows Stripe action for unpaid overdue invoice with stored balanceRemaining 0", () => {
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_overdue_no_payments",
+        invoiceTotal: 750,
+        total: 750,
+        amountPaid: 0,
+        balanceRemaining: 0,
+        status: "overdue",
+        paymentStatus: "overdue",
+        payments: [],
+      }),
+    ]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByRole("button", { name: /Pay Online with Stripe/i })).toBeInTheDocument();
+  });
+
+  test("Stripe checkout payload uses derived balanceRemaining for fresh invoice with stored 0", async () => {
+    const freshInvoice = createSentInvoice({
+      id: "inv_fresh_stripe_payload",
+      invoiceTotal: 600,
+      total: 600,
+      amountPaid: 0,
+      balanceRemaining: 0,
+      paymentStatus: "unpaid",
+      payments: [],
+    });
+    seedInvoices([freshInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/fresh-session",
+        sessionId: "cs_fresh_123",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    // Derived balance = invoiceTotal(600) - amountPaid(0) = 600, not the stored 0
+    expect(payload.balanceRemaining).toBe(600);
+    expect(payload.balanceRemaining).not.toBe(0);
+    // Storage must be unchanged
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
   test("Stripe checkout failure does not mutate invoice storage or append payments", async () => {
     const sourceInvoice = createSentInvoice({
       amountPaid: 125,

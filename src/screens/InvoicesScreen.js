@@ -442,7 +442,7 @@ function canRecordManualPayment(invoice) {
   const derivedStatus = deriveInvoiceStatus(invoice);
   const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
   const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-  const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+  const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
   return (
     derivedStatus !== INVOICE_STATUSES.DRAFT
     && derivedStatus !== INVOICE_STATUSES.VOID
@@ -920,7 +920,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const openPaymentModal = (invoice) => {
     if (!invoice || !canRecordManualPayment(invoice)) return;
-    const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? 0);
+    const balanceRemaining = roundCurrency(Math.max(0, roundCurrency(invoice?.invoiceTotal || 0) - roundCurrency(invoice?.amountPaid || 0)));
     setPaymentError("");
     setPaymentForm({
       amount: balanceRemaining > 0 ? balanceRemaining.toFixed(2) : "",
@@ -1010,7 +1010,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     try {
       const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
       const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-      const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+      const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
       const response = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
         headers: {
