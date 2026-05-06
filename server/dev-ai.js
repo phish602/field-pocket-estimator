@@ -85,6 +85,138 @@ function resolveStripeReturnBaseUrl(req) {
   return "http://localhost:3000";
 }
 
+function resolveUrlOrigin(value) {
+  const next = asText(value);
+  if (!next) return "";
+  try {
+    return new URL(next).origin;
+  } catch {
+    return "";
+  }
+}
+
+function resolveStripeAppBaseUrl(req) {
+  const origin = resolveUrlOrigin(req?.headers?.origin);
+  if (origin) return origin;
+
+  const refererOrigin = resolveUrlOrigin(req?.headers?.referer || req?.headers?.referrer);
+  if (refererOrigin) return refererOrigin;
+
+  const forwardedProto = asText(req?.headers?.["x-forwarded-proto"]);
+  const forwardedHost = asText(req?.headers?.["x-forwarded-host"]);
+  if (forwardedProto && forwardedHost) {
+    const candidate = `${forwardedProto}://${forwardedHost}`;
+    if (isHttpUrl(candidate) && !/:5055$/i.test(forwardedHost)) return candidate;
+  }
+
+  return "http://localhost:3000";
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildStripeCheckoutReturnLink(returnToBaseUrl, status, invoiceId, sessionId = "") {
+  const fallbackUrl = "http://localhost:3000";
+  const baseUrl = isHttpUrl(returnToBaseUrl) ? returnToBaseUrl : fallbackUrl;
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set("stripe", String(status || "").trim().toLowerCase() === "cancel" ? "cancel" : "success");
+    if (invoiceId) url.searchParams.set("invoiceId", invoiceId);
+    if (sessionId) url.searchParams.set("session_id", sessionId);
+    return url.toString();
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+function renderStripeCheckoutReturnPage({
+  title,
+  heading,
+  body,
+  invoiceNumber = "",
+  sessionId = "",
+  returnHref = "http://localhost:3000",
+  buttonLabel = "Return to EstiPaid",
+}) {
+  const safeTitle = escapeHtml(title);
+  const safeHeading = escapeHtml(heading);
+  const safeBody = escapeHtml(body);
+  const safeInvoiceNumber = escapeHtml(invoiceNumber);
+  const safeSessionId = escapeHtml(sessionId ? `${String(sessionId).slice(0, 12)}...` : "");
+  const safeReturnHref = escapeHtml(returnHref);
+  const safeButtonLabel = escapeHtml(buttonLabel);
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>${safeTitle}</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      main {
+        width: min(560px, 100%);
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 18px;
+        padding: 24px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      }
+      h1 { margin: 0 0 12px; font-size: 24px; line-height: 1.2; }
+      p { margin: 0 0 12px; line-height: 1.55; color: rgba(226, 232, 240, 0.92); }
+      dl {
+        margin: 16px 0 20px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(148, 163, 184, 0.16);
+      }
+      dt { font-size: 12px; font-weight: 700; color: rgba(148, 163, 184, 0.92); text-transform: uppercase; letter-spacing: 0.06em; }
+      dd { margin: 4px 0 12px; font-weight: 700; }
+      dd:last-child { margin-bottom: 0; }
+      a {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 12px 16px;
+        border-radius: 999px;
+        background: #22c55e;
+        color: #052e16;
+        font-weight: 800;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${safeHeading}</h1>
+      <p>${safeBody}</p>
+      <p>EstiPaid does not mark the invoice paid from this redirect alone. Return to the invoice and click <strong>Check / Sync Stripe Payment</strong>.</p>
+      ${(safeInvoiceNumber || safeSessionId) ? `<dl>
+        ${safeInvoiceNumber ? `<dt>Invoice</dt><dd>${safeInvoiceNumber}</dd>` : ""}
+        ${safeSessionId ? `<dt>Session</dt><dd>${safeSessionId}</dd>` : ""}
+      </dl>` : ""}
+      <a href="${safeReturnHref}">${safeButtonLabel}</a>
+    </main>
+  </body>
+</html>`;
+}
+
 function isHttpUrl(value) {
   const next = asText(value);
   if (!next) return false;
@@ -106,6 +238,25 @@ function resolveStripeConnectUrl(req, providedUrl, action, stripeAccountId = "")
 
 function getStripeClient() {
   return new Stripe(STRIPE_SECRET_KEY);
+}
+
+function sanitizeStripeErrorMessage(message) {
+  return asText(message).replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9_*]+\b/gi, "[REDACTED]");
+}
+
+function logSafeStripeError(route, error) {
+  const details = {
+    route: asText(route),
+    type: asText(error?.type),
+    code: asText(error?.code),
+    message: sanitizeStripeErrorMessage(error?.message),
+    requestId: asText(error?.requestId || error?.raw?.requestId),
+    statusCode: Number.isFinite(Number(error?.statusCode)) ? Number(error.statusCode) : undefined,
+  };
+  const safeDetails = Object.fromEntries(
+    Object.entries(details).filter(([, value]) => value !== undefined && value !== "")
+  );
+  console.error("[stripe_error]", safeDetails);
 }
 
 function extractJsonPayload(text) {
@@ -11821,6 +11972,7 @@ app.post("/api/stripe/connect/create-account-link", async (req, res) => {
       accountLinkUrl: asText(accountLink?.url),
     });
   } catch (error) {
+    logSafeStripeError("/api/stripe/connect/create-account-link", error);
     return res.status(500).json({ error: "Unable to create Stripe onboarding link." });
   }
 });
@@ -11846,6 +11998,7 @@ app.get("/api/stripe/connect/account-status", async (req, res) => {
       detailsSubmitted: !!account?.details_submitted,
     });
   } catch (error) {
+    logSafeStripeError("/api/stripe/connect/account-status", error);
     return res.status(500).json({ error: "Unable to retrieve Stripe account status." });
   }
 });
@@ -11883,8 +12036,9 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     }
 
     const returnBaseUrl = resolveStripeReturnBaseUrl(req);
-    const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/?stripe=success&invoiceId=${encodeURIComponent(invoiceId)}`;
-    const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/?stripe=cancel&invoiceId=${encodeURIComponent(invoiceId)}`;
+    const appBaseUrl = resolveStripeAppBaseUrl(req);
+    const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/api/stripe/checkout/success?invoiceId=${encodeURIComponent(invoiceId)}&invoiceNumber=${encodeURIComponent(invoiceNumber)}&returnTo=${encodeURIComponent(appBaseUrl)}&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/api/stripe/checkout/cancel?invoiceId=${encodeURIComponent(invoiceId)}&invoiceNumber=${encodeURIComponent(invoiceNumber)}&returnTo=${encodeURIComponent(appBaseUrl)}`;
     const stripe = getStripeClient();
     const connectedAccount = await stripe.accounts.retrieve(stripeAccountId);
     if (!connectedAccount?.charges_enabled) {
@@ -11915,6 +12069,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
       ],
       metadata: {
         invoiceId,
+        stripeAccountId,
         source: "estipaid",
         ...(invoiceNumber ? { invoiceNumber } : {}),
         ...(customerName ? { customerName } : {}),
@@ -11931,6 +12086,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
       expiresAt: Number(session?.expires_at || 0) || null,
     });
   } catch (error) {
+    logSafeStripeError("/api/stripe/create-checkout-session", error);
     return res.status(500).json({ error: "Unable to create Stripe checkout session." });
   }
 });
@@ -11975,8 +12131,56 @@ app.post("/api/stripe/retrieve-checkout-session", async (req, res) => {
       paidAt: paidAtTs ? new Date(paidAtTs * 1000).toISOString() : "",
     });
   } catch (error) {
+    logSafeStripeError("/api/stripe/retrieve-checkout-session", error);
     return res.status(500).json({ error: "Unable to retrieve Stripe checkout session." });
   }
+});
+
+app.get("/api/stripe/checkout/success", (req, res) => {
+  const invoiceId = asText(req.query?.invoiceId);
+  const invoiceNumber = asText(req.query?.invoiceNumber);
+  const sessionId = asText(req.query?.session_id);
+  const returnHref = buildStripeCheckoutReturnLink(
+    asText(req.query?.returnTo),
+    "success",
+    invoiceId,
+    sessionId,
+  );
+
+  return res
+    .status(200)
+    .type("html")
+    .send(renderStripeCheckoutReturnPage({
+      title: "Stripe payment received",
+      heading: "Stripe payment received",
+      body: "Stripe has confirmed the payment. The contractor still needs to sync it inside EstiPaid before the invoice ledger updates.",
+      invoiceNumber,
+      sessionId,
+      returnHref,
+      buttonLabel: "Return to EstiPaid",
+    }));
+});
+
+app.get("/api/stripe/checkout/cancel", (req, res) => {
+  const invoiceId = asText(req.query?.invoiceId);
+  const invoiceNumber = asText(req.query?.invoiceNumber);
+  const returnHref = buildStripeCheckoutReturnLink(
+    asText(req.query?.returnTo),
+    "cancel",
+    invoiceId,
+  );
+
+  return res
+    .status(200)
+    .type("html")
+    .send(renderStripeCheckoutReturnPage({
+      title: "Stripe checkout canceled",
+      heading: "Stripe checkout canceled",
+      body: "No payment was recorded from this Checkout Session. Return to EstiPaid if you want to copy the existing link or generate a fresh one.",
+      invoiceNumber,
+      returnHref,
+      buttonLabel: "Back to EstiPaid",
+    }));
 });
 
 app.get("/", (req, res) => res.send("OK"));

@@ -1436,3 +1436,68 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(invoice.payments).toEqual([]);
   });
 });
+
+describe("InvoicesScreen Stripe return notices", () => {
+  const originalFetch = global.fetch;
+  const originalOpen = window.open;
+  const originalAlert = window.alert;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    global.fetch = jest.fn();
+    window.open = jest.fn(() => ({}));
+    window.alert = jest.fn();
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    global.fetch = originalFetch;
+    window.open = originalOpen;
+    window.alert = originalAlert;
+    window.history.replaceState({}, "", "/");
+    jest.useRealTimers();
+  });
+
+  test("Stripe success return prompts manual sync when matching local session exists", () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_return_paid",
+        checkoutUrl: "https://checkout.stripe.com/pay/return-paid",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    window.history.replaceState({}, "", "/?stripe=success&invoiceId=inv_sent_payment&session_id=cs_return_paid");
+
+    const before = readStoredInvoices();
+    renderInvoicesScreen();
+
+    expect(screen.getByRole("button", { name: /^Hide$/i })).toBeInTheDocument();
+    expect(screen.getByText(/Stripe received the payment\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("Stripe success return warns when the local session reference is missing", () => {
+    seedInvoices([createSentInvoice()]);
+    window.history.replaceState({}, "", "/?stripe=success&invoiceId=inv_sent_payment&session_id=cs_missing_local");
+
+    const before = readStoredInvoices();
+    renderInvoicesScreen();
+
+    expect(screen.getByRole("button", { name: /^Hide$/i })).toBeInTheDocument();
+    expect(screen.getByText(/does not have the local session reference/i)).toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual(before);
+  });
+});

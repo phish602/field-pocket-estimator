@@ -589,6 +589,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const prevListCountRef = useRef(0);
   const hasMeasuredListRef = useRef(false);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
+  const stripeReturnNoticeKeyRef = useRef("");
 
   const [isPhone, setIsPhone] = useState(
     typeof window !== "undefined" ? window.innerWidth < 480 : false
@@ -1053,6 +1054,61 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     return getStripeSessionsForInvoice(targetInvoiceId)
       .find((entry) => String(entry?.status || "").trim().toLowerCase() !== "synced") || null;
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const searchParams = new URLSearchParams(window.location.search || "");
+    const stripeState = String(searchParams.get("stripe") || "").trim().toLowerCase();
+    const invoiceId = String(searchParams.get("invoiceId") || "").trim();
+    const sessionId = String(searchParams.get("session_id") || "").trim();
+    if (!invoiceId || (stripeState !== "success" && stripeState !== "cancel")) return;
+
+    const noticeKey = `${stripeState}:${invoiceId}:${sessionId}`;
+    if (stripeReturnNoticeKeyRef.current === noticeKey) return;
+
+    const invoiceExists = (Array.isArray(list) ? list : []).some(
+      (entry) => String(entry?.id || "").trim() === invoiceId
+    );
+    if (!invoiceExists) return;
+
+    stripeReturnNoticeKeyRef.current = noticeKey;
+    setExpanded((current) => ({ ...current, [invoiceId]: true }));
+
+    const matchingSession = sessionId
+      ? stripeCheckoutSessions.find((entry) => String(entry?.sessionId || "").trim() === sessionId)
+      : null;
+    const invoiceSession = matchingSession || getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+
+    if (stripeState === "cancel") {
+      setStripeInlineNotice(
+        invoiceId,
+        "info",
+        lang === "es"
+          ? "Stripe Checkout fue cancelado. Puedes reutilizar el enlace existente o generar uno nuevo cuando quieras."
+          : "Stripe Checkout was canceled. You can reuse the existing link or generate a new one when you're ready."
+      );
+      return;
+    }
+
+    if (invoiceSession) {
+      setStripeInlineNotice(
+        invoiceId,
+        "info",
+        lang === "es"
+          ? "Stripe recibió el pago. Vuelve a esta factura y haz clic en Revisar / sincronizar pago de Stripe para registrarlo en EstiPaid."
+          : "Stripe received the payment. Return to this invoice and click Check / Sync Stripe Payment to record it in EstiPaid."
+      );
+      return;
+    }
+
+    setStripeInlineNotice(
+      invoiceId,
+      "warning",
+      lang === "es"
+        ? "Stripe recibió el pago, pero este navegador no tiene la referencia local de la sesión. Vuelve a la sesión original de EstiPaid o revisa la factura manualmente antes de sincronizar."
+        : "Stripe received the payment, but this browser does not have the local session reference. Return to the original EstiPaid browser session or review the invoice manually before syncing."
+    );
+  }, [lang, list, stripeCheckoutSessions]);
 
   const createManualInvoice = () => {
     const currentInvoices = readStoredInvoices();

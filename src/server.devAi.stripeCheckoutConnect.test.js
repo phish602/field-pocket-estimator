@@ -44,6 +44,35 @@ function requestJson(port, method, routePath, body) {
   });
 }
 
+function requestText(port, method, routePath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: routePath,
+        method,
+      },
+      (res) => {
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode || 0,
+            text: raw,
+            contentType: String(res.headers["content-type"] || ""),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function waitForServer(port) {
   for (let index = 0; index < 80; index += 1) {
     try {
@@ -199,5 +228,50 @@ describe("dev-ai Stripe Connect checkout guards", () => {
 
     expect(response.status).toBe(500);
     expect(response.json).toEqual({ error: "Stripe is not configured." });
+  });
+
+  test("stripe checkout success page returns meaningful HTML instead of bare OK", async () => {
+    port = 5967;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "",
+    });
+    await waitForServer(port);
+
+    const response = await requestText(
+      port,
+      "GET",
+      "/api/stripe/checkout/success?invoiceId=inv_7&invoiceNumber=INV-7&returnTo=http%3A%2F%2Flocalhost%3A3000&session_id=cs_test_789"
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("text/html");
+    expect(response.text).toContain("Stripe payment received");
+    expect(response.text).toContain("Check / Sync Stripe Payment");
+    expect(response.text).toContain("INV-7");
+    expect(response.text).toContain("Return to EstiPaid");
+    expect(response.text).not.toBe("OK");
+  });
+
+  test("stripe checkout cancel page returns meaningful HTML instead of bare OK", async () => {
+    port = 5968;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "",
+    });
+    await waitForServer(port);
+
+    const response = await requestText(
+      port,
+      "GET",
+      "/api/stripe/checkout/cancel?invoiceId=inv_8&invoiceNumber=INV-8&returnTo=http%3A%2F%2Flocalhost%3A3000"
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("text/html");
+    expect(response.text).toContain("Stripe checkout canceled");
+    expect(response.text).toContain("INV-8");
+    expect(response.text).toContain("Back to EstiPaid");
+    expect(response.text).not.toBe("OK");
   });
 });
