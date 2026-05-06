@@ -29,6 +29,18 @@ const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PAYMENT_METHOD_OPTIONS = ["manual", "cash", "check", "card", "bank_transfer"];
 
+function readCompanyStripeAccountId() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE) || "";
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    const stripeAccountId = String(parsed?.stripeAccountId || "").trim();
+    return /^acct_/i.test(stripeAccountId) ? stripeAccountId : "";
+  } catch {
+    return "";
+  }
+}
+
 function loadSavedEstimates() {
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
@@ -517,6 +529,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [paymentError, setPaymentError] = useState("");
   const [stripeCheckoutBusyId, setStripeCheckoutBusyId] = useState("");
   const [stripeCopyBusyId, setStripeCopyBusyId] = useState("");
+  const [stripeAccountId, setStripeAccountId] = useState(() => readCompanyStripeAccountId());
   const [paymentForm, setPaymentForm] = useState(() => ({
     amount: "",
     paidAt: todayISO(),
@@ -619,6 +632,36 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       window.removeEventListener("pe-localstorage", onLocalStorage);
       window.removeEventListener("estipaid:customer-use", refresh);
       window.removeEventListener("focus", refresh);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshStripeAccountId = () => setStripeAccountId(readCompanyStripeAccountId());
+    const onStorage = (event) => {
+      if (!event?.key || event.key === STORAGE_KEYS.COMPANY_PROFILE) refreshStripeAccountId();
+    };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === STORAGE_KEYS.COMPANY_PROFILE) refreshStripeAccountId();
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refreshStripeAccountId();
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("focus", refreshStripeAccountId);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("focus", refreshStripeAccountId);
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       }
@@ -1005,7 +1048,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const launchStripeCheckout = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    if (!invoiceId || !canRecordManualPayment(invoice) || stripeCheckoutBusyId === invoiceId) return;
+    if (!invoiceId || !canRecordManualPayment(invoice) || !stripeAccountId || stripeCheckoutBusyId === invoiceId) return;
 
     setStripeCheckoutBusyId(invoiceId);
     try {
@@ -1023,6 +1066,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           customerName: String(invoice?.customerName || "").trim(),
           customerEmail: getInvoiceCustomerEmail(invoice),
           projectName: String(invoice?.projectName || "").trim(),
+          stripeAccountId,
           balanceRemaining,
         }),
       });
@@ -1047,7 +1091,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const copyStripeLink = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    if (!invoiceId || !canRecordManualPayment(invoice) || stripeCopyBusyId === invoiceId) return;
+    if (!invoiceId || !canRecordManualPayment(invoice) || !stripeAccountId || stripeCopyBusyId === invoiceId) return;
 
     setStripeCopyBusyId(invoiceId);
     try {
@@ -1063,6 +1107,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           customerName: String(invoice?.customerName || "").trim(),
           customerEmail: getInvoiceCustomerEmail(invoice),
           projectName: String(invoice?.projectName || "").trim(),
+          stripeAccountId,
           balanceRemaining,
         }),
       });
@@ -1273,6 +1318,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   ? [...invoice.payments].filter(Boolean).sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0))
                   : [];
                 const canTakePayment = canRecordManualPayment(invoice);
+                const canUseStripe = canTakePayment && !!stripeAccountId;
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const projectLabel = displayMeta.projectName || invoice?.projectName || "";
@@ -1511,7 +1557,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               {getPaymentActionLabel(invoice, lang)}
                             </button>
                           ) : null}
-                          {canTakePayment ? (
+                          {canUseStripe ? (
                             <button
                               className="pe-btn pe-btn-ghost"
                               type="button"
@@ -1523,7 +1569,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
                             </button>
                           ) : null}
-                          {canTakePayment ? (
+                          {canUseStripe ? (
                             <button
                               className="pe-btn pe-btn-ghost"
                               type="button"
@@ -1566,7 +1612,14 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             {lang === "es" ? "Eliminar" : "Delete"}
                           </button>
                         </div>
-                        {canTakePayment ? (
+                        {canTakePayment && !canUseStripe ? (
+                          <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
+                            {lang === "es"
+                              ? "Conecta Stripe en Company Profile para aceptar pagos en línea."
+                              : "Connect Stripe in Company Profile to accept online payments."}
+                          </div>
+                        ) : null}
+                        {canUseStripe ? (
                           <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
                             {lang === "es"
                               ? "Los enlaces de Stripe expiran. Genera uno nuevo si el cliente paga después. Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."

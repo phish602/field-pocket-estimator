@@ -11861,10 +11861,17 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     const customerName = asText(req.body?.customerName);
     const customerEmail = asText(req.body?.customerEmail);
     const projectName = asText(req.body?.projectName);
+    const stripeAccountId = asText(req.body?.stripeAccountId);
     const balanceRemaining = roundCurrency(req.body?.balanceRemaining);
 
     if (!invoiceId) {
       return res.status(400).json({ error: "Missing invoiceId." });
+    }
+    if (!stripeAccountId) {
+      return res.status(400).json({ error: "Connect Stripe before accepting online payments." });
+    }
+    if (!/^acct_/i.test(stripeAccountId)) {
+      return res.status(400).json({ error: "Invalid stripeAccountId." });
     }
     if (balanceRemaining <= 0) {
       return res.status(400).json({ error: "Invalid balanceRemaining." });
@@ -11879,6 +11886,10 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/?stripe=success&invoiceId=${encodeURIComponent(invoiceId)}`;
     const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/?stripe=cancel&invoiceId=${encodeURIComponent(invoiceId)}`;
     const stripe = getStripeClient();
+    const connectedAccount = await stripe.accounts.retrieve(stripeAccountId);
+    if (!connectedAccount?.charges_enabled) {
+      return res.status(400).json({ error: "Stripe account setup is not complete." });
+    }
 
     const itemName = invoiceNumber
       ? `EstiPaid Invoice ${invoiceNumber}`
@@ -11904,10 +11915,13 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
       ],
       metadata: {
         invoiceId,
+        source: "estipaid",
         ...(invoiceNumber ? { invoiceNumber } : {}),
         ...(customerName ? { customerName } : {}),
         ...(projectName ? { projectName } : {}),
       },
+    }, {
+      stripeAccount: stripeAccountId,
     });
 
     return res.json({

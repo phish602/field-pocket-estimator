@@ -44,6 +44,16 @@ function readStoredInvoices() {
   return JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
 }
 
+function seedCompanyProfile(overrides = {}) {
+  localStorage.setItem(
+    STORAGE_KEYS.COMPANY_PROFILE,
+    JSON.stringify({
+      stripeAccountId: "",
+      ...overrides,
+    }),
+  );
+}
+
 function renderInvoicesScreen() {
   render(<InvoicesScreen lang="en" t={(k) => k} />);
   act(() => {
@@ -414,6 +424,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
@@ -434,6 +445,17 @@ describe("InvoicesScreen Stripe checkout action", () => {
     renderInvoicesScreen();
     openInvoiceDetails();
     expect(screen.getByRole("button", { name: /Pay Online with Stripe/i })).toBeInTheDocument();
+  });
+
+  test("without stripeAccountId the Stripe actions are hidden and connect notice is shown while manual payment remains", () => {
+    seedCompanyProfile({ stripeAccountId: "" });
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Take Payment/i })).toBeInTheDocument();
+    expect(screen.getByText(/Connect Stripe in Company Profile to accept online payments\./i)).toBeInTheDocument();
   });
 
   test("hides Stripe action for draft invoices", () => {
@@ -506,6 +528,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
       })
     );
     const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.stripeAccountId).toBe("acct_test_connected_123");
     expect(payload.balanceRemaining).toBe(775);
     expect(payload.balanceRemaining).not.toBe(900);
     expect(payload.invoiceId).toBe("inv_sent_payment");
@@ -644,6 +667,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
@@ -675,6 +699,16 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     renderInvoicesScreen();
     openInvoiceDetails();
     expect(screen.getByRole("button", { name: /Copy Payment Link/i })).toBeInTheDocument();
+  });
+
+  test("Copy Payment Link is hidden without stripeAccountId and connect notice is shown", () => {
+    seedCompanyProfile({ stripeAccountId: "" });
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+    expect(screen.getByText(/Connect Stripe in Company Profile to accept online payments\./i)).toBeInTheDocument();
   });
 
   test("Copy Payment Link is hidden for draft invoice", () => {
@@ -731,6 +765,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
       expect.objectContaining({ method: "POST" })
     );
     const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.stripeAccountId).toBe("acct_test_connected_123");
     // Derived: invoiceTotal(800) - amountPaid(0) = 800, not stored 0
     expect(payload.balanceRemaining).toBe(800);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-session");
