@@ -2125,6 +2125,7 @@ export default function App() {
   const [routeEnterSeq, setRouteEnterSeq] = useState(0);
   const [userProfileDirty, setUserProfileDirty] = useState(false);
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
+  const [showLeaveEditModal, setShowLeaveEditModal] = useState(false);
   const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createFromEditIntent, setCreateFromEditIntent] = useState(BUILDER_INTENTS.ESTIMATE);
@@ -2135,6 +2136,7 @@ export default function App() {
   const [newProjectReturnRoute, setNewProjectReturnRoute] = useState(ROUTES.PROJECTS);
   const [projectDetailBackRoute, setProjectDetailBackRoute] = useState(ROUTES.PROJECTS);
   const pendingProfileLeaveTabRef = useRef(null);
+  const pendingEditLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [customerHistory, setCustomerHistory] = useState(() => loadSavedCustomers());
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -2336,8 +2338,16 @@ const [spinTick, setSpinTick] = useState(0);
       return;
     }
 
+    const isBuilderDestination =
+      tab === ROUTES.CREATE || tab === ROUTES.ESTIMATE_BUILDER || tab === ROUTES.INVOICE_BUILDER;
+    if (!bypassDirtyGuard && activeTab === ROUTES.CREATE && createEditSessionActive && !isBuilderDestination) {
+      pendingEditLeaveTabRef.current = tab;
+      setShowLeaveEditModal(true);
+      return;
+    }
+
     performNavigation(tab);
-  }, [activeTab, userProfileDirty, performNavigation]);
+  }, [activeTab, userProfileDirty, createEditSessionActive, performNavigation]);
 
   const navigateToCompanyProfile = useCallback((options = {}) => {
     prepareCompanyProfileReturnTarget();
@@ -2525,7 +2535,7 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
-      try { navigateTo(ROUTES.ESTIMATES); } catch {}
+      try { navigateTo(ROUTES.ESTIMATES, { bypassDirtyGuard: true }); } catch {}
     };
     const onNavInvoices = () => {
       if (activeTab === ROUTES.CREATE) {
@@ -2539,7 +2549,7 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
-      try { navigateTo(ROUTES.INVOICES); } catch {}
+      try { navigateTo(ROUTES.INVOICES, { bypassDirtyGuard: true }); } catch {}
     };
     window.addEventListener("estipaid:navigate-estimates", onNavEstimates);
     window.addEventListener("estipaid:navigate-invoices", onNavInvoices);
@@ -3660,6 +3670,38 @@ const gated = false;
                 onClick={continueCreateFromEdit}
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showLeaveEditModal ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Leave edit session">
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalText}>
+              You are currently editing. Leaving will discard any unsaved changes.
+              Continue?
+            </div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setShowLeaveEditModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  const target = pendingEditLeaveTabRef.current;
+                  pendingEditLeaveTabRef.current = null;
+                  setShowLeaveEditModal(false);
+                  if (target) navigateTo(target, { bypassDirtyGuard: true });
+                }}
+              >
+                Leave
               </button>
             </div>
           </div>
