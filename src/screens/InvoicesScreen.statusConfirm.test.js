@@ -634,3 +634,186 @@ describe("InvoicesScreen Stripe checkout action", () => {
     expect(invoice.status).toBe("sent");
   });
 });
+
+describe("InvoicesScreen Copy Payment Link action", () => {
+  const originalFetch = global.fetch;
+  const originalOpen = window.open;
+  const originalAlert = window.alert;
+  const originalClipboard = navigator.clipboard;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+    global.fetch = jest.fn();
+    window.open = jest.fn(() => ({}));
+    window.alert = jest.fn();
+    // Provide a working clipboard mock
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: jest.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    global.fetch = originalFetch;
+    window.open = originalOpen;
+    window.alert = originalAlert;
+    Object.defineProperty(navigator, "clipboard", {
+      value: originalClipboard,
+      writable: true,
+      configurable: true,
+    });
+    jest.useRealTimers();
+  });
+
+  test("Copy Payment Link button is visible for eligible sent invoice", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByRole("button", { name: /Copy Payment Link/i })).toBeInTheDocument();
+  });
+
+  test("Copy Payment Link is hidden for draft invoice", () => {
+    seedInvoices([createSentInvoice({ id: "inv_draft_copy", status: "draft" })]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+  });
+
+  test("Copy Payment Link is hidden for void invoice", () => {
+    seedInvoices([createSentInvoice({ id: "inv_void_copy", status: "void", paymentStatus: "void", balanceRemaining: 0 })]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+  });
+
+  test("Copy Payment Link is hidden for paid invoice", () => {
+    seedInvoices([createPaidInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+  });
+
+  test("Copy Payment Link calls backend with normalized balanceRemaining and copies URL to clipboard", async () => {
+    const sourceInvoice = createSentInvoice({
+      id: "inv_copy_link_test",
+      invoiceTotal: 800,
+      total: 800,
+      amountPaid: 0,
+      balanceRemaining: 0,
+      paymentStatus: "unpaid",
+      payments: [],
+    });
+    seedInvoices([sourceInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/copy-session",
+        sessionId: "cs_copy_123",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/stripe/create-checkout-session",
+      expect.objectContaining({ method: "POST" })
+    );
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    // Derived: invoiceTotal(800) - amountPaid(0) = 800, not stored 0
+    expect(payload.balanceRemaining).toBe(800);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-session");
+    // Storage must be unchanged
+    expect(readStoredInvoices()).toEqual(before);
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(0);
+    expect(invoice.amountPaid).toBe(0);
+    expect(invoice.paymentStatus).toBe("unpaid");
+    expect(invoice.status).toBe("sent");
+  });
+
+  test("Copy Payment Link clipboard fallback shows URL in alert without mutating storage", async () => {
+    // Clipboard unavailable
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: jest.fn().mockRejectedValue(new Error("Not allowed")) },
+      writable: true,
+      configurable: true,
+    });
+    const sourceInvoice = createSentInvoice({
+      id: "inv_copy_fallback",
+      invoiceTotal: 300,
+      total: 300,
+      amountPaid: 0,
+      balanceRemaining: 0,
+      paymentStatus: "unpaid",
+      payments: [],
+    });
+    seedInvoices([sourceInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/fallback-session",
+        sessionId: "cs_fallback_123",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    // Alert should contain the checkout URL so user can copy manually
+    expect(window.alert).toHaveBeenCalled();
+    const alertArg = window.alert.mock.calls[0][0];
+    expect(alertArg).toContain("https://checkout.stripe.com/pay/fallback-session");
+    // Storage must be unchanged
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("Copy Payment Link failure does not mutate invoice storage", async () => {
+    const sourceInvoice = createSentInvoice({
+      id: "inv_copy_fail",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 0,
+      balanceRemaining: 0,
+      paymentStatus: "unpaid",
+      payments: [],
+    });
+    seedInvoices([sourceInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: false,
+      json: async () => ({ error: "Stripe not configured." }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(window.alert).toHaveBeenCalledWith("Stripe not configured.");
+    expect(readStoredInvoices()).toEqual(before);
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(0);
+    expect(invoice.amountPaid).toBe(0);
+    expect(invoice.status).toBe("sent");
+  });
+});

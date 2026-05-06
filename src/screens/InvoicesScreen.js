@@ -516,6 +516,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentError, setPaymentError] = useState("");
   const [stripeCheckoutBusyId, setStripeCheckoutBusyId] = useState("");
+  const [stripeCopyBusyId, setStripeCopyBusyId] = useState("");
   const [paymentForm, setPaymentForm] = useState(() => ({
     amount: "",
     paidAt: todayISO(),
@@ -1044,6 +1045,84 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     }
   };
 
+  const copyStripeLink = async (invoice) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    if (!invoiceId || !canRecordManualPayment(invoice) || stripeCopyBusyId === invoiceId) return;
+
+    setStripeCopyBusyId(invoiceId);
+    try {
+      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+      const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+      const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
+      const response = await fetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoiceId,
+          invoiceNumber: String(invoice?.invoiceNumber || "").trim(),
+          customerName: String(invoice?.customerName || "").trim(),
+          customerEmail: getInvoiceCustomerEmail(invoice),
+          projectName: String(invoice?.projectName || "").trim(),
+          balanceRemaining,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !String(payload?.checkoutUrl || "").trim()) {
+        window.alert(payload?.error || (lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe payment link."));
+        return;
+      }
+
+      const checkoutUrl = String(payload.checkoutUrl);
+      const customerEmail = getInvoiceCustomerEmail(invoice);
+      const mailtoHref = customerEmail
+        ? `mailto:${encodeURIComponent(customerEmail)}?subject=${encodeURIComponent("Your payment link")}&body=${encodeURIComponent("Please use the link below to pay your invoice:\n\n" + checkoutUrl + "\n\nNote: This link expires. Please pay promptly or request a new link.")}`
+        : null;
+
+      let copied = false;
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        try {
+          await navigator.clipboard.writeText(checkoutUrl);
+          copied = true;
+        } catch (_clipErr) {
+          // fall through to alert
+        }
+      }
+
+      if (copied) {
+        window.alert(
+          (lang === "es"
+            ? "Enlace de pago copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
+            : "Payment link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
+          + (mailtoHref ? "\n\n" + checkoutUrl : "")
+        );
+        if (mailtoHref) {
+          const openedMailto = typeof window !== "undefined" && typeof window.open === "function"
+            ? window.open(mailtoHref, "_blank", "noopener,noreferrer")
+            : null;
+          if (!openedMailto && typeof window !== "undefined") {
+            window.location.assign(mailtoHref);
+          }
+        }
+      } else {
+        // Clipboard unavailable — show URL so user can copy manually
+        window.alert(
+          (lang === "es"
+            ? "No se pudo copiar automáticamente. Copia este enlace y envíaselo al cliente:\n\n"
+            : "Could not copy automatically. Copy this link and send it to your customer:\n\n")
+          + checkoutUrl
+          + "\n\n"
+          + (lang === "es"
+            ? "Recuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
+            : "Reminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms.")
+        );
+      }
+    } catch (_error) {
+      window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe payment link.");
+    } finally {
+      setStripeCopyBusyId("");
+    }
+  };
+
   const valueFilter = "all";
 
   return (
@@ -1444,6 +1523,18 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
                             </button>
                           ) : null}
+                          {canTakePayment ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onClick={() => copyStripeLink(invoice)}
+                              disabled={stripeCopyBusyId === invoiceId}
+                            >
+                              {stripeCopyBusyId === invoiceId
+                                ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
+                                : (lang === "es" ? "Copiar enlace de pago" : "Copy Payment Link")}
+                            </button>
+                          ) : null}
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
@@ -1478,8 +1569,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                         {canTakePayment ? (
                           <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
                             {lang === "es"
-                              ? "Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
-                              : "Stripe payments must be reconciled before recording them in EstiPaid."}
+                              ? "Los enlaces de Stripe expiran. Genera uno nuevo si el cliente paga después. Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
+                              : "Stripe links expire. Generate a fresh link if the customer pays later. Payment must still be reconciled in EstiPaid after Stripe confirms."}
                           </div>
                         ) : null}
                         {paymentLedger.length ? (

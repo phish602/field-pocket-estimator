@@ -85,6 +85,29 @@ function resolveStripeReturnBaseUrl(req) {
   return "http://localhost:3000";
 }
 
+function isHttpUrl(value) {
+  const next = asText(value);
+  if (!next) return false;
+  try {
+    const parsed = new URL(next);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function resolveStripeConnectUrl(req, providedUrl, action, stripeAccountId = "") {
+  if (isHttpUrl(providedUrl)) return asText(providedUrl);
+  const returnBaseUrl = resolveStripeReturnBaseUrl(req);
+  const suffix = action === "refresh" ? "refresh" : "return";
+  const accountPart = asText(stripeAccountId);
+  return `${returnBaseUrl}/?stripeConnect=${suffix}${accountPart ? `&stripeAccountId=${encodeURIComponent(accountPart)}` : ""}`;
+}
+
+function getStripeClient() {
+  return new Stripe(STRIPE_SECRET_KEY);
+}
+
 function extractJsonPayload(text) {
   const t = String(text || "").trim();
   try { return JSON.parse(t); } catch {}
@@ -11752,6 +11775,81 @@ app.post("/api/guided-build", async (req, res) => {
   }
 });
 
+app.post("/api/stripe/connect/create-account-link", async (req, res) => {
+  try {
+    if (!STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Stripe is not configured." });
+    }
+
+    let stripeAccountId = asText(req.body?.stripeAccountId);
+    if (stripeAccountId && !/^acct_/i.test(stripeAccountId)) {
+      return res.status(400).json({ error: "Invalid stripeAccountId." });
+    }
+
+    const stripe = getStripeClient();
+    if (!stripeAccountId) {
+      const account = await stripe.accounts.create({
+        type: "express",
+        country: "US",
+        capabilities: {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+        metadata: {
+          product: "EstiPaid",
+        },
+      });
+      stripeAccountId = asText(account?.id);
+    }
+
+    if (!stripeAccountId) {
+      return res.status(500).json({ error: "Unable to create Stripe onboarding link." });
+    }
+
+    const returnUrl = resolveStripeConnectUrl(req, req.body?.returnUrl, "return", stripeAccountId);
+    const refreshUrl = resolveStripeConnectUrl(req, req.body?.refreshUrl, "refresh", stripeAccountId);
+    const accountLink = await stripe.accountLinks.create({
+      account: stripeAccountId,
+      type: "account_onboarding",
+      return_url: returnUrl,
+      refresh_url: refreshUrl,
+    });
+
+    return res.json({
+      ok: true,
+      stripeAccountId,
+      accountLinkUrl: asText(accountLink?.url),
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to create Stripe onboarding link." });
+  }
+});
+
+app.get("/api/stripe/connect/account-status", async (req, res) => {
+  try {
+    if (!STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Stripe is not configured." });
+    }
+
+    const stripeAccountId = asText(req.query?.stripeAccountId);
+    if (!/^acct_/i.test(stripeAccountId)) {
+      return res.status(400).json({ error: "Invalid stripeAccountId." });
+    }
+
+    const stripe = getStripeClient();
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+    return res.json({
+      ok: true,
+      stripeAccountId,
+      chargesEnabled: !!account?.charges_enabled,
+      payoutsEnabled: !!account?.payouts_enabled,
+      detailsSubmitted: !!account?.details_submitted,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to retrieve Stripe account status." });
+  }
+});
+
 app.post("/api/stripe/create-checkout-session", async (req, res) => {
   try {
     if (!STRIPE_SECRET_KEY) {
@@ -11780,7 +11878,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     const returnBaseUrl = resolveStripeReturnBaseUrl(req);
     const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/?stripe=success&invoiceId=${encodeURIComponent(invoiceId)}`;
     const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/?stripe=cancel&invoiceId=${encodeURIComponent(invoiceId)}`;
-    const stripe = new Stripe(STRIPE_SECRET_KEY);
+    const stripe = getStripeClient();
 
     const itemName = invoiceNumber
       ? `EstiPaid Invoice ${invoiceNumber}`

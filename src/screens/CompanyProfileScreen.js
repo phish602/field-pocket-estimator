@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { formatPhoneForDisplay, sanitizePhoneDigits, sanitizeZip } from "../utils/sanitize";
@@ -167,6 +167,29 @@ function loadProfile() {
   }
 }
 
+function isStripeAccountId(value) {
+  return /^acct_/i.test(String(value || "").trim());
+}
+
+function buildStripeConnectUrls() {
+  try {
+    const current = new URL(String(window.location.href || "http://localhost:3000"));
+    const returnUrl = new URL(current.toString());
+    returnUrl.searchParams.set("stripeConnect", "return");
+    const refreshUrl = new URL(current.toString());
+    refreshUrl.searchParams.set("stripeConnect", "refresh");
+    return {
+      returnUrl: returnUrl.toString(),
+      refreshUrl: refreshUrl.toString(),
+    };
+  } catch {
+    return {
+      returnUrl: "http://localhost:3000/?stripeConnect=return",
+      refreshUrl: "http://localhost:3000/?stripeConnect=refresh",
+    };
+  }
+}
+
 function saveProfile(p) {
   try {
     const normalized = stripNonCompanyFields(normalizeCompanyProfile(p || {}));
@@ -222,6 +245,9 @@ export default function CompanyProfileScreen() {
   const [logoFileName, setLogoFileName] = useState("");
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
   const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
+  const [stripeConnectBusy, setStripeConnectBusy] = useState(false);
+  const [stripeStatusBusy, setStripeStatusBusy] = useState(false);
+  const [stripeStatus, setStripeStatus] = useState(null);
   const fileInputRef = useRef(null);
   const brandingCardRef = useRef(null);
   const brandingUploadButtonRef = useRef(null);
@@ -233,6 +259,7 @@ export default function CompanyProfileScreen() {
     () => new Set(showMissingRequiredPrompt ? missingRequiredFields : []),
     [showMissingRequiredPrompt, missingRequiredFields],
   );
+  const stripeAccountId = String(profile?.stripeAccountId || "").trim();
 
   useEffect(() => () => {
     if (saveFlashTimerRef.current) {
@@ -303,6 +330,100 @@ export default function CompanyProfileScreen() {
   const fieldLabelClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-label" : "");
   const fieldControlClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-input" : "");
   const fieldRequiredError = (fieldKey) => (isFieldMissing(fieldKey) ? "This field is required." : "");
+  const persistProfileUpdate = useCallback((nextProfile, options = {}) => {
+    const normalized = stripNonCompanyFields(normalizeCompanyProfile(nextProfile || {}));
+    const ok = saveProfile(normalized);
+    setLastSaveOk(ok);
+    setProfile(normalized);
+    if (!ok) return false;
+
+    try {
+      setSavedAt(Date.now());
+    } catch {}
+    setLastSavedSnapshot(serializeProfileState(normalized));
+    if (options.toastMessage) {
+      setToastMessage(options.toastMessage);
+      setShowToast(true);
+    }
+    return true;
+  }, []);
+
+  const refreshStripeStatus = useCallback(async (accountIdOverride = "", options = {}) => {
+    const accountId = String(accountIdOverride || "").trim() || stripeAccountId;
+    if (!isStripeAccountId(accountId)) {
+      setStripeStatus(null);
+      return;
+    }
+
+    setStripeStatusBusy(true);
+    try {
+      const response = await fetch(`/api/stripe/connect/account-status?stripeAccountId=${encodeURIComponent(accountId)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        window.alert(payload?.error || "Unable to refresh Stripe status.");
+        return;
+      }
+      setStripeStatus({
+        stripeAccountId: String(payload?.stripeAccountId || accountId),
+        chargesEnabled: !!payload?.chargesEnabled,
+        payoutsEnabled: !!payload?.payoutsEnabled,
+        detailsSubmitted: !!payload?.detailsSubmitted,
+      });
+      if (options.toastMessage) {
+        setToastMessage(options.toastMessage);
+        setShowToast(true);
+      }
+    } catch {
+      window.alert("Unable to refresh Stripe status.");
+    } finally {
+      setStripeStatusBusy(false);
+    }
+  }, [stripeAccountId]);
+
+  const handleStripeConnect = useCallback(async () => {
+    if (stripeConnectBusy) return;
+
+    setStripeConnectBusy(true);
+    try {
+      const { returnUrl, refreshUrl } = buildStripeConnectUrls();
+      const response = await fetch("/api/stripe/connect/create-account-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          stripeAccountId: stripeAccountId || undefined,
+          returnUrl,
+          refreshUrl,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !isStripeAccountId(payload?.stripeAccountId) || !String(payload?.accountLinkUrl || "").trim()) {
+        window.alert(payload?.error || "Unable to start Stripe onboarding.");
+        return;
+      }
+
+      if (!persistProfileUpdate(
+        { ...profile, stripeAccountId: String(payload.stripeAccountId || "").trim() },
+        { toastMessage: stripeAccountId ? "Stripe setup link refreshed" : "Stripe account linked" },
+      )) {
+        window.alert("Unable to save Stripe account information.");
+        return;
+      }
+
+      const opened = typeof window !== "undefined" && typeof window.open === "function"
+        ? window.open(String(payload.accountLinkUrl), "_self")
+        : null;
+      if (!opened && typeof window !== "undefined") {
+        window.location.assign(String(payload.accountLinkUrl));
+      }
+    } catch {
+      window.alert("Unable to start Stripe onboarding.");
+    } finally {
+      setStripeConnectBusy(false);
+    }
+  }, [persistProfileUpdate, profile, stripeAccountId, stripeConnectBusy]);
+
   const openLogoPicker = () => {
     if (!fileInputRef.current) return;
     try {
@@ -370,6 +491,14 @@ export default function CompanyProfileScreen() {
     window.addEventListener("estipaid:company-logo-focus", onFocusBranding);
     return () => window.removeEventListener("estipaid:company-logo-focus", onFocusBranding);
   }, []);
+
+  useEffect(() => {
+    if (!isStripeAccountId(stripeAccountId)) {
+      setStripeStatus(null);
+      return;
+    }
+    refreshStripeStatus(stripeAccountId);
+  }, [refreshStripeStatus, stripeAccountId]);
 
   const doExplicitSave = () => {
     const missing = getMissingRequiredFields(profile);
@@ -758,6 +887,60 @@ export default function CompanyProfileScreen() {
                 placeholder="12-3456789"
                 onChange={(e) => setProfile((p) => ({ ...p, ein: e.target.value }))}
               />
+            </div>
+          </div>
+
+          <div className="pe-company-form-section">
+            <div className="pe-company-section-divider" aria-hidden="true" />
+            <ProfileSectionHeader icon={<IconBadge />} title="STRIPE PAYMENTS" />
+            <div className="pe-company-grid-12">
+              <div className="pe-company-col-12">
+                <div className="pe-field-helper" style={{ marginBottom: 10, lineHeight: 1.5 }}>
+                  Connect your own Stripe account for future online invoice payments. EstiPaid stores your connected account ID only and never stores Stripe secret keys.
+                </div>
+                {stripeAccountId ? (
+                  <div style={{ marginBottom: 10, fontSize: 13.5 }}>
+                    Connected account ID: <strong data-testid="stripe-account-id">{stripeAccountId}</strong>
+                  </div>
+                ) : (
+                  <div style={{ marginBottom: 10, fontSize: 13.5, opacity: 0.78 }}>
+                    No Stripe account connected yet.
+                  </div>
+                )}
+                <div style={{ display: "grid", gap: 6, marginBottom: 12, fontSize: 13.5 }}>
+                  <div>
+                    Charges enabled: <strong>{stripeStatus ? (stripeStatus.chargesEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
+                  </div>
+                  <div>
+                    Payouts enabled: <strong>{stripeStatus ? (stripeStatus.payoutsEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
+                  </div>
+                  <div>
+                    Details submitted: <strong>{stripeStatus ? (stripeStatus.detailsSubmitted ? "Yes" : "No") : "Not checked yet"}</strong>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="pe-btn"
+                    onClick={handleStripeConnect}
+                    disabled={stripeConnectBusy}
+                  >
+                    {stripeConnectBusy
+                      ? "Opening Stripe..."
+                      : (stripeAccountId ? "Continue Stripe Setup" : "Connect Stripe")}
+                  </button>
+                  {stripeAccountId ? (
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => refreshStripeStatus(stripeAccountId, { toastMessage: "Stripe status refreshed" })}
+                      disabled={stripeStatusBusy}
+                    >
+                      {stripeStatusBusy ? "Refreshing Stripe..." : "Refresh Stripe Status"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </div>
 

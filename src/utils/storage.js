@@ -20,6 +20,7 @@ export const DEFAULT_COMPANY_PROFILE = {
   website: "",
   ein: "",
   terms: "",
+  stripeAccountId: "",
 };
 
 const STATE_ZIP_PATTERN = /^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/;
