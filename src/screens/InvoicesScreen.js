@@ -400,6 +400,34 @@ function formatPaymentMethod(method, lang) {
   return lang === "es" ? "Manual" : "Manual";
 }
 
+function formatStripeDetailText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function getStripePaymentSummary(payment) {
+  const brand = formatStripeDetailText(payment?.cardBrand);
+  const last4 = String(payment?.cardLast4 || "").trim();
+  if (brand && last4) return `${brand} •••• ${last4}`;
+  if (last4) return `Card •••• ${last4}`;
+  const methodType = formatStripeDetailText(payment?.paymentMethodType);
+  return methodType || "";
+}
+
+function isSafeReceiptUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 function moneyUSD(value) {
   const amount = roundCurrency(value);
   try {
@@ -1502,6 +1530,13 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         stripeSessionId: String(payload?.sessionId || sessionRef?.sessionId || "").trim(),
         stripePaymentIntentId: String(payload?.paymentIntentId || "").trim(),
         stripeAccountId: String(payload?.stripeAccountId || sessionRef?.stripeAccountId || "").trim(),
+        paymentMethodType: String(payload?.paymentMethodType || "").trim(),
+        cardBrand: String(payload?.cardBrand || "").trim(),
+        cardLast4: String(payload?.cardLast4 || "").trim(),
+        receiptEmail: String(payload?.receiptEmail || "").trim(),
+        receiptUrl: String(payload?.receiptUrl || "").trim(),
+        stripePaymentStatus: String(payload?.paymentStatus || "").trim(),
+        currency: String(payload?.currency || "").trim(),
       });
 
       if (!result?.ok || !result?.invoice) {
@@ -2175,44 +2210,75 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             </div>
                             <div style={{ display: "grid", gap: 8 }}>
                               {paymentLedger.map((payment) => (
-                                <div
-                                  key={String(payment?.id || `${payment?.paidAt || ""}_${payment?.amount || ""}`)}
-                                  style={{
-                                    display: "grid",
-                                    gap: 4,
-                                    borderRadius: 10,
-                                    border: "1px solid rgba(255,255,255,0.08)",
-                                    background: "rgba(255,255,255,0.03)",
-                                    padding: "8px 10px",
-                                  }}
-                                >
-                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-                                    <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
-                                    <div style={{ fontSize: 12, opacity: 0.76, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                                      <span>{formatDateOnly(payment?.paidAt) || "—"}</span>
-                                      {String(payment?.method || "").trim().toLowerCase() === "stripe" ? (
-                                        <span style={{
-                                          borderRadius: 999,
-                                          border: "1px solid rgba(59,130,246,0.18)",
-                                          background: "rgba(59,130,246,0.10)",
-                                          padding: "2px 8px",
-                                          fontSize: 11,
-                                          fontWeight: 800,
-                                          letterSpacing: "0.3px",
-                                        }}>
-                                          Stripe
-                                        </span>
-                                      ) : (
-                                        <span>{formatPaymentMethod(payment?.method, lang)}</span>
-                                      )}
+                                (() => {
+                                  const isStripePayment = String(payment?.method || "").trim().toLowerCase() === "stripe";
+                                  const stripeSummary = isStripePayment ? getStripePaymentSummary(payment) : "";
+                                  const receiptEmail = isStripePayment ? String(payment?.receiptEmail || "").trim() : "";
+                                  const receiptUrl = isStripePayment && isSafeReceiptUrl(payment?.receiptUrl)
+                                    ? String(payment?.receiptUrl || "").trim()
+                                    : "";
+
+                                  return (
+                                    <div
+                                      key={String(payment?.id || `${payment?.paidAt || ""}_${payment?.amount || ""}`)}
+                                      style={{
+                                        display: "grid",
+                                        gap: 4,
+                                        borderRadius: 10,
+                                        border: "1px solid rgba(255,255,255,0.08)",
+                                        background: "rgba(255,255,255,0.03)",
+                                        padding: "8px 10px",
+                                      }}
+                                    >
+                                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                                        <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
+                                        <div style={{ fontSize: 12, opacity: 0.76, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                          <span>{formatDateOnly(payment?.paidAt) || "—"}</span>
+                                          {isStripePayment ? (
+                                            <span style={{
+                                              borderRadius: 999,
+                                              border: "1px solid rgba(59,130,246,0.18)",
+                                              background: "rgba(59,130,246,0.10)",
+                                              padding: "2px 8px",
+                                              fontSize: 11,
+                                              fontWeight: 800,
+                                              letterSpacing: "0.3px",
+                                            }}>
+                                              Stripe
+                                            </span>
+                                          ) : (
+                                            <span>{formatPaymentMethod(payment?.method, lang)}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {payment?.note ? (
+                                        <div style={{ fontSize: 12.5, opacity: 0.84 }}>
+                                          {payment.note}
+                                        </div>
+                                      ) : null}
+                                      {isStripePayment && stripeSummary ? (
+                                        <div style={{ fontSize: 12, opacity: 0.76 }}>
+                                          {stripeSummary}
+                                        </div>
+                                      ) : null}
+                                      {isStripePayment && receiptEmail ? (
+                                        <div style={{ fontSize: 12, opacity: 0.76 }}>
+                                          {receiptEmail}
+                                        </div>
+                                      ) : null}
+                                      {receiptUrl ? (
+                                        <a
+                                          href={receiptUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          style={{ fontSize: 12, fontWeight: 700, color: "#93c5fd", textDecoration: "none" }}
+                                        >
+                                          {lang === "es" ? "Ver recibo de Stripe" : "View Stripe receipt"}
+                                        </a>
+                                      ) : null}
                                     </div>
-                                  </div>
-                                  {payment?.note ? (
-                                    <div style={{ fontSize: 12.5, opacity: 0.84 }}>
-                                      {payment.note}
-                                    </div>
-                                  ) : null}
-                                </div>
+                                  );
+                                })()
                               ))}
                             </div>
                           </div>

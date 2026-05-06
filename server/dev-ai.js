@@ -188,14 +188,28 @@ function renderStripeCheckoutReturnPage({
   sessionId = "",
   returnHref = "http://localhost:3000",
   fallbackLabel = "Open EstiPaid",
+  detailItems = [],
 }) {
   const safeTitle = escapeHtml(title);
   const safeHeading = escapeHtml(heading);
   const safeBody = escapeHtml(body);
-  const safeInvoiceNumber = escapeHtml(invoiceNumber);
-  const safeSessionId = escapeHtml(sessionId ? `${String(sessionId).slice(0, 12)}...` : "");
   const safeReturnHref = escapeHtml(returnHref);
   const safeFallbackLabel = escapeHtml(fallbackLabel);
+  const derivedDetailItems = Array.isArray(detailItems) && detailItems.length
+    ? detailItems
+    : [
+      ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
+      ...(sessionId ? [{ label: "Session", value: `${String(sessionId).slice(0, 12)}...` }] : []),
+    ];
+  const safeDetails = derivedDetailItems
+    .map((item) => {
+      const label = escapeHtml(asText(item?.label));
+      const value = escapeHtml(asText(item?.value));
+      if (!label || !value) return "";
+      return `<dt>${label}</dt><dd>${value}</dd>`;
+    })
+    .filter(Boolean)
+    .join("");
 
   return `<!doctype html>
 <html lang="en">
@@ -264,10 +278,7 @@ function renderStripeCheckoutReturnPage({
       <h1>${safeHeading}</h1>
       <p>${safeBody}</p>
       <p>EstiPaid does not mark the invoice paid from this redirect alone. Return to the original EstiPaid invoice tab and click <strong>Check / Sync Stripe Payment</strong>.</p>
-      ${(safeInvoiceNumber || safeSessionId) ? `<dl>
-        ${safeInvoiceNumber ? `<dt>Invoice</dt><dd>${safeInvoiceNumber}</dd>` : ""}
-        ${safeSessionId ? `<dt>Session</dt><dd>${safeSessionId}</dd>` : ""}
-      </dl>` : ""}
+      ${safeDetails ? `<dl>${safeDetails}</dl>` : ""}
       <div class="actions">
         <button type="button" onclick="window.close()">Close this tab</button>
         <a href="${safeReturnHref}" target="_blank" rel="noopener noreferrer">${safeFallbackLabel}</a>
@@ -12170,13 +12181,29 @@ app.post("/api/stripe/retrieve-checkout-session", async (req, res) => {
     const stripe = getStripeClient();
     const session = await stripe.checkout.sessions.retrieve(
       sessionId,
-      { expand: ["payment_intent"] },
+      { expand: ["payment_intent", "payment_intent.latest_charge", "payment_intent.payment_method"] },
       { stripeAccount: stripeAccountId },
     );
     const paymentIntent = session?.payment_intent && typeof session.payment_intent === "object"
       ? session.payment_intent
       : null;
-    const paidAtTs = Number(paymentIntent?.created || 0) || Number(session?.created || 0) || Math.floor(Date.now() / 1000);
+    const latestCharge = paymentIntent?.latest_charge && typeof paymentIntent.latest_charge === "object"
+      ? paymentIntent.latest_charge
+      : null;
+    const paymentMethod = paymentIntent?.payment_method && typeof paymentIntent.payment_method === "object"
+      ? paymentIntent.payment_method
+      : null;
+    const paymentMethodType = asText(
+      latestCharge?.payment_method_details?.type
+      || paymentMethod?.type
+      || paymentIntent?.payment_method_types?.[0]
+      || session?.payment_method_types?.[0]
+    );
+    const cardDetails = latestCharge?.payment_method_details?.card || paymentMethod?.card || null;
+    const paidAtTs = Number(latestCharge?.created || 0)
+      || Number(paymentIntent?.created || 0)
+      || Number(session?.created || 0)
+      || Math.floor(Date.now() / 1000);
 
     return res.json({
       ok: true,
@@ -12186,9 +12213,15 @@ app.post("/api/stripe/retrieve-checkout-session", async (req, res) => {
       status: asText(session?.status),
       amountTotal: Number(session?.amount_total || 0) || 0,
       amountSubtotal: Number(session?.amount_subtotal || 0) || 0,
+      amountReceived: Number(paymentIntent?.amount_received || latestCharge?.amount_captured || latestCharge?.amount || 0) || 0,
       currency: asText(session?.currency),
       customerEmail: asText(session?.customer_details?.email || session?.customer_email),
+      receiptEmail: asText(latestCharge?.receipt_email),
+      receiptUrl: asText(latestCharge?.receipt_url),
       paymentIntentId: asText(paymentIntent?.id),
+      paymentMethodType,
+      cardBrand: asText(cardDetails?.brand),
+      cardLast4: asText(cardDetails?.last4),
       paidAt: paidAtTs ? new Date(paidAtTs * 1000).toISOString() : "",
     });
   } catch (error) {
@@ -12214,11 +12247,14 @@ app.get("/api/stripe/checkout/success", (req, res) => {
     .send(renderStripeCheckoutReturnPage({
       title: "Stripe payment received",
       heading: "Stripe payment received",
-      body: "Stripe has confirmed the payment. The contractor still needs to sync it inside EstiPaid before the invoice ledger updates.",
-      invoiceNumber,
-      sessionId,
+      body: "Stripe has confirmed the payment. EstiPaid will show it after the contractor returns to the original invoice tab and runs Check / Sync Stripe Payment.",
       returnHref,
-      buttonLabel: "Return to EstiPaid",
+      detailItems: [
+        { label: "Payment status", value: "Received by Stripe" },
+        { label: "EstiPaid status", value: "Awaiting manual Check / Sync" },
+        ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
+        ...(sessionId ? [{ label: "Session", value: `${String(sessionId).slice(0, 12)}...` }] : []),
+      ],
     }));
 });
 
@@ -12237,10 +12273,13 @@ app.get("/api/stripe/checkout/cancel", (req, res) => {
     .send(renderStripeCheckoutReturnPage({
       title: "Stripe checkout canceled",
       heading: "Stripe checkout canceled",
-      body: "No payment was recorded from this Checkout Session. Return to EstiPaid if you want to copy the existing link or generate a fresh one.",
-      invoiceNumber,
+      body: "No payment was completed in Stripe from this Checkout Session. Return to EstiPaid if you want to reuse the link or generate a fresh one.",
       returnHref,
-      buttonLabel: "Back to EstiPaid",
+      detailItems: [
+        { label: "Payment status", value: "Canceled / not completed" },
+        { label: "EstiPaid status", value: "No invoice update yet" },
+        ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
+      ],
     }));
 });
 

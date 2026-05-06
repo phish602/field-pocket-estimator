@@ -450,6 +450,13 @@ function normalizePayments(payments) {
     stripeAccountId: asText(payment?.stripeAccountId),
     stripeEventId: asText(payment?.stripeEventId),
     stripeSyncKey: asText(payment?.stripeSyncKey),
+    paymentMethodType: asText(payment?.paymentMethodType),
+    cardBrand: asText(payment?.cardBrand),
+    cardLast4: asText(payment?.cardLast4),
+    receiptEmail: asText(payment?.receiptEmail),
+    receiptUrl: asText(payment?.receiptUrl),
+    stripePaymentStatus: asText(payment?.stripePaymentStatus),
+    currency: asText(payment?.currency),
   }));
 }
 
@@ -1467,6 +1474,13 @@ export function appendStripeInvoicePayment(invoice, paymentInput = {}, options =
     stripeAccountId,
     stripeEventId,
     stripeSyncKey,
+    paymentMethodType: asText(paymentInput?.paymentMethodType),
+    cardBrand: asText(paymentInput?.cardBrand),
+    cardLast4: asText(paymentInput?.cardLast4),
+    receiptEmail: asText(paymentInput?.receiptEmail),
+    receiptUrl: asText(paymentInput?.receiptUrl),
+    stripePaymentStatus: asText(paymentInput?.stripePaymentStatus),
+    currency: asText(paymentInput?.currency),
   };
   const nextAmountPaid = roundCurrency(source.amountPaid + amount);
   const isPaidInFull = nextAmountPaid >= source.invoiceTotal - EPSILON;

@@ -1090,7 +1090,12 @@ describe("InvoicesScreen Stripe payment sync", () => {
         status: "complete",
         amountTotal: 20000,
         currency: "usd",
+        receiptEmail: "payer@example.com",
+        receiptUrl: "https://pay.stripe.com/receipts/acct_123/ch_123",
         paymentIntentId: "pi_paid_123",
+        paymentMethodType: "card",
+        cardBrand: "visa",
+        cardLast4: "4242",
         paidAt: "2026-05-06T12:00:00.000Z",
       }),
     });
@@ -1111,6 +1116,13 @@ describe("InvoicesScreen Stripe payment sync", () => {
       stripeSessionId: "cs_paid_123",
       stripePaymentIntentId: "pi_paid_123",
       stripeAccountId: "acct_test_connected_123",
+      paymentMethodType: "card",
+      cardBrand: "visa",
+      cardLast4: "4242",
+      receiptEmail: "payer@example.com",
+      receiptUrl: "https://pay.stripe.com/receipts/acct_123/ch_123",
+      stripePaymentStatus: "paid",
+      currency: "usd",
     }));
     expect(invoice.amountPaid).toBe(200);
     expect(invoice.balanceRemaining).toBe(300);
@@ -1118,6 +1130,9 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(screen.getByText(/Stripe payment recorded successfully\./i)).toBeInTheDocument();
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Stripe$/i)).toBeInTheDocument();
+    expect(screen.getByText("Visa •••• 4242")).toBeInTheDocument();
+    expect(screen.getByText("payer@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View Stripe receipt/i })).toHaveAttribute("href", "https://pay.stripe.com/receipts/acct_123/ch_123");
     expect(screen.queryByText(/pi_paid_123/i)).toBeNull();
     expect(screen.queryByText(/cs_paid_123/i)).toBeNull();
     expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
@@ -1309,6 +1324,34 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(invoice.payments).toHaveLength(1);
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
+  });
+
+  test("manual payment ledger rendering stays unchanged without Stripe-only details", () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_manual_cash",
+            amount: 125,
+            paidAt: "2026-05-05",
+            note: "Cash deposit",
+            method: "cash",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    expect(screen.getByText("Cash deposit")).toBeInTheDocument();
+    expect(screen.getByText(/^Cash$/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /View Stripe receipt/i })).toBeNull();
+    expect(screen.queryByText(/4242/i)).toBeNull();
   });
 
   test("stale-balance overpayment is blocked without invoice mutation and session is marked review", async () => {
