@@ -95,21 +95,66 @@ function resolveUrlOrigin(value) {
   }
 }
 
+function getStripeFrontendFallbackUrl() {
+  const candidates = [
+    asText(process.env.STRIPE_APP_RETURN_URL),
+    asText(process.env.CLIENT_URL),
+    "http://localhost:3000",
+  ];
+
+  for (const candidate of candidates) {
+    if (!isHttpUrl(candidate)) continue;
+    try {
+      const url = new URL(candidate);
+      const backendHost = /^(?:localhost|127\.0\.0\.1)$/i.test(url.hostname)
+        && String(url.port || "") === String(DEV_AI_SERVER_PORT);
+      if (backendHost) continue;
+      return url.origin;
+    } catch {}
+  }
+
+  return "http://localhost:3000";
+}
+
+function sanitizeStripeAppReturnUrl(value) {
+  const fallbackUrl = getStripeFrontendFallbackUrl();
+  const candidate = resolveUrlOrigin(value);
+  if (!isHttpUrl(candidate)) return fallbackUrl;
+
+  try {
+    const parsed = new URL(candidate);
+    const isLocalDevHost = /^(?:localhost|127\.0\.0\.1)$/i.test(parsed.hostname);
+    const isBackendLocalOrigin = isLocalDevHost
+      && String(parsed.port || "") === String(DEV_AI_SERVER_PORT);
+    if (isBackendLocalOrigin) return fallbackUrl;
+
+    if (process.env.NODE_ENV !== "production") {
+      const isAllowedDevFrontend = isLocalDevHost && String(parsed.port || "") === "3000";
+      if (isAllowedDevFrontend) return parsed.origin;
+      if (isLocalDevHost) return fallbackUrl;
+    }
+
+    return parsed.origin;
+  } catch {
+    return fallbackUrl;
+  }
+}
+
 function resolveStripeAppBaseUrl(req) {
-  const origin = resolveUrlOrigin(req?.headers?.origin);
+  const origin = sanitizeStripeAppReturnUrl(req?.headers?.origin);
   if (origin) return origin;
 
-  const refererOrigin = resolveUrlOrigin(req?.headers?.referer || req?.headers?.referrer);
+  const refererOrigin = sanitizeStripeAppReturnUrl(req?.headers?.referer || req?.headers?.referrer);
   if (refererOrigin) return refererOrigin;
 
   const forwardedProto = asText(req?.headers?.["x-forwarded-proto"]);
   const forwardedHost = asText(req?.headers?.["x-forwarded-host"]);
   if (forwardedProto && forwardedHost) {
     const candidate = `${forwardedProto}://${forwardedHost}`;
-    if (isHttpUrl(candidate) && !/:5055$/i.test(forwardedHost)) return candidate;
+    return sanitizeStripeAppReturnUrl(candidate);
   }
 
-  return "http://localhost:3000";
+  return getStripeFrontendFallbackUrl();
 }
 
 function escapeHtml(value) {
@@ -122,8 +167,8 @@ function escapeHtml(value) {
 }
 
 function buildStripeCheckoutReturnLink(returnToBaseUrl, status, invoiceId, sessionId = "") {
-  const fallbackUrl = "http://localhost:3000";
-  const baseUrl = isHttpUrl(returnToBaseUrl) ? returnToBaseUrl : fallbackUrl;
+  const fallbackUrl = getStripeFrontendFallbackUrl();
+  const baseUrl = sanitizeStripeAppReturnUrl(returnToBaseUrl);
   try {
     const url = new URL(baseUrl);
     url.searchParams.set("stripe", String(status || "").trim().toLowerCase() === "cancel" ? "cancel" : "success");
@@ -142,7 +187,7 @@ function renderStripeCheckoutReturnPage({
   invoiceNumber = "",
   sessionId = "",
   returnHref = "http://localhost:3000",
-  buttonLabel = "Return to EstiPaid",
+  fallbackLabel = "Open EstiPaid",
 }) {
   const safeTitle = escapeHtml(title);
   const safeHeading = escapeHtml(heading);
@@ -150,7 +195,7 @@ function renderStripeCheckoutReturnPage({
   const safeInvoiceNumber = escapeHtml(invoiceNumber);
   const safeSessionId = escapeHtml(sessionId ? `${String(sessionId).slice(0, 12)}...` : "");
   const safeReturnHref = escapeHtml(returnHref);
-  const safeButtonLabel = escapeHtml(buttonLabel);
+  const safeFallbackLabel = escapeHtml(fallbackLabel);
 
   return `<!doctype html>
 <html lang="en">
@@ -190,28 +235,44 @@ function renderStripeCheckoutReturnPage({
       dt { font-size: 12px; font-weight: 700; color: rgba(148, 163, 184, 0.92); text-transform: uppercase; letter-spacing: 0.06em; }
       dd { margin: 4px 0 12px; font-weight: 700; }
       dd:last-child { margin-bottom: 0; }
-      a {
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+      button {
+        border: 0;
+        cursor: pointer;
         display: inline-block;
-        margin-top: 8px;
         padding: 12px 16px;
         border-radius: 999px;
         background: #22c55e;
         color: #052e16;
         font-weight: 800;
+        font-size: 15px;
+      }
+      a {
+        display: inline-block;
+        padding: 12px 16px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.08);
+        color: #e2e8f0;
+        font-weight: 800;
         text-decoration: none;
       }
+      .hint { font-size: 13px; color: rgba(148, 163, 184, 0.95); }
     </style>
   </head>
   <body>
     <main>
       <h1>${safeHeading}</h1>
       <p>${safeBody}</p>
-      <p>EstiPaid does not mark the invoice paid from this redirect alone. Return to the invoice and click <strong>Check / Sync Stripe Payment</strong>.</p>
+      <p>EstiPaid does not mark the invoice paid from this redirect alone. Return to the original EstiPaid invoice tab and click <strong>Check / Sync Stripe Payment</strong>.</p>
       ${(safeInvoiceNumber || safeSessionId) ? `<dl>
         ${safeInvoiceNumber ? `<dt>Invoice</dt><dd>${safeInvoiceNumber}</dd>` : ""}
         ${safeSessionId ? `<dt>Session</dt><dd>${safeSessionId}</dd>` : ""}
       </dl>` : ""}
-      <a href="${safeReturnHref}">${safeButtonLabel}</a>
+      <div class="actions">
+        <button type="button" onclick="window.close()">Close this tab</button>
+        <a href="${safeReturnHref}" target="_blank" rel="noopener noreferrer">${safeFallbackLabel}</a>
+      </div>
+      <p class="hint">If this tab cannot close automatically, switch back to the original EstiPaid tab or use Open EstiPaid.</p>
     </main>
   </body>
 </html>`;
