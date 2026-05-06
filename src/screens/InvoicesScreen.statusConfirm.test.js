@@ -55,6 +55,19 @@ function openInvoiceDetails() {
   fireEvent.click(screen.getByRole("button", { name: /Details/i }));
 }
 
+function createSentInvoice(overrides = {}) {
+  return createPaidInvoice({
+    id: "inv_sent_payment",
+    invoiceNumber: "INV-SENT-1",
+    status: "sent",
+    paymentStatus: "unpaid",
+    amountPaid: 0,
+    balanceRemaining: 500,
+    payments: [],
+    ...overrides,
+  });
+}
+
 describe("InvoicesScreen status confirm dialog", () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -62,7 +75,9 @@ describe("InvoicesScreen status confirm dialog", () => {
   });
 
   afterEach(() => {
-    jest.runOnlyPendingTimers();
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
     jest.useRealTimers();
   });
 
@@ -131,7 +146,9 @@ describe("InvoicesScreen void invoice Open button guard", () => {
   });
 
   afterEach(() => {
-    jest.runOnlyPendingTimers();
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
     jest.useRealTimers();
   });
 
@@ -196,5 +213,195 @@ describe("InvoicesScreen void invoice Open button guard", () => {
 
     const openBtn = screen.getByRole("button", { name: /^Open$/i });
     expect(openBtn).not.toBeDisabled();
+  });
+});
+
+describe("InvoicesScreen manual payments", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    jest.useRealTimers();
+  });
+
+  test("shows Take Payment only for eligible invoices", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByRole("button", { name: /^Take Payment$/i })).toBeInTheDocument();
+  });
+
+  test("hides manual payment action for draft invoices", () => {
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_draft",
+        status: "draft",
+      }),
+    ]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Take Payment|Add Payment/i })).toBeNull();
+  });
+
+  test("hides manual payment action for void invoices", () => {
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_void",
+        status: "void",
+        paymentStatus: "void",
+        balanceRemaining: 0,
+      }),
+    ]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Take Payment|Add Payment/i })).toBeNull();
+  });
+
+  test("hides manual payment action for paid invoices", () => {
+    seedInvoices([createPaidInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Take Payment|Add Payment/i })).toBeNull();
+  });
+
+  test("partial payment appends a ledger entry and updates payment totals", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Take Payment$/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /Record payment/i });
+    fireEvent.change(within(dialog).getByLabelText(/Payment amount/i), { target: { value: "125.00" } });
+    fireEvent.change(within(dialog).getByLabelText(/Paid date/i), { target: { value: "2026-05-06" } });
+    fireEvent.change(within(dialog).getByLabelText(/Payment method/i), { target: { value: "cash" } });
+    fireEvent.change(within(dialog).getByLabelText(/Payment note/i), { target: { value: "Deposit received" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+
+    const stored = readStoredInvoices();
+    const invoice = stored.find((entry) => entry.id === "inv_sent_payment");
+    expect(invoice).toBeDefined();
+    expect(invoice.status).toBe("sent");
+    expect(invoice.paymentStatus).toBe("partial");
+    expect(Number(invoice.amountPaid)).toBe(125);
+    expect(Number(invoice.balanceRemaining)).toBe(375);
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.payments[0]).toMatchObject({
+      amount: 125,
+      paidAt: "2026-05-06",
+      method: "cash",
+      note: "Deposit received",
+    });
+    expect(screen.getByText(/Deposit received/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Add Payment$/i })).toBeInTheDocument();
+  });
+
+  test("final payoff marks the invoice paid", () => {
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_partial_payoff",
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_existing",
+            amount: 125,
+            paidAt: "2026-05-05",
+            method: "cash",
+            note: "Deposit",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Add Payment$/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /Record payment/i });
+    fireEvent.change(within(dialog).getByLabelText(/Payment amount/i), { target: { value: "375.00" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+
+    const stored = readStoredInvoices();
+    const invoice = stored.find((entry) => entry.id === "inv_partial_payoff");
+    expect(invoice).toBeDefined();
+    expect(invoice.status).toBe("paid");
+    expect(invoice.paymentStatus).toBe("paid");
+    expect(Number(invoice.amountPaid)).toBe(500);
+    expect(Number(invoice.balanceRemaining)).toBe(0);
+    expect(invoice.payments).toHaveLength(2);
+  });
+
+  test("overpayment is blocked without mutating storage", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Take Payment$/i }));
+
+    const before = readStoredInvoices();
+    const dialog = screen.getByRole("dialog", { name: /Record payment/i });
+    fireEvent.change(within(dialog).getByLabelText(/Payment amount/i), { target: { value: "600.00" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+
+    expect(screen.getByText(/cannot exceed the remaining balance/i)).toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("canceling payment keeps storage unchanged", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Take Payment$/i }));
+
+    const before = readStoredInvoices();
+    const dialog = screen.getByRole("dialog", { name: /Record payment/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Cancel$/i }));
+
+    expect(screen.queryByRole("dialog", { name: /Record payment/i })).toBeNull();
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("voiding a partially paid invoice still clears the payment ledger", () => {
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_partial_void",
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_existing",
+            amount: 125,
+            paidAt: "2026-05-05",
+            method: "cash",
+            note: "Deposit",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+
+    const stored = readStoredInvoices();
+    const invoice = stored.find((entry) => entry.id === "inv_partial_void");
+    expect(invoice).toBeDefined();
+    expect(invoice.status).toBe("void");
+    expect(invoice.paymentStatus).toBe("void");
+    expect(invoice.payments).toEqual([]);
+    expect(Number(invoice.amountPaid)).toBe(0);
+    expect(Number(invoice.balanceRemaining)).toBe(0);
   });
 });

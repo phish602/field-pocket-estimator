@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
+  addManualInvoicePayment,
   INVOICE_STATUSES,
   PAYMENT_STATUSES,
   createManualInvoiceDraft,
@@ -10,6 +11,7 @@ import {
   duplicateInvoiceDraft,
   readStoredInvoices,
   roundCurrency,
+  todayISO,
   updateInvoiceLifecycleStatus,
   writeStoredInvoices,
 } from "../utils/invoices";
@@ -25,6 +27,7 @@ const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
+const PAYMENT_METHOD_OPTIONS = ["manual", "cash", "check", "card", "bank_transfer"];
 
 function loadSavedEstimates() {
   try {
@@ -309,6 +312,17 @@ function formatPaymentStatus(paymentStatus, lang) {
   return lang === "es" ? "Pendiente" : "Unpaid";
 }
 
+function formatPaymentMethod(method, lang) {
+  const raw = String(method || "manual").trim().toLowerCase();
+  if (raw === "cash") return lang === "es" ? "Efectivo" : "Cash";
+  if (raw === "check") return lang === "es" ? "Cheque" : "Check";
+  if (raw === "card") return lang === "es" ? "Tarjeta" : "Card";
+  if (raw === "bank_transfer" || raw === "bank transfer" || raw === "transfer") {
+    return lang === "es" ? "Transferencia" : "Bank Transfer";
+  }
+  return lang === "es" ? "Manual" : "Manual";
+}
+
 function moneyUSD(value) {
   const amount = roundCurrency(value);
   try {
@@ -424,6 +438,26 @@ function formatDateOnly(value) {
   return raw;
 }
 
+function canRecordManualPayment(invoice) {
+  const derivedStatus = deriveInvoiceStatus(invoice);
+  const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+  const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+  const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+  return (
+    derivedStatus !== INVOICE_STATUSES.DRAFT
+    && derivedStatus !== INVOICE_STATUSES.VOID
+    && derivedStatus !== INVOICE_STATUSES.PAID
+    && balanceRemaining > 0
+  );
+}
+
+function getPaymentActionLabel(invoice, lang) {
+  const hasPriorPayment = roundCurrency(invoice?.amountPaid || 0) > 0
+    || String(invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL;
+  if (hasPriorPayment) return lang === "es" ? "Agregar pago" : "Add Payment";
+  return lang === "es" ? "Cobrar" : "Take Payment";
+}
+
 function getStatusConfirmationContent(nextStatus, lang) {
   if (nextStatus === INVOICE_STATUSES.SENT) {
     return {
@@ -469,6 +503,15 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [toastMessage, setToastMessage] = useState("");
   const [statusConfirmState, setStatusConfirmState] = useState(null);
   const [statusConfirmBusy, setStatusConfirmBusy] = useState(false);
+  const [paymentModalState, setPaymentModalState] = useState(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+  const [paymentForm, setPaymentForm] = useState(() => ({
+    amount: "",
+    paidAt: todayISO(),
+    method: "manual",
+    note: "",
+  }));
   const prevListCountRef = useRef(0);
   const hasMeasuredListRef = useRef(false);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
@@ -865,6 +908,90 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     }
   };
 
+  const openPaymentModal = (invoice) => {
+    if (!invoice || !canRecordManualPayment(invoice)) return;
+    const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? 0);
+    setPaymentError("");
+    setPaymentForm({
+      amount: balanceRemaining > 0 ? balanceRemaining.toFixed(2) : "",
+      paidAt: todayISO(),
+      method: "manual",
+      note: "",
+    });
+    setPaymentModalState({
+      invoiceId: String(invoice?.id || "").trim(),
+      invoiceNumber: String(invoice?.invoiceNumber || "").trim(),
+      projectName: String(invoice?.projectName || "").trim(),
+      customerName: String(invoice?.customerName || "").trim(),
+      balanceRemaining,
+    });
+  };
+
+  const closePaymentModal = () => {
+    setPaymentModalState(null);
+    setPaymentError("");
+    setPaymentForm({
+      amount: "",
+      paidAt: todayISO(),
+      method: "manual",
+      note: "",
+    });
+  };
+
+  const confirmPayment = () => {
+    if (paymentBusy || !paymentModalState?.invoiceId) return;
+
+    const amount = roundCurrency(paymentForm.amount);
+    if (amount <= 0) {
+      setPaymentError(lang === "es" ? "Ingresa un monto mayor que $0." : "Enter a payment amount greater than $0.");
+      return;
+    }
+
+    if (amount > roundCurrency(paymentModalState.balanceRemaining)) {
+      setPaymentError(lang === "es" ? "El pago no puede exceder el saldo pendiente." : "Payment amount cannot exceed the remaining balance.");
+      return;
+    }
+
+    setPaymentBusy(true);
+    try {
+      const currentInvoices = readStoredInvoices();
+      const targetInvoice = currentInvoices.find(
+        (entry) => String(entry?.id || "").trim() === String(paymentModalState.invoiceId || "").trim()
+      );
+      if (!targetInvoice) {
+        closePaymentModal();
+        return;
+      }
+
+      const result = addManualInvoicePayment(targetInvoice, {
+        amount,
+        paidAt: paymentForm.paidAt,
+        method: paymentForm.method,
+        note: paymentForm.note,
+      });
+
+      if (!result?.ok || !result?.invoice) {
+        setPaymentError(result?.message || (lang === "es" ? "No se pudo registrar el pago." : "Unable to record payment."));
+        return;
+      }
+
+      const invoiceId = String(targetInvoice?.id || "").trim();
+      const nextInvoices = currentInvoices.map((entry) => (
+        String(entry?.id || "").trim() === invoiceId ? result.invoice : entry
+      ));
+      const fullyPaid = String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID;
+      persistInvoices(
+        nextInvoices,
+        fullyPaid
+          ? (lang === "es" ? "Pago final registrado" : "Final payment recorded")
+          : (lang === "es" ? "Pago registrado" : "Payment recorded")
+      );
+      closePaymentModal();
+    } finally {
+      setPaymentBusy(false);
+    }
+  };
+
   const valueFilter = "all";
 
   return (
@@ -1011,6 +1138,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
                 const amountPaid = roundCurrency(invoice?.amountPaid || 0);
                 const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+                const paymentLedger = Array.isArray(invoice?.payments)
+                  ? [...invoice.payments].filter(Boolean).sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0))
+                  : [];
+                const canTakePayment = canRecordManualPayment(invoice);
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const projectLabel = displayMeta.projectName || invoice?.projectName || "";
@@ -1240,6 +1371,15 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                         </div>
 
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {canTakePayment ? (
+                            <button
+                              className="pe-btn"
+                              type="button"
+                              onClick={() => openPaymentModal(invoice)}
+                            >
+                              {getPaymentActionLabel(invoice, lang)}
+                            </button>
+                          ) : null}
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
@@ -1271,6 +1411,49 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             {lang === "es" ? "Eliminar" : "Delete"}
                           </button>
                         </div>
+                        {paymentLedger.length ? (
+                          <div
+                            style={{
+                              borderRadius: 12,
+                              border: "1px solid rgba(255,255,255,0.10)",
+                              background: "rgba(255,255,255,0.04)",
+                              padding: 10,
+                              display: "grid",
+                              gap: 8,
+                            }}
+                          >
+                            <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
+                              {lang === "es" ? "Pagos" : "Payments"}
+                            </div>
+                            <div style={{ display: "grid", gap: 8 }}>
+                              {paymentLedger.map((payment) => (
+                                <div
+                                  key={String(payment?.id || `${payment?.paidAt || ""}_${payment?.amount || ""}`)}
+                                  style={{
+                                    display: "grid",
+                                    gap: 4,
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.08)",
+                                    background: "rgba(255,255,255,0.03)",
+                                    padding: "8px 10px",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                                    <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
+                                    <div style={{ fontSize: 12, opacity: 0.76 }}>
+                                      {formatDateOnly(payment?.paidAt) || "—"}{" • "}{formatPaymentMethod(payment?.method, lang)}
+                                    </div>
+                                  </div>
+                                  {payment?.note ? (
+                                    <div style={{ fontSize: 12.5, opacity: 0.84 }}>
+                                      {payment.note}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1280,6 +1463,146 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           </div>
         </div>
       </div>
+      {paymentModalState ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={lang === "es" ? "Registrar pago" : "Record payment"}
+          onClick={closePaymentModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 2100,
+            background: "rgba(4,8,14,0.58)",
+            backdropFilter: "blur(3px)",
+            WebkitBackdropFilter: "blur(3px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 12,
+          }}
+        >
+          <div
+            className="pe-card pe-card-content"
+            onClick={(evt) => evt.stopPropagation()}
+            style={{
+              width: "min(520px, 96vw)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: "linear-gradient(180deg, rgba(20,28,42,0.94), rgba(7,11,18,0.92))",
+              boxShadow: "0 20px 54px rgba(0,0,0,0.45)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+              padding: 16,
+              color: "rgba(245,248,252,0.98)",
+              display: "grid",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "0.2px" }}>
+                {lang === "es" ? "Registrar pago" : "Record payment"}
+              </div>
+              <div style={{ fontSize: 13, opacity: 0.82 }}>
+                {[paymentModalState.projectName, paymentModalState.customerName, paymentModalState.invoiceNumber]
+                  .filter(Boolean)
+                  .join(" • ")}
+              </div>
+            </div>
+            <div style={{ fontSize: 14, opacity: 0.92 }}>
+              {lang === "es" ? "Saldo pendiente" : "Remaining balance"}: <strong>{moneyUSD(paymentModalState.balanceRemaining)}</strong>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Monto" : "Amount"}</div>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  aria-label={lang === "es" ? "Monto del pago" : "Payment amount"}
+                  className="pe-input"
+                  value={paymentForm.amount}
+                  onChange={(event) => {
+                    setPaymentError("");
+                    setPaymentForm((current) => ({ ...current, amount: event.target.value }));
+                  }}
+                  placeholder="0.00"
+                />
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Fecha de pago" : "Paid date"}</div>
+                <input
+                  type="date"
+                  aria-label={lang === "es" ? "Fecha de pago" : "Paid date"}
+                  className="pe-input"
+                  value={paymentForm.paidAt}
+                  onChange={(event) => {
+                    setPaymentError("");
+                    setPaymentForm((current) => ({ ...current, paidAt: event.target.value }));
+                  }}
+                />
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Método" : "Method"}</div>
+                <select
+                  aria-label={lang === "es" ? "Método de pago" : "Payment method"}
+                  className="pe-select"
+                  value={paymentForm.method}
+                  onChange={(event) => {
+                    setPaymentError("");
+                    setPaymentForm((current) => ({ ...current, method: event.target.value }));
+                  }}
+                >
+                  {PAYMENT_METHOD_OPTIONS.map((method) => (
+                    <option key={method} value={method}>
+                      {formatPaymentMethod(method, lang)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.84 }}>{lang === "es" ? "Nota (opcional)" : "Note (optional)"}</div>
+                <textarea
+                  aria-label={lang === "es" ? "Nota del pago" : "Payment note"}
+                  className="pe-input"
+                  value={paymentForm.note}
+                  onChange={(event) => {
+                    setPaymentError("");
+                    setPaymentForm((current) => ({ ...current, note: event.target.value }));
+                  }}
+                  rows={3}
+                  placeholder={lang === "es" ? "Detalles del pago" : "Payment details"}
+                  style={{ resize: "vertical", minHeight: 88 }}
+                />
+              </div>
+            </div>
+            {paymentError ? (
+              <div style={{ color: "rgba(252,165,165,0.98)", fontSize: 13, fontWeight: 700 }}>
+                {paymentError}
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 4 }}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={closePaymentModal}
+                disabled={paymentBusy}
+              >
+                {lang === "es" ? "Cancelar" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={confirmPayment}
+                disabled={paymentBusy}
+              >
+                {paymentBusy
+                  ? (lang === "es" ? "Guardando..." : "Saving...")
+                  : (lang === "es" ? "Registrar pago" : "Record payment")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {statusConfirmState ? (
         <div
           role="dialog"

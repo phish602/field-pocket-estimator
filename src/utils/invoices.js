@@ -1297,3 +1297,77 @@ export function updateInvoiceLifecycleStatus(invoice, nextStatus, options = {}) 
     ts: now,
   });
 }
+
+export function addManualInvoicePayment(invoice, paymentInput = {}, options = {}) {
+  const source = normalizeInvoiceRecord(invoice);
+  const now = Number(options?.nowTs) || Date.now();
+  const derivedStatus = deriveInvoiceStatus(source, now);
+
+  if (derivedStatus === INVOICE_STATUSES.DRAFT) {
+    return {
+      ok: false,
+      message: "Payments can only be recorded on sent or overdue invoices.",
+    };
+  }
+
+  if (derivedStatus === INVOICE_STATUSES.VOID || source.paymentStatus === PAYMENT_STATUSES.VOID) {
+    return {
+      ok: false,
+      message: "Void invoices cannot accept payments.",
+    };
+  }
+
+  if (derivedStatus === INVOICE_STATUSES.PAID || source.paymentStatus === PAYMENT_STATUSES.PAID) {
+    return {
+      ok: false,
+      message: "This invoice is already fully paid.",
+    };
+  }
+
+  const balanceRemaining = roundCurrency(source.balanceRemaining);
+  if (balanceRemaining <= 0) {
+    return {
+      ok: false,
+      message: "This invoice has no remaining balance.",
+    };
+  }
+
+  const amount = roundCurrency(paymentInput?.amount);
+  if (amount <= 0) {
+    return {
+      ok: false,
+      message: "Payment amount must be greater than $0.",
+    };
+  }
+
+  if (amount > balanceRemaining + EPSILON) {
+    return {
+      ok: false,
+      message: "Payment amount cannot exceed the remaining balance.",
+    };
+  }
+
+  const payments = normalizePayments(source.payments);
+  const nextPayment = {
+    id: createPaymentId(),
+    amount,
+    paidAt: normalizeIsoDate(paymentInput?.paidAt || paymentInput?.date, todayParts(new Date(now))),
+    note: asText(paymentInput?.note),
+    method: asText(paymentInput?.method) || "manual",
+    order: payments.length,
+  };
+  const nextAmountPaid = roundCurrency(source.amountPaid + amount);
+  const isPaidInFull = nextAmountPaid >= source.invoiceTotal - EPSILON;
+
+  return {
+    ok: true,
+    invoice: normalizeInvoiceRecord({
+      ...source,
+      status: isPaidInFull ? INVOICE_STATUSES.PAID : source.status,
+      payments: [...payments, nextPayment],
+      updatedAt: now,
+      savedAt: now,
+      ts: now,
+    }),
+  };
+}
