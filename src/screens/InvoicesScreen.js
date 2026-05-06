@@ -68,10 +68,28 @@ function isStripeSessionExpired(sessionRef, nowTs = Date.now()) {
   return nowTs >= expiresAt * 1000;
 }
 
-function getStripeSessionDisplayState(sessionRef, nowTs = Date.now()) {
+function hasMatchingStripeLedgerPayment(invoice, sessionRef) {
+  const targetSessionId = String(sessionRef?.sessionId || "").trim();
+  const targetPaymentIntentId = String(sessionRef?.paymentIntentId || "").trim();
+  const payments = Array.isArray(invoice?.payments) ? invoice.payments : [];
+  if (!targetSessionId && !targetPaymentIntentId) return false;
+  return payments.some((payment) => {
+    const method = String(payment?.method || "").trim().toLowerCase();
+    if (method !== "stripe") return false;
+    const paymentSessionId = String(payment?.stripeSessionId || payment?.sessionId || "").trim();
+    const paymentIntentId = String(payment?.stripePaymentIntentId || payment?.paymentIntentId || "").trim();
+    return (
+      (targetSessionId && paymentSessionId && paymentSessionId === targetSessionId)
+      || (targetPaymentIntentId && paymentIntentId && paymentIntentId === targetPaymentIntentId)
+    );
+  });
+}
+
+function getStripeSessionDisplayState(sessionRef, invoice, nowTs = Date.now()) {
   const storedStatus = String(sessionRef?.status || "").trim().toLowerCase();
   if (storedStatus === "synced") return "synced";
   if (storedStatus === "review") return "review";
+  if (hasMatchingStripeLedgerPayment(invoice, sessionRef)) return "synced";
   if (isStripeSessionExpired(sessionRef, nowTs)) return "expired";
   return "pending";
 }
@@ -1035,11 +1053,12 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const getLatestStripeCheckoutSessionForInvoice = (invoiceId) => getStripeSessionsForInvoice(invoiceId)[0] || null;
 
-  const getLatestActionableStripeCheckoutSessionForInvoice = (invoiceId) => {
-    const targetInvoiceId = String(invoiceId || "").trim();
+  const getLatestActionableStripeCheckoutSessionForInvoice = (invoiceOrId) => {
+    const invoiceRecord = invoiceOrId && typeof invoiceOrId === "object" ? invoiceOrId : null;
+    const targetInvoiceId = String(invoiceRecord?.id || invoiceOrId || "").trim();
     if (!targetInvoiceId) return null;
     return getStripeSessionsForInvoice(targetInvoiceId)
-      .find((entry) => String(entry?.status || "").trim().toLowerCase() !== "synced") || null;
+      .find((entry) => getStripeSessionDisplayState(entry, invoiceRecord) !== "synced") || null;
   };
 
   useEffect(() => {
@@ -1064,7 +1083,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const matchingSession = sessionId
       ? stripeCheckoutSessions.find((entry) => String(entry?.sessionId || "").trim() === sessionId)
       : null;
-    const invoiceSession = matchingSession || getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+    const invoiceRecord = (Array.isArray(list) ? list : []).find((entry) => String(entry?.id || "").trim() === invoiceId) || null;
+    const invoiceSession = matchingSession || getLatestActionableStripeCheckoutSessionForInvoice(invoiceRecord || invoiceId);
 
     if (stripeState === "cancel") {
       setStripeInlineNotice(
@@ -1400,7 +1420,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const copyExistingStripeLink = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
     if (!invoiceId || !sessionRef?.checkoutUrl || stripeCopyBusyId === invoiceId) return;
 
     setStripeCopyBusyId(invoiceId);
@@ -1417,7 +1437,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
   const syncStripePayment = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
     if (!invoiceId || !sessionRef || stripeSyncBusyId === invoiceId) return;
 
     setStripeSyncBusyId(invoiceId);
@@ -1693,15 +1713,15 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   : [];
                 const canTakePayment = canRecordManualPayment(invoice);
                 const canUseStripe = canTakePayment && !!stripeAccountId;
-                const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoiceId);
+                const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
                 const latestStripeSession = latestActionableStripeSession || getLatestStripeCheckoutSessionForInvoice(invoiceId);
-                const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession) : "";
+                const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
                 const stripeNotice = stripeInlineNoticeByInvoice[invoiceId] || null;
                 const canSyncStripeSession = derivedStatus !== INVOICE_STATUSES.VOID
                   && derivedStatus !== INVOICE_STATUSES.PAID
                   && !!latestActionableStripeSession;
                 const canCopyExistingStripeLink = !!latestActionableStripeSession?.checkoutUrl
-                  && getStripeSessionDisplayState(latestActionableStripeSession) === "pending";
+                  && getStripeSessionDisplayState(latestActionableStripeSession, invoice) === "pending";
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const projectLabel = displayMeta.projectName || invoice?.projectName || "";

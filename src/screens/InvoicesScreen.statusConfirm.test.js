@@ -1116,6 +1116,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(invoice.balanceRemaining).toBe(300);
     expect(invoice.paymentStatus).toBe("partial");
     expect(screen.getByText(/Stripe payment recorded successfully\./i)).toBeInTheDocument();
+    expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Stripe$/i)).toBeInTheDocument();
     expect(screen.queryByText(/pi_paid_123/i)).toBeNull();
     expect(screen.queryByText(/cs_paid_123/i)).toBeNull();
@@ -1304,13 +1305,10 @@ describe("InvoicesScreen Stripe payment sync", () => {
     renderInvoicesScreen();
     openInvoiceDetails();
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
-    });
-
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(1);
-    expect(screen.getByText(/This Stripe payment is already recorded in EstiPaid\./i)).toBeInTheDocument();
+    expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
   });
 
   test("stale-balance overpayment is blocked without invoice mutation and session is marked review", async () => {
@@ -1396,6 +1394,56 @@ describe("InvoicesScreen Stripe payment sync", () => {
     openInvoiceDetails();
     expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
     expect(screen.getByText(/already been recorded in EstiPaid/i)).toBeInTheDocument();
+  });
+
+  test("stale pending session ref displays synced when matching Stripe ledger payment already exists", () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 500,
+        balanceRemaining: 0,
+        paymentStatus: "paid",
+        status: "paid",
+        payments: [
+          {
+            id: "pay_stripe_existing",
+            amount: 500,
+            paidAt: "2026-05-06T12:00:00.000Z",
+            note: "Stripe Checkout",
+            method: "stripe",
+            order: 0,
+            stripeSessionId: "cs_stale_pending_123",
+            stripePaymentIntentId: "pi_stale_pending_123",
+            stripeAccountId: "acct_test_connected_123",
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_stale_pending_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/stale-pending",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+        paymentIntentId: "pi_stale_pending_123",
+      },
+    ]);
+
+    const beforeInvoices = readStoredInvoices();
+    const beforeSessions = readStripeCheckoutSessions();
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    expect(screen.getByText(/^Synced$/i)).toBeInTheDocument();
+    expect(screen.getByText(/already been recorded in EstiPaid/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
+    expect(readStoredInvoices()).toEqual(beforeInvoices);
+    expect(readStripeCheckoutSessions()).toEqual(beforeSessions);
   });
 
   test("review session state remains visible in the Stripe session panel", () => {
