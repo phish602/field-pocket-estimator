@@ -405,3 +405,159 @@ describe("InvoicesScreen manual payments", () => {
     expect(Number(invoice.balanceRemaining)).toBe(0);
   });
 });
+
+describe("InvoicesScreen Stripe checkout action", () => {
+  const originalFetch = global.fetch;
+  const originalOpen = window.open;
+  const originalAlert = window.alert;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    localStorage.clear();
+    global.fetch = jest.fn();
+    window.open = jest.fn(() => ({}));
+    window.alert = jest.fn();
+  });
+
+  afterEach(() => {
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+    global.fetch = originalFetch;
+    window.open = originalOpen;
+    window.alert = originalAlert;
+    jest.useRealTimers();
+  });
+
+  test("shows Stripe action for eligible invoices", () => {
+    seedInvoices([createSentInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.getByRole("button", { name: /Pay Online with Stripe/i })).toBeInTheDocument();
+  });
+
+  test("hides Stripe action for draft invoices", () => {
+    seedInvoices([createSentInvoice({ id: "inv_draft_stripe", status: "draft" })]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+  });
+
+  test("hides Stripe action for void invoices", () => {
+    seedInvoices([createSentInvoice({ id: "inv_void_stripe", status: "void", paymentStatus: "void", balanceRemaining: 0 })]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+  });
+
+  test("hides Stripe action for paid invoices", () => {
+    seedInvoices([createPaidInvoice()]);
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+  });
+
+  test("Stripe checkout sends balanceRemaining and opens the returned checkout URL without mutating storage", async () => {
+    const sourceInvoice = createSentInvoice({
+      invoiceTotal: 900,
+      total: 900,
+      amountPaid: 125,
+      balanceRemaining: 775,
+      paymentStatus: "partial",
+      customer: {
+        id: "cust_1",
+        name: "Test Customer",
+        email: "customer@example.com",
+      },
+      payments: [
+        {
+          id: "pay_existing",
+          amount: 125,
+          paidAt: "2026-05-05",
+          note: "Deposit",
+          method: "cash",
+          order: 0,
+        },
+      ],
+    });
+    seedInvoices([sourceInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/test-session",
+        sessionId: "cs_test_123",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/stripe/create-checkout-session",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.balanceRemaining).toBe(775);
+    expect(payload.balanceRemaining).not.toBe(900);
+    expect(payload.invoiceId).toBe("inv_sent_payment");
+    expect(payload.customerEmail).toBe("customer@example.com");
+    expect(window.open).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/pay/test-session",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("Stripe checkout failure does not mutate invoice storage or append payments", async () => {
+    const sourceInvoice = createSentInvoice({
+      amountPaid: 125,
+      balanceRemaining: 375,
+      paymentStatus: "partial",
+      payments: [
+        {
+          id: "pay_existing",
+          amount: 125,
+          paidAt: "2026-05-05",
+          note: "Deposit",
+          method: "cash",
+          order: 0,
+        },
+      ],
+    });
+    seedInvoices([sourceInvoice]);
+    global.fetch.mockResolvedValue({
+      ok: false,
+      json: async () => ({
+        error: "Stripe is not configured.",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const before = readStoredInvoices();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(window.alert).toHaveBeenCalledWith("Stripe is not configured.");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(readStoredInvoices()).toEqual(before);
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.amountPaid).toBe(125);
+    expect(invoice.balanceRemaining).toBe(375);
+    expect(invoice.paymentStatus).toBe("partial");
+    expect(invoice.status).toBe("sent");
+  });
+});

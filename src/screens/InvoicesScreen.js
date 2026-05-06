@@ -458,6 +458,15 @@ function getPaymentActionLabel(invoice, lang) {
   return lang === "es" ? "Cobrar" : "Take Payment";
 }
 
+function getInvoiceCustomerEmail(invoice) {
+  return String(
+    invoice?.customer?.email
+    || invoice?.customerEmail
+    || invoice?.email
+    || ""
+  ).trim();
+}
+
 function getStatusConfirmationContent(nextStatus, lang) {
   if (nextStatus === INVOICE_STATUSES.SENT) {
     return {
@@ -506,6 +515,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const [paymentModalState, setPaymentModalState] = useState(null);
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentError, setPaymentError] = useState("");
+  const [stripeCheckoutBusyId, setStripeCheckoutBusyId] = useState("");
   const [paymentForm, setPaymentForm] = useState(() => ({
     amount: "",
     paidAt: todayISO(),
@@ -992,6 +1002,48 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     }
   };
 
+  const launchStripeCheckout = async (invoice) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    if (!invoiceId || !canRecordManualPayment(invoice) || stripeCheckoutBusyId === invoiceId) return;
+
+    setStripeCheckoutBusyId(invoiceId);
+    try {
+      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+      const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+      const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? (invoiceTotal - amountPaid));
+      const response = await fetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          invoiceId,
+          invoiceNumber: String(invoice?.invoiceNumber || "").trim(),
+          customerName: String(invoice?.customerName || "").trim(),
+          customerEmail: getInvoiceCustomerEmail(invoice),
+          projectName: String(invoice?.projectName || "").trim(),
+          balanceRemaining,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !String(payload?.checkoutUrl || "").trim()) {
+        window.alert(payload?.error || (lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout."));
+        return;
+      }
+
+      const openedWindow = typeof window !== "undefined" && typeof window.open === "function"
+        ? window.open(String(payload.checkoutUrl), "_blank", "noopener,noreferrer")
+        : null;
+      if (!openedWindow && typeof window !== "undefined") {
+        window.location.assign(String(payload.checkoutUrl));
+      }
+    } catch (_error) {
+      window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout.");
+    } finally {
+      setStripeCheckoutBusyId("");
+    }
+  };
+
   const valueFilter = "all";
 
   return (
@@ -1380,6 +1432,18 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               {getPaymentActionLabel(invoice, lang)}
                             </button>
                           ) : null}
+                          {canTakePayment ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onClick={() => launchStripeCheckout(invoice)}
+                              disabled={stripeCheckoutBusyId === invoiceId}
+                            >
+                              {stripeCheckoutBusyId === invoiceId
+                                ? (lang === "es" ? "Generando Stripe..." : "Generating Stripe...")
+                                : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
+                            </button>
+                          ) : null}
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
@@ -1411,6 +1475,13 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             {lang === "es" ? "Eliminar" : "Delete"}
                           </button>
                         </div>
+                        {canTakePayment ? (
+                          <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
+                            {lang === "es"
+                              ? "Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
+                              : "Stripe payments must be reconciled before recording them in EstiPaid."}
+                          </div>
+                        ) : null}
                         {paymentLedger.length ? (
                           <div
                             style={{

@@ -2,6 +2,7 @@
 const { createHash } = require("crypto");
 const http = require("http");
 const express = require("express");
+const Stripe = require("stripe");
 const { fetch } = require("undici");
 
 const app = express();
@@ -21,6 +22,9 @@ const SCOPE_ASSIST_PRIMARY_TIMEOUT_MS = 90000;
 const GROQ_MODEL = String(process.env.GROQ_MODEL || "llama-3.1-8b-instant").trim() || "llama-3.1-8b-instant";
 const GROQ_SCOPE_PRIMARY_MODEL = String(process.env.GROQ_SCOPE_PRIMARY_MODEL || process.env.GROQ_SCOPE_MODEL || "llama-3.3-70b-versatile").trim() || "llama-3.3-70b-versatile";
 const GROQ_API_KEY = String(process.env.GROQ_API_KEY || "").trim();
+const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
+const STRIPE_SUCCESS_URL = String(process.env.STRIPE_SUCCESS_URL || "").trim();
+const STRIPE_CANCEL_URL = String(process.env.STRIPE_CANCEL_URL || "").trim();
 const SCOPE_ASSIST_IN_FLIGHT_REQUESTS = new Map();
 const DASH_IMMUTABLE_ACCEPTED_PROSE_CACHE = new Map();
 let ROUTE_REQUEST_SEQ = 0;
@@ -50,6 +54,35 @@ function fetchWithTimeout(url, options, ms, onTimeout) {
     controller.abort();
   }, ms);
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
+function asText(value) {
+  return String(value || "").trim();
+}
+
+function toCurrencyNumber(value) {
+  const next = typeof value === "number"
+    ? value
+    : parseFloat(String(value ?? "").replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(next) ? next : 0;
+}
+
+function roundCurrency(value) {
+  return Math.round(toCurrencyNumber(value) * 100) / 100;
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(asText(value));
+}
+
+function resolveStripeReturnBaseUrl(req) {
+  const forwardedProto = asText(req?.headers?.["x-forwarded-proto"]);
+  const host = asText(req?.headers?.["x-forwarded-host"] || req?.headers?.host);
+  const origin = asText(req?.headers?.origin);
+  if (origin) return origin;
+  if (forwardedProto && host) return `${forwardedProto}://${host}`;
+  if (host) return `http://${host}`;
+  return "http://localhost:3000";
 }
 
 function extractJsonPayload(text) {
@@ -11716,6 +11749,77 @@ app.post("/api/guided-build", async (req, res) => {
       trace.end("error_fallback", { status: 200, provider: "groq" });
     }
     return res.json(failureFallback);
+  }
+});
+
+app.post("/api/stripe/create-checkout-session", async (req, res) => {
+  try {
+    if (!STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: "Stripe is not configured." });
+    }
+
+    const invoiceId = asText(req.body?.invoiceId);
+    const invoiceNumber = asText(req.body?.invoiceNumber);
+    const customerName = asText(req.body?.customerName);
+    const customerEmail = asText(req.body?.customerEmail);
+    const projectName = asText(req.body?.projectName);
+    const balanceRemaining = roundCurrency(req.body?.balanceRemaining);
+
+    if (!invoiceId) {
+      return res.status(400).json({ error: "Missing invoiceId." });
+    }
+    if (balanceRemaining <= 0) {
+      return res.status(400).json({ error: "Invalid balanceRemaining." });
+    }
+
+    const amountCents = Math.round(balanceRemaining * 100);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      return res.status(400).json({ error: "Invalid balanceRemaining." });
+    }
+
+    const returnBaseUrl = resolveStripeReturnBaseUrl(req);
+    const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/?stripe=success&invoiceId=${encodeURIComponent(invoiceId)}`;
+    const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/?stripe=cancel&invoiceId=${encodeURIComponent(invoiceId)}`;
+    const stripe = new Stripe(STRIPE_SECRET_KEY);
+
+    const itemName = invoiceNumber
+      ? `EstiPaid Invoice ${invoiceNumber}`
+      : "EstiPaid Invoice Payment";
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      customer_email: isValidEmail(customerEmail) ? customerEmail : undefined,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: {
+              name: itemName,
+              description: [projectName, customerName].filter(Boolean).join(" • ") || undefined,
+            },
+          },
+        },
+      ],
+      metadata: {
+        invoiceId,
+        ...(invoiceNumber ? { invoiceNumber } : {}),
+        ...(customerName ? { customerName } : {}),
+        ...(projectName ? { projectName } : {}),
+      },
+    });
+
+    return res.json({
+      ok: true,
+      checkoutUrl: asText(session?.url),
+      sessionId: asText(session?.id),
+      expiresAt: Number(session?.expires_at || 0) || null,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Unable to create Stripe checkout session." });
   }
 });
 
