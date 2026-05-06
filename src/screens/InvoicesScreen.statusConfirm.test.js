@@ -436,6 +436,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
+    window.history.replaceState({}, "", "/");
   });
 
   afterEach(() => {
@@ -445,6 +446,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
     global.fetch = originalFetch;
     window.open = originalOpen;
     window.alert = originalAlert;
+    window.history.replaceState({}, "", "/");
     jest.useRealTimers();
   });
 
@@ -546,6 +548,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
       "_blank",
       "noopener,noreferrer"
     );
+    expect(window.location.href).toBe("http://localhost/");
     expect(readStoredInvoices()).toEqual(before);
     expect(readStripeCheckoutSessions()).toEqual([
       expect.objectContaining({
@@ -630,8 +633,47 @@ describe("InvoicesScreen Stripe checkout action", () => {
     // Derived balance = invoiceTotal(600) - amountPaid(0) = 600, not the stored 0
     expect(payload.balanceRemaining).toBe(600);
     expect(payload.balanceRemaining).not.toBe(0);
+    expect(window.location.href).toBe("http://localhost/");
     // Storage must be unchanged
     expect(readStoredInvoices()).toEqual(before);
+  });
+
+  test("Stripe checkout keeps the current EstiPaid tab in place when the popup handle is unavailable", async () => {
+    const sourceInvoice = createSentInvoice();
+    seedInvoices([sourceInvoice]);
+    window.open = jest.fn(() => null);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/blocked-session",
+        sessionId: "cs_blocked_123",
+      }),
+    });
+
+    const before = readStoredInvoices();
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(window.open).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/pay/blocked-session",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("Copy Payment Link"));
+    expect(window.location.href).toBe("http://localhost/");
+    expect(readStoredInvoices()).toEqual(before);
+    expect(readStripeCheckoutSessions()).toEqual([
+      expect.objectContaining({
+        sessionId: "cs_blocked_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/blocked-session",
+        status: "pending",
+      }),
+    ]);
   });
 
   test("Stripe checkout failure does not mutate invoice storage or append payments", async () => {
@@ -691,6 +733,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
+    window.history.replaceState({}, "", "/");
     // Provide a working clipboard mock
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: jest.fn().mockResolvedValue(undefined) },
@@ -706,6 +749,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     global.fetch = originalFetch;
     window.open = originalOpen;
     window.alert = originalAlert;
+    window.history.replaceState({}, "", "/");
     Object.defineProperty(navigator, "clipboard", {
       value: originalClipboard,
       writable: true,
@@ -789,6 +833,8 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     // Derived: invoiceTotal(800) - amountPaid(0) = 800, not stored 0
     expect(payload.balanceRemaining).toBe(800);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-session");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(window.location.href).toBe("http://localhost/");
     // Storage must be unchanged
     expect(readStoredInvoices()).toEqual(before);
     const invoice = readStoredInvoices()[0];
@@ -847,6 +893,8 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     expect(window.alert).toHaveBeenCalled();
     const alertArg = window.alert.mock.calls[0][0];
     expect(alertArg).toContain("https://checkout.stripe.com/pay/fallback-session");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(window.location.href).toBe("http://localhost/");
     // Storage must be unchanged
     expect(readStoredInvoices()).toEqual(before);
   });
@@ -876,6 +924,8 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     });
 
     expect(window.alert).toHaveBeenCalledWith("Stripe not configured.");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(window.location.href).toBe("http://localhost/");
     expect(readStoredInvoices()).toEqual(before);
     const invoice = readStoredInvoices()[0];
     expect(invoice.payments).toHaveLength(0);
@@ -897,6 +947,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
     global.fetch = jest.fn();
     window.open = jest.fn(() => ({}));
     window.alert = jest.fn();
+    window.history.replaceState({}, "", "/");
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: jest.fn().mockResolvedValue(undefined) },
       writable: true,
@@ -911,6 +962,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
     global.fetch = originalFetch;
     window.open = originalOpen;
     window.alert = originalAlert;
+    window.history.replaceState({}, "", "/");
     Object.defineProperty(navigator, "clipboard", {
       value: originalClipboard,
       writable: true,
@@ -1002,6 +1054,8 @@ describe("InvoicesScreen Stripe payment sync", () => {
 
     expect(global.fetch).not.toHaveBeenCalled();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/existing-link");
+    expect(window.open).not.toHaveBeenCalled();
+    expect(window.location.href).toBe("http://localhost/");
     expect(readStripeCheckoutSessions()).toEqual([
       expect.objectContaining({
         sessionId: "cs_existing_123",

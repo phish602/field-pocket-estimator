@@ -990,10 +990,6 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const copyCheckoutUrlWithFallback = async (checkoutUrl, customerEmail, options = {}) => {
     const normalizedUrl = String(checkoutUrl || "").trim();
     if (!normalizedUrl) return false;
-    const normalizedEmail = String(customerEmail || "").trim();
-    const mailtoHref = normalizedEmail
-      ? `mailto:${encodeURIComponent(normalizedEmail)}?subject=${encodeURIComponent("Your payment link")}&body=${encodeURIComponent("Please use the link below to pay your invoice:\n\n" + normalizedUrl + "\n\nNote: This link expires. Please pay promptly or request a new link.")}`
-      : null;
 
     let copied = false;
     if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
@@ -1011,16 +1007,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           || (lang === "es"
             ? "Enlace de pago copiado al portapapeles. Envíaselo al cliente para que pague.\n\nRecuerda: el enlace expira. Concilia el pago en EstiPaid después de confirmarlo en Stripe."
             : "Payment link copied to clipboard. Send it to your customer to pay.\n\nReminder: Stripe links expire. Reconcile the payment in EstiPaid after Stripe confirms."))
-        + (mailtoHref ? "\n\n" + normalizedUrl : "")
       );
-      if (mailtoHref && options?.openMailto !== false) {
-        const openedMailto = typeof window !== "undefined" && typeof window.open === "function"
-          ? window.open(mailtoHref, "_blank", "noopener,noreferrer")
-          : null;
-        if (!openedMailto && typeof window !== "undefined") {
-          window.location.assign(mailtoHref);
-        }
-      }
       return true;
     }
 
@@ -1348,8 +1335,12 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       const openedWindow = typeof window !== "undefined" && typeof window.open === "function"
         ? window.open(String(payload.checkoutUrl), "_blank", "noopener,noreferrer")
         : null;
-      if (!openedWindow && typeof window !== "undefined") {
-        window.location.assign(String(payload.checkoutUrl));
+      if (!openedWindow) {
+        window.alert(
+          lang === "es"
+            ? "Stripe se abrió en una pestaña nueva. Si tu navegador la bloqueó, usa \"Copiar enlace de pago\" para abrirla manualmente sin salir de EstiPaid."
+            : "Stripe should open in a new tab. If your browser blocked it, use \"Copy Payment Link\" to open it manually without leaving EstiPaid."
+        );
       }
     } catch (_error) {
       window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout.");
