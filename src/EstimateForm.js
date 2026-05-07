@@ -24,6 +24,12 @@ import {
 } from "./estimator/aiAssist/adapters/materials";
 import { exportPdf } from "./pdf";
 import {
+  captureAssistAccept,
+  captureAssistRequest,
+  captureAssistResult,
+  captureDocumentSave,
+} from "./utils/jobLearningCapture";
+import {
   createMoneyFormatter,
   formatDateMMDDYYYY,
   normalizeHoursInput,
@@ -2677,12 +2683,31 @@ export default function EstimateForm(props) {
 
     try {
       if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_START]", { chip: normalizedInput, isRefine: isRefineRequest, seq: mySeq, ts: Date.now() });
+      captureAssistRequest({
+        sectionKey: "scope",
+        docType: uiDocType,
+        mode: isEditMode ? "edit" : "create",
+        rawInput: normalizedInput,
+        scopeTextLength: String(scopeNotes || "").length,
+        laborLineCount: Array.isArray(state?.labor?.lines) ? state.labor.lines.length : 0,
+        materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+      });
       const result = await requestSectionAssist({
         sectionKey: "scope",
         userInput: normalizedInput,
         state,
         ...serviceOptions,
         _traceId: traceId,
+      });
+      captureAssistResult({
+        sectionKey: "scope",
+        docType: uiDocType,
+        mode: isEditMode ? "edit" : "create",
+        success: !!result,
+        hasWrites: !!result?.writes,
+        writeKeys: Object.keys(result?.writes || {}),
+        validationValid: result?.validation?.valid === true,
+        validationError: result?.validation?.valid === false ? String(result?.validation?.error || "").trim() : "",
       });
 
       runtimeMeta = await scopeRuntimePromiseRef.current.catch(() => scopeRuntimeMetaRef.current) || scopeRuntimeMetaRef.current;
@@ -4544,6 +4569,16 @@ export default function EstimateForm(props) {
         writeStoredProjects(nextProjects);
         const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
         writeStoredInvoices(nextInvoices);
+        captureDocumentSave({
+          docType: "invoice",
+          mode: isEditMode ? "edit" : "create",
+          documentId: String(savedInvoice?.id || recordId).trim(),
+          documentNumber: String(savedInvoice?.invoiceNumber || invoiceNumber || "").trim(),
+          status: String(savedInvoice?.invoiceStatus || savedInvoice?.status || "").trim(),
+          scopeTextLength: String(savedInvoice?.scopeNotes || "").length,
+          laborLineCount: Array.isArray(savedInvoice?.labor?.lines) ? savedInvoice.labor.lines.length : 0,
+          materialItemCount: Array.isArray(savedInvoice?.materials?.items) ? savedInvoice.materials.items.length : 0,
+        });
         try {
           window.dispatchEvent(new Event("estipaid:invoices-changed"));
         } catch {}
@@ -4569,6 +4604,16 @@ export default function EstimateForm(props) {
         } catch {}
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         writeStoredEstimatesLocal(nextEstimates);
+        captureDocumentSave({
+          docType: "estimate",
+          mode: isEditMode ? "edit" : "create",
+          documentId: String(savedEstimate?.id || recordId).trim(),
+          documentNumber: String(savedEstimate?.estimateNumber || estimateNumber || "").trim(),
+          status: String(savedEstimate?.status || "").trim(),
+          scopeTextLength: String(savedEstimate?.scopeNotes || "").length,
+          laborLineCount: Array.isArray(savedEstimate?.labor?.lines) ? savedEstimate.labor.lines.length : 0,
+          materialItemCount: Array.isArray(savedEstimate?.materials?.items) ? savedEstimate.materials.items.length : 0,
+        });
 
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
@@ -6496,6 +6541,13 @@ export default function EstimateForm(props) {
           assistState={scopeAssistPanelState}
           onSubmit={submitScopeAssist}
           onAccept={(writes) => {
+            captureAssistAccept({
+              sectionKey: "scope",
+              docType: uiDocType,
+              mode: isEditMode ? "edit" : "create",
+              acceptedWriteKeys: Object.keys(writes || {}),
+              scopeTextLength: String(writes?.scopeNotes || "").length,
+            });
             maybeAutoPopulateProjectName({
               scopeNotesValue: String(writes?.scopeNotes || ""),
               sourceInput: String(scopeAssistState?.input || homeLaunchPrompt || ""),
@@ -6513,6 +6565,14 @@ export default function EstimateForm(props) {
           assistState={laborAssist.assistState}
           onSubmit={laborAssist.submit}
           onAccept={(writes, action) => {
+            captureAssistAccept({
+              sectionKey: "labor",
+              docType: uiDocType,
+              mode: isEditMode ? "edit" : "create",
+              acceptedWriteKeys: Object.keys(writes || {}),
+              laborLineCount: Array.isArray(writes?.laborLines) ? writes.laborLines.length : 0,
+              actionType: String(action?.type || "").trim(),
+            });
             applyAcceptedLaborAssist(writes, action);
           }}
           onClose={laborAssist.close}
@@ -6526,6 +6586,15 @@ export default function EstimateForm(props) {
           onSubmit={materialsAssist.submit}
           onAccept={(writes, action) => {
             if (action?.type === "switchMode") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "switchMode",
+                nextMode: action.mode === "itemized" ? "itemized" : "blanket",
+                materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+              });
               pendingMaterialsModeSwitchRequestRef.current = {
                 mode: action.mode === "itemized" ? "itemized" : "blanket",
                 input: String(materialsAssist.assistState?.input || ""),
@@ -6537,6 +6606,15 @@ export default function EstimateForm(props) {
             }
 
             if (writes?.mode === "blanket" && action?.type === "applyBlanketSuggestion") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "applyBlanketSuggestion",
+                nextMode: "blanket",
+                materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+              });
               setMaterialsMode("blanket");
               setMaterialsCost(normalizeMoneyInput(String(writes?.blanketSuggestion?.suggestedAmount || "")));
               materialsAssist.close();
@@ -6544,6 +6622,17 @@ export default function EstimateForm(props) {
             }
 
             if (writes?.mode === "itemized" && action?.type === "applyItemizedSuggestion") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "applyItemizedSuggestion",
+                nextMode: "itemized",
+                materialItemCount: Array.isArray(writes?.itemizedSuggestion?.proposedLines)
+                  ? writes.itemizedSuggestion.proposedLines.length
+                  : 0,
+              });
               setMaterialsMode("itemized");
               setMaterialsOpen(true);
               applySuggestedMaterialLines(writes?.itemizedSuggestion?.proposedLines || []);
