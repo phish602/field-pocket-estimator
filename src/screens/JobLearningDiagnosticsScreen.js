@@ -14,6 +14,11 @@ import {
   summarizeCandidateAssembly,
   detectCandidateAssemblyIssues,
 } from "../utils/jobLearningCandidateAssembler";
+import {
+  readReviewedJobLearningCandidates,
+  upsertReviewedJobLearningCandidate,
+  deleteReviewedJobLearningCandidate,
+} from "../utils/jobLearningReviewStore";
 
 // Dev/local gate — this screen must never render for production users.
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -41,6 +46,11 @@ function pill(text, color) {
 function riskPill(risk) {
   const map = { critical: "#c0392b", high: "#e67e22", moderate: "#8e44ad", low: "#27ae60" };
   return pill(risk || "—", map[risk] || "#555");
+}
+
+function reviewPill(reviewState) {
+  const map = { approved: "#27ae60", rejected: "#c0392b", needs_changes: "#e67e22" };
+  return pill(reviewState || "unreviewed", map[reviewState] || "#555");
 }
 
 function statePill(state) {
@@ -269,7 +279,32 @@ function CandidateAssemblySummaryPanel({ assemblySummary }) {
   );
 }
 
-function CandidateDraftsPanel({ drafts }) {
+function ManualReviewSummaryPanel({ drafts, reviewedMap }) {
+  const total = drafts ? drafts.length : 0;
+  let approved = 0, rejected = 0, needsChanges = 0;
+  if (drafts) {
+    for (const d of drafts) {
+      const rec = reviewedMap.get(d.fingerprint);
+      if (!rec) continue;
+      if (rec.reviewState === "approved") approved++;
+      else if (rec.reviewState === "rejected") rejected++;
+      else if (rec.reviewState === "needs_changes") needsChanges++;
+    }
+  }
+  const totalReviewed = approved + rejected + needsChanges;
+  return (
+    <Panel title="Manual Review Summary">
+      <StatRow label="Total candidates" value={total} />
+      <StatRow label="Total reviewed"   value={totalReviewed} />
+      <StatRow label="Approved"         value={approved} />
+      <StatRow label="Rejected"         value={rejected} />
+      <StatRow label="Needs changes"    value={needsChanges} />
+      <StatRow label="Unreviewed"       value={total - totalReviewed} />
+    </Panel>
+  );
+}
+
+function CandidateDraftsPanel({ drafts, reviewedMap, draftNotes, onReview, onDelete, onNotesChange }) {
   if (!drafts || drafts.length === 0) {
     return (
       <Panel title="Candidate Drafts">
@@ -280,38 +315,62 @@ function CandidateDraftsPanel({ drafts }) {
   return (
     <Panel title={`Candidate Drafts (${drafts.length})`}>
       <div style={S.tableWrap}>
-        {drafts.map((d, i) => (
-          <div key={d.fingerprint || i} style={S.tableRow}>
-            <code style={S.fp}>{d.fingerprint}</code>
-            <div style={S.rowMeta}>
-              {statePill(d.approvalState)}
-              {statePill(d.scoringTier)}
-              <span className="pe-muted">conf: {d.confidence}</span>
-              {d.workflowClass && <span className="pe-muted">{d.workflowClass}</span>}
-              {d.workflowComplexity && <span className="pe-muted">{d.workflowComplexity}</span>}
-              {d.tradeHint && d.tradeHint !== "unknown" && <span className="pe-muted">{d.tradeHint}</span>}
-            </div>
-            <div style={S.rowMeta}>
-              {d.assistTraceId && <span className="pe-muted">traceId: <code style={S.code}>{d.assistTraceId}</code></span>}
-              {d.assistSectionKey && <span className="pe-muted">section: {d.assistSectionKey}</span>}
-              {d.assistDocType && <span className="pe-muted">docType: {d.assistDocType}</span>}
-              {d.assistMode && <span className="pe-muted">mode: {d.assistMode}</span>}
-            </div>
-            {d.sequence && d.sequence.length > 0 && (
+        {drafts.map((d, i) => {
+          const existingReview = reviewedMap ? reviewedMap.get(d.fingerprint) : null;
+          const noteValue = draftNotes && d.fingerprint in draftNotes
+            ? draftNotes[d.fingerprint]
+            : (existingReview ? existingReview.reviewNotes : "");
+          return (
+            <div key={d.fingerprint || i} style={S.tableRow}>
+              <code style={S.fp}>{d.fingerprint}</code>
               <div style={S.rowMeta}>
-                <span className="pe-muted" style={{ fontSize: 10 }}>seq:</span>
-                {d.sequence.map((s) => <code key={s} style={{ ...S.code, fontSize: 10 }}>{s}</code>)}
+                {reviewPill(existingReview ? existingReview.reviewState : null)}
+                {statePill(d.approvalState)}
+                {statePill(d.scoringTier)}
+                <span className="pe-muted">conf: {d.confidence}</span>
+                {d.workflowClass && <span className="pe-muted">{d.workflowClass}</span>}
+                {d.workflowComplexity && <span className="pe-muted">{d.workflowComplexity}</span>}
+                {d.tradeHint && d.tradeHint !== "unknown" && <span className="pe-muted">{d.tradeHint}</span>}
               </div>
-            )}
-            {d.evidence && (
               <div style={S.rowMeta}>
-                {pill(d.evidence.documentSaveSeen ? "save ✓" : "save ✗", d.evidence.documentSaveSeen ? "#27ae60" : "#555")}
-                {d.evidence.resultType && <span className="pe-muted">{d.evidence.resultType}</span>}
-                {d.evidence.writeKeyCount > 0 && <span className="pe-muted">writes: {d.evidence.writeKeyCount}</span>}
+                {d.assistTraceId && <span className="pe-muted">traceId: <code style={S.code}>{d.assistTraceId}</code></span>}
+                {d.assistSectionKey && <span className="pe-muted">section: {d.assistSectionKey}</span>}
+                {d.assistDocType && <span className="pe-muted">docType: {d.assistDocType}</span>}
+                {d.assistMode && <span className="pe-muted">mode: {d.assistMode}</span>}
               </div>
-            )}
-          </div>
-        ))}
+              {d.sequence && d.sequence.length > 0 && (
+                <div style={S.rowMeta}>
+                  <span className="pe-muted" style={{ fontSize: 10 }}>seq:</span>
+                  {d.sequence.map((s) => <code key={s} style={{ ...S.code, fontSize: 10 }}>{s}</code>)}
+                </div>
+              )}
+              {d.evidence && (
+                <div style={S.rowMeta}>
+                  {pill(d.evidence.documentSaveSeen ? "save ✓" : "save ✗", d.evidence.documentSaveSeen ? "#27ae60" : "#555")}
+                  {d.evidence.resultType && <span className="pe-muted">{d.evidence.resultType}</span>}
+                  {d.evidence.writeKeyCount > 0 && <span className="pe-muted">writes: {d.evidence.writeKeyCount}</span>}
+                </div>
+              )}
+              <div style={S.reviewSection}>
+                <textarea
+                  style={S.reviewNotes}
+                  placeholder="Review notes (optional)"
+                  value={noteValue}
+                  onChange={(e) => onNotesChange && onNotesChange(d.fingerprint, e.target.value)}
+                  rows={2}
+                />
+                <div style={S.reviewBtns}>
+                  <button style={S.btnApprove} onClick={() => onReview && onReview(d, "approved")}>Approve</button>
+                  <button style={S.btnReject}  onClick={() => onReview && onReview(d, "rejected")}>Reject</button>
+                  <button style={S.btnNeeds}   onClick={() => onReview && onReview(d, "needs_changes")}>Needs Changes</button>
+                  {existingReview && (
+                    <button style={S.btnClear} onClick={() => onDelete && onDelete(d.fingerprint)}>Clear Review</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </Panel>
   );
@@ -707,6 +766,31 @@ const S = {
     border: "1px solid rgba(41,128,185,0.22)",
     color: "rgba(255,255,255,0.5)",
   },
+  reviewSection: {
+    borderTop: "1px solid rgba(255,255,255,0.06)",
+    paddingTop: 8,
+    marginTop: 4,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  reviewNotes: {
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 6,
+    color: "inherit",
+    fontSize: 11,
+    padding: "5px 8px",
+    resize: "vertical",
+    width: "100%",
+    fontFamily: "inherit",
+    boxSizing: "border-box",
+  },
+  reviewBtns: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" },
+  btnApprove: { border: "1px solid rgba(39,174,96,0.35)", borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(39,174,96,0.15)", color: "#27ae60" },
+  btnReject:  { border: "1px solid rgba(192,57,43,0.35)",  borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(192,57,43,0.15)",  color: "#e74c3c" },
+  btnNeeds:   { border: "1px solid rgba(230,126,34,0.35)", borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(230,126,34,0.15)", color: "#e67e22" },
+  btnClear:   { border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.45)" },
   unavailable: {
     display: "flex",
     alignItems: "center",
@@ -716,7 +800,100 @@ const S = {
   unavailableText: { fontSize: 14, opacity: 0.5, fontStyle: "italic" },
 };
 
-// ── Default export ────────────────────────────────────────────────────────────
+// ── Stateful review body (class component avoids useState spy in tests) ───────
+
+class DiagnosticsReviewBody extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      reviewedRecords: readReviewedJobLearningCandidates(),
+      draftNotes: {},
+    };
+    this.handleReview = this.handleReview.bind(this);
+    this.handleDelete = this.handleDelete.bind(this);
+    this.handleNotesChange = this.handleNotesChange.bind(this);
+  }
+
+  handleReview(draft, reviewState) {
+    const { draftNotes, reviewedRecords } = this.state;
+    const reviewedMap = new Map();
+    for (const r of reviewedRecords) reviewedMap.set(r.candidateFingerprint, r);
+    const notes = draft.fingerprint in draftNotes
+      ? draftNotes[draft.fingerprint]
+      : (reviewedMap.get(draft.fingerprint) ? reviewedMap.get(draft.fingerprint).reviewNotes : "");
+    const updated = upsertReviewedJobLearningCandidate({
+      candidateFingerprint: draft.fingerprint,
+      assistTraceId: draft.assistTraceId,
+      reviewState,
+      candidateDraftSnapshot: {
+        fingerprint:        draft.fingerprint,
+        approvalState:      draft.approvalState,
+        confidence:         draft.confidence,
+        scoringTier:        draft.scoringTier,
+        workflowClass:      draft.workflowClass,
+        workflowComplexity: draft.workflowComplexity,
+        tradeHint:          draft.tradeHint,
+        assistTraceId:      draft.assistTraceId,
+        assistSectionKey:   draft.assistSectionKey,
+        assistDocType:      draft.assistDocType,
+        assistMode:         draft.assistMode,
+        sequence: Array.isArray(draft.sequence) ? draft.sequence.slice() : [],
+      },
+      sourceEvidence: draft.evidence,
+      reviewNotes: notes,
+    });
+    this.setState({ reviewedRecords: updated });
+  }
+
+  handleDelete(fingerprint) {
+    this.setState({ reviewedRecords: deleteReviewedJobLearningCandidate(fingerprint) });
+  }
+
+  handleNotesChange(fingerprint, notes) {
+    const prev = this.state.draftNotes;
+    this.setState({ draftNotes: Object.assign({}, prev, { [fingerprint]: notes }) });
+  }
+
+  render() {
+    const { stats, assembly, assemblySummary, issues, snapshot, summary, drift, auditRows } = this.props;
+    const { reviewedRecords, draftNotes } = this.state;
+
+    const reviewedMap = new Map();
+    for (const r of reviewedRecords) reviewedMap.set(r.candidateFingerprint, r);
+
+    return (
+      <>
+        <CaptureEventSummaryPanel stats={stats} />
+        <DocumentSaveMetaPanel stats={stats} />
+        <AiAssistSummaryPanel stats={stats} />
+        <NoisePanel stats={stats} />
+        <CandidateAssemblySummaryPanel assemblySummary={assemblySummary} />
+        <ManualReviewSummaryPanel drafts={assembly.candidateDrafts} reviewedMap={reviewedMap} />
+        <CandidateDraftsPanel
+          drafts={assembly.candidateDrafts}
+          reviewedMap={reviewedMap}
+          draftNotes={draftNotes}
+          onReview={this.handleReview}
+          onDelete={this.handleDelete}
+          onNotesChange={this.handleNotesChange}
+        />
+        <QuarantinedEventsPanel quarantined={assembly.quarantinedEvents} />
+        <AssemblyIssuesPanel issues={issues} />
+        <AssemblyWarningsPanel warnings={assembly.assemblyWarnings} />
+        <NotWiredNotice />
+        <SummaryCards summary={summary} />
+        <DriftPanel drift={drift} />
+        <HealthPanels snapshot={snapshot} />
+        <RuntimeApprovedPanel candidates={snapshot.runtimeApprovedCandidates} />
+        <PromotionRankingPanel ranking={snapshot.promotionRanking} />
+        <ConsolidationGroupsPanel groups={snapshot.consolidationGroups} />
+        <AuditRowsPanel rows={auditRows} />
+      </>
+    );
+  }
+}
+
+// ── Default export (no hooks — safe under test useState spy) ──────────────────
 
 export default function JobLearningDiagnosticsScreen() {
   if (!ACCESSIBLE) {
@@ -727,39 +904,30 @@ export default function JobLearningDiagnosticsScreen() {
     );
   }
 
-  const events   = readJobLearningEvents();
-  const stats    = deriveCaptureStats(events);
-
-  const assembly        = assembleJobLearningCandidateDrafts(events);
+  const events        = readJobLearningEvents();
+  const stats         = deriveCaptureStats(events);
+  const assembly      = assembleJobLearningCandidateDrafts(events);
   const assemblySummary = summarizeCandidateAssembly(events);
-  const issues          = detectCandidateAssemblyIssues(events);
-
-  const snapshot = buildJobLearningRegistrySnapshot(CANDIDATES);
-  const summary  = summarizeJobLearningRegistrySnapshot(CANDIDATES);
-  const drift    = detectJobLearningRegistryDrift(CANDIDATES);
-  const auditRows = getJobLearningRegistryAuditRows(CANDIDATES);
+  const issues        = detectCandidateAssemblyIssues(events);
+  const snapshot      = buildJobLearningRegistrySnapshot(CANDIDATES);
+  const summary       = summarizeJobLearningRegistrySnapshot(CANDIDATES);
+  const drift         = detectJobLearningRegistryDrift(CANDIDATES);
+  const auditRows     = getJobLearningRegistryAuditRows(CANDIDATES);
 
   return (
     <section className="pe-section" style={S.screen}>
       <ScreenHeader />
       <NoSourceNotice />
-      <CaptureEventSummaryPanel stats={stats} />
-      <DocumentSaveMetaPanel stats={stats} />
-      <AiAssistSummaryPanel stats={stats} />
-      <NoisePanel stats={stats} />
-      <CandidateAssemblySummaryPanel assemblySummary={assemblySummary} />
-      <CandidateDraftsPanel drafts={assembly.candidateDrafts} />
-      <QuarantinedEventsPanel quarantined={assembly.quarantinedEvents} />
-      <AssemblyIssuesPanel issues={issues} />
-      <AssemblyWarningsPanel warnings={assembly.assemblyWarnings} />
-      <NotWiredNotice />
-      <SummaryCards summary={summary} />
-      <DriftPanel drift={drift} />
-      <HealthPanels snapshot={snapshot} />
-      <RuntimeApprovedPanel candidates={snapshot.runtimeApprovedCandidates} />
-      <PromotionRankingPanel ranking={snapshot.promotionRanking} />
-      <ConsolidationGroupsPanel groups={snapshot.consolidationGroups} />
-      <AuditRowsPanel rows={auditRows} />
+      <DiagnosticsReviewBody
+        stats={stats}
+        assembly={assembly}
+        assemblySummary={assemblySummary}
+        issues={issues}
+        snapshot={snapshot}
+        summary={summary}
+        drift={drift}
+        auditRows={auditRows}
+      />
     </section>
   );
 }
