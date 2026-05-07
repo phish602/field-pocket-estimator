@@ -41,6 +41,10 @@ function sanitizeLearningEvent(event = {}, seam = "") {
   );
   const normalizedAcceptedAction = sanitizeString(source.acceptedAction || source.actionType);
   const normalizedSaveType = sanitizeString(source.saveType || (normalizedSeam === "document_save" ? normalizedDocType : ""));
+  const normalizedSaveDocType = sanitizeString(source.saveDocType);
+  const normalizedSaveMode = sanitizeString(source.saveMode);
+  const normalizedProjectId = sanitizeString(source.projectId, null);
+  const normalizedLinkedEstimateId = sanitizeString(source.linkedEstimateId, null);
 
   return {
     seam: normalizedSeam,
@@ -52,6 +56,15 @@ function sanitizeLearningEvent(event = {}, seam = "") {
     ...(normalizedResultType ? { resultType: normalizedResultType } : {}),
     ...(normalizedAcceptedAction ? { acceptedAction: normalizedAcceptedAction } : {}),
     ...(normalizedSaveType ? { saveType: normalizedSaveType } : {}),
+    ...(normalizedSaveDocType ? { saveDocType: normalizedSaveDocType } : {}),
+    ...(normalizedSaveMode ? { saveMode: normalizedSaveMode } : {}),
+    isEditMode: sanitizeBoolean(source.isEditMode),
+    isProjectSeeded: sanitizeBoolean(source.isProjectSeeded),
+    hasLinkedEstimate: sanitizeBoolean(source.hasLinkedEstimate),
+    isInvoiceFromEstimate: sanitizeBoolean(source.isInvoiceFromEstimate),
+    hasSourceEstimateSnapshot: sanitizeBoolean(source.hasSourceEstimateSnapshot),
+    ...(normalizedProjectId !== null ? { projectId: normalizedProjectId } : {}),
+    ...(normalizedLinkedEstimateId !== null ? { linkedEstimateId: normalizedLinkedEstimateId } : {}),
     inputLength: sanitizeCount(
       Object.prototype.hasOwnProperty.call(source, "inputLength")
         ? source.inputLength
