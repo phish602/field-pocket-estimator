@@ -3,6 +3,10 @@
 
 import { useCallback, useRef, useState } from "react";
 import { buildScopeAssistRequestKey, requestSectionAssist } from "./service";
+import {
+  captureAssistRequest as captureJobLearningAssistRequest,
+  captureAssistResult as captureJobLearningAssistResult,
+} from "../../utils/jobLearningCapture";
 
 // Phase machine: idle → open → requesting → review | error → idle
 const IDLE = { phase: "idle" };
@@ -10,6 +14,60 @@ const DEV = process.env.NODE_ENV === "development";
 const AI_ASSIST_BUSY_MESSAGE = "AI assist is temporarily busy. Please wait a few seconds and try again.";
 const AI_ASSIST_GENERIC_MESSAGE = "AI assist couldn’t complete that request right now. Please try again.";
 const LABOR_AI_ASSIST_GUIDANCE_MESSAGE = "I could not build labor rows from that. Add the trade, crew role, hours, or rate and try again.";
+
+export function captureAiAssistRequest(event = {}) {
+  captureJobLearningAssistRequest(event);
+}
+
+export function captureAiAssistResult(event = {}) {
+  captureJobLearningAssistResult(event);
+}
+
+function resolveAiAssistLearningContext(sectionKey, state, captureMeta = {}) {
+  const normalizedDocType = String(captureMeta?.docType || state?.ui?.docType || "estimate").trim().toLowerCase() === "invoice"
+    ? "invoice"
+    : "estimate";
+  const normalizedMode = String(captureMeta?.mode || "").trim().toLowerCase() || "create";
+  return {
+    sectionKey: String(sectionKey || "").trim(),
+    docType: normalizedDocType,
+    mode: normalizedMode,
+    scopeTextLength: String(state?.scopeNotes || "").length,
+    laborLineCount: Array.isArray(state?.labor?.lines) ? state.labor.lines.length : 0,
+    materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+  };
+}
+
+function buildAiAssistRequestCapturePayload(sectionKey, userInput, state, captureMeta) {
+  const context = resolveAiAssistLearningContext(sectionKey, state, captureMeta);
+  return {
+    sectionKey: context.sectionKey,
+    docType: context.docType,
+    mode: context.mode,
+    rawInput: String(userInput || ""),
+    scopeTextLength: context.scopeTextLength,
+    laborLineCount: context.laborLineCount,
+    materialItemCount: context.materialItemCount,
+  };
+}
+
+function buildAiAssistResultCapturePayload(sectionKey, userInput, state, captureMeta, result) {
+  const context = resolveAiAssistLearningContext(sectionKey, state, captureMeta);
+  return {
+    sectionKey: context.sectionKey,
+    docType: context.docType,
+    mode: context.mode,
+    rawInput: String(userInput || ""),
+    scopeTextLength: context.scopeTextLength,
+    laborLineCount: context.laborLineCount,
+    materialItemCount: context.materialItemCount,
+    success: !!result,
+    hasWrites: !!result?.writes,
+    writeKeys: Object.keys(result?.writes || {}),
+    validationValid: result?.validation?.valid === true,
+    validationError: result?.validation?.valid === false ? String(result?.validation?.error || "").trim() : "",
+  };
+}
 
 function looksLikeBusyAssistError(value) {
   const text = String(value || "").trim();
@@ -77,7 +135,7 @@ function resolveLaborAssistErrorMessage(error, fallbackMessage = LABOR_AI_ASSIST
   return toSafeAssistErrorMessage(error, fallbackMessage);
 }
 
-export function useAiAssist(sectionKey, state) {
+export function useAiAssist(sectionKey, state, captureMeta = {}) {
   const [assistState, setAssistState] = useState(IDLE);
   const inFlightScopeRefineRequestRef = useRef(null);
   const submitSeqRef = useRef(0); // Pass 18: stale-request guard
@@ -111,12 +169,14 @@ export function useAiAssist(sectionKey, state) {
         setAssistState({ phase: "requesting", input: userInput });
         if (DEV) console.log(`[ai-assist:${traceId}] submit_start`, { section: sectionKey, seq: mySeq, inputLen: String(userInput || "").length });
         try {
+          captureAiAssistRequest(buildAiAssistRequestCapturePayload(sectionKey, userInput, state, captureMeta));
           const result = await requestSectionAssist({ sectionKey, userInput, state, ...serviceOptions, _traceId: traceId });
           // Pass 18: discard stale response — a newer submit already owns the state
           if (submitSeqRef.current !== mySeq) {
             if (DEV) console.log(`[ai-assist:${traceId}] stale_discarded`, { seq: mySeq, current: submitSeqRef.current });
             return;
           }
+          captureAiAssistResult(buildAiAssistResultCapturePayload(sectionKey, userInput, state, captureMeta, result));
           if (!result.validation.valid) {
             if (DEV) console.log(`[ai-assist:${traceId}] validation_failed`, { seq: mySeq, error: result.validation.error });
             setAssistState({

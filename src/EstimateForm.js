@@ -12,7 +12,11 @@ import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from ".
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
-import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
+import {
+  captureAiAssistRequest,
+  captureAiAssistResult,
+  useAiAssist,
+} from "./estimator/aiAssist/useAiAssist";
 import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
 import { getAssistConfig } from "./estimator/aiAssist/registry";
 import { requestSectionAssist } from "./estimator/aiAssist/service";
@@ -23,12 +27,7 @@ import {
   resolveMaterialsAssistMode,
 } from "./estimator/aiAssist/adapters/materials";
 import { exportPdf } from "./pdf";
-import {
-  captureAssistAccept,
-  captureAssistRequest,
-  captureAssistResult,
-  captureDocumentSave,
-} from "./utils/jobLearningCapture";
+import { captureAssistAccept, captureDocumentSave } from "./utils/jobLearningCapture";
 import {
   createMoneyFormatter,
   formatDateMMDDYYYY,
@@ -1619,8 +1618,14 @@ export default function EstimateForm(props) {
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
-  const laborAssist = useAiAssist("labor", state);
-  const materialsAssist = useAiAssist("materials", state);
+  const laborAssist = useAiAssist("labor", state, {
+    docType: guidedDocType,
+    mode: isEditMode ? "edit" : "create",
+  });
+  const materialsAssist = useAiAssist("materials", state, {
+    docType: guidedDocType,
+    mode: isEditMode ? "edit" : "create",
+  });
   const handleSuggestLaborFromScope = useCallback(() => {
     laborAssist.submit("", { laborRequestMode: "from_scope" });
   }, [laborAssist]);
@@ -2683,7 +2688,7 @@ export default function EstimateForm(props) {
 
     try {
       if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_START]", { chip: normalizedInput, isRefine: isRefineRequest, seq: mySeq, ts: Date.now() });
-      captureAssistRequest({
+      captureAiAssistRequest({
         sectionKey: "scope",
         docType: uiDocType,
         mode: isEditMode ? "edit" : "create",
@@ -2699,7 +2704,16 @@ export default function EstimateForm(props) {
         ...serviceOptions,
         _traceId: traceId,
       });
-      captureAssistResult({
+      runtimeMeta = await scopeRuntimePromiseRef.current.catch(() => scopeRuntimeMetaRef.current) || scopeRuntimeMetaRef.current;
+
+      if (scopeAssistSubmitSeqRef.current !== mySeq) {
+        if (traceId) {
+          console.log(`[ai-assist:${traceId}] scope_stale_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
+        }
+        return result;
+      }
+
+      captureAiAssistResult({
         sectionKey: "scope",
         docType: uiDocType,
         mode: isEditMode ? "edit" : "create",
@@ -2709,15 +2723,6 @@ export default function EstimateForm(props) {
         validationValid: result?.validation?.valid === true,
         validationError: result?.validation?.valid === false ? String(result?.validation?.error || "").trim() : "",
       });
-
-      runtimeMeta = await scopeRuntimePromiseRef.current.catch(() => scopeRuntimeMetaRef.current) || scopeRuntimeMetaRef.current;
-
-      if (scopeAssistSubmitSeqRef.current !== mySeq) {
-        if (traceId) {
-          console.log(`[ai-assist:${traceId}] scope_stale_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
-        }
-        return result;
-      }
 
       const scopeNotesValue = result?.writes?.scopeNotes;
       const normalizedClarificationQuestion = normalizeScopeAssistClientText(runtimeMeta?.clarificationQuestion);
