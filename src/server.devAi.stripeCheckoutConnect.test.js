@@ -100,13 +100,16 @@ function startServer(envOverrides = {}) {
   return child;
 }
 
-function createStripeMockHook(sessionPayload) {
+function createStripeMockHook(sessionPayload, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "estipaid-stripe-mock-"));
   const file = path.join(dir, "mock-stripe.js");
+  const createCaptureFile = options.createCaptureFile ? JSON.stringify(options.createCaptureFile) : "null";
   fs.writeFileSync(file, `
 const Module = require("module");
+const fs = require("fs");
 const originalLoad = Module._load;
 const sessionPayload = ${JSON.stringify(sessionPayload)};
+const createCaptureFile = ${createCaptureFile};
 
 class MockStripe {
   constructor() {
@@ -116,11 +119,16 @@ class MockStripe {
     this.checkout = {
       sessions: {
         retrieve: async () => sessionPayload,
-        create: async () => ({
+        create: async (params, requestOptions) => {
+          if (createCaptureFile) {
+            fs.writeFileSync(createCaptureFile, JSON.stringify({ params, requestOptions }), "utf8");
+          }
+          return {
           id: "cs_test_created",
           url: "https://checkout.stripe.com/pay/mock",
           expires_at: 1714694400,
-        }),
+          };
+        },
       },
     };
   }
@@ -218,6 +226,44 @@ describe("dev-ai Stripe Connect checkout guards", () => {
 
     expect(response.status).toBe(500);
     expect(response.json).toEqual({ error: "Stripe is not configured." });
+  });
+
+  test("create-checkout-session success_url includes checkout session id and stripe account context for customer receipt lookup", async () => {
+    port = 5969;
+    const captureFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "estipaid-stripe-create-")), "create.json");
+    tempDir = createStripeMockHook({
+      id: "cs_test_created",
+      payment_status: "unpaid",
+      status: "open",
+    }, {
+      createCaptureFile: captureFile,
+    });
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "sk_test_mocked",
+      STRIPE_APP_RETURN_URL: "http://127.0.0.1:3000",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require=${path.join(tempDir, "mock-stripe.js")}`,
+    });
+    await waitForServer(port);
+
+    const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
+      invoiceId: "inv_4",
+      invoiceNumber: "INV-4",
+      customerEmail: "payer@example.com",
+      projectName: "Test Project",
+      customerName: "Test Customer",
+      stripeAccountId: "acct_test_connected_123",
+      balanceRemaining: 125,
+    });
+
+    expect(response.status).toBe(200);
+    const captured = JSON.parse(fs.readFileSync(captureFile, "utf8"));
+    expect(captured.requestOptions).toEqual({ stripeAccount: "acct_test_connected_123" });
+    expect(captured.params.success_url).toContain("/api/stripe/checkout/success?");
+    expect(captured.params.success_url).toContain("invoiceId=inv_4");
+    expect(captured.params.success_url).toContain("invoiceNumber=INV-4");
+    expect(captured.params.success_url).toContain("stripeAccountId=acct_test_connected_123");
+    expect(captured.params.success_url).toContain("session_id={CHECKOUT_SESSION_ID}");
   });
 
   test("retrieve-checkout-session returns safe enriched Stripe payment details", async () => {
@@ -348,65 +394,115 @@ describe("dev-ai Stripe Connect checkout guards", () => {
     expect(response.json).toEqual({ error: "Stripe is not configured." });
   });
 
-  test("stripe checkout success page uses close-tab action and safe frontend fallback instead of backend OK", async () => {
+  test("stripe checkout success page is customer-facing and gracefully handles missing receipt details", async () => {
     port = 5967;
     child = startServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
-      STRIPE_APP_RETURN_URL: "http://127.0.0.1:3000",
     });
     await waitForServer(port);
 
     const response = await requestText(
       port,
       "GET",
-      "/api/stripe/checkout/success?invoiceId=inv_7&invoiceNumber=INV-7&returnTo=http%3A%2F%2Flocalhost%3A5055&session_id=cs_test_789"
+      "/api/stripe/checkout/success?invoiceId=inv_7&invoiceNumber=INV-7&session_id=cs_test_789"
     );
 
     expect(response.status).toBe(200);
     expect(response.contentType).toContain("text/html");
-    expect(response.text).toContain("Stripe payment received");
-    expect(response.text).toContain("Check / Sync Stripe Payment");
+    expect(response.text).toContain("Payment received");
+    expect(response.text).toContain("Your payment was received successfully.");
+    expect(response.text).toContain("The business will update their records after payment confirmation.");
     expect(response.text).toContain("Payment status");
-    expect(response.text).toContain("Received by Stripe");
-    expect(response.text).toContain("EstiPaid status");
-    expect(response.text).toContain("Awaiting manual Check / Sync");
     expect(response.text).toContain("INV-7");
-    expect(response.text).toContain("cs_test_789...");
     expect(response.text).toContain("Close this tab");
-    expect(response.text).toContain("Open EstiPaid");
-    expect(response.text).toContain('href="http://127.0.0.1:3000/?stripe=success&amp;invoiceId=inv_7&amp;session_id=cs_test_789"');
-    expect(response.text).not.toContain('href="http://localhost:5055');
-    expect(response.text).not.toContain("invoice ledger updates.");
+    expect(response.text).not.toContain("Check / Sync Stripe Payment");
+    expect(response.text).not.toContain("Open EstiPaid");
+    expect(response.text).not.toContain("View Stripe receipt");
+    expect(response.text).not.toContain("cs_test_789");
+    expect(response.text).not.toContain("pi_");
+    expect(response.text).not.toContain("acct_");
     expect(response.text).not.toBe("OK");
   });
 
-  test("stripe checkout cancel page uses close-tab action and safe frontend fallback instead of backend OK", async () => {
+  test("stripe checkout success page shows Stripe receipt link when available", async () => {
+    port = 5970;
+    tempDir = createStripeMockHook({
+      id: "cs_test_789",
+      payment_status: "paid",
+      status: "complete",
+      amount_total: 20000,
+      amount_subtotal: 20000,
+      currency: "usd",
+      customer_details: { email: "payer@example.com" },
+      payment_intent: {
+        id: "pi_test_paid_123",
+        created: 1714993200,
+        amount_received: 20000,
+        latest_charge: {
+          id: "ch_test_123",
+          created: 1714993260,
+          amount: 20000,
+          amount_captured: 20000,
+          receipt_email: "payer@example.com",
+          receipt_url: "https://pay.stripe.com/receipts/acct_123/ch_123",
+        },
+      },
+    });
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "sk_test_mocked",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require=${path.join(tempDir, "mock-stripe.js")}`,
+    });
+    await waitForServer(port);
+
+    const response = await requestText(
+      port,
+      "GET",
+      "/api/stripe/checkout/success?invoiceId=inv_7&invoiceNumber=INV-7&stripeAccountId=acct_test_connected_123&session_id=cs_test_789"
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain("text/html");
+    expect(response.text).toContain("Payment received");
+    expect(response.text).toContain("INV-7");
+    expect(response.text).toContain("$200.00");
+    expect(response.text).toContain("payer@example.com");
+    expect(response.text).toContain("View Stripe receipt");
+    expect(response.text).toContain('href="https://pay.stripe.com/receipts/acct_123/ch_123"');
+    expect(response.text).toContain("Close this tab");
+    expect(response.text).toContain("INV-7");
+    expect(response.text).not.toContain("Check / Sync Stripe Payment");
+    expect(response.text).not.toContain("Open EstiPaid");
+    expect(response.text).not.toContain("cs_test_789");
+    expect(response.text).not.toContain("pi_test_paid_123");
+    expect(response.text).not.toBe("OK");
+  });
+
+  test("stripe checkout cancel page is customer-facing and does not direct customers to EstiPaid dashboard", async () => {
     port = 5968;
     child = startServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
-      CLIENT_URL: "http://localhost:3000",
     });
     await waitForServer(port);
 
     const response = await requestText(
       port,
       "GET",
-      "/api/stripe/checkout/cancel?invoiceId=inv_8&invoiceNumber=INV-8&returnTo=http%3A%2F%2Flocalhost%3A5055"
+      "/api/stripe/checkout/cancel?invoiceId=inv_8&invoiceNumber=INV-8"
     );
 
     expect(response.status).toBe(200);
     expect(response.contentType).toContain("text/html");
-    expect(response.text).toContain("Stripe checkout canceled");
-    expect(response.text).toContain("No payment was completed in Stripe");
+    expect(response.text).toContain("Payment canceled");
+    expect(response.text).toContain("This payment was canceled or not completed in Stripe.");
     expect(response.text).toContain("Canceled / not completed");
-    expect(response.text).toContain("No invoice update yet");
     expect(response.text).toContain("INV-8");
     expect(response.text).toContain("Close this tab");
-    expect(response.text).toContain("Open EstiPaid");
-    expect(response.text).toContain('href="http://localhost:3000/?stripe=cancel&amp;invoiceId=inv_8"');
-    expect(response.text).not.toContain('href="http://localhost:5055');
+    expect(response.text).toContain("ask the business for a new payment link");
+    expect(response.text).not.toContain("Check / Sync Stripe Payment");
+    expect(response.text).not.toContain("Open EstiPaid");
     expect(response.text).not.toBe("OK");
   });
 });

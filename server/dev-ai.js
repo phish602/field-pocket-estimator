@@ -184,24 +184,14 @@ function renderStripeCheckoutReturnPage({
   title,
   heading,
   body,
-  invoiceNumber = "",
-  sessionId = "",
-  returnHref = "http://localhost:3000",
-  fallbackLabel = "Open EstiPaid",
   detailItems = [],
+  actionItems = [],
+  hint = "",
 }) {
   const safeTitle = escapeHtml(title);
   const safeHeading = escapeHtml(heading);
   const safeBody = escapeHtml(body);
-  const safeReturnHref = escapeHtml(returnHref);
-  const safeFallbackLabel = escapeHtml(fallbackLabel);
-  const derivedDetailItems = Array.isArray(detailItems) && detailItems.length
-    ? detailItems
-    : [
-      ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
-      ...(sessionId ? [{ label: "Session", value: `${String(sessionId).slice(0, 12)}...` }] : []),
-    ];
-  const safeDetails = derivedDetailItems
+  const safeDetails = (Array.isArray(detailItems) ? detailItems : [])
     .map((item) => {
       const label = escapeHtml(asText(item?.label));
       const value = escapeHtml(asText(item?.value));
@@ -210,6 +200,22 @@ function renderStripeCheckoutReturnPage({
     })
     .filter(Boolean)
     .join("");
+  const safeActions = (Array.isArray(actionItems) ? actionItems : [])
+    .map((item) => {
+      const label = escapeHtml(asText(item?.label));
+      const tone = String(item?.tone || "").trim().toLowerCase();
+      const className = tone === "primary" ? "action-primary" : "action-secondary";
+      if (!label) return "";
+      if (String(item?.type || "").trim().toLowerCase() === "close") {
+        return `<button type="button" class="${className}" onclick="window.close()">${label}</button>`;
+      }
+      const href = asText(item?.href);
+      if (!isHttpUrl(href)) return "";
+      return `<a class="${className}" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    })
+    .filter(Boolean)
+    .join("");
+  const safeHint = escapeHtml(hint);
 
   return `<!doctype html>
 <html lang="en">
@@ -250,25 +256,24 @@ function renderStripeCheckoutReturnPage({
       dd { margin: 4px 0 12px; font-weight: 700; }
       dd:last-child { margin-bottom: 0; }
       .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
-      button {
+      button,
+      a {
         border: 0;
         cursor: pointer;
         display: inline-block;
         padding: 12px 16px;
         border-radius: 999px;
-        background: #22c55e;
-        color: #052e16;
         font-weight: 800;
         font-size: 15px;
+        text-decoration: none;
       }
-      a {
-        display: inline-block;
-        padding: 12px 16px;
-        border-radius: 999px;
+      .action-primary {
+        background: #22c55e;
+        color: #052e16;
+      }
+      .action-secondary {
         background: rgba(255,255,255,0.08);
         color: #e2e8f0;
-        font-weight: 800;
-        text-decoration: none;
       }
       .hint { font-size: 13px; color: rgba(148, 163, 184, 0.95); }
     </style>
@@ -277,16 +282,79 @@ function renderStripeCheckoutReturnPage({
     <main>
       <h1>${safeHeading}</h1>
       <p>${safeBody}</p>
-      <p>EstiPaid does not mark the invoice paid from this redirect alone. Return to the original EstiPaid invoice tab and click <strong>Check / Sync Stripe Payment</strong>.</p>
       ${safeDetails ? `<dl>${safeDetails}</dl>` : ""}
-      <div class="actions">
-        <button type="button" onclick="window.close()">Close this tab</button>
-        <a href="${safeReturnHref}" target="_blank" rel="noopener noreferrer">${safeFallbackLabel}</a>
-      </div>
-      <p class="hint">If this tab cannot close automatically, switch back to the original EstiPaid tab or use Open EstiPaid.</p>
+      ${safeActions ? `<div class="actions">${safeActions}</div>` : ""}
+      ${safeHint ? `<p class="hint">${safeHint}</p>` : ""}
     </main>
   </body>
 </html>`;
+}
+
+function formatStripeCurrencyAmount(amountMinor, currency) {
+  const amount = Number(amountMinor || 0) || 0;
+  const normalizedCurrency = asText(currency).toUpperCase() || "USD";
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: normalizedCurrency,
+    }).format(amount / 100);
+  } catch {
+    return `${(amount / 100).toFixed(2)} ${normalizedCurrency}`;
+  }
+}
+
+function extractStripeCheckoutSessionSummary(sessionId, stripeAccountId, session) {
+  const paymentIntent = session?.payment_intent && typeof session.payment_intent === "object"
+    ? session.payment_intent
+    : null;
+  const latestCharge = paymentIntent?.latest_charge && typeof paymentIntent.latest_charge === "object"
+    ? paymentIntent.latest_charge
+    : null;
+  const paymentMethod = paymentIntent?.payment_method && typeof paymentIntent.payment_method === "object"
+    ? paymentIntent.payment_method
+    : null;
+  const paymentMethodType = asText(
+    latestCharge?.payment_method_details?.type
+    || paymentMethod?.type
+    || paymentIntent?.payment_method_types?.[0]
+    || session?.payment_method_types?.[0]
+  );
+  const cardDetails = latestCharge?.payment_method_details?.card || paymentMethod?.card || null;
+  const paidAtTs = Number(latestCharge?.created || 0)
+    || Number(paymentIntent?.created || 0)
+    || Number(session?.created || 0)
+    || Math.floor(Date.now() / 1000);
+
+  return {
+    ok: true,
+    sessionId,
+    stripeAccountId,
+    paymentStatus: asText(session?.payment_status),
+    status: asText(session?.status),
+    amountTotal: Number(session?.amount_total || 0) || 0,
+    amountSubtotal: Number(session?.amount_subtotal || 0) || 0,
+    amountReceived: Number(paymentIntent?.amount_received || latestCharge?.amount_captured || latestCharge?.amount || 0) || 0,
+    currency: asText(session?.currency),
+    customerEmail: asText(session?.customer_details?.email || session?.customer_email),
+    receiptEmail: asText(latestCharge?.receipt_email),
+    receiptUrl: asText(latestCharge?.receipt_url),
+    paymentIntentId: asText(paymentIntent?.id),
+    paymentMethodType,
+    cardBrand: asText(cardDetails?.brand),
+    cardLast4: asText(cardDetails?.last4),
+    paidAt: paidAtTs ? new Date(paidAtTs * 1000).toISOString() : "",
+  };
+}
+
+async function retrieveStripeCheckoutSessionSummary(sessionId, stripeAccountId) {
+  const stripe = getStripeClient();
+  const session = await stripe.checkout.sessions.retrieve(
+    sessionId,
+    { expand: ["payment_intent", "payment_intent.latest_charge", "payment_intent.payment_method"] },
+    { stripeAccount: stripeAccountId },
+  );
+  return extractStripeCheckoutSessionSummary(sessionId, stripeAccountId, session);
 }
 
 function isHttpUrl(value) {
@@ -12109,7 +12177,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
 
     const returnBaseUrl = resolveStripeReturnBaseUrl(req);
     const appBaseUrl = resolveStripeAppBaseUrl(req);
-    const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/api/stripe/checkout/success?invoiceId=${encodeURIComponent(invoiceId)}&invoiceNumber=${encodeURIComponent(invoiceNumber)}&returnTo=${encodeURIComponent(appBaseUrl)}&session_id={CHECKOUT_SESSION_ID}`;
+    const successUrl = STRIPE_SUCCESS_URL || `${returnBaseUrl}/api/stripe/checkout/success?invoiceId=${encodeURIComponent(invoiceId)}&invoiceNumber=${encodeURIComponent(invoiceNumber)}&stripeAccountId=${encodeURIComponent(stripeAccountId)}&returnTo=${encodeURIComponent(appBaseUrl)}&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = STRIPE_CANCEL_URL || `${returnBaseUrl}/api/stripe/checkout/cancel?invoiceId=${encodeURIComponent(invoiceId)}&invoiceNumber=${encodeURIComponent(invoiceNumber)}&returnTo=${encodeURIComponent(appBaseUrl)}`;
     const stripe = getStripeClient();
     const connectedAccount = await stripe.accounts.retrieve(stripeAccountId);
@@ -12178,108 +12246,83 @@ app.post("/api/stripe/retrieve-checkout-session", async (req, res) => {
       return res.status(400).json({ error: "Invalid stripeAccountId." });
     }
 
-    const stripe = getStripeClient();
-    const session = await stripe.checkout.sessions.retrieve(
-      sessionId,
-      { expand: ["payment_intent", "payment_intent.latest_charge", "payment_intent.payment_method"] },
-      { stripeAccount: stripeAccountId },
-    );
-    const paymentIntent = session?.payment_intent && typeof session.payment_intent === "object"
-      ? session.payment_intent
-      : null;
-    const latestCharge = paymentIntent?.latest_charge && typeof paymentIntent.latest_charge === "object"
-      ? paymentIntent.latest_charge
-      : null;
-    const paymentMethod = paymentIntent?.payment_method && typeof paymentIntent.payment_method === "object"
-      ? paymentIntent.payment_method
-      : null;
-    const paymentMethodType = asText(
-      latestCharge?.payment_method_details?.type
-      || paymentMethod?.type
-      || paymentIntent?.payment_method_types?.[0]
-      || session?.payment_method_types?.[0]
-    );
-    const cardDetails = latestCharge?.payment_method_details?.card || paymentMethod?.card || null;
-    const paidAtTs = Number(latestCharge?.created || 0)
-      || Number(paymentIntent?.created || 0)
-      || Number(session?.created || 0)
-      || Math.floor(Date.now() / 1000);
-
-    return res.json({
-      ok: true,
-      sessionId,
-      stripeAccountId,
-      paymentStatus: asText(session?.payment_status),
-      status: asText(session?.status),
-      amountTotal: Number(session?.amount_total || 0) || 0,
-      amountSubtotal: Number(session?.amount_subtotal || 0) || 0,
-      amountReceived: Number(paymentIntent?.amount_received || latestCharge?.amount_captured || latestCharge?.amount || 0) || 0,
-      currency: asText(session?.currency),
-      customerEmail: asText(session?.customer_details?.email || session?.customer_email),
-      receiptEmail: asText(latestCharge?.receipt_email),
-      receiptUrl: asText(latestCharge?.receipt_url),
-      paymentIntentId: asText(paymentIntent?.id),
-      paymentMethodType,
-      cardBrand: asText(cardDetails?.brand),
-      cardLast4: asText(cardDetails?.last4),
-      paidAt: paidAtTs ? new Date(paidAtTs * 1000).toISOString() : "",
-    });
+    return res.json(await retrieveStripeCheckoutSessionSummary(sessionId, stripeAccountId));
   } catch (error) {
     logSafeStripeError("/api/stripe/retrieve-checkout-session", error);
     return res.status(500).json({ error: "Unable to retrieve Stripe checkout session." });
   }
 });
 
-app.get("/api/stripe/checkout/success", (req, res) => {
+app.get("/api/stripe/checkout/success", async (req, res) => {
   const invoiceId = asText(req.query?.invoiceId);
   const invoiceNumber = asText(req.query?.invoiceNumber);
   const sessionId = asText(req.query?.session_id);
-  const returnHref = buildStripeCheckoutReturnLink(
-    asText(req.query?.returnTo),
-    "success",
-    invoiceId,
-    sessionId,
+  const stripeAccountId = asText(req.query?.stripeAccountId);
+  let sessionSummary = null;
+  if (STRIPE_SECRET_KEY && /^cs_/i.test(sessionId) && /^acct_/i.test(stripeAccountId)) {
+    try {
+      sessionSummary = await retrieveStripeCheckoutSessionSummary(sessionId, stripeAccountId);
+    } catch (error) {
+      logSafeStripeError("/api/stripe/checkout/success", error);
+      sessionSummary = null;
+    }
+  }
+
+  const amountLabel = formatStripeCurrencyAmount(
+    sessionSummary?.amountReceived || sessionSummary?.amountTotal,
+    sessionSummary?.currency,
   );
+  const receiptLink = isHttpUrl(sessionSummary?.receiptUrl) ? asText(sessionSummary?.receiptUrl) : "";
+  const receiptEmail = asText(sessionSummary?.receiptEmail || sessionSummary?.customerEmail);
+  const detailItems = [
+    { label: "Payment status", value: "Payment received" },
+    ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
+    ...(amountLabel ? [{ label: "Amount", value: amountLabel }] : []),
+    ...(receiptEmail ? [{ label: "Receipt email", value: receiptEmail }] : []),
+  ];
+  const body = receiptLink
+    ? "Your payment was received successfully. You can use the receipt link below for your records."
+    : "Your payment was received successfully.";
+  const hint = receiptLink
+    ? "You may close this tab when you are done."
+    : (receiptEmail
+      ? "A receipt will be emailed by Stripe when available. You may close this tab."
+      : "The business will update their records after payment confirmation. You may close this tab.");
 
   return res
     .status(200)
     .type("html")
     .send(renderStripeCheckoutReturnPage({
-      title: "Stripe payment received",
-      heading: "Stripe payment received",
-      body: "Stripe has confirmed the payment. EstiPaid will show it after the contractor returns to the original invoice tab and runs Check / Sync Stripe Payment.",
-      returnHref,
-      detailItems: [
-        { label: "Payment status", value: "Received by Stripe" },
-        { label: "EstiPaid status", value: "Awaiting manual Check / Sync" },
-        ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
-        ...(sessionId ? [{ label: "Session", value: `${String(sessionId).slice(0, 12)}...` }] : []),
+      title: "Payment received",
+      heading: "Payment received",
+      body,
+      detailItems,
+      actionItems: [
+        ...(receiptLink ? [{ type: "link", label: "View Stripe receipt", href: receiptLink, tone: "primary" }] : []),
+        { type: "close", label: "Close this tab", tone: receiptLink ? "secondary" : "primary" },
       ],
+      hint,
     }));
 });
 
 app.get("/api/stripe/checkout/cancel", (req, res) => {
-  const invoiceId = asText(req.query?.invoiceId);
   const invoiceNumber = asText(req.query?.invoiceNumber);
-  const returnHref = buildStripeCheckoutReturnLink(
-    asText(req.query?.returnTo),
-    "cancel",
-    invoiceId,
-  );
 
   return res
     .status(200)
     .type("html")
     .send(renderStripeCheckoutReturnPage({
-      title: "Stripe checkout canceled",
-      heading: "Stripe checkout canceled",
-      body: "No payment was completed in Stripe from this Checkout Session. Return to EstiPaid if you want to reuse the link or generate a fresh one.",
-      returnHref,
+      title: "Payment canceled",
+      heading: "Payment canceled",
+      body: "This payment was canceled or not completed in Stripe.",
       detailItems: [
         { label: "Payment status", value: "Canceled / not completed" },
-        { label: "EstiPaid status", value: "No invoice update yet" },
         ...(invoiceNumber ? [{ label: "Invoice", value: invoiceNumber }] : []),
       ],
+      actionItems: [
+        { type: "close", label: "Close this tab", tone: "primary" },
+      ],
+      hint: "If you still need to pay, ask the business for a new payment link.",
     }));
 });
 
