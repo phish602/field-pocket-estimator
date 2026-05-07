@@ -29,9 +29,25 @@ function renderAppAtRoute(route, nodeEnv = "test") {
   return { ...result, screen };
 }
 
+async function renderAppWithDevHashRoute(nodeEnv = "test") {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = nodeEnv;
+
+  delete require.cache[APP_MODULE_PATH];
+  window.history.replaceState({}, "", "/#job-learning-diagnostics");
+
+  const App = require("./App").default;
+  const result = render(<App />);
+
+  process.env.NODE_ENV = previousNodeEnv;
+  delete require.cache[APP_MODULE_PATH];
+  return { ...result, screen };
+}
+
 describe("App job learning diagnostics route gating", () => {
   afterEach(() => {
     process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    window.history.replaceState({}, "", "/");
     delete require.cache[APP_MODULE_PATH];
     jest.clearAllMocks();
   });
@@ -53,6 +69,20 @@ describe("App job learning diagnostics route gating", () => {
 
   test("production access does not render diagnostics even when the hidden route key is forced", () => {
     const { screen } = renderAppAtRoute(ROUTES.JOB_LEARNING_DIAGNOSTICS, "production");
+
+    expect(screen.queryByRole("heading", { name: /job learning diagnostics/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/read-only registry health and promotion audit/i)).not.toBeInTheDocument();
+  });
+
+  test("local manual access renders diagnostics through the hidden hash route", async () => {
+    const { screen } = await renderAppWithDevHashRoute("test");
+
+    expect(await screen.findByRole("heading", { name: /job learning diagnostics/i })).toBeInTheDocument();
+    expect(screen.getByText(/read-only registry health and promotion audit/i)).toBeInTheDocument();
+  });
+
+  test("production blocks the hidden hash route", async () => {
+    const { screen } = await renderAppWithDevHashRoute("production");
 
     expect(screen.queryByRole("heading", { name: /job learning diagnostics/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/read-only registry health and promotion audit/i)).not.toBeInTheDocument();

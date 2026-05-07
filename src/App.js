@@ -68,6 +68,31 @@ const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "Finan
 const JobLearningDiagnosticsScreen = process.env.NODE_ENV !== "production"
   ? resolveScreen(JobLearningDiagnosticsScreenMod, "JobLearningDiagnosticsScreen")
   : null;
+const DEV_JOB_LEARNING_DIAGNOSTICS_KEY = "job-learning-diagnostics";
+
+function isLocalDevHost() {
+  try {
+    const hostname = String(window.location.hostname || "").trim().toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "";
+  } catch {
+    return false;
+  }
+}
+
+function shouldOpenDevJobLearningDiagnostics() {
+  try {
+    if (process.env.NODE_ENV === "production") return false;
+    if (!isLocalDevHost()) return false;
+
+    const hash = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
+    const search = new URLSearchParams(String(window.location.search || ""));
+    const devParam = String(search.get("dev") || "").trim().toLowerCase();
+
+    return hash === DEV_JOB_LEARNING_DIAGNOSTICS_KEY || devParam === DEV_JOB_LEARNING_DIAGNOSTICS_KEY;
+  } catch {
+    return false;
+  }
+}
 
 function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title = "EstiPaid" }) {
   const baseId = useId().replace(/:/g, "");
@@ -2107,6 +2132,22 @@ export default function App() {
     if (process.env.NODE_ENV !== "development") return undefined;
     installDevJobLearningConsole();
     return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (!shouldOpenDevJobLearningDiagnostics()) return undefined;
+
+    const syncDevDiagnosticsRoute = () => {
+      if (shouldOpenDevJobLearningDiagnostics()) {
+        setActiveTab(ROUTES.JOB_LEARNING_DIAGNOSTICS);
+      }
+    };
+
+    syncDevDiagnosticsRoute();
+    window.addEventListener("hashchange", syncDevDiagnosticsRoute);
+    return () => {
+      window.removeEventListener("hashchange", syncDevDiagnosticsRoute);
+    };
   }, []);
 
   // Patch localStorage.setItem so we can detect language selection inside EstimateForm (same tab)
