@@ -23,15 +23,23 @@ export function captureAiAssistResult(event = {}) {
   captureJobLearningAssistResult(event);
 }
 
-function resolveAiAssistLearningContext(sectionKey, state, captureMeta = {}) {
+function resolveAssistCaptureContext(sectionKey, state, captureMeta = {}, sequenceIndex = 0) {
+  const normalizedSectionKey = String(sectionKey || "").trim();
   const normalizedDocType = String(captureMeta?.docType || state?.ui?.docType || "estimate").trim().toLowerCase() === "invoice"
     ? "invoice"
     : "estimate";
   const normalizedMode = String(captureMeta?.mode || "").trim().toLowerCase() || "create";
+  const assistSequenceIndex = Math.max(0, Math.floor(Number(sequenceIndex) || 0));
+  const assistTraceId = [normalizedSectionKey || "unknown", normalizedDocType, normalizedMode, String(assistSequenceIndex)].join(":");
   return {
-    sectionKey: String(sectionKey || "").trim(),
+    sectionKey: normalizedSectionKey,
     docType: normalizedDocType,
     mode: normalizedMode,
+    assistTraceId,
+    assistSequenceIndex,
+    assistSectionKey: normalizedSectionKey,
+    assistDocType: normalizedDocType,
+    assistMode: normalizedMode,
     scopeTextLength: String(state?.scopeNotes || "").length,
     laborLineCount: Array.isArray(state?.labor?.lines) ? state.labor.lines.length : 0,
     materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
@@ -39,11 +47,16 @@ function resolveAiAssistLearningContext(sectionKey, state, captureMeta = {}) {
 }
 
 function buildAiAssistRequestCapturePayload(sectionKey, userInput, state, captureMeta) {
-  const context = resolveAiAssistLearningContext(sectionKey, state, captureMeta);
+  const context = resolveAssistCaptureContext(sectionKey, state, captureMeta, captureMeta?.assistSequenceIndex);
   return {
     sectionKey: context.sectionKey,
     docType: context.docType,
     mode: context.mode,
+    assistTraceId: context.assistTraceId,
+    assistSequenceIndex: context.assistSequenceIndex,
+    assistSectionKey: context.assistSectionKey,
+    assistDocType: context.assistDocType,
+    assistMode: context.assistMode,
     rawInput: String(userInput || ""),
     scopeTextLength: context.scopeTextLength,
     laborLineCount: context.laborLineCount,
@@ -52,11 +65,16 @@ function buildAiAssistRequestCapturePayload(sectionKey, userInput, state, captur
 }
 
 function buildAiAssistResultCapturePayload(sectionKey, userInput, state, captureMeta, result) {
-  const context = resolveAiAssistLearningContext(sectionKey, state, captureMeta);
+  const context = resolveAssistCaptureContext(sectionKey, state, captureMeta, captureMeta?.assistSequenceIndex);
   return {
     sectionKey: context.sectionKey,
     docType: context.docType,
     mode: context.mode,
+    assistTraceId: context.assistTraceId,
+    assistSequenceIndex: context.assistSequenceIndex,
+    assistSectionKey: context.assistSectionKey,
+    assistDocType: context.assistDocType,
+    assistMode: context.assistMode,
     rawInput: String(userInput || ""),
     scopeTextLength: context.scopeTextLength,
     laborLineCount: context.laborLineCount,
@@ -139,6 +157,7 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
   const [assistState, setAssistState] = useState(IDLE);
   const inFlightScopeRefineRequestRef = useRef(null);
   const submitSeqRef = useRef(0); // Pass 18: stale-request guard
+  const latestAssistCaptureMetaRef = useRef(null);
 
   const open = useCallback((openOptions = null) => {
     const options = openOptions && typeof openOptions === "object" ? openOptions : {};
@@ -148,14 +167,16 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
   const close = useCallback(() => {
     submitSeqRef.current += 1;
     inFlightScopeRefineRequestRef.current = null;
+    latestAssistCaptureMetaRef.current = null;
     setAssistState(IDLE);
   }, []);
 
   const submit = useCallback(
     async (userInput, serviceOptions = {}) => {
       const mySeq = ++submitSeqRef.current; // Pass 18: capture sequence before async work
-      const traceId = DEV ? Math.random().toString(36).slice(2, 7) : ""; // Pass 19: per-submit correlation ID
       const normalizedMode = String(serviceOptions?.mode || "").trim().toLowerCase() === "refine" ? "refine" : "initial";
+      const assistCaptureMeta = resolveAssistCaptureContext(sectionKey, state, captureMeta, mySeq);
+      const traceId = assistCaptureMeta.assistTraceId;
       const scopeRefineRequest = sectionKey === "scope" && normalizedMode === "refine";
       const scopeRefineRequestKey = scopeRefineRequest
         ? buildScopeAssistRequestKey({ sectionKey, userInput, state, ...serviceOptions })
@@ -169,14 +190,14 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
         setAssistState({ phase: "requesting", input: userInput });
         if (DEV) console.log(`[ai-assist:${traceId}] submit_start`, { section: sectionKey, seq: mySeq, inputLen: String(userInput || "").length });
         try {
-          captureAiAssistRequest(buildAiAssistRequestCapturePayload(sectionKey, userInput, state, captureMeta));
+          captureAiAssistRequest(buildAiAssistRequestCapturePayload(sectionKey, userInput, state, assistCaptureMeta));
           const result = await requestSectionAssist({ sectionKey, userInput, state, ...serviceOptions, _traceId: traceId });
           // Pass 18: discard stale response — a newer submit already owns the state
           if (submitSeqRef.current !== mySeq) {
             if (DEV) console.log(`[ai-assist:${traceId}] stale_discarded`, { seq: mySeq, current: submitSeqRef.current });
             return;
           }
-          captureAiAssistResult(buildAiAssistResultCapturePayload(sectionKey, userInput, state, captureMeta, result));
+          captureAiAssistResult(buildAiAssistResultCapturePayload(sectionKey, userInput, state, assistCaptureMeta, result));
           if (!result.validation.valid) {
             if (DEV) console.log(`[ai-assist:${traceId}] validation_failed`, { seq: mySeq, error: result.validation.error });
             setAssistState({
@@ -195,6 +216,7 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
             return;
           }
           if (DEV) console.log(`[ai-assist:${traceId}] success`, { seq: mySeq, writeKeys: Object.keys(result.writes || {}) });
+          latestAssistCaptureMetaRef.current = assistCaptureMeta;
           setAssistState({ phase: "review", input: userInput, result });
         } catch (e) {
           // Pass 18: discard stale error — newer request owns the state
@@ -227,8 +249,8 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
 
       return requestPromise;
     },
-    [sectionKey, state]
+    [sectionKey, state, captureMeta]
   );
 
-  return { assistState, open, close, submit };
+  return { assistState, open, close, submit, assistCaptureMeta: latestAssistCaptureMetaRef.current };
 }

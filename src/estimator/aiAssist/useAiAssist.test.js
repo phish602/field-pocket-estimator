@@ -2,10 +2,17 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useAiAssist } from "./useAiAssist";
 
 const mockRequestSectionAssist = jest.fn();
+const mockCaptureAssistRequest = jest.fn();
+const mockCaptureAssistResult = jest.fn();
 
 jest.mock("./service", () => ({
   buildScopeAssistRequestKey: jest.fn(() => "scope-refine-key"),
   requestSectionAssist: (...args) => mockRequestSectionAssist(...args),
+}));
+
+jest.mock("../../utils/jobLearningCapture", () => ({
+  captureAssistRequest: (...args) => mockCaptureAssistRequest(...args),
+  captureAssistResult: (...args) => mockCaptureAssistResult(...args),
 }));
 
 function createDeferred() {
@@ -21,6 +28,8 @@ function createDeferred() {
 describe("useAiAssist close-request invalidation", () => {
   beforeEach(() => {
     mockRequestSectionAssist.mockReset();
+    mockCaptureAssistRequest.mockReset();
+    mockCaptureAssistResult.mockReset();
   });
 
   test("ignores a late successful response after close and allows a fresh submit", async () => {
@@ -125,6 +134,8 @@ describe("useAiAssist close-request invalidation", () => {
 describe("useAiAssist shared scope validation", () => {
   beforeEach(() => {
     mockRequestSectionAssist.mockReset();
+    mockCaptureAssistRequest.mockReset();
+    mockCaptureAssistResult.mockReset();
   });
 
   test("keeps invalid non-empty scaffold scope output out of review", async () => {
@@ -175,5 +186,49 @@ describe("useAiAssist shared scope validation", () => {
       expect(result.current.assistState.input).toBe("replace ceiling tiles");
       expect(result.current.assistState.result?.writes?.scopeNotes).toContain("Remove damaged ceiling tiles");
     });
+  });
+});
+
+describe("useAiAssist passive correlation metadata", () => {
+  beforeEach(() => {
+    mockRequestSectionAssist.mockReset();
+    mockCaptureAssistRequest.mockReset();
+    mockCaptureAssistResult.mockReset();
+  });
+
+  test("shares assistTraceId and sequence metadata between request and result", async () => {
+    mockRequestSectionAssist.mockResolvedValueOnce({
+      writes: {
+        blanketSuggestion: { suggestedAmount: "300" },
+      },
+      validation: { valid: true },
+    });
+
+    const { result } = renderHook(() => useAiAssist("materials", { ui: { docType: "estimate" } }, { docType: "estimate", mode: "create" }));
+
+    await act(async () => {
+      result.current.open();
+    });
+
+    await act(async () => {
+      await result.current.submit("add materials allowance");
+    });
+
+    await waitFor(() => {
+      expect(result.current.assistState.phase).toBe("review");
+    });
+
+    expect(mockCaptureAssistRequest).toHaveBeenCalledTimes(1);
+    expect(mockCaptureAssistResult).toHaveBeenCalledTimes(1);
+
+    const requestPayload = mockCaptureAssistRequest.mock.calls[0][0];
+    const resultPayload = mockCaptureAssistResult.mock.calls[0][0];
+
+    expect(requestPayload.assistTraceId).toBe(resultPayload.assistTraceId);
+    expect(requestPayload.assistSequenceIndex).toBe(resultPayload.assistSequenceIndex);
+    expect(requestPayload.assistSectionKey).toBe("materials");
+    expect(requestPayload.assistDocType).toBe("estimate");
+    expect(requestPayload.assistMode).toBe("create");
+    expect(result.current.assistCaptureMeta.assistTraceId).toBe(requestPayload.assistTraceId);
   });
 });

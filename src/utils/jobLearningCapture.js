@@ -43,6 +43,11 @@ function sanitizeLearningEvent(event = {}, seam = "") {
   const normalizedSaveType = sanitizeString(source.saveType || (normalizedSeam === "document_save" ? normalizedDocType : ""));
   const normalizedSaveDocType = sanitizeString(source.saveDocType);
   const normalizedSaveMode = sanitizeString(source.saveMode);
+  const hasAssistTraceId = Object.prototype.hasOwnProperty.call(source, "assistTraceId");
+  const hasAssistSequenceIndex = Object.prototype.hasOwnProperty.call(source, "assistSequenceIndex");
+  const hasAssistSectionKey = Object.prototype.hasOwnProperty.call(source, "assistSectionKey");
+  const hasAssistDocType = Object.prototype.hasOwnProperty.call(source, "assistDocType");
+  const hasAssistMode = Object.prototype.hasOwnProperty.call(source, "assistMode");
   const normalizedProjectId = sanitizeString(source.projectId, null);
   const normalizedLinkedEstimateId = sanitizeString(source.linkedEstimateId, null);
 
@@ -58,6 +63,11 @@ function sanitizeLearningEvent(event = {}, seam = "") {
     ...(normalizedSaveType ? { saveType: normalizedSaveType } : {}),
     ...(normalizedSaveDocType ? { saveDocType: normalizedSaveDocType } : {}),
     ...(normalizedSaveMode ? { saveMode: normalizedSaveMode } : {}),
+    ...(hasAssistTraceId && sanitizeString(source.assistTraceId) ? { assistTraceId: sanitizeString(source.assistTraceId) } : {}),
+    ...(hasAssistSequenceIndex ? { assistSequenceIndex: sanitizeCount(source.assistSequenceIndex) } : {}),
+    ...(hasAssistSectionKey && sanitizeString(source.assistSectionKey) ? { assistSectionKey: sanitizeString(source.assistSectionKey) } : {}),
+    ...(hasAssistDocType && sanitizeString(source.assistDocType) ? { assistDocType: sanitizeString(source.assistDocType) } : {}),
+    ...(hasAssistMode && sanitizeString(source.assistMode) ? { assistMode: sanitizeString(source.assistMode) } : {}),
     isEditMode: sanitizeBoolean(source.isEditMode),
     isProjectSeeded: sanitizeBoolean(source.isProjectSeeded),
     hasLinkedEstimate: sanitizeBoolean(source.hasLinkedEstimate),
