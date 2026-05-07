@@ -1962,3 +1962,53 @@
     transition: none !important;
   }
 }
+
+/* ── Scope Editor shell ─────────────────────────────────────────────────── */
+
+.pe-scope-editor {
+  display: grid;
+  gap: 0;
+}
+
+.pe-scope-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(15, 23, 42, 0.42);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+}
+
+/* Remove top-radius from the textarea when it sits below the toolbar */
+.pe-scope-editor .pe-scope-textarea {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.pe-scope-toolbar-btn {
+  padding: 3px 8px;
+  min-height: 26px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 6px;
+  font-weight: 700;
+  color: rgba(203, 213, 225, 0.72);
+  background: rgba(99, 179, 237, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pe-scope-toolbar-btn:hover {
+  background: rgba(99, 179, 237, 0.13);
+  border-color: rgba(99, 179, 237, 0.32);
+  color: rgba(203, 213, 225, 0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pe-scope-toolbar-btn {
+    transition: none !important;
+  }
+}

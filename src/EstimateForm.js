@@ -10,6 +10,7 @@ import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
+import ScopeEditor from "./components/ScopeEditor";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
 import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
@@ -5900,16 +5901,14 @@ export default function EstimateForm(props) {
               ) : null}
             </div>
           </div>
-          <textarea
-            ref={scopeNotesRef}
-            className="pe-input pe-textarea"
+          <ScopeEditor
             value={scopeNotes}
-            onChange={(e) => {
-              patch("scopeNotes", e.target.value);
-              autoResizeScopeNotes(e.target);
-            }}
+            onChange={(val) => patch("scopeNotes", val)}
+            textareaRef={scopeNotesRef}
+            onResize={autoResizeScopeNotes}
             placeholder="What work is being done? e.g. Tear off existing roof, install 30-yr architectural shingles, replace flashing and vents…"
-            style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
+            minHeight={SCOPE_NOTES_MIN_HEIGHT}
+            lang={lang}
           />
         </div>
         <div
