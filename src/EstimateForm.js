@@ -1554,6 +1554,15 @@ function buildMaterialsAssistSuggestedPrompts(mode) {
   return [];
 }
 
+function resolveMaterialsFromScopePrompt(mode) {
+  const prompts = buildMaterialsAssistSuggestedPrompts(mode);
+  const fromScopeEntry = prompts.find((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    return String(entry.label || "").trim().toLowerCase() === "from scope notes";
+  });
+  return String(fromScopeEntry?.prompt || "").trim();
+}
+
 export default function EstimateForm(props) {
   const {
     embeddedInShell = false,
@@ -6412,7 +6421,14 @@ export default function EstimateForm(props) {
         money={money}
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
-        onAiAssistOpen={() => materialsAssist.open({ suggestedPrompts: buildMaterialsAssistSuggestedPrompts(materialsAssistMode) })}
+        onAiAssistOpen={() => {
+          const fromScopePrompt = resolveMaterialsFromScopePrompt(materialsAssistMode);
+          if (fromScopePrompt) {
+            materialsAssist.submit(fromScopePrompt);
+            return;
+          }
+          materialsAssist.open({ suggestedPrompts: buildMaterialsAssistSuggestedPrompts(materialsAssistMode) });
+        }}
         materialsMode={materialsMode}
         setMaterialsMode={setMaterialsMode}
         materialsOpen={materialsOpen}
