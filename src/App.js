@@ -18,6 +18,7 @@ import { requireCompanyProfile } from "./utils/guards";
 import { migrateLegacyStorageNamespace } from "./utils/storage";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "./utils/projects";
+import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -2098,6 +2099,12 @@ const styles = {
 };
 
 export default function App() {
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return undefined;
+    installDevJobLearningConsole();
+    return undefined;
+  }, []);
+
   // Patch localStorage.setItem so we can detect language selection inside EstimateForm (same tab)
   useEffect(() => {
     try {
