@@ -111,7 +111,7 @@ test("toolbar renders Spanish labels when lang=es", () => {
   renderEditor({ lang: "es" });
   expect(screen.getByRole("button", { name: /encabezado/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /viñeta/i })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /numerado/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /numerada/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /negrita/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /cursiva/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /insertar enlace/i })).toBeInTheDocument();
@@ -229,4 +229,65 @@ test("output from toolbar buttons is always plain text — no HTML tags", () => 
   fireEvent.click(screen.getByRole("button", { name: /bold/i }));
   const called = onChange.mock.calls[0][0];
   expect(called).not.toMatch(/<[^>]+>/); // no HTML tags
+});
+
+// ── Helper text ───────────────────────────────────────────────────────────────
+
+test("helper text is rendered", () => {
+  const { container } = renderEditor();
+  const helper = container.querySelector(".pe-scope-helper");
+  expect(helper).toBeInTheDocument();
+  expect(helper.textContent).toMatch(/formatting markers/i);
+});
+
+test("helper text renders in Spanish when lang=es", () => {
+  const { container } = renderEditor({ lang: "es" });
+  const helper = container.querySelector(".pe-scope-helper");
+  expect(helper).toBeInTheDocument();
+  expect(helper.textContent).toMatch(/marcadores de formato/i);
+});
+
+// ── Toolbar icon clarity ──────────────────────────────────────────────────────
+
+test("Heading button icon is H1", () => {
+  renderEditor();
+  const headingBtn = screen.getByRole("button", { name: /heading/i });
+  expect(headingBtn.textContent).toBe("H1");
+});
+
+// ── No image insert ───────────────────────────────────────────────────────────
+
+test("no image insert button exists inside ScopeEditor", () => {
+  renderEditor({ value: "scope text" });
+  expect(
+    screen.queryByRole("button", { name: /image|photo|upload|attach/i })
+  ).not.toBeInTheDocument();
+});
+
+// ── No-selection bold/italic placeholders ─────────────────────────────────────
+
+test("Bold button with no selection inserts bold text placeholder", () => {
+  const onChange = jest.fn();
+  const { container } = renderEditor({ value: "hello", onChange });
+  const ta = getTextarea(container);
+
+  Object.defineProperty(ta, "selectionStart", { get: () => 5, configurable: true });
+  Object.defineProperty(ta, "selectionEnd", { get: () => 5, configurable: true });
+  ta.value = "hello";
+
+  fireEvent.click(screen.getByRole("button", { name: /bold/i }));
+  expect(onChange).toHaveBeenCalledWith("hello**bold text**");
+});
+
+test("Italic button with no selection inserts italic text placeholder", () => {
+  const onChange = jest.fn();
+  const { container } = renderEditor({ value: "hello", onChange });
+  const ta = getTextarea(container);
+
+  Object.defineProperty(ta, "selectionStart", { get: () => 5, configurable: true });
+  Object.defineProperty(ta, "selectionEnd", { get: () => 5, configurable: true });
+  ta.value = "hello";
+
+  fireEvent.click(screen.getByRole("button", { name: /italic/i }));
+  expect(onChange).toHaveBeenCalledWith("hello_italic text_");
 });

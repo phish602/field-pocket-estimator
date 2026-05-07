@@ -1988,8 +1988,8 @@
 }
 
 .pe-scope-toolbar-btn {
-  padding: 3px 8px;
-  min-height: 26px;
+  padding: 4px 10px;
+  min-height: 34px;
   font-size: 12px;
   line-height: 1;
   border-radius: 6px;
@@ -2005,6 +2005,21 @@
   background: rgba(99, 179, 237, 0.13);
   border-color: rgba(99, 179, 237, 0.32);
   color: rgba(203, 213, 225, 0.98);
+}
+
+.pe-scope-toolbar-divider {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.pe-scope-helper {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.52);
+  line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {

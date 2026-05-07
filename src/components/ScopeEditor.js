@@ -94,43 +94,68 @@ export default function ScopeEditor({
   }
 
   const en = lang !== "es";
+
+  // Flat list with divider sentinels between button groups.
   const toolbarActions = [
+    // Line-level formatters
     {
-      icon: "H",
+      icon: "H1",
       label: en ? "Heading" : "Encabezado",
+      title: en
+        ? "Heading — inserts ## marker at line start (cleaned in PDF export)"
+        : "Encabezado — inserta marcador ## al inicio de la línea (se elimina al exportar el PDF)",
       action: () => applyResult(insertLinePrefix(ref.current, "## ")),
     },
     {
       icon: "•",
-      label: en ? "Bullet" : "Viñeta",
+      label: en ? "Bullet list" : "Lista con viñetas",
+      title: en
+        ? "Bullet list — inserts - marker at line start"
+        : "Lista con viñetas — inserta marcador - al inicio de la línea",
       action: () => applyResult(insertLinePrefix(ref.current, "- ")),
     },
     {
       icon: "1.",
-      label: en ? "Numbered" : "Numerado",
+      label: en ? "Numbered list" : "Lista numerada",
+      title: en
+        ? "Numbered list — inserts 1. marker at line start"
+        : "Lista numerada — inserta marcador 1. al inicio de la línea",
       action: () => applyResult(insertLinePrefix(ref.current, "1. ")),
     },
+    { divider: true },
+    // Inline formatters
     {
       icon: "B",
       label: en ? "Bold" : "Negrita",
+      title: en
+        ? "Bold — select text first, then click (** markers, cleaned in PDF export)"
+        : "Negrita — selecciona el texto primero (marcadores **, se eliminan al exportar el PDF)",
       extraStyle: { fontWeight: 900 },
       action: () =>
         applyResult(
-          wrapSelectionMarkers(ref.current, "**", "**", en ? "text" : "texto")
+          wrapSelectionMarkers(ref.current, "**", "**", en ? "bold text" : "texto en negrita")
         ),
     },
     {
       icon: "I",
       label: en ? "Italic" : "Cursiva",
+      title: en
+        ? "Italic — select text first, then click (_ markers, cleaned in PDF export)"
+        : "Cursiva — selecciona el texto primero (marcadores _, se eliminan al exportar el PDF)",
       extraStyle: { fontStyle: "italic" },
       action: () =>
         applyResult(
-          wrapSelectionMarkers(ref.current, "_", "_", en ? "text" : "texto")
+          wrapSelectionMarkers(ref.current, "_", "_", en ? "italic text" : "texto en cursiva")
         ),
     },
+    { divider: true },
+    // Utility
     {
       icon: "🔗",
       label: en ? "Insert link" : "Insertar enlace",
+      title: en
+        ? "Insert link — inserts a plain text URL reference"
+        : "Insertar enlace — inserta una referencia de URL en texto plano",
       action: handleInsertLink,
     },
   ];
@@ -142,20 +167,28 @@ export default function ScopeEditor({
         role="toolbar"
         aria-label={en ? "Scope formatting toolbar" : "Barra de herramientas de alcance"}
       >
-        {toolbarActions.map((btn) => (
-          <button
-            key={btn.label}
-            type="button"
-            className="pe-btn pe-scope-toolbar-btn"
-            title={btn.label}
-            aria-label={btn.label}
-            onClick={btn.action}
-            style={btn.extraStyle}
-            tabIndex={-1}
-          >
-            {btn.icon}
-          </button>
-        ))}
+        {toolbarActions.map((btn, i) =>
+          btn.divider ? (
+            <span
+              key={`divider-${i}`}
+              className="pe-scope-toolbar-divider"
+              aria-hidden="true"
+            />
+          ) : (
+            <button
+              key={btn.label}
+              type="button"
+              className="pe-btn pe-scope-toolbar-btn"
+              title={btn.title}
+              aria-label={btn.label}
+              onClick={btn.action}
+              style={btn.extraStyle}
+              tabIndex={-1}
+            >
+              {btn.icon}
+            </button>
+          )
+        )}
       </div>
       <textarea
         ref={ref}
@@ -168,6 +201,11 @@ export default function ScopeEditor({
         placeholder={placeholder}
         style={{ minHeight, resize: "none" }}
       />
+      <p className="pe-scope-helper">
+        {en
+          ? "Formatting markers stay editable here and are cleaned in the PDF export."
+          : "Los marcadores de formato se editan aquí y se limpian al exportar el PDF."}
+      </p>
     </div>
   );
 }
