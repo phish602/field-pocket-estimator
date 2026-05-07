@@ -16,6 +16,7 @@ export const ROUTES = {
   PROJECT_DETAIL: "projectDetail",
   NEW_PROJECT: "newProject",
   EDIT_PROJECT: "editProject",
+  JOB_LEARNING_DIAGNOSTICS: "jobLearningDiagnostics",
 };
 
 export const BUILDER_INTENTS = {

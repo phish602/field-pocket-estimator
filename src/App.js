@@ -11,6 +11,7 @@ import { readProjectDetailTarget, writeProjectDetailTarget } from "./screens/Pro
 import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
 import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
+import * as JobLearningDiagnosticsScreenMod from "./screens/JobLearningDiagnosticsScreen";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
 import { DEFAULT_STATE } from "./estimator/defaultState";
@@ -64,6 +65,9 @@ const resolveScreen = (mod, fallbackName) => {
 const CompanyProfileScreen = resolveScreen(CompanyProfileScreenMod, "CompanyProfileScreen");
 const AdvancedSettingsScreen = resolveScreen(AdvancedSettingsScreenMod, "AdvancedSettingsScreen");
 const FinancialSnapshotScreen = resolveScreen(FinancialSnapshotScreenMod, "FinancialSnapshotScreen");
+const JobLearningDiagnosticsScreen = process.env.NODE_ENV !== "production"
+  ? resolveScreen(JobLearningDiagnosticsScreenMod, "JobLearningDiagnosticsScreen")
+  : null;
 
 function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title = "EstiPaid" }) {
   const baseId = useId().replace(/:/g, "");
@@ -3363,6 +3367,10 @@ const gated = false;
         }}
       />
     ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    if (activeTab === ROUTES.JOB_LEARNING_DIAGNOSTICS) {
+      if (process.env.NODE_ENV === "production") return null;
+      return JobLearningDiagnosticsScreen ? <JobLearningDiagnosticsScreen /> : null;
+    }
     if (activeTab === ROUTES.CREATE) {
       return (
         <CreateFlow
