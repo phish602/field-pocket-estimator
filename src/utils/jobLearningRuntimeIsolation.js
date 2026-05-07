@@ -1,193 +1,236 @@
 // @ts-nocheck
 /* eslint-disable */
 
-// Standalone runtime isolation gate for the Job Learning system.
-// No imports. No runtime wiring. Advisory/quarantine layer only.
-// This utility MUST remain inert — it evaluates entries but never activates them.
+// Standalone deterministic runtime isolation utility for Job Learning candidates.
+// Safety wall between stored learning data and anything that could later be consumed
+// by runtime behavior. No imports. No runtime wiring. No persistence. No side effects.
 
-const MAX_REGISTRY_ENTRIES = 1000;
-const MAX_SEQUENCE_LENGTH  = 6;
+const MAX_CANDIDATES      = 1000;
+const MAX_TOKEN_LENGTH    = 80;
+const MAX_SEQUENCE_LENGTH = 100;
 
-// Confidence threshold for runtime eligibility is deliberately stricter than
-// the governance module's promotion threshold (0.9 vs 0.8).
-const CONFIDENCE_RUNTIME_THRESHOLD = 0.9;
-const TIER_HIGH_CONFIDENCE = "high_confidence";
+// Confidence tier thresholds (inline — no imports allowed).
+const CONF_HIGH_CONFIDENCE = 0.8;
+const CONF_STABLE          = 0.6;
+const CONF_EMERGING        = 0.4;
 
-// Isolation reasons, in evaluation priority order.
-const REASON_MALFORMED          = "malformed_entry";
-const REASON_REUSABLE_DISABLED  = "reusable_disabled";
-const REASON_NOT_APPROVED       = "runtime_not_approved";
-const REASON_INSUFFICIENT_TIER  = "insufficient_tier";
-const REASON_LOW_CONFIDENCE     = "insufficient_confidence";
-const REASON_EMPTY_SEQUENCE     = "empty_sequence";
-const REASON_NO_SAVE_SIGNAL     = "missing_save_signal";
-const REASON_ELIGIBLE           = "runtime_eligible";
+const VALID_APPROVAL_STATES = new Set([
+  "rejected",
+  "quarantined",
+  "needs_review",
+  "review_ready",
+  "approved_candidate",
+  "runtime_blocked",
+]);
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-function safeString(value, fallback) {
-  const text = String(value ?? "").trim();
-  return text || (fallback !== undefined ? fallback : "");
+function isPlainObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
-function safeNumber(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : (fallback !== undefined ? fallback : 0);
+function isValidFingerprint(fp) {
+  return typeof fp === "string" && fp.startsWith("seq_") && fp.length > 4;
 }
 
-function roundMetric(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  return Math.round(n * 1000) / 1000;
+function isValidConfidence(c) {
+  const n = Number(c);
+  return Number.isFinite(n) && n >= 0 && n <= 1;
 }
 
-function clamp(value, min, max) {
-  const lo = min !== undefined ? min : 0;
-  const hi = max !== undefined ? max : 1;
-  return Math.min(hi, Math.max(lo, Number.isFinite(value) ? value : lo));
-}
-
-// Returns a bounded, cleaned copy of a sequence array. Never throws.
-function normalizeSequence(sequence) {
-  if (!Array.isArray(sequence)) return [];
+// Returns trimmed token array or null if unusable.
+function sanitizeSequence(seq) {
+  if (!Array.isArray(seq) || seq.length === 0 || seq.length > MAX_SEQUENCE_LENGTH) return null;
   const out = [];
-  for (let i = 0; i < sequence.length && out.length < MAX_SEQUENCE_LENGTH; i++) {
-    const token = safeString(sequence[i]);
-    if (token) out.push(token);
+  for (let i = 0; i < seq.length; i++) {
+    if (typeof seq[i] !== "string") return null;
+    const t = seq[i].trim();
+    if (!t || t.length > MAX_TOKEN_LENGTH) return null;
+    out.push(t);
   }
-  return out;
+  return out.length ? out : null;
 }
 
-// True when at least one token in the sequence ends with "_save".
-function sequenceHasSaveSignal(sequence) {
-  for (let i = 0; i < sequence.length; i++) {
-    if (sequence[i].endsWith("_save")) return true;
-  }
-  return false;
+// Returns fingerprint if valid, else "candidate:" + index.
+function candidateId(raw, index) {
+  if (isPlainObject(raw) && isValidFingerprint(raw.fingerprint)) return raw.fingerprint;
+  return "candidate:" + index;
 }
 
-// Returns a frozen, normalized read-only copy of an entry for evaluation.
-// Returns null when the raw entry is structurally unusable.
-function freezeEntry(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const sequence = normalizeSequence(raw.sequence);
-  return Object.freeze({
-    registryId:         safeString(raw.registryId, "unknown"),
-    tier:               safeString(raw.tier, "unstable"),
-    confidence:         roundMetric(clamp(safeNumber(raw.confidence, 0))),
-    frequency:          Math.max(0, Math.floor(safeNumber(raw.frequency, 0))),
-    reusable:           raw.reusable === true,
-    approvedForRuntime: raw.approvedForRuntime === true,
-    sequence:           Object.freeze(sequence),
-  });
+// Infer scoring tier from a valid confidence value.
+function inferScoringTier(confidence) {
+  if (confidence >= CONF_HIGH_CONFIDENCE) return "high_confidence";
+  if (confidence >= CONF_STABLE)          return "stable";
+  if (confidence >= CONF_EMERGING)        return "emerging";
+  return "unstable";
 }
 
-// ── Public: canRuntimeUseRegistryEntry ───────────────────────────────────────
+// ── Public: getRuntimeApprovedCandidates ──────────────────────────────────────
 
 /**
- * Single authoritative gate: may this registry entry affect runtime behavior?
+ * Return sanitized, frozen candidate objects that are safe for downstream consumption.
+ * Only includes entries with approvalState === "approved_candidate" that pass all
+ * governance checks. Returns [] for any malformed input. Never throws.
  *
- * Returns true ONLY when ALL seven conditions hold simultaneously.
- * Fails closed on every malformed, partial, or borderline input.
- * Pure, deterministic, never throws. No side effects.
+ * Returned objects contain ONLY:
+ *   fingerprint, workflowClass, workflowComplexity, tradeHint,
+ *   confidence, scoringTier, sequence, saveCount, acceptedCount
  */
-export function canRuntimeUseRegistryEntry(entry) {
+export function getRuntimeApprovedCandidates(candidates) {
   try {
-    const e = freezeEntry(entry);
-    if (!e) return false;
-    return (
-      e.reusable           === true
-      && e.approvedForRuntime === true
-      && e.tier              === TIER_HIGH_CONFIDENCE
-      && e.confidence        >= CONFIDENCE_RUNTIME_THRESHOLD
-      && e.sequence.length   > 0
-      && sequenceHasSaveSignal(e.sequence)
-    );
+    if (!Array.isArray(candidates)) return Object.freeze([]);
+
+    const list   = candidates.slice(0, MAX_CANDIDATES);
+    const result = [];
+
+    for (let i = 0; i < list.length; i++) {
+      const raw = list[i];
+
+      // Must be a plain object.
+      if (!isPlainObject(raw)) continue;
+
+      // Must be approved_candidate.
+      if (raw.approvalState !== "approved_candidate") continue;
+
+      // Governance flags must be absent / false.
+      if (raw.approvedForRuntime === true) continue;
+      if (raw.reusable === true) continue;
+
+      // Fingerprint must be valid.
+      if (!isValidFingerprint(raw.fingerprint)) continue;
+
+      // Confidence must be valid.
+      if (!isValidConfidence(raw.confidence)) continue;
+
+      // Sequence must be sanitizable.
+      const seq = sanitizeSequence(raw.sequence);
+      if (!seq) continue;
+
+      const confidence  = Number(raw.confidence);
+      const scoringTier = inferScoringTier(confidence);
+
+      // Build sanitized object — only allowed fields, no reference to original.
+      const sanitized = Object.freeze({
+        fingerprint:        raw.fingerprint,
+        workflowClass:      typeof raw.workflowClass      === "string" ? raw.workflowClass      : "",
+        workflowComplexity: typeof raw.workflowComplexity === "string" ? raw.workflowComplexity : "",
+        tradeHint:          typeof raw.tradeHint           === "string" ? raw.tradeHint           : "",
+        confidence,
+        scoringTier,
+        sequence:           Object.freeze(seq),
+        saveCount:     typeof raw.saveCount    === "number" && raw.saveCount    >= 0 ? raw.saveCount    : 0,
+        acceptedCount: typeof raw.acceptedCount === "number" && raw.acceptedCount >= 0 ? raw.acceptedCount : 0,
+      });
+
+      result.push(sanitized);
+    }
+
+    return Object.freeze(result);
   } catch {
-    return false;
+    return Object.freeze([]);
   }
 }
 
-// ── Public: deriveRuntimeIsolationState ──────────────────────────────────────
+// ── Public: deriveRuntimeIsolationRisk ────────────────────────────────────────
 
 /**
- * Explain why an entry is isolated (or the single path to eligibility).
- * Checks run in strict priority order — first failure wins.
- * isolated=true for every reason except "runtime_eligible".
- * Pure, deterministic, never throws. No side effects.
+ * Classify the overall isolation risk of a candidates array.
+ * Highest applicable level wins. Pure, deterministic, never throws.
  */
-export function deriveRuntimeIsolationState(entry) {
-  const ISOLATED = (reason) => Object.freeze({ isolated: true,  reason });
-  const ELIGIBLE  =           Object.freeze({ isolated: false, reason: REASON_ELIGIBLE });
-
+export function deriveRuntimeIsolationRisk(candidates) {
   try {
-    const e = freezeEntry(entry);
-    if (!e)                                          return ISOLATED(REASON_MALFORMED);
-    if (!e.reusable)                                 return ISOLATED(REASON_REUSABLE_DISABLED);
-    if (!e.approvedForRuntime)                       return ISOLATED(REASON_NOT_APPROVED);
-    if (e.tier !== TIER_HIGH_CONFIDENCE)             return ISOLATED(REASON_INSUFFICIENT_TIER);
-    if (e.confidence < CONFIDENCE_RUNTIME_THRESHOLD) return ISOLATED(REASON_LOW_CONFIDENCE);
-    if (e.sequence.length === 0)                     return ISOLATED(REASON_EMPTY_SEQUENCE);
-    if (!sequenceHasSaveSignal(e.sequence))          return ISOLATED(REASON_NO_SAVE_SIGNAL);
-    return ELIGIBLE;
+    // Not an array at all.
+    if (!Array.isArray(candidates)) return "critical";
+
+    const list = candidates.slice(0, MAX_CANDIDATES);
+    if (!list.length) return "low";
+
+    let hasHighRisk     = false;
+    let hasModerateRisk = false;
+
+    for (let i = 0; i < list.length; i++) {
+      const raw = list[i];
+
+      if (!isPlainObject(raw)) {
+        hasHighRisk = true;
+        continue;
+      }
+
+      // Critical: governance flags set on any entry.
+      if (raw.approvedForRuntime === true) return "critical";
+      if (raw.reusable === true)           return "critical";
+
+      const fpValid   = isValidFingerprint(raw.fingerprint);
+      const confValid = isValidConfidence(raw.confidence);
+      const seqValid  = sanitizeSequence(raw.sequence) !== null;
+
+      // High: malformed fingerprint / sequence / confidence on any entry.
+      if (!fpValid || !confValid || !seqValid) {
+        hasHighRisk = true;
+        continue;
+      }
+
+      // High: invalid approvalState.
+      const stateStr = typeof raw.approvalState === "string" ? raw.approvalState : "";
+      if (!VALID_APPROVAL_STATES.has(stateStr)) {
+        hasHighRisk = true;
+        continue;
+      }
+
+      // Moderate: non-approved_candidate entries present.
+      if (raw.approvalState !== "approved_candidate") {
+        hasModerateRisk = true;
+        continue;
+      }
+
+      // Moderate: approved_candidate missing saveCount.
+      if (typeof raw.saveCount !== "number" || raw.saveCount < 0) {
+        hasModerateRisk = true;
+      }
+    }
+
+    if (hasHighRisk)     return "high";
+    if (hasModerateRisk) return "moderate";
+    return "low";
   } catch {
-    return ISOLATED(REASON_MALFORMED);
+    return "critical";
   }
 }
 
 // ── Public: summarizeRuntimeIsolationHealth ───────────────────────────────────
 
 /**
- * Aggregate isolation metrics across an entire registry.
- * All rates are in [0, 1], rounded to 3 decimal places.
+ * Summarize the isolation health of a candidates array.
  * Pure, deterministic, never throws. No side effects.
  */
-export function summarizeRuntimeIsolationHealth(registry) {
+export function summarizeRuntimeIsolationHealth(candidates) {
   const EMPTY = Object.freeze({
-    totalEntries:          0,
-    isolatedEntries:       0,
-    runtimeEligibleEntries: 0,
-    approvalRate:          0,
-    isolationRate:         0,
-    saveSignalCoverage:    0,
+    total:            0,
+    approvedEligible: 0,
+    blocked:          0,
+    blockedRate:      0,
+    eligibleRate:     0,
   });
 
   try {
-    const list = Array.isArray(registry)
-      ? registry.slice(0, MAX_REGISTRY_ENTRIES)
-      : [];
-    if (!list.length) return EMPTY;
+    if (!Array.isArray(candidates)) return EMPTY;
 
-    let isolatedEntries        = 0;
-    let runtimeEligibleEntries = 0;
-    let entriesWithSaveSignal  = 0;
-    let validEntries           = 0;
+    const list  = candidates.slice(0, MAX_CANDIDATES);
+    const total = list.length;
+    if (!total) return EMPTY;
 
-    for (let i = 0; i < list.length; i++) {
-      const e = freezeEntry(list[i]);
-      if (!e) continue;
-      validEntries += 1;
+    const approvedEligible = getRuntimeApprovedCandidates(list).length;
+    const blocked          = total - approvedEligible;
 
-      const state = deriveRuntimeIsolationState(list[i]);
-      if (state.isolated) {
-        isolatedEntries += 1;
-      } else {
-        runtimeEligibleEntries += 1;
-      }
+    const blockedRate  = Math.round((blocked          / total) * 1000) / 1000;
+    const eligibleRate = Math.round((approvedEligible / total) * 1000) / 1000;
 
-      if (e.sequence.length > 0 && sequenceHasSaveSignal(e.sequence)) {
-        entriesWithSaveSignal += 1;
-      }
-    }
-
-    const total = validEntries;
     return Object.freeze({
-      totalEntries:           total,
-      isolatedEntries,
-      runtimeEligibleEntries,
-      approvalRate:     total > 0 ? roundMetric(clamp(runtimeEligibleEntries / total)) : 0,
-      isolationRate:    total > 0 ? roundMetric(clamp(isolatedEntries        / total)) : 0,
-      saveSignalCoverage: total > 0 ? roundMetric(clamp(entriesWithSaveSignal  / total)) : 0,
+      total,
+      approvedEligible,
+      blocked,
+      blockedRate,
+      eligibleRate,
     });
   } catch {
     return EMPTY;
@@ -197,88 +240,106 @@ export function summarizeRuntimeIsolationHealth(registry) {
 // ── Public: detectRuntimeIsolationViolations ──────────────────────────────────
 
 /**
- * Scan a registry for entries that violate runtime isolation invariants.
- *
- * Invariants (all must hold for a clean registry):
- *   - reusable=true implies approvedForRuntime=true (and vice versa)
- *   - approvedForRuntime=true requires tier=high_confidence
- *   - high_confidence entries should carry a save signal
- *   - no structurally malformed entries
- *
+ * Scan a candidates array for isolation violations.
  * Pure, deterministic, never throws. No side effects. No mutations.
+ *
+ * IDs: fingerprint if valid (starts "seq_"), else "candidate:N"
  */
-export function detectRuntimeIsolationViolations(registry) {
+export function detectRuntimeIsolationViolations(candidates) {
   const EMPTY = Object.freeze({
-    runtimeApprovedWithoutReusable:      [],
-    reusableWithoutRuntimeApproval:      [],
-    highConfidenceWithoutSaveSignal:     [],
-    runtimeApprovedWithoutHighConfidence: [],
-    malformedRuntimeCandidates:          [],
-    totalViolationCount:                 0,
+    runtimeGovernanceViolations: Object.freeze([]),
+    malformedApprovedCandidates: Object.freeze([]),
+    invalidApprovalStates:       Object.freeze([]),
+    unsafeReusableCandidates:    Object.freeze([]),
+    unsafeRuntimeFlags:          Object.freeze([]),
+    malformedFingerprints:       Object.freeze([]),
+    malformedSequences:          Object.freeze([]),
+    malformedConfidence:         Object.freeze([]),
+    totalViolationCount:         0,
   });
 
   try {
-    const list = Array.isArray(registry)
-      ? registry.slice(0, MAX_REGISTRY_ENTRIES)
-      : [];
+    if (!Array.isArray(candidates)) return EMPTY;
+
+    const list = candidates.slice(0, MAX_CANDIDATES);
     if (!list.length) return EMPTY;
 
-    const runtimeApprovedWithoutReusable       = [];
-    const reusableWithoutRuntimeApproval       = [];
-    const highConfidenceWithoutSaveSignal      = [];
-    const runtimeApprovedWithoutHighConfidence = [];
-    const malformedRuntimeCandidates           = [];
+    const runtimeGovernanceViolations = [];
+    const malformedApprovedCandidates = [];
+    const invalidApprovalStates       = [];
+    const unsafeReusableCandidates    = [];
+    const unsafeRuntimeFlags          = [];
+    const malformedFingerprints       = [];
+    const malformedSequences          = [];
+    const malformedConfidenceArr      = [];
 
     for (let i = 0; i < list.length; i++) {
       const raw = list[i];
-      const e   = freezeEntry(raw);
+      const id  = candidateId(raw, i);
 
-      if (!e) {
-        malformedRuntimeCandidates.push("(non-object entry)");
+      // Non-objects: governance violation.
+      if (!isPlainObject(raw)) {
+        runtimeGovernanceViolations.push(id);
         continue;
       }
 
-      const id = safeString(e.registryId, "(missing id)");
-
-      // Structural failures that make the entry uninterpretable.
-      const hasNoSequence       = e.sequence.length === 0;
-      const hasInvalidConfidence = !(safeNumber(raw.confidence, -1) >= 0 && safeNumber(raw.confidence, -1) <= 1);
-      if (hasNoSequence || hasInvalidConfidence) {
-        malformedRuntimeCandidates.push(id);
+      // Unsafe governance flags.
+      if (raw.approvedForRuntime === true) {
+        unsafeRuntimeFlags.push(id);
+        runtimeGovernanceViolations.push(id);
+      }
+      if (raw.reusable === true) {
+        unsafeReusableCandidates.push(id);
+        runtimeGovernanceViolations.push(id);
       }
 
-      // Asymmetric approval flags — both must be set together or neither.
-      if (e.approvedForRuntime && !e.reusable) {
-        runtimeApprovedWithoutReusable.push(id);
-      }
-      if (e.reusable && !e.approvedForRuntime) {
-        reusableWithoutRuntimeApproval.push(id);
-      }
+      // approvalState validity.
+      const stateStr = typeof raw.approvalState === "string" ? raw.approvalState : "";
+      if (!VALID_APPROVAL_STATES.has(stateStr)) invalidApprovalStates.push(id);
 
-      // Runtime approval requires high_confidence tier.
-      if (e.approvedForRuntime && e.tier !== TIER_HIGH_CONFIDENCE) {
-        runtimeApprovedWithoutHighConfidence.push(id);
-      }
+      // Fingerprint validity.
+      if (!isValidFingerprint(raw.fingerprint)) malformedFingerprints.push(id);
 
-      // high_confidence entries with no save signal cannot be meaningfully trusted.
-      if (e.tier === TIER_HIGH_CONFIDENCE && e.sequence.length > 0 && !sequenceHasSaveSignal(e.sequence)) {
-        highConfidenceWithoutSaveSignal.push(id);
+      // Sequence validity.
+      if (sanitizeSequence(raw.sequence) === null) malformedSequences.push(id);
+
+      // Confidence validity.
+      if (!isValidConfidence(raw.confidence)) malformedConfidenceArr.push(id);
+
+      // Malformed approved_candidate: state is approved_candidate but fails a structural check.
+      if (
+        raw.approvalState === "approved_candidate" &&
+        (
+          !isValidFingerprint(raw.fingerprint)  ||
+          sanitizeSequence(raw.sequence) === null ||
+          !isValidConfidence(raw.confidence)    ||
+          raw.approvedForRuntime === true        ||
+          raw.reusable === true
+        )
+      ) {
+        malformedApprovedCandidates.push(id);
       }
     }
 
     const totalViolationCount =
-      runtimeApprovedWithoutReusable.length
-      + reusableWithoutRuntimeApproval.length
-      + highConfidenceWithoutSaveSignal.length
-      + runtimeApprovedWithoutHighConfidence.length
-      + malformedRuntimeCandidates.length;
+      runtimeGovernanceViolations.length
+      + malformedApprovedCandidates.length
+      + invalidApprovalStates.length
+      + unsafeReusableCandidates.length
+      + unsafeRuntimeFlags.length
+      + malformedFingerprints.length
+      + malformedSequences.length
+      + malformedConfidenceArr.length;
 
     return Object.freeze({
-      runtimeApprovedWithoutReusable:       runtimeApprovedWithoutReusable.sort(),
-      reusableWithoutRuntimeApproval:       reusableWithoutRuntimeApproval.sort(),
-      highConfidenceWithoutSaveSignal:      highConfidenceWithoutSaveSignal.sort(),
-      runtimeApprovedWithoutHighConfidence: runtimeApprovedWithoutHighConfidence.sort(),
-      malformedRuntimeCandidates:           malformedRuntimeCandidates.sort(),
+      runtimeGovernanceViolations: Object.freeze(runtimeGovernanceViolations.sort()),
+      malformedApprovedCandidates: Object.freeze(malformedApprovedCandidates.sort()),
+      invalidApprovalStates:       Object.freeze(invalidApprovalStates.sort()),
+      unsafeReusableCandidates:    Object.freeze(unsafeReusableCandidates.sort()),
+      unsafeRuntimeFlags:          Object.freeze(unsafeRuntimeFlags.sort()),
+      malformedFingerprints:       Object.freeze(malformedFingerprints.sort()),
+      malformedSequences:          Object.freeze(malformedSequences.sort()),
+      malformedConfidence:         Object.freeze(malformedConfidenceArr.sort()),
       totalViolationCount,
     });
   } catch {
