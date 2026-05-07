@@ -23,4 +23,5 @@ export const STORAGE_KEYS = {
   STRIPE_CHECKOUT_CREATE_LOCKS: "estipaid-stripe-checkout-create-locks-v1",
   SCOPE_TEMPLATES: "estipaid-scope-templates-v1",
   CUSTOM_LABOR_ROLES: "estipaid-custom-labor-roles-v1",
+  JOB_LEARNING_REVIEWED_CANDIDATES: "estipaid-job-learning-reviewed-candidates-v1",
 };
