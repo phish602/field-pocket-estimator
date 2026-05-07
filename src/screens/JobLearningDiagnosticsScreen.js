@@ -9,6 +9,11 @@ import {
   getJobLearningRegistryAuditRows,
 } from "../utils/jobLearningRegistrySnapshot";
 import { readJobLearningEvents } from "../utils/jobLearningStore";
+import {
+  assembleJobLearningCandidateDrafts,
+  summarizeCandidateAssembly,
+  detectCandidateAssemblyIssues,
+} from "../utils/jobLearningCandidateAssembler";
 
 // Dev/local gate — this screen must never render for production users.
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -248,10 +253,149 @@ function NoisePanel({ stats }) {
   );
 }
 
+const MAX_QUARANTINE_DISPLAY = 20;
+
+function CandidateAssemblySummaryPanel({ assemblySummary }) {
+  return (
+    <Panel title="Candidate Assembly Summary">
+      <StatRow label="Total events"         value={assemblySummary.totalEvents} />
+      <StatRow label="Candidate drafts"     value={assemblySummary.candidateDraftCount} />
+      <StatRow label="Quarantined events"   value={assemblySummary.quarantinedEventCount} />
+      <StatRow label="Warnings"             value={assemblySummary.warningCount} />
+      <StatRow label="Complete traces"      value={assemblySummary.completeTraceCount} />
+      <StatRow label="Incomplete traces"    value={assemblySummary.incompleteTraceCount} />
+      <StatRow label="Duplicate traces"     value={assemblySummary.duplicateTraceCount} />
+    </Panel>
+  );
+}
+
+function CandidateDraftsPanel({ drafts }) {
+  if (!drafts || drafts.length === 0) {
+    return (
+      <Panel title="Candidate Drafts">
+        <div className="pe-muted" style={S.empty}>No candidate drafts assembled yet.</div>
+      </Panel>
+    );
+  }
+  return (
+    <Panel title={`Candidate Drafts (${drafts.length})`}>
+      <div style={S.tableWrap}>
+        {drafts.map((d, i) => (
+          <div key={d.fingerprint || i} style={S.tableRow}>
+            <code style={S.fp}>{d.fingerprint}</code>
+            <div style={S.rowMeta}>
+              {statePill(d.approvalState)}
+              {statePill(d.scoringTier)}
+              <span className="pe-muted">conf: {d.confidence}</span>
+              {d.workflowClass && <span className="pe-muted">{d.workflowClass}</span>}
+              {d.workflowComplexity && <span className="pe-muted">{d.workflowComplexity}</span>}
+              {d.tradeHint && d.tradeHint !== "unknown" && <span className="pe-muted">{d.tradeHint}</span>}
+            </div>
+            <div style={S.rowMeta}>
+              {d.assistTraceId && <span className="pe-muted">traceId: <code style={S.code}>{d.assistTraceId}</code></span>}
+              {d.assistSectionKey && <span className="pe-muted">section: {d.assistSectionKey}</span>}
+              {d.assistDocType && <span className="pe-muted">docType: {d.assistDocType}</span>}
+              {d.assistMode && <span className="pe-muted">mode: {d.assistMode}</span>}
+            </div>
+            {d.sequence && d.sequence.length > 0 && (
+              <div style={S.rowMeta}>
+                <span className="pe-muted" style={{ fontSize: 10 }}>seq:</span>
+                {d.sequence.map((s) => <code key={s} style={{ ...S.code, fontSize: 10 }}>{s}</code>)}
+              </div>
+            )}
+            {d.evidence && (
+              <div style={S.rowMeta}>
+                {pill(d.evidence.documentSaveSeen ? "save ✓" : "save ✗", d.evidence.documentSaveSeen ? "#27ae60" : "#555")}
+                {d.evidence.resultType && <span className="pe-muted">{d.evidence.resultType}</span>}
+                {d.evidence.writeKeyCount > 0 && <span className="pe-muted">writes: {d.evidence.writeKeyCount}</span>}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function QuarantinedEventsPanel({ quarantined }) {
+  const visible = quarantined ? quarantined.slice(0, MAX_QUARANTINE_DISPLAY) : [];
+  const overflow = quarantined ? Math.max(0, quarantined.length - MAX_QUARANTINE_DISPLAY) : 0;
+  return (
+    <Panel title={`Quarantined Events (${quarantined ? quarantined.length : 0})`}>
+      {visible.length === 0 ? (
+        <div className="pe-muted" style={S.empty}>No quarantined events.</div>
+      ) : (
+        <>
+          <div style={S.tableWrap}>
+            {visible.map((q, i) => (
+              <div key={q.label || i} style={{ ...S.rowMeta, padding: "3px 0" }}>
+                <code style={S.code}>{q.label}</code>
+                {q.reason && pill(q.reason, "#8e44ad")}
+              </div>
+            ))}
+          </div>
+          {overflow > 0 && (
+            <div className="pe-muted" style={{ ...S.empty, marginTop: 4 }}>
+              +{overflow} more (capped at {MAX_QUARANTINE_DISPLAY})
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function AssemblyIssuesPanel({ issues }) {
+  const sections = [
+    { label: "Malformed events",          items: issues.malformedEvents },
+    { label: "Missing trace events",      items: issues.missingTraceEvents },
+    { label: "Incomplete traces",         items: issues.incompleteTraces },
+    { label: "Duplicate traces",          items: issues.duplicateTraces },
+    { label: "Conflicting metadata",      items: issues.conflictingMetadataTraces },
+  ];
+  return (
+    <Panel title={`Assembly Issues (${issues.totalIssueCount})`}>
+      {issues.totalIssueCount === 0 ? (
+        <div className="pe-muted" style={S.empty}>No assembly issues.</div>
+      ) : (
+        sections.map(({ label, items }) =>
+          items && items.length > 0 ? (
+            <div key={label} style={S.healthBlock}>
+              <div style={S.healthLabel}>{label} ({items.length})</div>
+              <div style={S.rowMeta}>
+                {items.slice(0, 10).map((id) => (
+                  <code key={id} style={S.code}>{id}</code>
+                ))}
+                {items.length > 10 && <span className="pe-muted" style={{ fontSize: 10 }}>+{items.length - 10} more</span>}
+              </div>
+            </div>
+          ) : null
+        )
+      )}
+    </Panel>
+  );
+}
+
+function AssemblyWarningsPanel({ warnings }) {
+  return (
+    <Panel title={`Assembly Warnings (${warnings ? warnings.length : 0})`}>
+      {!warnings || warnings.length === 0 ? (
+        <div className="pe-muted" style={S.empty}>No assembly warnings.</div>
+      ) : (
+        <ul style={S.list}>
+          {warnings.map((w) => (
+            <li key={w} style={S.listItem}><code style={S.code}>{w}</code></li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
 function NotWiredNotice() {
   return (
     <div style={S.notWiredBanner}>
-      Captured events are visible, but registry candidate assembly is not wired yet.
+      Candidate drafts are visible for diagnostics only; registry promotion/runtime wiring is not enabled.
     </div>
   );
 }
@@ -586,6 +730,10 @@ export default function JobLearningDiagnosticsScreen() {
   const events   = readJobLearningEvents();
   const stats    = deriveCaptureStats(events);
 
+  const assembly        = assembleJobLearningCandidateDrafts(events);
+  const assemblySummary = summarizeCandidateAssembly(events);
+  const issues          = detectCandidateAssemblyIssues(events);
+
   const snapshot = buildJobLearningRegistrySnapshot(CANDIDATES);
   const summary  = summarizeJobLearningRegistrySnapshot(CANDIDATES);
   const drift    = detectJobLearningRegistryDrift(CANDIDATES);
@@ -599,6 +747,11 @@ export default function JobLearningDiagnosticsScreen() {
       <DocumentSaveMetaPanel stats={stats} />
       <AiAssistSummaryPanel stats={stats} />
       <NoisePanel stats={stats} />
+      <CandidateAssemblySummaryPanel assemblySummary={assemblySummary} />
+      <CandidateDraftsPanel drafts={assembly.candidateDrafts} />
+      <QuarantinedEventsPanel quarantined={assembly.quarantinedEvents} />
+      <AssemblyIssuesPanel issues={issues} />
+      <AssemblyWarningsPanel warnings={assembly.assemblyWarnings} />
       <NotWiredNotice />
       <SummaryCards summary={summary} />
       <DriftPanel drift={drift} />
