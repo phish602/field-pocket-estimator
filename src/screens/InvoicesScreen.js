@@ -69,6 +69,17 @@ function isStripeSessionExpired(sessionRef, nowTs = Date.now()) {
   return nowTs >= expiresAt * 1000;
 }
 
+function isHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function hasMatchingStripeLedgerPayment(invoice, sessionRef) {
   const targetSessionId = String(sessionRef?.sessionId || "").trim();
   const targetPaymentIntentId = String(sessionRef?.paymentIntentId || "").trim();
@@ -655,6 +666,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const hasMeasuredListRef = useRef(false);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
+  const stripeCheckoutCreateLocksRef = useRef(new Set());
 
   const [isPhone, setIsPhone] = useState(
     typeof window !== "undefined" ? window.innerWidth < 480 : false
@@ -1159,6 +1171,34 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       .find((entry) => getStripeSessionDisplayState(entry, invoiceRecord) !== "synced") || null;
   };
 
+  const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
+    const invoiceId = String(invoice?.id || "").trim();
+    if (!invoiceId) return null;
+    const normalizedAmount = roundCurrency(balanceRemaining);
+    const normalizedCurrency = String(currency || "usd").trim().toLowerCase() || "usd";
+    return getStripeSessionsForInvoice(invoiceId).find((entry) => {
+      if (!entry || !isHttpUrl(entry?.checkoutUrl)) return false;
+      if (String(entry?.stripeAccountId || "").trim() !== stripeAccountId) return false;
+      if (roundCurrency(entry?.amount) !== normalizedAmount) return false;
+      if ((String(entry?.currency || "usd").trim().toLowerCase() || "usd") !== normalizedCurrency) return false;
+      return getStripeSessionDisplayState(entry, invoice) === "pending";
+    }) || null;
+  };
+
+  const acquireStripeCheckoutCreateLock = (invoiceId) => {
+    const normalizedInvoiceId = String(invoiceId || "").trim();
+    if (!normalizedInvoiceId) return false;
+    if (stripeCheckoutCreateLocksRef.current.has(normalizedInvoiceId)) return false;
+    stripeCheckoutCreateLocksRef.current.add(normalizedInvoiceId);
+    return true;
+  };
+
+  const releaseStripeCheckoutCreateLock = (invoiceId) => {
+    const normalizedInvoiceId = String(invoiceId || "").trim();
+    if (!normalizedInvoiceId) return;
+    stripeCheckoutCreateLocksRef.current.delete(normalizedInvoiceId);
+  };
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const searchParams = new URLSearchParams(window.location.search || "");
@@ -1411,11 +1451,34 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const invoiceId = String(invoice?.id || "").trim();
     if (!invoiceId || !canRecordManualPayment(invoice) || !stripeAccountId || stripeCheckoutBusyId === invoiceId) return;
 
+    const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+    const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+    const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
+    const reusableSession = getReusableStripeCheckoutSessionForInvoice(invoice, balanceRemaining);
+    if (reusableSession?.checkoutUrl) {
+      setStripeInlineNotice(
+        invoiceId,
+        "info",
+        lang === "es"
+          ? "Usando el enlace activo de Stripe existente para este saldo de factura."
+          : "Using existing active Stripe link for this invoice balance."
+      );
+      const openedWindow = typeof window !== "undefined" && typeof window.open === "function"
+        ? window.open(String(reusableSession.checkoutUrl), "_blank", "noopener,noreferrer")
+        : null;
+      if (!openedWindow) {
+        window.alert(
+          lang === "es"
+            ? "Stripe se abrió en una pestaña nueva. Si tu navegador la bloqueó, usa \"Copiar enlace de pago\" para abrirla manualmente sin salir de EstiPaid."
+            : "Stripe should open in a new tab. If your browser blocked it, use \"Copy Payment Link\" to open it manually without leaving EstiPaid."
+        );
+      }
+      return;
+    }
+
+    if (!acquireStripeCheckoutCreateLock(invoiceId)) return;
     setStripeCheckoutBusyId(invoiceId);
     try {
-      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
-      const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-      const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
       const response = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
         headers: {
@@ -1463,6 +1526,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     } catch (_error) {
       window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe checkout.");
     } finally {
+      releaseStripeCheckoutCreateLock(invoiceId);
       setStripeCheckoutBusyId("");
     }
   };
@@ -1471,11 +1535,30 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const invoiceId = String(invoice?.id || "").trim();
     if (!invoiceId || !canRecordManualPayment(invoice) || !stripeAccountId || stripeCopyBusyId === invoiceId) return;
 
+    const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+    const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+    const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
+    const reusableSession = getReusableStripeCheckoutSessionForInvoice(invoice, balanceRemaining);
+    if (reusableSession?.checkoutUrl) {
+      setStripeInlineNotice(
+        invoiceId,
+        "info",
+        lang === "es"
+          ? "Usando el enlace activo de Stripe existente para este saldo de factura."
+          : "Using existing active Stripe link for this invoice balance."
+      );
+      setStripeCopyBusyId(invoiceId);
+      try {
+        await copyCheckoutUrlWithFallback(String(reusableSession.checkoutUrl || "").trim(), getInvoiceCustomerEmail(invoice));
+      } finally {
+        setStripeCopyBusyId("");
+      }
+      return;
+    }
+
+    if (!acquireStripeCheckoutCreateLock(invoiceId)) return;
     setStripeCopyBusyId(invoiceId);
     try {
-      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
-      const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-      const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
       const response = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1512,13 +1595,17 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     } catch (_error) {
       window.alert(lang === "es" ? "No se pudo generar el enlace de Stripe." : "Unable to generate Stripe payment link.");
     } finally {
+      releaseStripeCheckoutCreateLock(invoiceId);
       setStripeCopyBusyId("");
     }
   };
 
   const copyExistingStripeLink = async (invoice) => {
     const invoiceId = String(invoice?.id || "").trim();
-    const sessionRef = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
+    const invoiceTotal = roundCurrency(invoice?.invoiceTotal || 0);
+    const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+    const balanceRemaining = roundCurrency(Math.max(0, invoiceTotal - amountPaid));
+    const sessionRef = getReusableStripeCheckoutSessionForInvoice(invoice, balanceRemaining);
     if (!invoiceId || !sessionRef?.checkoutUrl || stripeCopyBusyId === invoiceId) return;
 
     setStripeCopyBusyId(invoiceId);

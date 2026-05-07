@@ -569,6 +569,128 @@ describe("InvoicesScreen Stripe checkout action", () => {
     ]);
   });
 
+  test("Pay Online reuses existing pending unexpired same-balance session without backend call", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_reuse_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/reuse-existing",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 2714694400,
+        status: "pending",
+      },
+    ]);
+
+    const beforeInvoices = readStoredInvoices();
+    const beforeSessions = readStripeCheckoutSessions();
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(window.open).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/pay/reuse-existing",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(screen.getByText(/Using existing active Stripe link for this invoice balance\./i)).toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual(beforeInvoices);
+    expect(readStripeCheckoutSessions()).toEqual(beforeSessions);
+  });
+
+  test("expired pending session is not reused and a fresh checkout session is created", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_expired_old",
+        checkoutUrl: "https://checkout.stripe.com/pay/expired-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 1714694400,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/new-after-expired",
+        sessionId: "cs_new_after_expired",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/pay/new-after-expired",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_new_after_expired",
+      checkoutUrl: "https://checkout.stripe.com/pay/new-after-expired",
+      amount: 500,
+      status: "pending",
+    }));
+  });
+
+  test("rapid duplicate Pay Online clicks do not create two checkout sessions", async () => {
+    seedInvoices([createSentInvoice()]);
+    let resolveFetch;
+    global.fetch.mockImplementation(() => new Promise((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    const button = screen.getByRole("button", { name: /Pay Online with Stripe/i });
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFetch({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          checkoutUrl: "https://checkout.stripe.com/pay/double-click-safe",
+          sessionId: "cs_double_click_safe",
+        }),
+      });
+      await Promise.resolve();
+    });
+
+    expect(readStripeCheckoutSessions()).toEqual([
+      expect.objectContaining({
+        sessionId: "cs_double_click_safe",
+        checkoutUrl: "https://checkout.stripe.com/pay/double-click-safe",
+        status: "pending",
+      }),
+    ]);
+  });
+
   test("shows Stripe action for unpaid sent invoice with no payments and stored balanceRemaining 0", () => {
     // Simulates a fresh invoice created by the UI where balanceRemaining is initialised to 0
     // even though no payment has been recorded.
@@ -858,6 +980,167 @@ describe("InvoicesScreen Copy Payment Link action", () => {
         status: "pending",
       }),
     ]);
+  });
+
+  test("Copy Payment Link reuses existing pending unexpired same-balance session without backend call", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_copy_reuse_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/copy-reuse-existing",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 2714694400,
+        status: "pending",
+      },
+    ]);
+
+    const beforeInvoices = readStoredInvoices();
+    const beforeSessions = readStripeCheckoutSessions();
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-reuse-existing");
+    expect(screen.getByText(/Using existing active Stripe link for this invoice balance\./i)).toBeInTheDocument();
+    expect(readStoredInvoices()).toEqual(beforeInvoices);
+    expect(readStripeCheckoutSessions()).toEqual(beforeSessions);
+  });
+
+  test("balance-changed session is not reused and Copy Payment Link creates a fresh session", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_existing",
+            amount: 125,
+            paidAt: "2026-05-05",
+            note: "Deposit",
+            method: "cash",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_old_balance_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/old-balance",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 2714694400,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/new-balance-link",
+        sessionId: "cs_new_balance_123",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/new-balance-link");
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_new_balance_123",
+      amount: 375,
+      checkoutUrl: "https://checkout.stripe.com/pay/new-balance-link",
+      status: "pending",
+    }));
+  });
+
+  test("synced session is not reused for a new payment link", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_synced_old_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/synced-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "synced",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/new-after-synced",
+        sessionId: "cs_new_after_synced",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/new-after-synced");
+  });
+
+  test("review session is not reused for a new payment link", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_review_old_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/review-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "review",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/new-after-review",
+        sessionId: "cs_new_after_review",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/new-after-review");
   });
 
   test("Copy Payment Link clipboard fallback shows URL in alert without mutating storage", async () => {
