@@ -56,7 +56,7 @@ function normalizeStripeCheckoutSessionRef(entry) {
     currency: String(entry?.currency || "usd").trim().toLowerCase() || "usd",
     createdAt: Number(entry?.createdAt || 0) || Date.now(),
     expiresAt: Number(entry?.expiresAt || 0) || null,
-    status: ["pending", "synced", "review"].includes(status) ? status : "pending",
+    status: ["pending", "synced", "review", "stale"].includes(status) ? status : "pending",
     paymentIntentId: String(entry?.paymentIntentId || "").trim(),
     paidAt: String(entry?.paidAt || "").trim(),
     lastCheckedAt: Number(entry?.lastCheckedAt || 0) || 0,
@@ -118,6 +118,7 @@ function getStripeSessionDisplayState(sessionRef, invoice, nowTs = Date.now()) {
   const storedStatus = String(sessionRef?.status || "").trim().toLowerCase();
   if (storedStatus === "synced") return "synced";
   if (storedStatus === "review") return "review";
+  if (storedStatus === "stale") return "stale";
   if (hasMatchingStripeLedgerPayment(invoice, sessionRef)) return "synced";
   if (isStripeSessionExpired(sessionRef, nowTs)) return "expired";
   return "pending";
@@ -1103,6 +1104,80 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     return persistStripeCheckoutSessions(nextSessions);
   };
 
+  const getInvoiceBalanceRemaining = (invoice) => roundCurrency(
+    Math.max(0, roundCurrency(invoice?.invoiceTotal || 0) - roundCurrency(invoice?.amountPaid || 0))
+  );
+
+  const retireStripeCheckoutSessionsForInvoice = (invoice, options = {}) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    if (!invoiceId) return stripeCheckoutSessions;
+    const nextBalanceRemaining = getInvoiceBalanceRemaining(invoice);
+    const retireAllPending = !!options?.retireAllPending;
+    const excludedSessionId = String(options?.excludeSessionId || "").trim();
+    const targetStripeAccountId = String(options?.stripeAccountId || stripeAccountId || "").trim();
+    const nowTs = Date.now();
+    let changed = false;
+    const nextSessions = stripeCheckoutSessions.map((entry) => {
+      if (String(entry?.invoiceId || "").trim() !== invoiceId) return entry;
+      if (excludedSessionId && String(entry?.sessionId || "").trim() === excludedSessionId) return entry;
+      const storedStatus = String(entry?.status || "").trim().toLowerCase();
+      if (storedStatus !== "pending") return entry;
+      if (
+        !retireAllPending
+        && targetStripeAccountId
+        && String(entry?.stripeAccountId || "").trim() !== targetStripeAccountId
+      ) {
+        return entry;
+      }
+      if (getStripeSessionDisplayState(entry, invoice, nowTs) !== "pending") return entry;
+      if (!retireAllPending && roundCurrency(entry?.amount) === nextBalanceRemaining) return entry;
+      changed = true;
+      return normalizeStripeCheckoutSessionRef({
+        ...entry,
+        status: "stale",
+        lastCheckedAt: nowTs,
+      });
+    });
+    return changed ? persistStripeCheckoutSessions(nextSessions) : stripeCheckoutSessions;
+  };
+
+  const reconcileStripeCheckoutSessionsWithInvoices = (invoices = list) => {
+    const invoiceRecords = Array.isArray(invoices) ? invoices : [];
+    if (!invoiceRecords.length || !stripeCheckoutSessions.length) return stripeCheckoutSessions;
+    const activeStripeAccountId = String(stripeAccountId || "").trim();
+    const nowTs = Date.now();
+    let changed = false;
+    const nextSessions = stripeCheckoutSessions.map((entry) => {
+      const storedStatus = String(entry?.status || "").trim().toLowerCase();
+      if (storedStatus !== "pending") return entry;
+      const invoice = invoiceRecords.find((candidate) => String(candidate?.id || "").trim() === String(entry?.invoiceId || "").trim());
+      if (!invoice) return entry;
+      const displayState = getStripeSessionDisplayState(entry, invoice, nowTs);
+      if (displayState !== "pending") return entry;
+      const derivedStatus = String(deriveInvoiceStatus(invoice, nowTs) || "").trim().toLowerCase();
+      const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
+      const shouldRetireForLifecycle = (
+        derivedStatus === INVOICE_STATUSES.PAID
+        || derivedStatus === INVOICE_STATUSES.VOID
+        || paymentStatus === PAYMENT_STATUSES.PAID
+        || paymentStatus === PAYMENT_STATUSES.VOID
+      );
+      const shouldRetireForBalance = (
+        !!activeStripeAccountId
+        && String(entry?.stripeAccountId || "").trim() === activeStripeAccountId
+        && roundCurrency(entry?.amount) !== getInvoiceBalanceRemaining(invoice)
+      );
+      if (!shouldRetireForLifecycle && !shouldRetireForBalance) return entry;
+      changed = true;
+      return normalizeStripeCheckoutSessionRef({
+        ...entry,
+        status: "stale",
+        lastCheckedAt: nowTs,
+      });
+    });
+    return changed ? persistStripeCheckoutSessions(nextSessions) : stripeCheckoutSessions;
+  };
+
   const setStripeInlineNotice = (invoiceId, tone, message) => {
     const normalizedInvoiceId = String(invoiceId || "").trim();
     if (!normalizedInvoiceId) return;
@@ -1168,7 +1243,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const targetInvoiceId = String(invoiceRecord?.id || invoiceOrId || "").trim();
     if (!targetInvoiceId) return null;
     return getStripeSessionsForInvoice(targetInvoiceId)
-      .find((entry) => getStripeSessionDisplayState(entry, invoiceRecord) !== "synced") || null;
+      .find((entry) => {
+        const state = getStripeSessionDisplayState(entry, invoiceRecord);
+        return state !== "synced" && state !== "stale";
+      }) || null;
   };
 
   const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
@@ -1255,6 +1333,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     );
   }, [lang, list, stripeCheckoutSessions]);
 
+  useEffect(() => {
+    reconcileStripeCheckoutSessionsWithInvoices(list);
+  }, [list, stripeCheckoutSessions, stripeAccountId]);
+
   const createManualInvoice = () => {
     const currentInvoices = readStoredInvoices();
     const draft = createManualInvoiceDraft(currentInvoices);
@@ -1324,7 +1406,13 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       if (String(entry?.id || "").trim() !== invoiceId) return entry;
       return updateInvoiceLifecycleStatus(entry, nextStatus);
     });
-    persistInvoices(nextInvoices);
+    const normalizedInvoices = persistInvoices(nextInvoices);
+    const updatedInvoice = normalizedInvoices.find((entry) => String(entry?.id || "").trim() === invoiceId) || null;
+    if (!updatedInvoice) return;
+    const normalizedNextStatus = String(nextStatus || "").trim().toLowerCase();
+    retireStripeCheckoutSessionsForInvoice(updatedInvoice, {
+      retireAllPending: normalizedNextStatus === INVOICE_STATUSES.PAID || normalizedNextStatus === INVOICE_STATUSES.VOID,
+    });
   };
 
   const requestInvoiceStatusChange = (invoice, nextStatus) => {
@@ -1441,6 +1529,9 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           ? (lang === "es" ? "Pago final registrado" : "Final payment recorded")
           : (lang === "es" ? "Pago registrado" : "Payment recorded")
       );
+      retireStripeCheckoutSessionsForInvoice(result.invoice, {
+        retireAllPending: fullyPaid,
+      });
       closePaymentModal();
     } finally {
       setPaymentBusy(false);
@@ -1718,6 +1809,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
             stripePaymentStatus: String(payload?.paymentStatus || "").trim(),
             currency: String(payload?.currency || "").trim(),
           });
+          retireStripeCheckoutSessionsForInvoice(backfillResult?.invoice || targetInvoice, {
+            retireAllPending: String((backfillResult?.invoice || targetInvoice)?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID,
+            excludeSessionId: sessionRef.sessionId,
+          });
           updateStripeCheckoutSessionRef(sessionRef.sessionId, {
             status: "synced",
             paymentIntentId: String(payload?.paymentIntentId || "").trim(),
@@ -1780,6 +1875,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           ? (lang === "es" ? "Pago de Stripe sincronizado" : "Stripe payment synced")
           : (lang === "es" ? "Pago de Stripe registrado" : "Stripe payment recorded")
       );
+      retireStripeCheckoutSessionsForInvoice(result.invoice, {
+        retireAllPending: String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID,
+        excludeSessionId: sessionRef.sessionId,
+      });
       updateStripeCheckoutSessionRef(sessionRef.sessionId, {
         status: "synced",
         paymentIntentId: String(payload?.paymentIntentId || "").trim(),
@@ -2002,7 +2101,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
                 const stripeNotice = stripeInlineNoticeByInvoice[invoiceId] || null;
                 const canSyncStripeSession = derivedStatus !== INVOICE_STATUSES.VOID
-                  && !!latestStripeSession;
+                  && !!latestStripeSession
+                  && !(stripeSessionState === "stale" && String(invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID);
                 const canCopyExistingStripeLink = !!latestActionableStripeSession?.checkoutUrl
                   && getStripeSessionDisplayState(latestActionableStripeSession, invoice) === "pending";
                 const dueDate = formatDateOnly(invoice?.dueDate);
@@ -2363,6 +2463,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 padding: "3px 9px",
                                 background: stripeSessionState === "review"
                                   ? "rgba(248,113,113,0.14)"
+                                  : stripeSessionState === "stale"
+                                    ? "rgba(251,146,60,0.14)"
                                   : stripeSessionState === "synced"
                                     ? "rgba(34,197,94,0.14)"
                                     : stripeSessionState === "expired"
@@ -2371,6 +2473,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               }}>
                                 {stripeSessionState === "review"
                                   ? (lang === "es" ? "Revisión" : "Review")
+                                  : stripeSessionState === "stale"
+                                    ? (lang === "es" ? "Desactualizada" : "Stale or Outdated")
                                   : stripeSessionState === "synced"
                                     ? (lang === "es" ? "Sincronizada" : "Synced")
                                     : stripeSessionState === "expired"
@@ -2399,6 +2503,10 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 ? (lang === "es"
                                   ? "Stripe reportó un pago que no se pudo registrar automáticamente. Revísalo manualmente antes de agregarlo."
                                   : "Stripe reported a payment that could not be safely recorded automatically. Review it manually before adding it.")
+                                : stripeSessionState === "stale"
+                                  ? (lang === "es"
+                                    ? "El saldo de la factura cambió después de generar este enlace. Genera un enlace nuevo si todavía se necesita el pago."
+                                    : "Invoice balance changed after this link was generated. Generate a fresh link if payment is still needed.")
                                 : stripeSessionState === "synced"
                                   ? (lang === "es"
                                     ? "Este pago de Stripe ya se registró en EstiPaid."

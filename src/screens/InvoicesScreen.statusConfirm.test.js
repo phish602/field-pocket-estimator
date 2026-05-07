@@ -160,6 +160,45 @@ describe("InvoicesScreen status confirm dialog", () => {
     expect(Number(invoice.amountPaid)).toBe(500);
     expect(Array.isArray(invoice.payments) && invoice.payments.length > 0).toBe(true);
   });
+
+  test("Mark Paid retires pending Stripe sessions and hides Stripe payment actions", () => {
+    seedInvoices([createSentInvoice()]);
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_mark_paid_stale",
+        checkoutUrl: "https://checkout.stripe.com/pay/mark-paid-stale",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Mark Paid$/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /Mark invoice as paid\?/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Mark Paid$/i }));
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.status).toBe("paid");
+    expect(invoice.paymentStatus).toBe("paid");
+    expect(invoice.balanceRemaining).toBe(0);
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_mark_paid_stale",
+      status: "stale",
+    }));
+    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
+  });
 });
 
 describe("InvoicesScreen void invoice Open button guard", () => {
@@ -324,6 +363,56 @@ describe("InvoicesScreen manual payments", () => {
     expect(screen.getByRole("button", { name: /^Add Payment$/i })).toBeInTheDocument();
   });
 
+  test("manual partial payment marks existing old-balance pending Stripe session stale without mutating accounting beyond the payment", () => {
+    seedInvoices([createSentInvoice()]);
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_manual_stale_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/manual-stale",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Take Payment$/i }));
+    const dialog = screen.getByRole("dialog", { name: /Record payment/i });
+    fireEvent.change(within(dialog).getByLabelText(/Payment amount/i), { target: { value: "125.00" } });
+    fireEvent.change(within(dialog).getByLabelText(/Paid date/i), { target: { value: "2026-05-06" } });
+    fireEvent.change(within(dialog).getByLabelText(/Payment method/i), { target: { value: "cash" } });
+    fireEvent.change(within(dialog).getByLabelText(/Payment note/i), { target: { value: "Deposit received" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.status).toBe("sent");
+    expect(invoice.paymentStatus).toBe("partial");
+    expect(invoice.amountPaid).toBe(125);
+    expect(invoice.balanceRemaining).toBe(375);
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({
+      amount: 125,
+      method: "cash",
+      note: "Deposit received",
+    }));
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_manual_stale_123",
+      status: "stale",
+      amount: 500,
+    }));
+    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Invoice balance changed after this link was generated\./i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
+  });
+
   test("final payoff marks the invoice paid", () => {
     seedInvoices([
       createSentInvoice({
@@ -426,6 +515,47 @@ describe("InvoicesScreen manual payments", () => {
     expect(invoice.payments).toEqual([]);
     expect(Number(invoice.amountPaid)).toBe(0);
     expect(Number(invoice.balanceRemaining)).toBe(0);
+  });
+
+  test("Void retires pending Stripe sessions and keeps Stripe actions hidden", () => {
+    seedInvoices([createSentInvoice()]);
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_void_stale_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/void-stale",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
+
+    const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+
+    const invoice = readStoredInvoices()[0];
+    expect(invoice.status).toBe("void");
+    expect(invoice.paymentStatus).toBe("void");
+    expect(invoice.amountPaid).toBe(0);
+    expect(invoice.balanceRemaining).toBe(0);
+    expect(invoice.payments).toEqual([]);
+    expect(readStripeCheckoutSessions()[0]).toEqual(expect.objectContaining({
+      sessionId: "cs_void_stale_123",
+      status: "stale",
+    }));
+    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeNull();
   });
 });
 
@@ -1071,6 +1201,50 @@ describe("InvoicesScreen Copy Payment Link action", () => {
       checkoutUrl: "https://checkout.stripe.com/pay/new-balance-link",
       status: "pending",
     }));
+    expect(readStripeCheckoutSessions()[1]).toEqual(expect.objectContaining({
+      sessionId: "cs_old_balance_123",
+      status: "stale",
+      amount: 500,
+    }));
+  });
+
+  test("stale session is not reused by Pay Online", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_stale_pay_online",
+        checkoutUrl: "https://checkout.stripe.com/pay/stale-pay-online",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "stale",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/fresh-after-stale",
+        sessionId: "cs_fresh_after_stale",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/pay/fresh-after-stale",
+      "_blank",
+      "noopener,noreferrer"
+    );
   });
 
   test("synced session is not reused for a new payment link", async () => {
@@ -1141,6 +1315,41 @@ describe("InvoicesScreen Copy Payment Link action", () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/new-after-review");
+  });
+
+  test("stale session is not reused by Copy Payment Link", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_copy_stale_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/copy-stale",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "stale",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/copy-fresh-after-stale",
+        sessionId: "cs_copy_fresh_after_stale",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-fresh-after-stale");
   });
 
   test("Copy Payment Link clipboard fallback shows URL in alert without mutating storage", async () => {
@@ -1748,6 +1957,81 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(statusSelect).toHaveValue("paid");
     expect(screen.getByRole("button", { name: /^Hide$/i })).toBeInTheDocument();
     expect(screen.getByText(/Stripe payment recorded and invoice is now paid\./i)).toBeInTheDocument();
+  });
+
+  test("successful Stripe sync retires other pending sessions that are now stale", async () => {
+    seedInvoices([
+      createSentInvoice({
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_manual_sync_retire",
+            amount: 125,
+            paidAt: "2026-05-05",
+            note: "Deposit",
+            method: "cash",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_sync_target_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/sync-target",
+        amount: 375,
+        currency: "usd",
+        createdAt: 1714694500000,
+        status: "pending",
+      },
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_sync_old_123",
+        checkoutUrl: "https://checkout.stripe.com/pay/sync-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessionId: "cs_sync_target_123",
+        stripeAccountId: "acct_test_connected_123",
+        paymentStatus: "paid",
+        status: "complete",
+        amountTotal: 37500,
+        currency: "usd",
+        paymentIntentId: "pi_sync_target_123",
+        paidAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i }));
+    });
+
+    const sessions = readStripeCheckoutSessions();
+    expect(sessions.find((entry) => entry.sessionId === "cs_sync_target_123")).toEqual(expect.objectContaining({
+      status: "synced",
+      paymentIntentId: "pi_sync_target_123",
+    }));
+    expect(sessions.find((entry) => entry.sessionId === "cs_sync_old_123")).toEqual(expect.objectContaining({
+      status: "stale",
+      amount: 500,
+    }));
   });
 
   test("manual payment ledger rendering stays unchanged without Stripe-only details", () => {
