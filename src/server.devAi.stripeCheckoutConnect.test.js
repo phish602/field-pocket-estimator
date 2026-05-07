@@ -254,16 +254,40 @@ describe("dev-ai Stripe Connect checkout guards", () => {
       customerName: "Test Customer",
       stripeAccountId: "acct_test_connected_123",
       balanceRemaining: 125,
+      idempotencyKey: "estipaid-checkout-test-abc123",
     });
 
     expect(response.status).toBe(200);
     const captured = JSON.parse(fs.readFileSync(captureFile, "utf8"));
-    expect(captured.requestOptions).toEqual({ stripeAccount: "acct_test_connected_123" });
+    expect(captured.requestOptions).toEqual({
+      stripeAccount: "acct_test_connected_123",
+      idempotencyKey: "estipaid-checkout-test-abc123",
+    });
     expect(captured.params.success_url).toContain("/api/stripe/checkout/success?");
     expect(captured.params.success_url).toContain("invoiceId=inv_4");
     expect(captured.params.success_url).toContain("invoiceNumber=INV-4");
     expect(captured.params.success_url).toContain("stripeAccountId=acct_test_connected_123");
     expect(captured.params.success_url).toContain("session_id={CHECKOUT_SESSION_ID}");
+  });
+
+  test("rejects unsafe idempotencyKey with safe 400", async () => {
+    port = 5970;
+    child = startServer({
+      DEV_AI_PORT: String(port),
+      STRIPE_SECRET_KEY: "sk_test_connect_phase2",
+    });
+    await waitForServer(port);
+
+    const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
+      invoiceId: "inv_unsafe_idem",
+      invoiceNumber: "INV-UNSAFE",
+      stripeAccountId: "acct_test_connected_123",
+      balanceRemaining: 125,
+      idempotencyKey: "unsafe key with spaces",
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.json).toEqual({ error: "Invalid idempotencyKey." });
   });
 
   test("retrieve-checkout-session returns safe enriched Stripe payment details", async () => {

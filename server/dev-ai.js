@@ -71,6 +71,11 @@ function roundCurrency(value) {
   return Math.round(toCurrencyNumber(value) * 100) / 100;
 }
 
+function isSafeStripeIdempotencyKey(value) {
+  const text = asText(value);
+  return /^[a-z0-9._:-]{1,255}$/i.test(text);
+}
+
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(asText(value));
 }
@@ -12156,6 +12161,8 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     const projectName = asText(req.body?.projectName);
     const stripeAccountId = asText(req.body?.stripeAccountId);
     const balanceRemaining = roundCurrency(req.body?.balanceRemaining);
+    const currency = asText(req.body?.currency || "usd").toLowerCase() || "usd";
+    const idempotencyKey = asText(req.body?.idempotencyKey);
 
     if (!invoiceId) {
       return res.status(400).json({ error: "Missing invoiceId." });
@@ -12168,6 +12175,12 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
     }
     if (balanceRemaining <= 0) {
       return res.status(400).json({ error: "Invalid balanceRemaining." });
+    }
+    if (currency !== "usd") {
+      return res.status(400).json({ error: "Invalid currency." });
+    }
+    if (idempotencyKey && !isSafeStripeIdempotencyKey(idempotencyKey)) {
+      return res.status(400).json({ error: "Invalid idempotencyKey." });
     }
 
     const amountCents = Math.round(balanceRemaining * 100);
@@ -12198,7 +12211,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
         {
           quantity: 1,
           price_data: {
-            currency: "usd",
+            currency,
             unit_amount: amountCents,
             product_data: {
               name: itemName,
@@ -12217,6 +12230,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
       },
     }, {
       stripeAccount: stripeAccountId,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
 
     return res.json({

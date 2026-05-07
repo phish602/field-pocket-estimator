@@ -20,6 +20,7 @@ export const STORAGE_KEYS = {
   CUSTOMER_RECENTS: "estipaid-customer-recent-v1",
   COMPANY_PROFILE: "estipaid-company-profile-v1",
   STRIPE_CHECKOUT_SESSIONS: "estipaid-stripe-checkout-sessions-v1",
+  STRIPE_CHECKOUT_CREATE_LOCKS: "estipaid-stripe-checkout-create-locks-v1",
   SCOPE_TEMPLATES: "estipaid-scope-templates-v1",
   CUSTOM_LABOR_ROLES: "estipaid-custom-labor-roles-v1",
 };

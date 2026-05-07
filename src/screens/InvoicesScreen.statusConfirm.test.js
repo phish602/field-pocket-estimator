@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import InvoicesScreen from "./InvoicesScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
@@ -60,6 +60,23 @@ function seedStripeCheckoutSessions(entries) {
 
 function readStripeCheckoutSessions() {
   return JSON.parse(localStorage.getItem(STORAGE_KEYS.STRIPE_CHECKOUT_SESSIONS) || "[]");
+}
+
+function buildStripeCheckoutCreateLockKey({
+  invoiceId = "inv_sent_payment",
+  stripeAccountId = "acct_test_connected_123",
+  balanceRemaining = 500,
+  currency = "usd",
+} = {}) {
+  return `invoice:${invoiceId}|account:${stripeAccountId}|amount:${Number(balanceRemaining).toFixed(2)}|currency:${String(currency || "usd").toLowerCase()}`;
+}
+
+function seedStripeCheckoutCreateLocks(entries) {
+  localStorage.setItem(STORAGE_KEYS.STRIPE_CHECKOUT_CREATE_LOCKS, JSON.stringify(entries || {}));
+}
+
+function readStripeCheckoutCreateLocks() {
+  return JSON.parse(localStorage.getItem(STORAGE_KEYS.STRIPE_CHECKOUT_CREATE_LOCKS) || "{}");
 }
 
 function renderInvoicesScreen() {
@@ -678,6 +695,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
     expect(payload.balanceRemaining).not.toBe(900);
     expect(payload.invoiceId).toBe("inv_sent_payment");
     expect(payload.customerEmail).toBe("customer@example.com");
+    expect(payload.idempotencyKey).toMatch(/^estipaid-checkout-[a-f0-9]+-[a-f0-9]+$/i);
     expect(window.open).toHaveBeenCalledWith(
       "https://checkout.stripe.com/pay/test-session",
       "_blank",
@@ -819,6 +837,102 @@ describe("InvoicesScreen Stripe checkout action", () => {
         status: "pending",
       }),
     ]);
+    expect(readStripeCheckoutCreateLocks()).toEqual({});
+  });
+
+  test("shared localStorage checkout lock prevents a second create call for the same invoice balance", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutCreateLocks({
+      [buildStripeCheckoutCreateLockKey()]: {
+        ownerId: "other-tab",
+        lockToken: "other-token",
+        createdAt: 1714694400000,
+        expiresAt: Date.now() + 10000,
+      },
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+    expect(screen.getByText(/A Stripe link is already being generated for this invoice\./i)).toBeInTheDocument();
+  });
+
+  test("expired shared checkout lock is ignored and a new create can proceed", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutCreateLocks({
+      [buildStripeCheckoutCreateLockKey()]: {
+        ownerId: "other-tab",
+        lockToken: "expired-token",
+        createdAt: 1714694400000,
+        expiresAt: Date.now() - 1000,
+      },
+    });
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/expired-lock-new",
+        sessionId: "cs_expired_lock_new",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(readStripeCheckoutCreateLocks()).toEqual({});
+  });
+
+  test("after shared lock acquisition a newly stored reusable session is reused without backend POST", async () => {
+    seedInvoices([createSentInvoice()]);
+    const originalDispatchEvent = window.dispatchEvent;
+    window.dispatchEvent = jest.fn((event) => {
+      if (event?.type === "pe-localstorage" && event?.detail?.key === STORAGE_KEYS.STRIPE_CHECKOUT_CREATE_LOCKS) {
+        seedStripeCheckoutSessions([
+          {
+            invoiceId: "inv_sent_payment",
+            invoiceNumber: "INV-SENT-1",
+            stripeAccountId: "acct_test_connected_123",
+            sessionId: "cs_raced_session",
+            checkoutUrl: "https://checkout.stripe.com/pay/raced-session",
+            amount: 500,
+            currency: "usd",
+            createdAt: 1714694500000,
+            expiresAt: 2714694400,
+            status: "pending",
+          },
+        ]);
+      }
+      return originalDispatchEvent.call(window, event);
+    });
+    try {
+      renderInvoicesScreen();
+      openInvoiceDetails();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Pay Online with Stripe/i }));
+      });
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(window.open).toHaveBeenCalledWith(
+        "https://checkout.stripe.com/pay/raced-session",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      expect(readStripeCheckoutCreateLocks()).toEqual({});
+    } finally {
+      window.dispatchEvent = originalDispatchEvent;
+    }
   });
 
   test("shows Stripe action for unpaid sent invoice with no payments and stored balanceRemaining 0", () => {
@@ -890,6 +1004,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
     // Derived balance = invoiceTotal(600) - amountPaid(0) = 600, not the stored 0
     expect(payload.balanceRemaining).toBe(600);
     expect(payload.balanceRemaining).not.toBe(0);
+    expect(payload.idempotencyKey).toMatch(/^estipaid-checkout-[a-f0-9]+-[a-f0-9]+$/i);
     expect(window.location.href).toBe("http://localhost/");
     // Storage must be unchanged
     expect(readStoredInvoices()).toEqual(before);
@@ -974,6 +1089,7 @@ describe("InvoicesScreen Stripe checkout action", () => {
     expect(invoice.balanceRemaining).toBe(375);
     expect(invoice.paymentStatus).toBe("partial");
     expect(invoice.status).toBe("sent");
+    expect(readStripeCheckoutCreateLocks()).toEqual({});
   });
 });
 
@@ -1089,6 +1205,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     expect(payload.stripeAccountId).toBe("acct_test_connected_123");
     // Derived: invoiceTotal(800) - amountPaid(0) = 800, not stored 0
     expect(payload.balanceRemaining).toBe(800);
+    expect(payload.idempotencyKey).toMatch(/^estipaid-checkout-[a-f0-9]+-[a-f0-9]+$/i);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://checkout.stripe.com/pay/copy-session");
     expect(window.open).not.toHaveBeenCalled();
     expect(window.location.href).toBe("http://localhost/");
@@ -1110,6 +1227,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
         status: "pending",
       }),
     ]);
+    expect(readStripeCheckoutCreateLocks()).toEqual({});
   });
 
   test("Copy Payment Link reuses existing pending unexpired same-balance session without backend call", async () => {
@@ -1206,6 +1324,150 @@ describe("InvoicesScreen Copy Payment Link action", () => {
       status: "stale",
       amount: 500,
     }));
+  });
+
+  test("idempotencyKey changes when balance changes", async () => {
+    const firstInvoice = createSentInvoice({
+      id: "inv_balance_key",
+      invoiceNumber: "INV-BAL-1",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 0,
+      balanceRemaining: 500,
+      paymentStatus: "unpaid",
+      payments: [],
+    });
+    seedInvoices([firstInvoice]);
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/balance-key-1",
+        sessionId: "cs_balance_key_1",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    const firstPayload = JSON.parse(global.fetch.mock.calls[0][1].body);
+
+    cleanup();
+    localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    seedInvoices([
+      createSentInvoice({
+        id: "inv_balance_key",
+        invoiceNumber: "INV-BAL-1",
+        invoiceTotal: 500,
+        total: 500,
+        amountPaid: 125,
+        balanceRemaining: 375,
+        paymentStatus: "partial",
+        payments: [
+          {
+            id: "pay_balance_key",
+            amount: 125,
+            paidAt: "2026-05-05",
+            method: "cash",
+            note: "Deposit",
+            order: 0,
+          },
+        ],
+      }),
+    ]);
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/balance-key-2",
+        sessionId: "cs_balance_key_2",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+
+    const secondPayload = JSON.parse(global.fetch.mock.calls[1][1].body);
+    expect(firstPayload.idempotencyKey).not.toBe(secondPayload.idempotencyKey);
+    expect(firstPayload.balanceRemaining).toBe(500);
+    expect(secondPayload.balanceRemaining).toBe(375);
+  });
+
+  test("idempotencyKey changes when forcing a fresh session after expired or stale refs", async () => {
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_expired_key_old",
+        checkoutUrl: "https://checkout.stripe.com/pay/expired-key-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        expiresAt: 1714694400,
+        status: "pending",
+      },
+    ]);
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/expired-key-new",
+        sessionId: "cs_expired_key_new",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+    const firstPayload = JSON.parse(global.fetch.mock.calls[0][1].body);
+
+    cleanup();
+    localStorage.clear();
+    seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
+    seedInvoices([createSentInvoice()]);
+    seedStripeCheckoutSessions([
+      {
+        invoiceId: "inv_sent_payment",
+        invoiceNumber: "INV-SENT-1",
+        stripeAccountId: "acct_test_connected_123",
+        sessionId: "cs_stale_key_old",
+        checkoutUrl: "https://checkout.stripe.com/pay/stale-key-old",
+        amount: 500,
+        currency: "usd",
+        createdAt: 1714694400000,
+        status: "stale",
+      },
+    ]);
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        checkoutUrl: "https://checkout.stripe.com/pay/stale-key-new",
+        sessionId: "cs_stale_key_new",
+      }),
+    });
+
+    renderInvoicesScreen();
+    openInvoiceDetails();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Copy Payment Link/i }));
+    });
+    const secondPayload = JSON.parse(global.fetch.mock.calls[1][1].body);
+
+    expect(firstPayload.idempotencyKey).not.toBe(secondPayload.idempotencyKey);
   });
 
   test("stale session is not reused by Pay Online", async () => {
@@ -1428,6 +1690,7 @@ describe("InvoicesScreen Copy Payment Link action", () => {
     expect(invoice.payments).toHaveLength(0);
     expect(invoice.amountPaid).toBe(0);
     expect(invoice.status).toBe("sent");
+    expect(readStripeCheckoutCreateLocks()).toEqual({});
   });
 });
 
