@@ -114,6 +114,16 @@ function formatDenseLongTextParagraph(value) {
   return groupedSentences.map((group) => group.join(" ")).join("\n\n");
 }
 
+export function stripScopeMarkdownMarkers(value) {
+  const text = String(value ?? "");
+  if (!text) return "";
+
+  return text
+    .replace(/^[ \t]*##+\s+/gm, "")
+    .replace(/\*\*(\S(?:[\s\S]*?\S)?)\*\*/g, "$1")
+    .replace(/(^|[^\w/])_(\S(?:[\s\S]*?\S)?)_(?=($|[^\w/]))/gm, (_, prefix, content) => `${prefix}${content}`);
+}
+
 function formatLongFormPdfText(value) {
   const text = asText(value);
   if (!text) return "";
@@ -619,7 +629,7 @@ function buildPdfDoc(payload) {
     .map(normalizeMaterialRow)
     .filter((row) => !isItemizedMaterials || !!asText(row?.desc));
   const summaryRows = ensureArray(payload?.summaryRows);
-  const scopeNotesText = formatLongFormPdfText(payload?.scopeNotes);
+  const scopeNotesText = formatLongFormPdfText(stripScopeMarkdownMarkers(payload?.scopeNotes));
   const tradeInsertText = formatLongFormPdfText(payload?.tradeInsertText);
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
   const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
