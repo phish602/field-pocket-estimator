@@ -19,6 +19,11 @@ import {
   upsertReviewedJobLearningCandidate,
   deleteReviewedJobLearningCandidate,
 } from "../utils/jobLearningReviewStore";
+import {
+  buildReviewedRegistryCandidates,
+  summarizeReviewedRegistryCandidates,
+  detectReviewedRegistryIssues,
+} from "../utils/jobLearningReviewedRegistrySnapshot";
 
 // Dev/local gate — this screen must never render for production users.
 const IS_DEV = process.env.NODE_ENV !== "production";
@@ -32,8 +37,6 @@ function isLocal() {
 }
 const ACCESSIBLE = IS_DEV || isLocal();
 
-// No registry source wired yet. Using empty fixture per spec.
-const CANDIDATES = [];
 
 // ── Tiny helpers ──────────────────────────────────────────────────────────────
 
@@ -648,6 +651,91 @@ function AuditRowsPanel({ rows }) {
   );
 }
 
+// ── Reviewed registry panels ──────────────────────────────────────────────────
+
+function ReviewedRegistrySummaryPanel({ reviewSummary }) {
+  return (
+    <Panel title="Reviewed Registry Summary">
+      <StatRow label="Total reviewed"       value={reviewSummary.totalReviewed} />
+      <StatRow label="Emitted candidates"   value={reviewSummary.emittedCandidateCount} />
+      <StatRow label="Quarantined reviewed" value={reviewSummary.quarantinedReviewedCount} />
+      <StatRow label="Approved"             value={reviewSummary.approvedReviewedCount} />
+      <StatRow label="Rejected"             value={reviewSummary.rejectedReviewedCount} />
+      <StatRow label="Needs changes"        value={reviewSummary.needsChangesReviewedCount} />
+      <StatRow label="Warnings"             value={reviewSummary.warningCount} />
+    </Panel>
+  );
+}
+
+function ReviewedRegistryIssuesPanel({ reviewIssues }) {
+  const sections = [
+    { label: "Malformed reviewed records",    items: reviewIssues.malformedReviewedRecords },
+    { label: "Non-approved reviewed",         items: reviewIssues.nonApprovedReviewedRecords },
+    { label: "Unsafe runtime flags",          items: reviewIssues.unsafeRuntimeFlags },
+    { label: "Unsafe reusable flags",         items: reviewIssues.unsafeReusableFlags },
+    { label: "Missing required fields",       items: reviewIssues.missingRequiredFields },
+    { label: "Malformed candidate snapshots", items: reviewIssues.malformedCandidateSnapshots },
+    { label: "Duplicate fingerprints",        items: reviewIssues.duplicateFingerprints },
+  ];
+  return (
+    <Panel title={`Reviewed Registry Issues (${reviewIssues.totalIssueCount})`}>
+      {reviewIssues.totalIssueCount === 0 ? (
+        <div className="pe-muted" style={S.empty}>No reviewed registry issues.</div>
+      ) : (
+        sections.map(({ label, items }) =>
+          items && items.length > 0 ? (
+            <div key={label} style={S.healthBlock}>
+              <div style={S.healthLabel}>{label} ({items.length})</div>
+              <div style={S.rowMeta}>
+                {items.slice(0, 10).map((id) => (
+                  <code key={id} style={S.code}>{id}</code>
+                ))}
+                {items.length > 10 && <span className="pe-muted" style={{ fontSize: 10 }}>+{items.length - 10} more</span>}
+              </div>
+            </div>
+          ) : null
+        )
+      )}
+    </Panel>
+  );
+}
+
+function GovernedReviewedCandidatesPanel({ candidates }) {
+  return (
+    <Panel title={`Governed Reviewed Candidates (${candidates ? candidates.length : 0})`}>
+      {!candidates || candidates.length === 0 ? (
+        <div className="pe-muted" style={S.empty}>No approved reviewed candidates emitted.</div>
+      ) : (
+        <div style={S.tableWrap}>
+          {candidates.map((c, i) => (
+            <div key={c.fingerprint || i} style={S.tableRow}>
+              <code style={S.fp}>{c.fingerprint}</code>
+              <div style={S.rowMeta}>
+                {statePill(c.approvalState)}
+                {statePill(c.scoringTier)}
+                <span className="pe-muted">conf: {c.confidence}</span>
+                {c.workflowClass && <span className="pe-muted">{c.workflowClass}</span>}
+                {c.workflowComplexity && <span className="pe-muted">{c.workflowComplexity}</span>}
+                {c.tradeHint && c.tradeHint !== "unknown" && <span className="pe-muted">{c.tradeHint}</span>}
+              </div>
+              <div style={S.rowMeta}>
+                <span className="pe-muted">saves: {c.saveCount}</span>
+                <span className="pe-muted">accepted: {c.acceptedCount}</span>
+              </div>
+              {c.sequence && c.sequence.length > 0 && (
+                <div style={S.rowMeta}>
+                  <span className="pe-muted" style={{ fontSize: 10 }}>seq:</span>
+                  {c.sequence.map((s) => <code key={s} style={{ ...S.code, fontSize: 10 }}>{s}</code>)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const S = {
@@ -791,6 +879,15 @@ const S = {
   btnReject:  { border: "1px solid rgba(192,57,43,0.35)",  borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(192,57,43,0.15)",  color: "#e74c3c" },
   btnNeeds:   { border: "1px solid rgba(230,126,34,0.35)", borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(230,126,34,0.15)", color: "#e67e22" },
   btnClear:   { border: "1px solid rgba(255,255,255,0.1)", borderRadius: 5, fontSize: 11, fontWeight: 700, padding: "3px 10px", cursor: "pointer", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.45)" },
+  reviewedSnapshotNote: {
+    fontSize: 12,
+    fontStyle: "italic",
+    padding: "8px 14px",
+    borderRadius: 8,
+    background: "rgba(41,128,185,0.08)",
+    border: "1px solid rgba(41,128,185,0.2)",
+    color: "rgba(255,255,255,0.45)",
+  },
   unavailable: {
     display: "flex",
     alignItems: "center",
@@ -855,11 +952,22 @@ class DiagnosticsReviewBody extends React.Component {
   }
 
   render() {
-    const { stats, assembly, assemblySummary, issues, snapshot, summary, drift, auditRows } = this.props;
+    const { stats, assembly, assemblySummary, issues } = this.props;
     const { reviewedRecords, draftNotes } = this.state;
 
     const reviewedMap = new Map();
     for (const r of reviewedRecords) reviewedMap.set(r.candidateFingerprint, r);
+
+    // Bridge: filter approved reviewed records into governed registry candidates (diagnostics only).
+    const bridge        = buildReviewedRegistryCandidates(reviewedRecords);
+    const reviewSummary = summarizeReviewedRegistryCandidates(reviewedRecords);
+    const reviewIssues  = detectReviewedRegistryIssues(reviewedRecords);
+
+    // Registry snapshot driven by bridge-emitted candidates for diagnostics only.
+    const snapshot  = buildJobLearningRegistrySnapshot(bridge.registryCandidates);
+    const summary   = summarizeJobLearningRegistrySnapshot(bridge.registryCandidates);
+    const drift     = detectJobLearningRegistryDrift(bridge.registryCandidates);
+    const auditRows = getJobLearningRegistryAuditRows(bridge.registryCandidates);
 
     return (
       <>
@@ -881,6 +989,12 @@ class DiagnosticsReviewBody extends React.Component {
         <AssemblyIssuesPanel issues={issues} />
         <AssemblyWarningsPanel warnings={assembly.assemblyWarnings} />
         <NotWiredNotice />
+        <ReviewedRegistrySummaryPanel reviewSummary={reviewSummary} />
+        <ReviewedRegistryIssuesPanel reviewIssues={reviewIssues} />
+        <GovernedReviewedCandidatesPanel candidates={bridge.registryCandidates} />
+        <div style={S.reviewedSnapshotNote}>
+          Registry snapshot below is built from approved reviewed candidates for diagnostics only. Runtime remains disconnected.
+        </div>
         <SummaryCards summary={summary} />
         <DriftPanel drift={drift} />
         <HealthPanels snapshot={snapshot} />
@@ -904,15 +1018,11 @@ export default function JobLearningDiagnosticsScreen() {
     );
   }
 
-  const events        = readJobLearningEvents();
-  const stats         = deriveCaptureStats(events);
-  const assembly      = assembleJobLearningCandidateDrafts(events);
+  const events          = readJobLearningEvents();
+  const stats           = deriveCaptureStats(events);
+  const assembly        = assembleJobLearningCandidateDrafts(events);
   const assemblySummary = summarizeCandidateAssembly(events);
-  const issues        = detectCandidateAssemblyIssues(events);
-  const snapshot      = buildJobLearningRegistrySnapshot(CANDIDATES);
-  const summary       = summarizeJobLearningRegistrySnapshot(CANDIDATES);
-  const drift         = detectJobLearningRegistryDrift(CANDIDATES);
-  const auditRows     = getJobLearningRegistryAuditRows(CANDIDATES);
+  const issues          = detectCandidateAssemblyIssues(events);
 
   return (
     <section className="pe-section" style={S.screen}>
@@ -923,10 +1033,6 @@ export default function JobLearningDiagnosticsScreen() {
         assembly={assembly}
         assemblySummary={assemblySummary}
         issues={issues}
-        snapshot={snapshot}
-        summary={summary}
-        drift={drift}
-        auditRows={auditRows}
       />
     </section>
   );
