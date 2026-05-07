@@ -13,6 +13,7 @@ import {
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+const STRIPE_CHECKOUT_SESSIONS_KEY = STORAGE_KEYS.STRIPE_CHECKOUT_SESSIONS;
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 const REQUIRED_FIELD_META = {
@@ -203,6 +204,12 @@ function saveProfile(p) {
   } catch {
     return false;
   }
+}
+
+function dispatchLocalStorageUpdate(key, value) {
+  try {
+    window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key, value } }));
+  } catch {}
 }
 
 function readProfileReturnTarget() {
@@ -575,10 +582,30 @@ export default function CompanyProfileScreen() {
     setLastSavedSnapshot(serializeProfileState(cleared));
     setShowClearConfirm(false);
 
-    try {
-      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: "" } }));
-    } catch {}
+    dispatchLocalStorageUpdate(PROFILE_KEY, "");
   };
+
+  const handleStripeDisconnect = useCallback(() => {
+    if (!isStripeAccountId(stripeAccountId)) return;
+    const confirmed = window.confirm(
+      "Disconnect Stripe from this Company Profile?\n\n"
+      + "Online payment links created for the old Stripe account will no longer be usable from EstiPaid.\n"
+      + "Saved invoice payment history will not be deleted."
+    );
+    if (!confirmed) return;
+
+    const nextProfile = { ...profile, stripeAccountId: "" };
+    if (!persistProfileUpdate(nextProfile, { toastMessage: "Stripe connection reset" })) {
+      window.alert("Unable to clear the saved Stripe connection.");
+      return;
+    }
+
+    try {
+      localStorage.removeItem(STRIPE_CHECKOUT_SESSIONS_KEY);
+    } catch {}
+    dispatchLocalStorageUpdate(STRIPE_CHECKOUT_SESSIONS_KEY, "");
+    setStripeStatus(null);
+  }, [persistProfileUpdate, profile, stripeAccountId]);
 
   const modalOverlay = {
     position: "fixed",
@@ -937,6 +964,15 @@ export default function CompanyProfileScreen() {
                       disabled={stripeStatusBusy}
                     >
                       {stripeStatusBusy ? "Refreshing Stripe..." : "Refresh Stripe Status"}
+                    </button>
+                  ) : null}
+                  {stripeAccountId ? (
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={handleStripeDisconnect}
+                    >
+                      Disconnect Stripe
                     </button>
                   ) : null}
                 </div>
