@@ -3417,7 +3417,6 @@ export default function EstimateForm(props) {
       case "divider": document.execCommand("insertHorizontalRule", false, null); break;
       case "heading": document.execCommand("formatBlock", false, "h2"); break;
       case "normal": document.execCommand("formatBlock", false, "div"); break;
-      case "clear": document.execCommand("removeFormat", false, null); break;
       default: break;
     }
     const nextText = el.innerText || "";
@@ -6098,13 +6097,6 @@ export default function EstimateForm(props) {
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("redo"); }}
                 title="Redo"
               >↪</button>
-              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
-              <button
-                type="button"
-                className="pe-scope-toolbar-btn"
-                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("clear"); }}
-                title="Clear formatting"
-              >Clear ×</button>
             </div>
             <div
               ref={scopeNotesRef}
