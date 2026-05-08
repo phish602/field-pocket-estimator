@@ -3263,7 +3263,7 @@ export default function EstimateForm(props) {
   useEffect(() => {
     const el = scopeNotesRef.current;
     if (!el || el.tagName === "TEXTAREA") return;
-    const current = (el.innerText || "").replace(/\n$/, "");
+    const current = extractScopeTextFromElement(el).replace(/\n+$/, "");
     if (current === scopeNotes) return;
     el.innerText = scopeNotes;
     if (!scopeNotes.trim()) {
@@ -3420,7 +3420,7 @@ export default function EstimateForm(props) {
       case "normal": document.execCommand("formatBlock", false, "div"); break;
       default: break;
     }
-    const nextText = el.innerText || "";
+    const nextText = extractScopeTextFromElement(el);
     patch("scopeNotes", nextText);
     autoResizeScopeNotes(el);
     updateScopeFormatState();
@@ -3438,6 +3438,62 @@ export default function EstimateForm(props) {
         heading: String(document.queryCommandValue("formatBlock") || "").toLowerCase() === "h2",
       });
     } catch {}
+  }
+
+  function extractScopeTextFromElement(el) {
+    if (!el) return "";
+    const parts = [];
+    function getInlineText(node) {
+      if (node.nodeType === 3) return node.textContent;
+      if (node.nodeType !== 1) return "";
+      if (node.tagName.toLowerCase() === "br") return "\n";
+      return Array.from(node.childNodes).map(getInlineText).join("");
+    }
+    function walk(node) {
+      if (node.nodeType === 3) { const t = node.textContent; if (t) parts.push(t); return; }
+      if (node.nodeType !== 1) return;
+      const tag = node.tagName.toLowerCase();
+      switch (tag) {
+        case "h1": case "h2": case "h3": {
+          const text = getInlineText(node).replace(/\n/g, " ").trim();
+          if (text) parts.push("## " + text + "\n");
+          break;
+        }
+        case "ul": {
+          for (const li of node.children) {
+            if (li.tagName.toLowerCase() === "li") {
+              const text = getInlineText(li).replace(/\n/g, " ").trim();
+              if (text) parts.push("• " + text + "\n");
+            }
+          }
+          break;
+        }
+        case "ol": {
+          let idx = 1;
+          for (const li of node.children) {
+            if (li.tagName.toLowerCase() === "li") {
+              const text = getInlineText(li).replace(/\n/g, " ").trim();
+              if (text) { parts.push(idx + ". " + text + "\n"); idx++; }
+            }
+          }
+          break;
+        }
+        case "hr": { parts.push("---\n"); break; }
+        case "br": { parts.push("\n"); break; }
+        case "div": case "p": {
+          if (!node.textContent.trim() && !node.querySelector("hr")) { parts.push("\n"); return; }
+          const hasBlockChildren = Array.from(node.children).some((c) =>
+            ["h1", "h2", "h3", "ul", "ol", "hr", "div", "p"].includes(c.tagName.toLowerCase())
+          );
+          if (hasBlockChildren) { for (const c of node.childNodes) walk(c); }
+          else { const text = getInlineText(node).trim(); if (text) parts.push(text + "\n"); else parts.push("\n"); }
+          break;
+        }
+        default: for (const c of node.childNodes) walk(c); break;
+      }
+    }
+    for (const child of el.childNodes) walk(child);
+    return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   function handleSaveCustomTradeStarter() {
@@ -6130,7 +6186,7 @@ export default function EstimateForm(props) {
               suppressContentEditableWarning
               className="pe-input pe-textarea pe-scope-textarea"
               onInput={(e) => {
-                const nextText = e.currentTarget.innerText || "";
+                const nextText = extractScopeTextFromElement(e.currentTarget);
                 if (!nextText.trim()) {
                   e.currentTarget.setAttribute("data-empty", "true");
                 } else {

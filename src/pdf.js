@@ -174,6 +174,56 @@ function formatLongFormPdfText(value) {
   return formattedBlocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function parseScopeBlocks(rawText) {
+  if (!rawText) return [];
+  const normalized = String(rawText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  const lines = normalized.split("\n");
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line) { i++; continue; }
+    if (/^---+$/.test(line)) {
+      blocks.push({ type: "divider" });
+      i++;
+      continue;
+    }
+    if (/^##\s+/.test(line)) {
+      const text = normalizeLongTextLine(line.replace(/^##\s+/, ""));
+      if (text) blocks.push({ type: "heading", text });
+      i++;
+      continue;
+    }
+    if (isStructuredListLine(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const l = lines[i];
+        if (!l.trim()) { i++; break; }
+        if (/^---+$/.test(l.trim()) || /^##\s+/.test(l)) break;
+        if (isStructuredListLine(l)) items.push(normalizeLongTextLine(l));
+        i++;
+      }
+      if (items.length) blocks.push({ type: "list", items });
+      continue;
+    }
+    const paraLines = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim()) { i++; break; }
+      if (/^---+$/.test(l.trim()) || /^##\s+/.test(l) || isStructuredListLine(l)) break;
+      paraLines.push(l);
+      i++;
+    }
+    if (paraLines.length) {
+      const text = formatLongFormPdfText(paraLines.join("\n"));
+      if (text) blocks.push({ type: "paragraph", text });
+    }
+  }
+  return blocks;
+}
+
 function cleanMaterialNoteText(value) {
   const text = asText(value);
   if (!text) return "";
@@ -630,6 +680,7 @@ function buildPdfDoc(payload) {
     .filter((row) => !isItemizedMaterials || !!asText(row?.desc));
   const summaryRows = ensureArray(payload?.summaryRows);
   const scopeNotesText = formatLongFormPdfText(stripScopeMarkdownMarkers(payload?.scopeNotes));
+  const scopeBlocks = parseScopeBlocks(payload?.scopeNotes);
   const tradeInsertText = formatLongFormPdfText(payload?.tradeInsertText);
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
   const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
@@ -914,36 +965,64 @@ function buildPdfDoc(payload) {
 
   let y = (doc.lastAutoTable?.finalY || CLIENT_Y) + 9.6;
 
-  if (payload?.docType === "estimate" && scopeNotesText) {
-    const scopeSectionMinHeight = SECTION_HEADER_MIN_HEIGHT + estimatePreviewTextHeight(scopeNotesText, 8.95, 3.7) + 1.8;
-    y = ensureSectionFits(y, scopeSectionMinHeight);
+  if (payload?.docType === "estimate" && scopeBlocks.length > 0) {
+    let estimatedScopeHeight = SECTION_HEADER_MIN_HEIGHT + 1.8;
+    for (const blk of scopeBlocks) {
+      if (blk.type === "divider") estimatedScopeHeight += 3.8;
+      else if (blk.type === "heading") estimatedScopeHeight += estimatePreviewTextHeight(blk.text, 10.2, 4.5);
+      else if (blk.type === "list") estimatedScopeHeight += estimatePreviewTextHeight(blk.items.join("\n"), 8.95, 3.7);
+      else estimatedScopeHeight += estimatePreviewTextHeight(blk.text, 8.95, 3.7);
+    }
+    y = ensureSectionFits(y, estimatedScopeHeight);
 
-    autoTable(doc, {
-      startY: y,
-      head: [["SCOPE / NOTES"]],
-      body: [[scopeNotesText]],
-      theme: "plain",
-      tableLineWidth: 0,
-      styles: {
-        fontSize: 8.95,
-        cellPadding: 0.9,
-        minCellHeight: 3.7,
-        overflow: "linebreak",
-        lineWidth: 0,
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-        valign: "top",
-      },
-      headStyles: {
-        fontStyle: "bold",
-        fillColor: HEADER_FILL,
-        textColor: [20, 20, 20],
-        lineWidth: 0,
-      },
-      margin: { left: LEFT, right: RIGHT_GUTTER },
-    });
+    const SCOPE_MARGIN = { left: LEFT, right: RIGHT_GUTTER };
+    const SCOPE_HEAD = [["SCOPE / NOTES"]];
+    const SCOPE_HEAD_STYLES = { fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
+    const SCOPE_COMMON = { theme: "plain", tableLineWidth: 0, showHead: "firstPage", margin: SCOPE_MARGIN };
+    const SCOPE_BASE = { overflow: "linebreak", lineWidth: 0, fillColor: [255, 255, 255], textColor: [20, 20, 20], valign: "top" };
+    let scopeHeaderPending = true;
 
-    y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
+    for (const blk of scopeBlocks) {
+      if (blk.type === "divider") {
+        if (scopeHeaderPending) {
+          autoTable(doc, { ...SCOPE_COMMON, startY: y, head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES, body: [], styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0, minCellHeight: 0 } });
+          y = doc.lastAutoTable?.finalY ?? y;
+          scopeHeaderPending = false;
+        }
+        const divY = y + 2;
+        doc.setDrawColor(180, 180, 180);
+        doc.setLineWidth(0.28);
+        doc.line(LEFT + 0.9, divY, RIGHT - 0.9, divY);
+        y = divY + 3;
+        continue;
+      }
+      if (blk.type === "heading") {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: [[blk.text]],
+          styles: { ...SCOPE_BASE, fontStyle: "bold", fontSize: 10.2, cellPadding: { top: 2.4, bottom: 1, left: 0.9, right: 0.9 }, minCellHeight: 4.5 },
+        });
+      } else if (blk.type === "list") {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: blk.items.map((item) => [item]),
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: { top: 0.6, bottom: 0.6, left: 4.5, right: 0.9 }, minCellHeight: 3 },
+        });
+      } else {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: [[blk.text]],
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0.9, minCellHeight: 3.7 },
+        });
+      }
+      y = doc.lastAutoTable?.finalY ?? y;
+      scopeHeaderPending = false;
+    }
+
+    y += TEXT_SECTION_GAP;
   }
 
   if (tradeInsertText) {
