@@ -3257,6 +3257,21 @@ export default function EstimateForm(props) {
     };
   }, [notesOpen, scopeNotes]);
 
+  // Sync external scopeNotes writes (AI Assist accept, template apply) into the contenteditable div.
+  // Skipped when the div's text already matches, preserving cursor position during normal typing.
+  useEffect(() => {
+    const el = scopeNotesRef.current;
+    if (!el || el.tagName === "TEXTAREA") return;
+    const current = (el.innerText || "").replace(/\n$/, "");
+    if (current === scopeNotes) return;
+    el.innerText = scopeNotes;
+    if (!scopeNotes.trim()) {
+      el.setAttribute("data-empty", "true");
+    } else {
+      el.removeAttribute("data-empty");
+    }
+  }, [scopeNotes]);
+
   useLayoutEffect(() => {
     const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
       ? window.requestAnimationFrame(() => autoResizeScopeNotes(additionalNotesRef.current))
@@ -3371,6 +3386,24 @@ export default function EstimateForm(props) {
     patch("scopeNotes", existing + sep + text);
     patch("tradeInsert.key", String(insertKey || "").trim());
     patch("tradeInsert.text", text);
+  }
+
+  function handleScopeFormat(command) {
+    const el = scopeNotesRef.current;
+    if (!el) return;
+    el.focus();
+    // eslint-disable-next-line no-fallthrough
+    switch (command) {
+      case "bold": document.execCommand("bold", false, null); break;
+      case "italic": document.execCommand("italic", false, null); break;
+      case "bullet": document.execCommand("insertUnorderedList", false, null); break;
+      case "numbered": document.execCommand("insertOrderedList", false, null); break;
+      case "clear": document.execCommand("removeFormat", false, null); break;
+      default: break;
+    }
+    const nextText = el.innerText || "";
+    patch("scopeNotes", nextText);
+    autoResizeScopeNotes(el);
   }
 
   function handleSaveCustomTradeStarter() {
@@ -5981,17 +6014,66 @@ export default function EstimateForm(props) {
               ) : null}
             </div>
           </div>
-          <textarea
-            ref={scopeNotesRef}
-            className="pe-input pe-textarea"
-            value={scopeNotes}
-            onChange={(e) => {
-              patch("scopeNotes", e.target.value);
-              autoResizeScopeNotes(e.target);
-            }}
-            placeholder="What work is being done? e.g. Tear off existing roof, install 30-yr architectural shingles, replace flashing and vents…"
-            style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
-          />
+          <div className="pe-scope-editor">
+            <div className="pe-scope-toolbar" role="toolbar" aria-label="Scope text formatting">
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bold"); }}
+                title="Bold"
+              ><strong>B</strong></button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("italic"); }}
+                title="Italic"
+              ><em>I</em></button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bullet"); }}
+                title="Bullet list"
+              >• List</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("numbered"); }}
+                title="Numbered list"
+              >1. List</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("clear"); }}
+                title="Clear formatting"
+              >Clear ×</button>
+            </div>
+            <div
+              ref={scopeNotesRef}
+              contentEditable
+              suppressContentEditableWarning
+              className="pe-input pe-textarea pe-scope-textarea"
+              onInput={(e) => {
+                const nextText = e.currentTarget.innerText || "";
+                if (!nextText.trim()) {
+                  e.currentTarget.setAttribute("data-empty", "true");
+                } else {
+                  e.currentTarget.removeAttribute("data-empty");
+                }
+                patch("scopeNotes", nextText);
+                autoResizeScopeNotes(e.currentTarget);
+              }}
+              onPaste={(e) => {
+                e.preventDefault();
+                const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+                document.execCommand("insertText", false, text);
+              }}
+              data-placeholder="What work is being done? e.g. Tear off existing roof, install 30-yr architectural shingles, replace flashing and vents…"
+              {...(!scopeNotes.trim() ? { "data-empty": "true" } : {})}
+              style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none", whiteSpace: "pre-wrap", outline: "none" }}
+            />
+          </div>
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "" : "pe-open"}`}

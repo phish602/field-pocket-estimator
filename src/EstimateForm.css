@@ -2022,6 +2022,19 @@
   line-height: 1.4;
 }
 
+/* Contenteditable scope editor */
+.pe-scope-textarea[contenteditable] {
+  outline: none;
+  cursor: text;
+}
+
+.pe-scope-textarea[contenteditable][data-empty]::before {
+  content: attr(data-placeholder);
+  color: rgba(148, 163, 184, 0.48);
+  pointer-events: none;
+  display: block;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pe-scope-toolbar-btn {
     transition: none !important;
