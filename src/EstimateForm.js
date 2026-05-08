@@ -12,11 +12,7 @@ import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from ".
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
-import {
-  captureAiAssistRequest,
-  captureAiAssistResult,
-  useAiAssist,
-} from "./estimator/aiAssist/useAiAssist";
+import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
 import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
 import { getAssistConfig } from "./estimator/aiAssist/registry";
 import { requestSectionAssist } from "./estimator/aiAssist/service";
@@ -27,7 +23,12 @@ import {
   resolveMaterialsAssistMode,
 } from "./estimator/aiAssist/adapters/materials";
 import { exportPdf } from "./pdf";
-import { captureAssistAccept, captureDocumentSave } from "./utils/jobLearningCapture";
+import {
+  captureAssistAccept,
+  captureAssistRequest,
+  captureAssistResult,
+  captureDocumentSave,
+} from "./utils/jobLearningCapture";
 import {
   createMoneyFormatter,
   formatDateMMDDYYYY,
@@ -1618,14 +1619,8 @@ export default function EstimateForm(props) {
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
-  const laborAssist = useAiAssist("labor", state, {
-    docType: guidedDocType,
-    mode: isEditMode ? "edit" : "create",
-  });
-  const materialsAssist = useAiAssist("materials", state, {
-    docType: guidedDocType,
-    mode: isEditMode ? "edit" : "create",
-  });
+  const laborAssist = useAiAssist("labor", state);
+  const materialsAssist = useAiAssist("materials", state);
   const handleSuggestLaborFromScope = useCallback(() => {
     laborAssist.submit("", { laborRequestMode: "from_scope" });
   }, [laborAssist]);
@@ -2700,7 +2695,7 @@ export default function EstimateForm(props) {
 
     try {
       if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_START]", { chip: normalizedInput, isRefine: isRefineRequest, seq: mySeq, ts: Date.now() });
-      captureAiAssistRequest({
+      captureAssistRequest({
         ...assistCaptureMeta,
         rawInput: normalizedInput,
         scopeTextLength: String(scopeNotes || "").length,
@@ -2723,7 +2718,7 @@ export default function EstimateForm(props) {
         return result;
       }
 
-      captureAiAssistResult({
+      captureAssistResult({
         ...assistCaptureMeta,
         success: !!result,
         hasWrites: !!result?.writes,
@@ -6446,12 +6441,7 @@ export default function EstimateForm(props) {
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
         onAiAssistOpen={() => {
-          const fromScopePrompt = resolveMaterialsFromScopePrompt(materialsAssistMode);
-          if (fromScopePrompt) {
-            materialsAssist.submit(fromScopePrompt);
-            return;
-          }
-          materialsAssist.open({ suggestedPrompts: buildMaterialsAssistSuggestedPrompts(materialsAssistMode) });
+          materialsAssist.submit(resolveMaterialsFromScopePrompt(materialsAssistMode));
         }}
         materialsMode={materialsMode}
         setMaterialsMode={setMaterialsMode}
@@ -6599,24 +6589,16 @@ export default function EstimateForm(props) {
         />
       )}
 
-      {laborAssist.assistState.phase !== "idle" && laborAssistConfig && (
+      {laborAssist.assistState.phase !== "idle" && laborAssistConfig && (!laborAssist.assistState.fromScopeDirect || laborAssist.assistState.phase === "review") && (
         <SectionAssistPanel
           config={laborAssistConfig}
           assistState={laborAssist.assistState}
           onSubmit={laborAssist.submit}
           onAccept={(writes, action) => {
-            const assistCaptureMeta = laborAssist.assistCaptureMeta;
             captureAssistAccept({
               sectionKey: "labor",
               docType: uiDocType,
               mode: isEditMode ? "edit" : "create",
-              ...(assistCaptureMeta ? {
-                assistTraceId: assistCaptureMeta.assistTraceId,
-                assistSequenceIndex: assistCaptureMeta.assistSequenceIndex,
-                assistSectionKey: assistCaptureMeta.assistSectionKey,
-                assistDocType: assistCaptureMeta.assistDocType,
-                assistMode: assistCaptureMeta.assistMode,
-              } : {}),
               acceptedWriteKeys: Object.keys(writes || {}),
               laborLineCount: Array.isArray(writes?.laborLines) ? writes.laborLines.length : 0,
               actionType: String(action?.type || "").trim(),
@@ -6627,25 +6609,17 @@ export default function EstimateForm(props) {
         />
       )}
 
-      {materialsAssist.assistState.phase !== "idle" && materialsAssistConfig && (
+      {materialsAssist.assistState.phase !== "idle" && materialsAssistConfig && (!materialsAssist.assistState.fromScopeDirect || materialsAssist.assistState.phase === "review") && (
         <SectionAssistPanel
           config={materialsAssistConfig}
           assistState={materialsAssist.assistState}
           onSubmit={materialsAssist.submit}
           onAccept={(writes, action) => {
-            const assistCaptureMeta = materialsAssist.assistCaptureMeta;
             if (action?.type === "switchMode") {
               captureAssistAccept({
                 sectionKey: "materials",
                 docType: uiDocType,
                 mode: isEditMode ? "edit" : "create",
-                ...(assistCaptureMeta ? {
-                  assistTraceId: assistCaptureMeta.assistTraceId,
-                  assistSequenceIndex: assistCaptureMeta.assistSequenceIndex,
-                  assistSectionKey: assistCaptureMeta.assistSectionKey,
-                  assistDocType: assistCaptureMeta.assistDocType,
-                  assistMode: assistCaptureMeta.assistMode,
-                } : {}),
                 acceptedWriteKeys: Object.keys(writes || {}),
                 actionType: "switchMode",
                 nextMode: action.mode === "itemized" ? "itemized" : "blanket",
@@ -6666,13 +6640,6 @@ export default function EstimateForm(props) {
                 sectionKey: "materials",
                 docType: uiDocType,
                 mode: isEditMode ? "edit" : "create",
-                ...(assistCaptureMeta ? {
-                  assistTraceId: assistCaptureMeta.assistTraceId,
-                  assistSequenceIndex: assistCaptureMeta.assistSequenceIndex,
-                  assistSectionKey: assistCaptureMeta.assistSectionKey,
-                  assistDocType: assistCaptureMeta.assistDocType,
-                  assistMode: assistCaptureMeta.assistMode,
-                } : {}),
                 acceptedWriteKeys: Object.keys(writes || {}),
                 actionType: "applyBlanketSuggestion",
                 nextMode: "blanket",
@@ -6689,13 +6656,6 @@ export default function EstimateForm(props) {
                 sectionKey: "materials",
                 docType: uiDocType,
                 mode: isEditMode ? "edit" : "create",
-                ...(assistCaptureMeta ? {
-                  assistTraceId: assistCaptureMeta.assistTraceId,
-                  assistSequenceIndex: assistCaptureMeta.assistSequenceIndex,
-                  assistSectionKey: assistCaptureMeta.assistSectionKey,
-                  assistDocType: assistCaptureMeta.assistDocType,
-                  assistMode: assistCaptureMeta.assistMode,
-                } : {}),
                 acceptedWriteKeys: Object.keys(writes || {}),
                 actionType: "applyItemizedSuggestion",
                 nextMode: "itemized",
