@@ -3391,13 +3391,32 @@ export default function EstimateForm(props) {
   function handleScopeFormat(command) {
     const el = scopeNotesRef.current;
     if (!el) return;
+    // Save selection before focus() — calling focus() on an already-focused
+    // contentEditable drops the range in Safari/Chrome, breaking repeated commands.
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    const savedRanges = [];
+    if (sel && sel.rangeCount > 0) {
+      for (let i = 0; i < sel.rangeCount; i++) {
+        savedRanges.push(sel.getRangeAt(i).cloneRange());
+      }
+    }
     el.focus();
+    if (sel && savedRanges.length > 0) {
+      sel.removeAllRanges();
+      savedRanges.forEach((range) => sel.addRange(range));
+    }
     // eslint-disable-next-line no-fallthrough
     switch (command) {
       case "bold": document.execCommand("bold", false, null); break;
       case "italic": document.execCommand("italic", false, null); break;
+      case "underline": document.execCommand("underline", false, null); break;
       case "bullet": document.execCommand("insertUnorderedList", false, null); break;
       case "numbered": document.execCommand("insertOrderedList", false, null); break;
+      case "undo": document.execCommand("undo", false, null); break;
+      case "redo": document.execCommand("redo", false, null); break;
+      case "divider": document.execCommand("insertHorizontalRule", false, null); break;
+      case "heading": document.execCommand("formatBlock", false, "h2"); break;
+      case "normal": document.execCommand("formatBlock", false, "div"); break;
       case "clear": document.execCommand("removeFormat", false, null); break;
       default: break;
     }
@@ -6028,6 +6047,12 @@ export default function EstimateForm(props) {
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("italic"); }}
                 title="Italic"
               ><em>I</em></button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("underline"); }}
+                title="Underline"
+              ><u>U</u></button>
               <span className="pe-scope-toolbar-divider" aria-hidden="true" />
               <button
                 type="button"
@@ -6041,6 +6066,38 @@ export default function EstimateForm(props) {
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("numbered"); }}
                 title="Numbered list"
               >1. List</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("heading"); }}
+                title="Heading"
+              >H2</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("normal"); }}
+                title="Normal text"
+              >Aa</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("divider"); }}
+                title="Horizontal rule"
+              >—</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("undo"); }}
+                title="Undo"
+              >↩</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("redo"); }}
+                title="Redo"
+              >↪</button>
               <span className="pe-scope-toolbar-divider" aria-hidden="true" />
               <button
                 type="button"
