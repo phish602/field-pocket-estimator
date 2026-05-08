@@ -1616,6 +1616,7 @@ export default function EstimateForm(props) {
   const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
   const additionalNotes = String(state?.additionalNotes || "");
+  const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
@@ -3422,6 +3423,21 @@ export default function EstimateForm(props) {
     const nextText = el.innerText || "";
     patch("scopeNotes", nextText);
     autoResizeScopeNotes(el);
+    updateScopeFormatState();
+  }
+
+  function updateScopeFormatState() {
+    if (typeof document === "undefined") return;
+    try {
+      setScopeFormatState({
+        bold: document.queryCommandState("bold"),
+        italic: document.queryCommandState("italic"),
+        underline: document.queryCommandState("underline"),
+        bullet: document.queryCommandState("insertUnorderedList"),
+        numbered: document.queryCommandState("insertOrderedList"),
+        heading: String(document.queryCommandValue("formatBlock") || "").toLowerCase() === "h2",
+      });
+    } catch {}
   }
 
   function handleSaveCustomTradeStarter() {
@@ -6036,51 +6052,59 @@ export default function EstimateForm(props) {
             <div className="pe-scope-toolbar" role="toolbar" aria-label="Scope text formatting">
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.bold ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Bold" aria-pressed={scopeFormatState.bold}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bold"); }}
                 title="Bold"
               ><strong>B</strong></button>
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.italic ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Italic" aria-pressed={scopeFormatState.italic}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("italic"); }}
                 title="Italic"
               ><em>I</em></button>
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.underline ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Underline" aria-pressed={scopeFormatState.underline}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("underline"); }}
                 title="Underline"
               ><u>U</u></button>
               <span className="pe-scope-toolbar-divider" aria-hidden="true" />
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.bullet ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Bullet list" aria-pressed={scopeFormatState.bullet}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bullet"); }}
                 title="Bullet list"
               >• List</button>
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.numbered ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Numbered list" aria-pressed={scopeFormatState.numbered}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("numbered"); }}
                 title="Numbered list"
               >1. List</button>
               <span className="pe-scope-toolbar-divider" aria-hidden="true" />
               <button
                 type="button"
-                className="pe-scope-toolbar-btn"
+                className={`pe-scope-toolbar-btn${scopeFormatState.heading ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Heading 2" aria-pressed={scopeFormatState.heading}
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("heading"); }}
                 title="Heading"
               >H2</button>
               <button
                 type="button"
                 className="pe-scope-toolbar-btn"
+                aria-label="Normal text"
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("normal"); }}
                 title="Normal text"
               >Aa</button>
               <button
                 type="button"
                 className="pe-scope-toolbar-btn"
+                aria-label="Insert horizontal rule"
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("divider"); }}
                 title="Horizontal rule"
               >—</button>
@@ -6088,12 +6112,14 @@ export default function EstimateForm(props) {
               <button
                 type="button"
                 className="pe-scope-toolbar-btn"
+                aria-label="Undo"
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("undo"); }}
                 title="Undo"
               >↩</button>
               <button
                 type="button"
                 className="pe-scope-toolbar-btn"
+                aria-label="Redo"
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("redo"); }}
                 title="Redo"
               >↪</button>
@@ -6113,6 +6139,9 @@ export default function EstimateForm(props) {
                 patch("scopeNotes", nextText);
                 autoResizeScopeNotes(e.currentTarget);
               }}
+              onMouseUp={updateScopeFormatState}
+              onKeyUp={updateScopeFormatState}
+              onSelect={updateScopeFormatState}
               onPaste={(e) => {
                 e.preventDefault();
                 const text = (e.clipboardData || window.clipboardData).getData("text/plain");
