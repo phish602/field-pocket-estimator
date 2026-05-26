@@ -546,7 +546,7 @@ function deriveHomeDashboardSummary({
     nextSteps.push({
       key: "overdue",
       tone: "danger",
-      title: "Collect overdue invoices",
+      title: "Overdue Collection",
       detail: `${Number(pulse.overdueInvoices)} ${Number(pulse.overdueInvoices) === 1 ? "invoice is" : "invoices are"} overdue for ${homeMoney(overdueBalance || unpaidBalance)}.`,
     });
   }
@@ -562,7 +562,7 @@ function deriveHomeDashboardSummary({
     nextSteps.push({
       key: "approved",
       tone: "good",
-      title: "Invoice approved work",
+      title: "Ready to Invoice",
       detail: `${Number(pulse.approvedEstimates)} approved ${Number(pulse.approvedEstimates) === 1 ? "estimate is" : "estimates are"} ready to move into billing.`,
     });
   }
