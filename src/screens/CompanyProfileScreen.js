@@ -267,6 +267,42 @@ export default function CompanyProfileScreen() {
     [showMissingRequiredPrompt, missingRequiredFields],
   );
   const stripeAccountId = String(profile?.stripeAccountId || "").trim();
+  const stripeConnected = isStripeAccountId(stripeAccountId);
+  const stripeChargesEnabled = stripeStatus ? !!stripeStatus.chargesEnabled : null;
+  const stripePayoutsEnabled = stripeStatus ? !!stripeStatus.payoutsEnabled : null;
+  const stripeDetailsSubmitted = stripeStatus ? !!stripeStatus.detailsSubmitted : null;
+  const stripeReady = stripeConnected && !!stripeChargesEnabled && !!stripePayoutsEnabled && !!stripeDetailsSubmitted;
+  const stripeCanAcceptPayments = stripeConnected && !!stripeChargesEnabled;
+  const stripePrimaryActionLabel = stripeConnected ? "Continue Stripe Setup" : "Connect Stripe";
+  const stripeStateMeta = stripeConnected
+    ? (stripeReady
+      ? {
+        label: "Ready for payments",
+        background: "rgba(34,197,94,0.12)",
+        border: "rgba(34,197,94,0.22)",
+        color: "rgba(187,247,208,0.98)",
+        summary: "Stripe is connected and online invoice payments are available.",
+        helper: "Customers can pay invoices online and Stripe can route funds to payouts.",
+        nextAction: "Refresh Stripe Status whenever Stripe onboarding details change.",
+      }
+      : {
+        label: "Setup incomplete",
+        background: "rgba(245,158,11,0.12)",
+        border: "rgba(245,158,11,0.22)",
+        color: "rgba(253,230,138,0.98)",
+        summary: "Stripe is connected, but onboarding still needs attention before payments are fully ready.",
+        helper: "Finish account setup so EstiPaid can safely support online invoice payments.",
+        nextAction: "Continue Stripe Setup, then refresh the status after Stripe updates the account.",
+      })
+    : {
+      label: "Not connected",
+      background: "rgba(59,130,246,0.12)",
+      border: "rgba(59,130,246,0.22)",
+      color: "rgba(191,219,254,0.98)",
+      summary: "Stripe is not connected yet, so this contractor cannot accept online invoice payments.",
+      helper: "Connect Stripe to let customers pay invoices online without changing invoice or payment flows.",
+      nextAction: "Connect Stripe to start onboarding and create a payment-ready account link.",
+    };
 
   useEffect(() => () => {
     if (saveFlashTimerRef.current) {
@@ -643,13 +679,114 @@ export default function CompanyProfileScreen() {
     lineHeight: 1.35,
   };
 
-  const modalActions = {
-    display: "flex",
-    gap: 10,
-    justifyContent: "flex-end",
-    flexWrap: "wrap",
-    marginTop: 6,
-  };
+const modalActions = {
+  display: "flex",
+  gap: 10,
+  justifyContent: "flex-end",
+  flexWrap: "wrap",
+  marginTop: 6,
+};
+
+const stripeCardBaseStyle = {
+  borderRadius: 18,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "linear-gradient(180deg, rgba(18,24,38,0.92), rgba(9,14,24,0.9))",
+  padding: 16,
+  display: "grid",
+  gap: 14,
+  boxShadow: "0 14px 30px rgba(0,0,0,0.22)",
+};
+
+const stripeEyebrowStyle = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: "0.12em",
+  textTransform: "uppercase",
+  color: "rgba(226,232,240,0.42)",
+};
+
+const stripeHeadlineStyle = {
+  fontSize: 20,
+  lineHeight: 1.15,
+  fontWeight: 950,
+  color: "rgba(248,250,252,0.98)",
+};
+
+const stripeBodyStyle = {
+  fontSize: 13.5,
+  lineHeight: 1.55,
+  color: "rgba(226,232,240,0.78)",
+};
+
+const stripeStatusPillStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: 30,
+  padding: "6px 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.14)",
+  fontSize: 11,
+  fontWeight: 900,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  whiteSpace: "nowrap",
+};
+
+const stripeMetricCardStyle = {
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "rgba(255,255,255,0.04)",
+  padding: "12px 12px 10px",
+  display: "grid",
+  gap: 5,
+  minWidth: 0,
+};
+
+const stripeMetricLabelStyle = {
+  fontSize: 10.5,
+  fontWeight: 800,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "rgba(226,232,240,0.46)",
+};
+
+const stripeMetricValueStyle = {
+  fontSize: 18,
+  lineHeight: 1.15,
+  fontWeight: 900,
+  color: "rgba(248,250,252,0.98)",
+};
+
+const stripeMetricMetaStyle = {
+  fontSize: 11.5,
+  lineHeight: 1.4,
+  color: "rgba(226,232,240,0.62)",
+};
+
+const stripeDetailsGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+  gap: 10,
+};
+
+const stripeDetailBlockStyle = {
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "rgba(255,255,255,0.03)",
+  padding: 12,
+  display: "grid",
+  gap: 8,
+};
+
+const stripeActionGroupStyle = {
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "rgba(255,255,255,0.03)",
+  padding: 12,
+  display: "grid",
+  gap: 8,
+};
 
   return (
     <section className="pe-section">
@@ -922,59 +1059,164 @@ export default function CompanyProfileScreen() {
             <ProfileSectionHeader icon={<IconBadge />} title="STRIPE PAYMENTS" />
             <div className="pe-company-grid-12">
               <div className="pe-company-col-12">
-                <div className="pe-field-helper" style={{ marginBottom: 10, lineHeight: 1.5 }}>
-                  Connect your own Stripe account for future online invoice payments. EstiPaid stores your connected account ID only and never stores Stripe secret keys.
-                </div>
-                {stripeAccountId ? (
-                  <div style={{ marginBottom: 10, fontSize: 13.5 }}>
-                    Connected account ID: <strong data-testid="stripe-account-id">{stripeAccountId}</strong>
+                <div
+                  style={{
+                    ...stripeCardBaseStyle,
+                    background: `linear-gradient(180deg, ${stripeStateMeta.background}, rgba(9,14,24,0.9))`,
+                    border: `1px solid ${stripeStateMeta.border}`,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+                      <div style={stripeEyebrowStyle}>Stripe onboarding</div>
+                      <div style={stripeHeadlineStyle}>{stripeStateMeta.summary}</div>
+                      <div className="pe-field-helper" style={{ ...stripeBodyStyle, marginBottom: 0 }}>
+                        Connect your own Stripe account for future online invoice payments. EstiPaid stores your connected account ID only and never stores Stripe secret keys.
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        ...stripeStatusPillStyle,
+                        background: stripeStateMeta.background,
+                        border: `1px solid ${stripeStateMeta.border}`,
+                        color: stripeStateMeta.color,
+                      }}
+                    >
+                      {stripeStateMeta.label}
+                    </div>
                   </div>
-                ) : (
-                  <div style={{ marginBottom: 10, fontSize: 13.5, opacity: 0.78 }}>
-                    No Stripe account connected yet.
-                  </div>
-                )}
-                <div style={{ display: "grid", gap: 6, marginBottom: 12, fontSize: 13.5 }}>
-                  <div>
-                    Charges enabled: <strong>{stripeStatus ? (stripeStatus.chargesEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
-                  </div>
-                  <div>
-                    Payouts enabled: <strong>{stripeStatus ? (stripeStatus.payoutsEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
-                  </div>
-                  <div>
-                    Details submitted: <strong>{stripeStatus ? (stripeStatus.detailsSubmitted ? "Yes" : "No") : "Not checked yet"}</strong>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    className="pe-btn"
-                    onClick={handleStripeConnect}
-                    disabled={stripeConnectBusy}
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                      gap: 10,
+                    }}
                   >
-                    {stripeConnectBusy
-                      ? "Opening Stripe..."
-                      : (stripeAccountId ? "Continue Stripe Setup" : "Connect Stripe")}
-                  </button>
-                  {stripeAccountId ? (
-                    <button
-                      type="button"
-                      className="pe-btn pe-btn-ghost"
-                      onClick={() => refreshStripeStatus(stripeAccountId, { toastMessage: "Stripe status refreshed" })}
-                      disabled={stripeStatusBusy}
-                    >
-                      {stripeStatusBusy ? "Refreshing Stripe..." : "Refresh Stripe Status"}
-                    </button>
-                  ) : null}
-                  {stripeAccountId ? (
-                    <button
-                      type="button"
-                      className="pe-btn pe-btn-ghost"
-                      onClick={handleStripeDisconnect}
-                    >
-                      Disconnect Stripe
-                    </button>
-                  ) : null}
+                    <div style={stripeMetricCardStyle}>
+                      <div style={stripeMetricLabelStyle}>Connected</div>
+                      <div style={{ ...stripeMetricValueStyle, color: stripeConnected ? "rgba(191,219,254,0.98)" : "rgba(226,232,240,0.92)" }}>
+                        {stripeConnected ? "Yes" : "No"}
+                      </div>
+                      <div style={stripeMetricMetaStyle}>
+                        {stripeConnected ? "Stripe account linked to this profile" : "No Stripe account linked yet"}
+                      </div>
+                    </div>
+                    <div style={stripeMetricCardStyle}>
+                      <div style={stripeMetricLabelStyle}>Details submitted</div>
+                      <div style={{ ...stripeMetricValueStyle, color: stripeDetailsSubmitted ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
+                        {stripeStatus ? (stripeStatus.detailsSubmitted ? "Yes" : "No") : "Not checked yet"}
+                      </div>
+                      <div style={stripeMetricMetaStyle}>
+                        {stripeDetailsSubmitted ? "Stripe onboarding details are submitted" : "Stripe still needs setup details"}
+                      </div>
+                    </div>
+                    <div style={stripeMetricCardStyle}>
+                      <div style={stripeMetricLabelStyle}>Charges enabled</div>
+                      <div style={{ ...stripeMetricValueStyle, color: stripeChargesEnabled ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
+                        {stripeStatus ? (stripeStatus.chargesEnabled ? "Yes" : "No") : "Not checked yet"}
+                      </div>
+                      <div style={stripeMetricMetaStyle}>
+                        {stripeCanAcceptPayments ? "Online invoice payments can be accepted" : "Customers cannot pay online yet"}
+                      </div>
+                    </div>
+                    <div style={stripeMetricCardStyle}>
+                      <div style={stripeMetricLabelStyle}>Payouts enabled</div>
+                      <div style={{ ...stripeMetricValueStyle, color: stripePayoutsEnabled ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
+                        {stripeStatus ? (stripeStatus.payoutsEnabled ? "Yes" : "No") : "Not checked yet"}
+                      </div>
+                      <div style={stripeMetricMetaStyle}>
+                        {stripePayoutsEnabled ? "Stripe payouts are available" : "Stripe payouts are not ready yet"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={stripeDetailsGridStyle}>
+                    <div style={stripeDetailBlockStyle}>
+                      <div style={stripeEyebrowStyle}>Status details</div>
+                      {stripeAccountId ? (
+                        <div style={{ fontSize: 13.5 }}>
+                          Connected account ID: <strong data-testid="stripe-account-id">{stripeAccountId}</strong>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 13.5, opacity: 0.82 }}>
+                          No Stripe account connected yet.
+                        </div>
+                      )}
+                      <div style={{ display: "grid", gap: 6, fontSize: 13.5 }}>
+                        <div>
+                          Charges enabled: <strong>{stripeStatus ? (stripeStatus.chargesEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
+                        </div>
+                        <div>
+                          Payouts enabled: <strong>{stripeStatus ? (stripeStatus.payoutsEnabled ? "Yes" : "No") : "Not checked yet"}</strong>
+                        </div>
+                        <div>
+                          Details submitted: <strong>{stripeStatus ? (stripeStatus.detailsSubmitted ? "Yes" : "No") : "Not checked yet"}</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={stripeDetailBlockStyle}>
+                      <div style={stripeEyebrowStyle}>Next safest action</div>
+                      <div style={{ fontSize: 15, fontWeight: 900, color: stripeStateMeta.color }}>
+                        {stripeConnected ? (stripeReady ? "Refresh Stripe Status" : "Continue Stripe Setup") : "Connect Stripe"}
+                      </div>
+                      <div style={stripeBodyStyle}>{stripeStateMeta.nextAction}</div>
+                      <div style={{ ...stripeBodyStyle, color: "rgba(226,232,240,0.68)" }}>{stripeStateMeta.helper}</div>
+                    </div>
+                  </div>
+
+                  <div style={stripeDetailsGridStyle}>
+                    <div style={stripeActionGroupStyle}>
+                      <div style={stripeEyebrowStyle}>Primary actions</div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="pe-btn"
+                          onClick={handleStripeConnect}
+                          disabled={stripeConnectBusy}
+                        >
+                          {stripeConnectBusy
+                            ? "Opening Stripe..."
+                            : stripePrimaryActionLabel}
+                        </button>
+                        {stripeAccountId ? (
+                          <button
+                            type="button"
+                            className="pe-btn pe-btn-ghost"
+                            onClick={() => refreshStripeStatus(stripeAccountId, { toastMessage: "Stripe status refreshed" })}
+                            disabled={stripeStatusBusy}
+                          >
+                            {stripeStatusBusy ? "Refreshing Stripe..." : "Refresh Stripe Status"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {stripeAccountId ? (
+                      <div
+                        style={{
+                          ...stripeActionGroupStyle,
+                          background: "rgba(127,29,29,0.12)",
+                          border: "1px solid rgba(248,113,113,0.18)",
+                        }}
+                      >
+                        <div style={stripeEyebrowStyle}>Secondary action</div>
+                        <div style={{ ...stripeBodyStyle, color: "rgba(254,202,202,0.86)" }}>
+                          Disconnect Stripe only if this profile should stop using the current Stripe account for online invoice payments.
+                        </div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            className="pe-btn pe-btn-ghost"
+                            onClick={handleStripeDisconnect}
+                          >
+                            Disconnect Stripe
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>
