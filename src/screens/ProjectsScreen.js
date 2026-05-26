@@ -64,6 +64,43 @@ function projSortPriority(proj) {
   return 3;
 }
 
+function deriveProjectNextAction(proj) {
+  if ((proj?.overdueCount || 0) > 0) {
+    return {
+      label: "Next action: resolve overdue invoice",
+      tone: "danger",
+    };
+  }
+  if ((proj?.totals?.balanceRemaining || 0) > 0) {
+    return {
+      label: "Next action: collect balance due",
+      tone: "warning",
+    };
+  }
+  if ((proj?.approvedEstCount || 0) > 0) {
+    return {
+      label: "Next action: move approved estimate forward",
+      tone: "success",
+    };
+  }
+  if (String(proj?.status || "").toLowerCase() === "estimating") {
+    return {
+      label: "Next action: keep estimate moving",
+      tone: "info",
+    };
+  }
+  if (String(proj?.status || "").toLowerCase() === "completed") {
+    return {
+      label: "Next action: review closeout",
+      tone: "neutral",
+    };
+  }
+  return {
+    label: "Next action: open project detail",
+    tone: "info",
+  };
+}
+
 const FILTER_CHIPS = [
   { key: "all", label: "All" },
   { key: "draft", label: "Draft" },
@@ -108,43 +145,52 @@ const S = {
     outline: "none",
   },
   card: {
-    background: "rgba(255,255,255,0.03)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.022))",
     border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 14,
-    padding: "14px 16px",
+    borderRadius: 18,
+    padding: "16px 16px 15px",
     cursor: "pointer",
     display: "grid",
-    gap: 8,
+    gap: 10,
+    boxShadow: "0 16px 34px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.035)",
   },
   cardTop: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  cardName: { fontWeight: 800, fontSize: 15, letterSpacing: 0.2, lineHeight: 1.3 },
+  cardName: { fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", lineHeight: 1.2 },
   cardCustomer: { fontSize: 13, fontWeight: 600, color: "rgba(99,179,237,0.78)" },
-  cardAddress: { fontSize: 12, opacity: 0.45, lineHeight: 1.4 },
+  cardAddress: { fontSize: 12.5, opacity: 0.58, lineHeight: 1.4 },
   statusBadge: {
     display: "inline-flex",
-    padding: "2px 8px",
+    padding: "4px 9px",
     borderRadius: 999,
     fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: "0.07em",
+    fontWeight: 800,
+    letterSpacing: "0.08em",
     textTransform: "uppercase",
     flexShrink: 0,
   },
   statsRow: {
-    display: "flex",
-    gap: 14,
-    flexWrap: "wrap",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(92px, 1fr))",
+    gap: 10,
     borderTop: "1px solid rgba(255,255,255,0.06)",
-    paddingTop: 8,
+    paddingTop: 12,
     marginTop: 2,
   },
-  statItem: { display: "grid", gap: 1 },
-  statLabel: { fontSize: 10, fontWeight: 700, opacity: 0.4, letterSpacing: "0.08em", textTransform: "uppercase" },
-  statValue: { fontSize: 13, fontWeight: 700, opacity: 0.85, fontVariantNumeric: "tabular-nums" },
+  statItem: {
+    display: "grid",
+    gap: 4,
+    padding: "10px 10px 9px",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(255,255,255,0.025)",
+    minWidth: 0,
+  },
+  statLabel: { fontSize: 10, fontWeight: 800, opacity: 0.46, letterSpacing: "0.1em", textTransform: "uppercase" },
+  statValue: { fontSize: 13.5, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" },
   emptyWrap: { display: "grid", placeItems: "center", padding: "48px 16px", gap: 12, textAlign: "center" },
   emptyTitle: { fontWeight: 800, fontSize: 16, opacity: 0.7 },
   emptyDesc: { fontSize: 13, opacity: 0.4, lineHeight: 1.5, maxWidth: 280 },
-  activityText: { fontSize: 11, opacity: 0.35, fontWeight: 600 },
+  activityText: { fontSize: 11.5, opacity: 0.55, fontWeight: 700 },
   filterRow: {
     display: "flex",
     gap: 6,
@@ -165,6 +211,29 @@ const S = {
     flexShrink: 0,
     background: "none",
     lineHeight: 1.5,
+  },
+  portfolioHero: {
+    display: "grid",
+    gap: 14,
+    padding: "16px 16px 14px",
+    borderRadius: 20,
+    border: "1px solid rgba(168,184,195,0.14)",
+    background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+    boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+  },
+  heroStatGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+    gap: 10,
+  },
+  heroStat: {
+    minWidth: 0,
+    display: "grid",
+    gap: 6,
+    padding: "12px 12px 11px",
+    borderRadius: 14,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
   },
 };
 
@@ -283,6 +352,31 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
     });
   }, [allData, q, activeFilter]);
 
+  const portfolioSummary = useMemo(() => {
+    const visible = filtered;
+    const activeProjects = visible.filter((proj) => proj.status === "active").length;
+    const balanceDue = visible.reduce((sum, proj) => sum + Number(proj?.totals?.balanceRemaining || 0), 0);
+    const overdueProjects = visible.filter((proj) => (proj.overdueCount || 0) > 0).length;
+    const overdueInvoices = visible.reduce((sum, proj) => sum + Number(proj?.overdueCount || 0), 0);
+    const approvedReadyProjects = visible.filter((proj) => (proj.approvedEstCount || 0) > 0).length;
+    const totalDocuments = visible.reduce(
+      (sum, proj) => sum + Number(proj?.totals?.estimateCount || 0) + Number(proj?.totals?.invoiceCount || 0),
+      0
+    );
+    const highestBalanceProject = visible
+      .slice()
+      .sort((a, b) => Number(b?.totals?.balanceRemaining || 0) - Number(a?.totals?.balanceRemaining || 0))[0] || null;
+    return {
+      activeProjects,
+      balanceDue,
+      overdueProjects,
+      overdueInvoices,
+      approvedReadyProjects,
+      totalDocuments,
+      highestBalanceProject,
+    };
+  }, [filtered]);
+
   if (!allData.length) {
     return (
       <div className="pe-card" style={{ padding: 0 }}>
@@ -301,6 +395,71 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
       <div style={S.header}>
         <div style={S.title}>Projects</div>
         <div style={S.countBadge}>{chipCounts.all} project{chipCounts.all !== 1 ? "s" : ""}</div>
+      </div>
+
+      <div style={S.portfolioHero}>
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+            Active work portfolio
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+            Projects prioritized by what needs attention next
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+            {portfolioSummary.highestBalanceProject && Number(portfolioSummary.highestBalanceProject?.totals?.balanceRemaining || 0) > 0
+              ? `${portfolioSummary.highestBalanceProject.projectName || "This project"} carries the highest visible balance due at ${formatMoney(portfolioSummary.highestBalanceProject.totals.balanceRemaining)}.`
+              : "Use this view to scan active jobs, document load, and the next project action without leaving the portfolio."}
+          </div>
+        </div>
+
+        <div style={S.heroStatGrid}>
+          {[
+            {
+              key: "active",
+              label: "Active jobs",
+              value: String(portfolioSummary.activeProjects),
+              detail: `${filtered.length} visible`,
+              color: "rgba(74,222,128,0.84)",
+              border: "rgba(34,197,94,0.18)",
+            },
+            {
+              key: "balance",
+              label: "Balance due",
+              value: formatMoney(portfolioSummary.balanceDue),
+              detail: portfolioSummary.balanceDue > 0 ? "Outstanding across visible projects" : "No balance due in view",
+              color: portfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.88)" : "rgba(203,213,225,0.78)",
+              border: portfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
+            },
+            {
+              key: "overdue",
+              label: "Overdue attention",
+              value: String(portfolioSummary.overdueInvoices),
+              detail: portfolioSummary.overdueProjects > 0 ? `${portfolioSummary.overdueProjects} project${portfolioSummary.overdueProjects !== 1 ? "s" : ""}` : "No overdue invoices in view",
+              color: portfolioSummary.overdueInvoices > 0 ? "rgba(248,113,113,0.88)" : "rgba(203,213,225,0.78)",
+              border: portfolioSummary.overdueInvoices > 0 ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.1)",
+            },
+            {
+              key: "approved",
+              label: "Approved estimate ready",
+              value: String(portfolioSummary.approvedReadyProjects),
+              detail: `${portfolioSummary.totalDocuments} docs in visible portfolio`,
+              color: "rgba(96,165,250,0.84)",
+              border: "rgba(59,130,246,0.2)",
+            },
+          ].map((item) => (
+            <div key={item.key} style={{ ...S.heroStat, border: `1px solid ${item.border}` }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                {item.label}
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                {item.value}
+              </div>
+              <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                {item.detail}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div style={S.filterRow}>
@@ -351,11 +510,51 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
             const statusKey = proj.displayStatus?.key || proj.status || "draft";
             const statusLabel = proj.displayStatus?.label || STATUS_LABELS[statusKey] || "Draft";
             const statusStyle = STATUS_COLORS[statusKey] || STATUS_COLORS.draft;
+            const nextAction = deriveProjectNextAction(proj);
+            const nextActionTone = nextAction.tone === "danger"
+              ? {
+                  color: "rgba(248,113,113,0.9)",
+                  border: "rgba(239,68,68,0.22)",
+                  background: "rgba(239,68,68,0.08)",
+                }
+              : nextAction.tone === "warning"
+                ? {
+                    color: "rgba(251,191,36,0.88)",
+                    border: "rgba(245,158,11,0.22)",
+                    background: "rgba(245,158,11,0.08)",
+                  }
+                : nextAction.tone === "success"
+                  ? {
+                      color: "rgba(74,222,128,0.88)",
+                      border: "rgba(34,197,94,0.22)",
+                      background: "rgba(34,197,94,0.08)",
+                    }
+                  : {
+                      color: "rgba(96,165,250,0.88)",
+                      border: "rgba(59,130,246,0.22)",
+                      background: "rgba(59,130,246,0.08)",
+                    };
             return (
               <div
                 key={proj.id}
                 className="pe-card pe-card-content ep-glass-tile"
-                style={S.card}
+                style={{
+                  ...S.card,
+                  border: (proj.overdueCount || 0) > 0
+                    ? "1px solid rgba(239,68,68,0.16)"
+                    : (proj.totals?.balanceRemaining || 0) > 0
+                      ? "1px solid rgba(245,158,11,0.16)"
+                      : proj.approvedEstCount > 0
+                        ? "1px solid rgba(34,197,94,0.16)"
+                        : S.card.border,
+                  background: (proj.overdueCount || 0) > 0
+                    ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
+                    : (proj.totals?.balanceRemaining || 0) > 0
+                      ? "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))"
+                      : proj.approvedEstCount > 0
+                        ? "linear-gradient(180deg, rgba(34,197,94,0.06), rgba(255,255,255,0.03))"
+                        : S.card.background,
+                }}
                 onClick={() => {
                   if (onOpenProjectDetail && proj.id) onOpenProjectDetail(proj.id);
                 }}
@@ -372,6 +571,17 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                   <span style={{ ...S.statusBadge, background: statusStyle.bg, border: `1px solid ${statusStyle.border}`, color: statusStyle.color }}>
                     {statusLabel}
                   </span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${nextActionTone.border}`, background: nextActionTone.background, color: nextActionTone.color, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                    {nextAction.label}
+                  </span>
+                  {(proj.totals?.amountPaid || 0) > 0 ? (
+                    <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.18)", background: "rgba(34,197,94,0.06)", color: "rgba(74,222,128,0.86)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                      {formatMoney(proj.totals.amountPaid)} paid
+                    </span>
+                  ) : null}
                 </div>
 
                 {(proj.overdueCount > 0 || (proj.totals?.balanceRemaining || 0) > 0 || proj.approvedEstCount > 0) ? (
@@ -419,8 +629,15 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                       <div style={S.statValue}>{formatMoney(proj.totals.invoiceTotal)}</div>
                     </div>
                   ) : null}
+                  {(proj.totals?.balanceRemaining || 0) > 0 ? (
+                    <div style={S.statItem}>
+                      <div style={S.statLabel}>Balance due</div>
+                      <div style={S.statValue}>{formatMoney(proj.totals.balanceRemaining)}</div>
+                    </div>
+                  ) : null}
                   {proj.latestActivityAt ? (
-                    <div style={{ ...S.statItem, marginLeft: "auto" }}>
+                    <div style={S.statItem}>
+                      <div style={S.statLabel}>Last activity</div>
                       <div style={S.activityText}>{formatRelativeDate(proj.latestActivityAt)}</div>
                     </div>
                   ) : null}
