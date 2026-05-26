@@ -192,22 +192,65 @@ const S = {
   },
   heroCard: {
     margin: "0 16px 16px",
-    padding: "18px 18px 16px",
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.09)",
+    padding: "20px 18px 18px",
+    borderRadius: 18,
+    background: "linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))",
+    border: "1px solid rgba(255,255,255,0.1)",
     display: "grid",
-    gap: 6,
+    gap: 14,
+    boxShadow: "0 18px 42px rgba(2,6,23,0.18)",
+  },
+  heroHeader: {
+    display: "grid",
+    gap: 14,
+  },
+  heroHeaderTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
+    flexWrap: "wrap",
+  },
+  heroIdentity: {
+    display: "grid",
+    gap: 8,
+    minWidth: 0,
+  },
+  heroEyebrow: {
+    fontSize: 10.5,
+    fontWeight: 700,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.34)",
+  },
+  heroStatusStack: {
+    display: "grid",
+    gap: 8,
+    justifyItems: "flex-start",
+  },
+  heroContextRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  heroContextPill: {
+    padding: "6px 10px",
+    borderRadius: 999,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    fontSize: 11,
+    fontWeight: 700,
+    color: "rgba(230,241,248,0.6)",
   },
   projectName: {
-    fontSize: 18,
+    fontSize: 28,
     fontWeight: 800,
     lineHeight: 1.25,
     color: "rgba(230,241,248,0.96)",
     overflowWrap: "break-word",
   },
   customerName: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: 600,
     color: "rgba(99,179,237,0.82)",
   },
@@ -217,8 +260,8 @@ const S = {
     lineHeight: 1.4,
   },
   statusBadge: {
-    display: "inline-block",
-    padding: "2px 8px",
+    display: "inline-flex",
+    padding: "5px 10px",
     borderRadius: 999,
     fontSize: 10,
     fontWeight: 700,
@@ -229,6 +272,67 @@ const S = {
     color: "rgba(99,179,237,0.72)",
     marginTop: 2,
     alignSelf: "flex-start",
+    justifySelf: "flex-start",
+    width: "fit-content",
+  },
+  heroFinancialGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 10,
+  },
+  heroFinancialCard: {
+    padding: "14px 14px 12px",
+    borderRadius: 14,
+    background: "rgba(9,15,24,0.44)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    display: "grid",
+    gap: 4,
+    minWidth: 0,
+  },
+  heroFinancialLabel: {
+    fontSize: 10.5,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.4)",
+  },
+  heroFinancialValue: {
+    fontSize: 25,
+    lineHeight: 1.1,
+    fontWeight: 800,
+    fontVariantNumeric: "tabular-nums",
+    color: "rgba(230,241,248,0.96)",
+  },
+  heroFinancialMeta: {
+    fontSize: 11.5,
+    color: "rgba(230,241,248,0.46)",
+    lineHeight: 1.35,
+  },
+  heroAttentionCard: {
+    display: "grid",
+    gap: 5,
+    padding: "14px 16px",
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
+  },
+  heroAttentionLabel: {
+    fontSize: 10.5,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.4)",
+  },
+  heroAttentionValue: {
+    fontSize: 18,
+    lineHeight: 1.2,
+    fontWeight: 800,
+    color: "rgba(230,241,248,0.96)",
+  },
+  heroAttentionMeta: {
+    fontSize: 12,
+    color: "rgba(230,241,248,0.56)",
+    lineHeight: 1.4,
   },
   statusControlWrap: {
     display: "grid",
@@ -271,7 +375,7 @@ const S = {
   },
   overviewGrid: {
     display: "grid",
-    gridTemplateColumns: "1fr 1fr",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
     gap: 8,
   },
   overviewCard: {
@@ -338,6 +442,64 @@ const S = {
     display: "flex",
     gap: 10,
     marginTop: 8,
+  },
+  docFlowShell: {
+    padding: "14px",
+    borderRadius: 14,
+    background: "rgba(255,255,255,0.035)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    display: "grid",
+    gap: 14,
+  },
+  docFlowSummary: {
+    display: "grid",
+    gap: 4,
+    padding: "0 2px",
+  },
+  docFlowTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "rgba(230,241,248,0.9)",
+  },
+  docFlowMeta: {
+    fontSize: 12,
+    color: "rgba(230,241,248,0.48)",
+    lineHeight: 1.4,
+  },
+  docFlowGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 14,
+    alignItems: "start",
+  },
+  docFlowColumn: {
+    display: "grid",
+    gap: 10,
+    minWidth: 0,
+  },
+  docFlowColumnHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+    padding: "0 2px",
+  },
+  docFlowColumnTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.38)",
+  },
+  docFlowColumnCount: {
+    padding: "4px 8px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 700,
+    color: "rgba(230,241,248,0.65)",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
   },
   actionBtn: {
     flex: 1,
@@ -477,7 +639,90 @@ export default function ProjectDetailScreen({
   const overdueCount = invoices.filter((inv) => deriveInvoiceStatus(inv) === INVOICE_STATUSES.OVERDUE).length;
   const approvedEstCount = estimates.filter((est) => String(est?.status || "").toLowerCase() === "approved").length;
   const hasAttentionSignals = overdueCount > 0 || totals.balanceRemaining > 0 || approvedEstCount > 0;
+  const documentCount = totals.estimateCount + totals.invoiceCount;
+  const hasPaid = totals.amountPaid > 0;
+  const hasBalanceDue = totals.balanceRemaining > 0;
   const overviewValueStyle = isPhone ? { ...S.overviewValue, fontSize: 17 } : S.overviewValue;
+  const projectNameStyle = isPhone ? { ...S.projectName, fontSize: 24 } : S.projectName;
+  const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.heroFinancialGrid;
+  const overviewGridStyle = isPhone ? { ...S.overviewGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.overviewGrid;
+  const docFlowGridStyle = isPhone ? { ...S.docFlowGrid, gridTemplateColumns: "1fr" } : S.docFlowGrid;
+  const nextStepTone = overdueCount > 0
+    ? { bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.22)", value: "rgba(248,113,113,0.96)" }
+    : hasBalanceDue
+      ? { bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.24)", value: "rgba(245,158,11,0.96)" }
+      : approvedEstCount > 0
+        ? { bg: "rgba(72,187,120,0.08)", border: "rgba(72,187,120,0.22)", value: "rgba(72,187,120,0.96)" }
+        : { bg: "rgba(99,179,237,0.08)", border: "rgba(99,179,237,0.2)", value: "rgba(99,179,237,0.94)" };
+  const nextStep = overdueCount > 0
+    ? {
+      label: "Needs attention",
+      value: overdueCount === 1 ? "1 overdue invoice" : `${overdueCount} overdue invoices`,
+      meta: "A payment follow-up is the top priority on this job.",
+    }
+    : hasBalanceDue
+      ? {
+        label: "Needs attention",
+        value: `${money(totals.balanceRemaining)} still due`,
+        meta: "Open invoice balance remains on this project.",
+      }
+      : approvedEstCount > 0
+        ? {
+          label: "Next up",
+          value: approvedEstCount === 1 ? "1 approved estimate is ready to bill" : `${approvedEstCount} approved estimates are ready to bill`,
+          meta: "Convert approved work into the next invoice when ready.",
+        }
+        : totals.estimateCount === 0
+          ? {
+            label: "Next up",
+            value: "Create the first estimate",
+            meta: "No project documents exist yet.",
+          }
+          : totals.invoiceCount === 0
+            ? {
+              label: "Next up",
+              value: "Create the first invoice",
+              meta: "Estimate work exists, but nothing has been invoiced yet.",
+            }
+            : {
+              label: "Next up",
+              value: "Project is moving",
+              meta: latestActivityAt ? `Latest recorded activity was ${fmtDate(latestActivityAt)}.` : "Documents and billing are up to date.",
+            };
+  const heroMetrics = [
+    {
+      label: "Estimated",
+      value: money(totals.estimateTotal),
+      meta: totals.estimateCount === 1 ? "1 estimate" : `${totals.estimateCount} estimates`,
+      tone: {},
+    },
+    {
+      label: "Invoiced",
+      value: money(totals.invoiceTotal),
+      meta: totals.invoiceCount === 1 ? "1 invoice" : `${totals.invoiceCount} invoices`,
+      tone: {},
+    },
+    {
+      label: "Paid",
+      value: money(totals.amountPaid),
+      meta: hasPaid ? "Collected so far" : "No payment recorded yet",
+      tone: hasPaid ? {
+        background: "rgba(72,187,120,0.09)",
+        border: "1px solid rgba(72,187,120,0.22)",
+        color: "rgba(72,187,120,0.96)",
+      } : {},
+    },
+    {
+      label: "Balance Due",
+      value: money(totals.balanceRemaining),
+      meta: hasBalanceDue ? "Outstanding receivable" : "Paid or no balance remaining",
+      tone: hasBalanceDue ? {
+        background: "rgba(245,158,11,0.1)",
+        border: "1px solid rgba(245,158,11,0.26)",
+        color: "rgba(245,158,11,0.98)",
+      } : {},
+    },
+  ];
 
   return (
     <div style={S.screen}>
@@ -487,16 +732,50 @@ export default function ProjectDetailScreen({
 
       {/* Hero */}
       <div style={S.heroCard}>
-        <div style={S.projectName}>{project.projectName || "Untitled Project"}</div>
-        {project.projectNumber ? <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(230,241,248,0.38)", letterSpacing: "0.04em" }}>Project #{project.projectNumber}</div> : null}
-        {customer ? (
-          <div style={S.customerName}>{customer.name || customer.companyName || customer.fullName || "—"}</div>
-        ) : null}
-        {project.siteAddress ? <div style={S.meta}>{project.siteAddress}</div> : null}
-        <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
-          {displayStatus.label}
+        <div style={S.heroHeader}>
+          <div style={S.heroHeaderTop}>
+            <div style={S.heroIdentity}>
+              <div style={S.heroEyebrow}>Project command center</div>
+              <div style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
+              {project.projectNumber ? <div style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(230,241,248,0.4)", letterSpacing: "0.05em" }}>Project #{project.projectNumber}</div> : null}
+              {customer ? (
+                <div style={S.customerName}>{customer.name || customer.companyName || customer.fullName || "—"}</div>
+              ) : null}
+              {project.siteAddress ? <div style={S.meta}>{project.siteAddress}</div> : null}
+            </div>
+            <div style={S.heroStatusStack}>
+              <div style={{ ...S.statusBadge, background: projectStatusStyle.bg, border: `1px solid ${projectStatusStyle.border}`, color: projectStatusStyle.color }}>
+                {displayStatus.label}
+              </div>
+              <div style={S.heroContextRow}>
+                <div style={S.heroContextPill}>{documentCount === 1 ? "1 document" : `${documentCount} documents`}</div>
+                <div style={S.heroContextPill}>{latestActivityAt ? `Updated ${fmtDate(latestActivityAt)}` : "No recent activity"}</div>
+              </div>
+            </div>
+          </div>
+          <div style={heroFinancialGridStyle}>
+            {heroMetrics.map((metric) => (
+              <div
+                key={metric.label}
+                style={{
+                  ...S.heroFinancialCard,
+                  ...(metric.tone?.background ? { background: metric.tone.background } : {}),
+                  ...(metric.tone?.border ? { border: metric.tone.border } : {}),
+                }}
+              >
+                <div style={S.heroFinancialLabel}>{metric.label}</div>
+                <div style={{ ...S.heroFinancialValue, ...(metric.tone?.color ? { color: metric.tone.color } : {}) }}>{metric.value}</div>
+                <div style={S.heroFinancialMeta}>{metric.meta}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ ...S.heroAttentionCard, background: nextStepTone.bg, border: `1px solid ${nextStepTone.border}` }}>
+            <div style={S.heroAttentionLabel}>{nextStep.label}</div>
+            <div style={{ ...S.heroAttentionValue, color: nextStepTone.value }}>{nextStep.value}</div>
+            <div style={S.heroAttentionMeta}>{nextStep.meta}</div>
+          </div>
         </div>
-        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 6px" : "6px 0 4px" }} />
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "2px 0 0" : "0" }} />
         <div style={{ display: "grid", gap: 8, marginTop: isPhone ? 0 : 4 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <button
@@ -579,7 +858,39 @@ export default function ProjectDetailScreen({
       {/* Overview */}
       <div style={S.sectionWrap}>
         <div style={S.sectionTitle}>Overview</div>
-        <div style={S.overviewGrid}>
+        <div style={overviewGridStyle}>
+          <div style={S.overviewCard}>
+            <div style={S.overviewLabel}>Estimated</div>
+            <div style={overviewValueStyle}>{money(totals.estimateTotal)}</div>
+          </div>
+          <div style={S.overviewCard}>
+            <div style={S.overviewLabel}>Invoiced</div>
+            <div style={overviewValueStyle}>{money(totals.invoiceTotal)}</div>
+          </div>
+          <div
+            style={{
+              ...S.overviewCard,
+              ...(hasPaid ? {
+                background: "rgba(72,187,120,0.08)",
+                border: "1px solid rgba(72,187,120,0.2)",
+              } : {}),
+            }}
+          >
+            <div style={S.overviewLabel}>Paid</div>
+            <div style={{ ...overviewValueStyle, ...(hasPaid ? { color: "rgba(72,187,120,0.96)" } : {}) }}>{money(totals.amountPaid)}</div>
+          </div>
+          <div
+            style={{
+              ...S.overviewCard,
+              ...(hasBalanceDue ? {
+                background: "rgba(245,158,11,0.09)",
+                border: "1px solid rgba(245,158,11,0.24)",
+              } : {}),
+            }}
+          >
+            <div style={S.overviewLabel}>Balance Due</div>
+            <div style={{ ...overviewValueStyle, ...(hasBalanceDue ? { color: "rgba(245,158,11,0.98)" } : {}) }}>{money(totals.balanceRemaining)}</div>
+          </div>
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Estimates</div>
             <div style={overviewValueStyle}>{totals.estimateCount}</div>
@@ -587,14 +898,6 @@ export default function ProjectDetailScreen({
           <div style={S.overviewCard}>
             <div style={S.overviewLabel}>Invoices</div>
             <div style={overviewValueStyle}>{totals.invoiceCount}</div>
-          </div>
-          <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Est. Total</div>
-            <div style={overviewValueStyle}>{money(totals.estimateTotal)}</div>
-          </div>
-          <div style={S.overviewCard}>
-            <div style={S.overviewLabel}>Invoiced</div>
-            <div style={overviewValueStyle}>{money(totals.invoiceTotal)}</div>
           </div>
         </div>
         {hasAttentionSignals ? (
@@ -621,95 +924,114 @@ export default function ProjectDetailScreen({
         ) : null}
       </div>
 
-      {/* Estimates */}
       <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Estimates{estimates.length > 0 ? ` (${estimates.length})` : ""}</div>
-        {estimates.length === 0 ? (
-          <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
-            <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No estimates for this project yet.</div>
-            {onNewEstimate ? (
-              <button
-                type="button"
-                style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
-                onClick={() => { writeProjectCreateSeed(view); onNewEstimate && onNewEstimate(); }}
-              >
-                + New Estimate
-              </button>
-            ) : null}
+        <div style={S.sectionTitle}>Documents</div>
+        <div style={S.docFlowShell}>
+          <div style={S.docFlowSummary}>
+            <div style={S.docFlowTitle}>Project document flow</div>
+            <div style={S.docFlowMeta}>
+              {documentCount === 0
+                ? "No estimates or invoices have been created for this project yet."
+                : `${documentCount} project documents across estimating and billing. Estimated ${money(totals.estimateTotal)} · Invoiced ${money(totals.invoiceTotal)}.`}
+            </div>
           </div>
-        ) : (
-          [...estimates].sort((a, b) => estSortPriority(a) - estSortPriority(b)).map((est, i) => {
-            const estTotal = est?.approvedTotal ?? est?.total ?? est?.grandTotal ?? 0;
-            const estNum = est?.estimateNumber || est?.docNumber || "";
-            const estDate = fmtDate(est?.updatedAt || est?.savedAt || est?.createdAt);
-            const estStatusStr = statusLabel(est?.status);
-            const estStatusKey = String(est?.status || "").toLowerCase();
-            return (
-              <button
-                key={est?.id || i}
-                type="button"
-                style={{ ...S.docCard, ...S.docActionCard }}
-                onClick={() => onOpenEstimate && onOpenEstimate(est)}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={S.docTitle}>{estNum ? `Estimate #${estNum}` : (est?.projectName || "Estimate")}</div>
-                  <div style={S.docAmount}>{money(estTotal)}</div>
+          <div style={docFlowGridStyle}>
+            <div style={S.docFlowColumn}>
+              <div style={S.docFlowColumnHeader}>
+                <div style={S.docFlowColumnTitle}>Estimates</div>
+                <div style={S.docFlowColumnCount}>{estimates.length === 1 ? "1 document" : `${estimates.length} documents`}</div>
+              </div>
+              {estimates.length === 0 ? (
+                <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
+                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No estimates for this project yet.</div>
+                  {onNewEstimate ? (
+                    <button
+                      type="button"
+                      style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
+                      onClick={() => { writeProjectCreateSeed(view); onNewEstimate && onNewEstimate(); }}
+                    >
+                      + New Estimate
+                    </button>
+                  ) : null}
                 </div>
-                <div style={S.docMeta}>
-                  <span style={{ color: EST_STATUS_ACCENT[estStatusKey] || "rgba(230,241,248,0.45)" }}>{estStatusStr}</span>
-                  {estDate ? ` · ${estDate}` : ""}
-                </div>
-              </button>
-            );
-          })
-        )}
-      </div>
+              ) : (
+                [...estimates].sort((a, b) => estSortPriority(a) - estSortPriority(b)).map((est, i) => {
+                  const estTotal = est?.approvedTotal ?? est?.total ?? est?.grandTotal ?? 0;
+                  const estNum = est?.estimateNumber || est?.docNumber || "";
+                  const estDate = fmtDate(est?.updatedAt || est?.savedAt || est?.createdAt);
+                  const estStatusStr = statusLabel(est?.status);
+                  const estStatusKey = String(est?.status || "").toLowerCase();
+                  return (
+                    <button
+                      key={est?.id || i}
+                      type="button"
+                      style={{ ...S.docCard, ...S.docActionCard }}
+                      onClick={() => onOpenEstimate && onOpenEstimate(est)}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                        <div style={S.docTitle}>{estNum ? `Estimate #${estNum}` : (est?.projectName || "Estimate")}</div>
+                        <div style={S.docAmount}>{money(estTotal)}</div>
+                      </div>
+                      <div style={S.docMeta}>
+                        <span style={{ color: EST_STATUS_ACCENT[estStatusKey] || "rgba(230,241,248,0.45)" }}>{estStatusStr}</span>
+                        {estDate ? ` · ${estDate}` : ""}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
 
-      {/* Invoices */}
-      <div style={S.sectionWrap}>
-        <div style={S.sectionTitle}>Invoices{invoices.length > 0 ? ` (${invoices.length})` : ""}</div>
-        {invoices.length === 0 ? (
-          <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
-            <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No invoices for this project yet.</div>
-            {onNewInvoice ? (
-              <button
-                type="button"
-                style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
-                onClick={() => { writeProjectCreateSeed(view); onNewInvoice && onNewInvoice(); }}
-              >
-                + New Invoice
-              </button>
-            ) : null}
+            <div style={S.docFlowColumn}>
+              <div style={S.docFlowColumnHeader}>
+                <div style={S.docFlowColumnTitle}>Invoices</div>
+                <div style={S.docFlowColumnCount}>{invoices.length === 1 ? "1 document" : `${invoices.length} documents`}</div>
+              </div>
+              {invoices.length === 0 ? (
+                <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
+                  <div style={{ fontSize: 13, color: "rgba(230,241,248,0.38)", lineHeight: 1.4 }}>No invoices for this project yet.</div>
+                  {onNewInvoice ? (
+                    <button
+                      type="button"
+                      style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(99,179,237,0.2)", background: "rgba(99,179,237,0.07)", color: "rgba(99,179,237,0.82)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.02em" }}
+                      onClick={() => { writeProjectCreateSeed(view); onNewInvoice && onNewInvoice(); }}
+                    >
+                      + New Invoice
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                [...invoices].sort((a, b) => invSortPriority(a) - invSortPriority(b)).map((inv, i) => {
+                  const invTotal = inv?.invoiceTotal ?? inv?.total ?? 0;
+                  const invNum = inv?.invoiceNumber || inv?.docNumber || "";
+                  const invDate = fmtDate(inv?.updatedAt || inv?.savedAt || inv?.createdAt || inv?.date);
+                  const invDerivedStatus = deriveInvoiceStatus(inv);
+                  const invStatusStr = invStatusLabel(invDerivedStatus);
+                  const invStatusKey = String(invDerivedStatus || "").toLowerCase();
+                  const isVoidInv = invDerivedStatus === INVOICE_STATUSES.VOID;
+                  return (
+                    <button
+                      key={inv?.id || i}
+                      type="button"
+                      style={{ ...S.docCard, ...S.docActionCard, ...(isVoidInv ? { opacity: 0.55, cursor: "default" } : {}) }}
+                      onClick={() => !isVoidInv && onOpenInvoice && onOpenInvoice(inv)}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                        <div style={S.docTitle}>{invNum ? `Invoice #${invNum}` : (inv?.customerName || "Invoice")}</div>
+                        <div style={S.docAmount}>{money(invTotal)}</div>
+                      </div>
+                      <div style={S.docMeta}>
+                        {invStatusStr ? <span style={{ color: INV_STATUS_ACCENT[invStatusKey] || "rgba(230,241,248,0.45)" }}>{invStatusStr}</span> : null}
+                        {invStatusStr && invDate ? " · " : ""}
+                        {invDate || ""}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
-        ) : (
-          [...invoices].sort((a, b) => invSortPriority(a) - invSortPriority(b)).map((inv, i) => {
-            const invTotal = inv?.invoiceTotal ?? inv?.total ?? 0;
-            const invNum = inv?.invoiceNumber || inv?.docNumber || "";
-            const invDate = fmtDate(inv?.updatedAt || inv?.savedAt || inv?.createdAt || inv?.date);
-            const invDerivedStatus = deriveInvoiceStatus(inv);
-            const invStatusStr = invStatusLabel(invDerivedStatus);
-            const invStatusKey = String(invDerivedStatus || "").toLowerCase();
-            const isVoidInv = invDerivedStatus === INVOICE_STATUSES.VOID;
-            return (
-              <button
-                key={inv?.id || i}
-                type="button"
-                style={{ ...S.docCard, ...S.docActionCard, ...(isVoidInv ? { opacity: 0.55, cursor: "default" } : {}) }}
-                onClick={() => !isVoidInv && onOpenInvoice && onOpenInvoice(inv)}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={S.docTitle}>{invNum ? `Invoice #${invNum}` : (inv?.customerName || "Invoice")}</div>
-                  <div style={S.docAmount}>{money(invTotal)}</div>
-                </div>
-                <div style={S.docMeta}>
-                  {invStatusStr ? <span style={{ color: INV_STATUS_ACCENT[invStatusKey] || "rgba(230,241,248,0.45)" }}>{invStatusStr}</span> : null}
-                  {invStatusStr && invDate ? " · " : ""}
-                  {invDate || ""}
-                </div>
-              </button>
-            );
-          })
-        )}
+        </div>
       </div>
     </div>
   );
