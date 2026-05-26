@@ -1199,7 +1199,7 @@ export default function CustomersScreen({
                   {label("Client account book", "Libro de cuentas de clientes")}
                 </div>
                 <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
-                  {label("Customers prioritized by account attention", "Clientes priorizados por atención de cuenta")}
+                  {label("Account Priority", "Clientes priorizados por atención de cuenta")}
                 </div>
                 <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
                   {customerPortfolioSummary.topAttentionCustomer
@@ -1308,14 +1308,14 @@ export default function CustomersScreen({
                       ? { color: "rgba(74,222,128,0.88)", border: "rgba(34,197,94,0.22)", background: "rgba(34,197,94,0.08)" }
                       : { color: "rgba(96,165,250,0.9)", border: "rgba(59,130,246,0.22)", background: "rgba(59,130,246,0.08)" };
                 const actionLabel = accountAction.key === "resolve-overdue"
-                  ? label("Next action: resolve overdue", "Siguiente acción: resolver vencidos")
+                  ? label("Resolve Overdue", "Siguiente acción: resolver vencidos")
                   : accountAction.key === "collect-balance"
-                    ? label("Next action: collect balance", "Siguiente acción: cobrar saldo")
+                    ? label("Collect Balance", "Siguiente acción: cobrar saldo")
                     : accountAction.key === "review-active-work"
-                      ? label("Next action: review active work", "Siguiente acción: revisar trabajo activo")
+                      ? label("Active Work", "Siguiente acción: revisar trabajo activo")
                       : accountAction.key === "review-open-docs"
-                        ? label("Next action: review open docs", "Siguiente acción: revisar documentos abiertos")
-                        : label("Next action: update account", "Siguiente acción: actualizar cuenta");
+                        ? label("Open Docs", "Siguiente acción: revisar documentos abiertos")
+                        : label("Update Account", "Siguiente acción: actualizar cuenta");
 
                 return (
                   <div

@@ -1384,7 +1384,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "overdue",
         tone: "bad",
-        title: lang === "es" ? "Cobrar facturas vencidas" : "Collect overdue invoices",
+        title: lang === "es" ? "Cobrar facturas vencidas" : "Overdue Collection",
         detail: lang === "es"
           ? `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "factura vencida" : "facturas vencidas"} por ${fmtMoney(computed.invoiceTotals.overdueValue)}.`
           : `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "invoice is" : "invoices are"} overdue for ${fmtMoney(computed.invoiceTotals.overdueValue)}.`,
@@ -1394,7 +1394,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "approved-ready",
         tone: "ok",
-        title: lang === "es" ? "Facturar trabajo aprobado" : "Invoice approved work",
+        title: lang === "es" ? "Facturar trabajo aprobado" : "Ready to Invoice",
         detail: lang === "es"
           ? `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimado listo" : "estimados listos"} por ${fmtMoney(computed.approvedReadyValue)}.`
           : `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimate is" : "estimates are"} ready to invoice for ${fmtMoney(computed.approvedReadyValue)}.`,
@@ -1404,7 +1404,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "pending-follow-up",
         tone: "info",
-        title: lang === "es" ? "Seguimiento de estimados" : "Follow up on pending estimates",
+        title: lang === "es" ? "Seguimiento de estimados" : "Pending Follow-Up",
         detail: lang === "es"
           ? `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimado necesita seguimiento" : "estimados necesitan seguimiento"}.`
           : `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
@@ -1414,7 +1414,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "missing-dates",
         tone: "warn",
-        title: lang === "es" ? "Completar fechas de factura" : "Complete invoice dates",
+        title: lang === "es" ? "Completar fechas de factura" : "Missing Due Dates",
         detail: lang === "es"
           ? `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "factura está excluida" : "facturas están excluidas"} de los totales por fecha.`
           : `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "invoice is" : "invoices are"} excluded from date-based totals.`,
@@ -1424,7 +1424,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "steady",
         tone: "ok",
-        title: lang === "es" ? "Sin alertas inmediatas" : "No urgent financial alerts",
+        title: lang === "es" ? "Sin alertas inmediatas" : "All Clear",
         detail: lang === "es"
           ? "Las cobranzas y el pipeline están al día en este momento."
           : "Receivables and pipeline actions are currently under control.",
@@ -1433,7 +1433,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
 
     return {
       heroLabel: lang === "es" ? "Cabina financiera" : "Financial cockpit",
-      heroTitle: lang === "es" ? "Dinero en juego y siguiente acción" : "Money at stake and next action",
+      heroTitle: lang === "es" ? "Dinero en juego y siguiente acción" : "Active Exposure",
       heroNote: computed.missingInvoiceDateCount > 0
         ? (lang === "es"
           ? `La exposición mostrada aquí usa tus documentos actuales mientras ${computed.missingInvoiceDateCount} facturas siguen sin fecha.`

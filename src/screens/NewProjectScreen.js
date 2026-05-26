@@ -258,7 +258,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
         <div style={S.subtitle}>Capture project intake details, then continue in the Project Command Center.</div>
       </div>
       <div style={S.workflowHint}>
-        <div style={S.workflowHintTitle}>What happens next</div>
+        <div style={S.workflowHintTitle}>Next Steps</div>
         <div style={S.workflowHintCopy}>Save this intake to open the project in the same command-center workflow used across Projects and Project Detail.</div>
       </div>
 

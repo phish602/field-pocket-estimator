@@ -992,7 +992,7 @@ export default function EstimatesScreen({
       nextActions.push({
         key: "approved-ready",
         tone: "approved",
-        title: lang === "es" ? "Crear facturas desde aprobados" : "Create invoices from approved",
+        title: lang === "es" ? "Crear facturas desde aprobados" : "Ready to Invoice",
         detail: lang === "es"
           ? `${approvedReady.count} ${approvedReady.count === 1 ? "estimado listo" : "estimados listos"} por ${money(approvedReady.value)}.`
           : `${approvedReady.count} ${approvedReady.count === 1 ? "estimate is" : "estimates are"} ready to invoice for ${money(approvedReady.value)}.`,
@@ -1002,7 +1002,7 @@ export default function EstimatesScreen({
       nextActions.push({
         key: "follow-up",
         tone: "pending",
-        title: lang === "es" ? "Seguimiento de espera" : "Follow up on awaiting response",
+        title: lang === "es" ? "Seguimiento de espera" : "Awaiting Response",
         detail: lang === "es"
           ? `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimado necesita respuesta" : "estimados necesitan respuesta"}.`
           : `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
@@ -1012,7 +1012,7 @@ export default function EstimatesScreen({
       nextActions.push({
         key: "lost",
         tone: "lost",
-        title: lang === "es" ? "Revisar pérdida de ingresos" : "Review lost revenue",
+        title: lang === "es" ? "Revisar pérdida de ingresos" : "Lost Revenue",
         detail: lang === "es"
           ? `${lostVisible.length} ${lostVisible.length === 1 ? "estimado perdido" : "estimados perdidos"} por ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`
           : `${lostVisible.length} ${lostVisible.length === 1 ? "estimate is" : "estimates are"} marked lost for ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`,
@@ -1022,7 +1022,7 @@ export default function EstimatesScreen({
       nextActions.push({
         key: "steady",
         tone: "approved",
-        title: lang === "es" ? "Pipeline estable" : "Pipeline is steady",
+        title: lang === "es" ? "Pipeline estable" : "Stable Pipeline",
         detail: lang === "es" ? "No hay acciones inmediatas visibles en los filtros actuales." : "No immediate revenue action is surfacing in the current filters.",
       });
     }
@@ -1982,7 +1982,7 @@ export default function EstimatesScreen({
                 {lang === "es" ? "Pipeline de ingresos" : "Revenue pipeline"}
               </div>
               <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
-                {lang === "es" ? "Estimados listos para avanzar" : "Estimates ready to move revenue forward"}
+                {lang === "es" ? "Estimados listos para avanzar" : "Estimates in Motion"}
               </div>
               <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
                 {estimatePipelineSummary.highestValueEstimate
@@ -2431,7 +2431,7 @@ export default function EstimatesScreen({
               const actionMeta = status === STATUS_APPROVED
                 ? remainingToInvoice > 0
                   ? {
-                      label: lang === "es" ? "Siguiente acción: crear factura" : "Next action: create invoice",
+                      label: lang === "es" ? "Siguiente acción: crear factura" : "Create Invoice",
                       tone: "rgba(74,222,128,0.9)",
                       border: "rgba(34,197,94,0.22)",
                       background: "rgba(34,197,94,0.08)",
@@ -2450,7 +2450,7 @@ export default function EstimatesScreen({
                       background: "rgba(239,68,68,0.08)",
                     }
                   : {
-                      label: lang === "es" ? "Siguiente acción: seguimiento" : "Next action: follow up",
+                      label: lang === "es" ? "Siguiente acción: seguimiento" : "Follow Up",
                       tone: "rgba(96,165,250,0.9)",
                       border: "rgba(59,130,246,0.2)",
                       background: "rgba(59,130,246,0.08)",

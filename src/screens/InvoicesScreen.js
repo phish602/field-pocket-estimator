@@ -678,7 +678,7 @@ function getInvoicePaymentConsoleState({
   if (String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL) {
     return {
       eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
-      label: lang === "es" ? "Saldo abierto" : "Balance still open",
+      label: lang === "es" ? "Saldo abierto" : "Open Balance",
       summary: canSyncStripeSession
         ? (lang === "es"
           ? "Queda saldo por cobrar. Sigue con Stripe o agrega el siguiente pago manual."

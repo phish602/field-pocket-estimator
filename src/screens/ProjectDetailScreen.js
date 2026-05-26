@@ -735,7 +735,7 @@ export default function ProjectDetailScreen({
         <div style={S.heroHeader}>
           <div style={S.heroHeaderTop}>
             <div style={S.heroIdentity}>
-              <div style={S.heroEyebrow}>Project command center</div>
+              <div style={S.heroEyebrow}>Job Overview</div>
               <div style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
               {project.projectNumber ? <div style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(230,241,248,0.4)", letterSpacing: "0.05em" }}>Project #{project.projectNumber}</div> : null}
               {customer ? (

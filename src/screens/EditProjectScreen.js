@@ -149,7 +149,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
         <div style={S.subtitle}>Refine project metadata and continue in the Project Command Center workflow.</div>
       </div>
       <div style={S.workflowHint}>
-        <div style={S.workflowHintTitle}>What happens next</div>
+        <div style={S.workflowHintTitle}>Next Steps</div>
         <div style={S.workflowHintCopy}>Saving updates keeps this project aligned with Projects portfolio and Project Detail command controls.</div>
       </div>
 

@@ -67,36 +67,36 @@ function projSortPriority(proj) {
 function deriveProjectNextAction(proj) {
   if ((proj?.overdueCount || 0) > 0) {
     return {
-      label: "Next action: resolve overdue invoice",
+      label: "Resolve Overdue",
       tone: "danger",
     };
   }
   if ((proj?.totals?.balanceRemaining || 0) > 0) {
     return {
-      label: "Next action: collect balance due",
+      label: "Collect Balance",
       tone: "warning",
     };
   }
   if ((proj?.approvedEstCount || 0) > 0) {
     return {
-      label: "Next action: move approved estimate forward",
+      label: "Invoice Approved",
       tone: "success",
     };
   }
   if (String(proj?.status || "").toLowerCase() === "estimating") {
     return {
-      label: "Next action: keep estimate moving",
+      label: "Follow Up",
       tone: "info",
     };
   }
   if (String(proj?.status || "").toLowerCase() === "completed") {
     return {
-      label: "Next action: review closeout",
+      label: "Review Closeout",
       tone: "neutral",
     };
   }
   return {
-    label: "Next action: open project detail",
+    label: "View Project",
     tone: "info",
   };
 }
