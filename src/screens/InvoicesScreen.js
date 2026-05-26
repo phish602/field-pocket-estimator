@@ -438,6 +438,293 @@ const invoiceDetailsWrapStyle = {
   borderTop: "1px solid rgba(255,255,255,0.10)",
 };
 
+const invoiceDetailCardStyle = {
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.10)",
+  background: "rgba(255,255,255,0.04)",
+  padding: 12,
+  display: "grid",
+  gap: 10,
+};
+
+const invoiceDetailLabelStyle = {
+  fontSize: 11.5,
+  fontWeight: 900,
+  opacity: 0.88,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+};
+
+const paymentConsoleMetricCardStyle = {
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(9,15,24,0.44)",
+  padding: "12px 12px 10px",
+  display: "grid",
+  gap: 4,
+  minWidth: 0,
+};
+
+const paymentConsoleMetricLabelStyle = {
+  fontSize: 10.5,
+  fontWeight: 800,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "rgba(226,232,240,0.48)",
+};
+
+const paymentConsoleMetricValueStyle = {
+  fontSize: 20,
+  lineHeight: 1.1,
+  fontWeight: 900,
+  color: "rgba(248,250,252,0.98)",
+  fontVariantNumeric: "tabular-nums",
+};
+
+const paymentConsoleMetricMetaStyle = {
+  fontSize: 11.5,
+  lineHeight: 1.4,
+  color: "rgba(226,232,240,0.56)",
+};
+
+const paymentConsoleActionCardStyle = {
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.03)",
+  padding: 12,
+  display: "grid",
+  gap: 8,
+  alignContent: "start",
+};
+
+const paymentConsoleActionTitleStyle = {
+  fontSize: 13,
+  fontWeight: 800,
+  color: "rgba(248,250,252,0.96)",
+};
+
+const paymentConsoleActionCopyStyle = {
+  fontSize: 11.5,
+  lineHeight: 1.45,
+  color: "rgba(226,232,240,0.68)",
+};
+
+const paymentConsoleButtonGridStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+};
+
+const paymentConsoleInlineNoteStyle = {
+  fontSize: 11.5,
+  lineHeight: 1.45,
+  color: "rgba(226,232,240,0.68)",
+};
+
+function getStripeSessionStateMeta(state, lang) {
+  if (state === "review") {
+    return {
+      label: lang === "es" ? "Revisión" : "Review",
+      background: "rgba(248,113,113,0.10)",
+      border: "rgba(248,113,113,0.24)",
+      color: "rgba(254,202,202,0.98)",
+      summary: lang === "es"
+        ? "Stripe reportó un pago que no se pudo registrar automáticamente de forma segura."
+        : "Stripe reported a payment that could not be safely recorded automatically.",
+      nextAction: lang === "es"
+        ? "Revisa manualmente antes de registrar cualquier cobro."
+        : "Review manually before recording any payment.",
+    };
+  }
+  if (state === "stale") {
+    return {
+      label: lang === "es" ? "Desactualizada" : "Stale or Outdated",
+      background: "rgba(251,146,60,0.10)",
+      border: "rgba(251,146,60,0.24)",
+      color: "rgba(254,215,170,0.98)",
+      summary: lang === "es"
+        ? "El saldo cambió después de generar este enlace."
+        : "The invoice balance changed after this link was generated.",
+      nextAction: lang === "es"
+        ? "Genera un enlace nuevo si todavía se necesita el pago."
+        : "Generate a fresh link if payment is still needed.",
+    };
+  }
+  if (state === "synced") {
+    return {
+      label: lang === "es" ? "Sincronizada" : "Synced",
+      background: "rgba(34,197,94,0.10)",
+      border: "rgba(34,197,94,0.22)",
+      color: "rgba(187,247,208,0.98)",
+      summary: lang === "es"
+        ? "Este pago de Stripe ya se registró en EstiPaid."
+        : "This Stripe payment has already been recorded in EstiPaid.",
+      nextAction: lang === "es"
+        ? "No se requiere otra acción de cobro."
+        : "No further collection action is needed.",
+    };
+  }
+  if (state === "expired") {
+    return {
+      label: lang === "es" ? "Expirada" : "Expired",
+      background: "rgba(250,204,21,0.10)",
+      border: "rgba(250,204,21,0.22)",
+      color: "rgba(254,240,138,0.98)",
+      summary: lang === "es"
+        ? "Este enlace de Stripe expiró."
+        : "This Stripe link expired.",
+      nextAction: lang === "es"
+        ? "Genera un enlace nuevo si el cliente todavía necesita pagar."
+        : "Generate a fresh link if the customer still needs to pay.",
+    };
+  }
+  return {
+    label: lang === "es" ? "Pendiente" : "Pending",
+    background: "rgba(59,130,246,0.10)",
+    border: "rgba(59,130,246,0.22)",
+    color: "rgba(191,219,254,0.98)",
+    summary: lang === "es"
+      ? "Pendiente significa que se generó un enlace de Stripe, pero el pago todavía no se registró en EstiPaid."
+      : "Pending means a Stripe link was generated, but the payment has not been recorded in EstiPaid yet.",
+    nextAction: lang === "es"
+      ? "Cuando Stripe confirme el cobro, usa Revisar / sincronizar pago de Stripe."
+      : "After Stripe confirms the charge, use Check / Sync Stripe Payment.",
+  };
+}
+
+function getInvoicePaymentConsoleState({
+  derivedStatus,
+  paymentStatus,
+  stripeSessionState,
+  canTakePayment,
+  canUseStripe,
+  canSyncStripeSession,
+  lang,
+}) {
+  if (derivedStatus === INVOICE_STATUSES.VOID || paymentStatus === PAYMENT_STATUSES.VOID) {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Factura anulada" : "Invoice voided",
+      summary: lang === "es"
+        ? "Mantén este registro solo como referencia. No se deben registrar más cobros."
+        : "Keep this invoice as reference only. No further collection action should be taken.",
+      tone: {
+        background: "rgba(148,163,184,0.08)",
+        border: "rgba(148,163,184,0.18)",
+        color: "rgba(226,232,240,0.88)",
+      },
+    };
+  }
+  if (derivedStatus === INVOICE_STATUSES.PAID || paymentStatus === PAYMENT_STATUSES.PAID) {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Factura liquidada" : "Invoice settled",
+      summary: lang === "es"
+        ? "El cobro ya está resuelto. Revisa el historial o los detalles de Stripe si necesitas contexto."
+        : "Collection is complete. Review the ledger or Stripe details if you need context.",
+      tone: {
+        background: "rgba(34,197,94,0.08)",
+        border: "rgba(34,197,94,0.2)",
+        color: "rgba(187,247,208,0.98)",
+      },
+    };
+  }
+  if (stripeSessionState === "review") {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Requiere revisión" : "Needs review",
+      summary: lang === "es"
+        ? "Stripe detectó una situación que debe confirmarse manualmente antes de registrar el pago."
+        : "Stripe reported a situation that should be manually confirmed before recording payment.",
+      tone: {
+        background: "rgba(248,113,113,0.08)",
+        border: "rgba(248,113,113,0.2)",
+        color: "rgba(254,202,202,0.98)",
+      },
+    };
+  }
+  if (stripeSessionState === "expired") {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Enlace expirado" : "Link expired",
+      summary: lang === "es"
+        ? "El cliente ya no debería usar el enlace anterior. Genera uno nuevo o cobra manualmente."
+        : "The customer should not use the old link. Generate a new link or take payment manually.",
+      tone: {
+        background: "rgba(250,204,21,0.08)",
+        border: "rgba(250,204,21,0.2)",
+        color: "rgba(254,240,138,0.98)",
+      },
+    };
+  }
+  if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Cobro urgente" : "Collection priority",
+      summary: canUseStripe
+        ? (lang === "es"
+          ? "La factura está vencida. El siguiente paso más seguro es reenviar o regenerar el enlace de Stripe y luego sincronizar el pago."
+          : "This invoice is overdue. The safest next step is to send or refresh the Stripe link, then sync payment after confirmation.")
+        : (lang === "es"
+          ? "La factura está vencida. Registra un pago manual cuando el cliente pague."
+          : "This invoice is overdue. Record a manual payment when the customer pays."),
+      tone: {
+        background: "rgba(248,113,113,0.08)",
+        border: "rgba(248,113,113,0.2)",
+        color: "rgba(254,202,202,0.98)",
+      },
+    };
+  }
+  if (String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL) {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Saldo abierto" : "Balance still open",
+      summary: canSyncStripeSession
+        ? (lang === "es"
+          ? "Queda saldo por cobrar. Sigue con Stripe o agrega el siguiente pago manual."
+          : "A balance remains. Continue with Stripe or add the next manual payment.")
+        : (lang === "es"
+          ? "Queda saldo por cobrar. Agrega el siguiente pago cuando lo recibas."
+          : "A balance remains. Add the next payment when you receive it."),
+      tone: {
+        background: "rgba(245,158,11,0.08)",
+        border: "rgba(245,158,11,0.2)",
+        color: "rgba(253,230,138,0.98)",
+      },
+    };
+  }
+  if (canTakePayment) {
+    return {
+      eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+      label: lang === "es" ? "Lista para cobrar" : "Ready to collect",
+      summary: canUseStripe
+        ? (lang === "es"
+          ? "Elige entre cobro manual o enviar al cliente a Stripe."
+          : "Choose between a manual payment or sending the customer to Stripe.")
+        : (lang === "es"
+          ? "Registra el pago manual cuando el cliente pague."
+          : "Record the manual payment when the customer pays."),
+      tone: {
+        background: "rgba(59,130,246,0.08)",
+        border: "rgba(59,130,246,0.2)",
+        color: "rgba(191,219,254,0.98)",
+      },
+    };
+  }
+  return {
+    eyebrow: lang === "es" ? "Consola de pago" : "Payment Console",
+    label: lang === "es" ? "Solo referencia" : "Reference only",
+    summary: lang === "es"
+      ? "No hay acciones de cobro principales disponibles para esta factura."
+      : "No primary collection actions are available for this invoice.",
+    tone: {
+      background: "rgba(148,163,184,0.08)",
+      border: "rgba(148,163,184,0.18)",
+      color: "rgba(226,232,240,0.88)",
+    },
+  };
+}
+
 function formatStatusLabel(status, lang) {
   const raw = String(status || "").toLowerCase();
   if (raw === INVOICE_STATUSES.SENT) return lang === "es" ? "Enviada" : "Sent";
@@ -2245,10 +2532,21 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   && !(stripeSessionState === "stale" && String(invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID);
                 const canCopyExistingStripeLink = !!latestActionableStripeSession?.checkoutUrl
                   && getStripeSessionDisplayState(latestActionableStripeSession, invoice) === "pending";
+                const paymentStatusKey = String(invoice?.paymentStatus || "").trim().toLowerCase();
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
                 const projectLabel = displayMeta.projectName || invoice?.projectName || "";
                 const customerLabel = displayMeta.customerName || invoice?.customerName || "";
+                const stripeSessionMeta = latestStripeSession ? getStripeSessionStateMeta(stripeSessionState, lang) : null;
+                const paymentConsoleState = getInvoicePaymentConsoleState({
+                  derivedStatus,
+                  paymentStatus: paymentStatusKey,
+                  stripeSessionState,
+                  canTakePayment,
+                  canUseStripe,
+                  canSyncStripeSession,
+                  lang,
+                });
                 const statusTone = derivedStatus === INVOICE_STATUSES.PAID
                   ? "rgba(34,197,94,0.14)"
                   : derivedStatus === INVOICE_STATUSES.OVERDUE
@@ -2418,7 +2716,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                     <div
                       style={{
                         ...invoiceDetailsWrapStyle,
-                        maxHeight: isOpen ? 1200 : 0,
+                        maxHeight: isOpen ? 3200 : 0,
                         opacity: isOpen ? 1 : 0,
                         transform: isOpen ? "translateY(0px)" : "translateY(-4px)",
                         paddingTop: isOpen ? 10 : 0,
@@ -2426,17 +2724,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                       aria-hidden={!isOpen}
                     >
                       <div style={{ display: "grid", gap: 10 }}>
-                        <div
-                          style={{
-                            borderRadius: 12,
-                            border: "1px solid rgba(255,255,255,0.10)",
-                            background: "rgba(255,255,255,0.04)",
-                            padding: 10,
-                            display: "grid",
-                            gap: 8,
-                          }}
-                        >
-                          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
+                        <div style={invoiceDetailCardStyle}>
+                          <div style={invoiceDetailLabelStyle}>
                             {lang === "es" ? "Resumen" : "Summary"}
                           </div>
                           <div style={{ display: "grid", gap: 6 }}>
@@ -2472,313 +2761,413 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             ) : null}
                           </div>
                         </div>
+                        <div
+                          style={{
+                            ...invoiceDetailCardStyle,
+                            background: paymentConsoleState.tone.background,
+                            border: `1px solid ${paymentConsoleState.tone.border}`,
+                          }}
+                        >
+                          <div style={{ display: "grid", gap: 6 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                              <div style={{ display: "grid", gap: 4 }}>
+                                <div style={invoiceDetailLabelStyle}>{paymentConsoleState.eyebrow}</div>
+                                <div style={{ fontSize: 18, lineHeight: 1.2, fontWeight: 900, color: paymentConsoleState.tone.color }}>
+                                  {paymentConsoleState.label}
+                                </div>
+                              </div>
+                              <div
+                                style={{
+                                  borderRadius: 999,
+                                  border: `1px solid ${paymentConsoleState.tone.border}`,
+                                  background: paymentConsoleState.tone.background,
+                                  color: paymentConsoleState.tone.color,
+                                  padding: "4px 10px",
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  letterSpacing: "0.04em",
+                                }}
+                              >
+                                {formatPaymentStatus(invoice?.paymentStatus, lang)} {derivedStatus === INVOICE_STATUSES.OVERDUE ? `· ${formatStatusLabel(derivedStatus, lang)}` : ""}
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(226,232,240,0.8)" }}>
+                              {paymentConsoleState.summary}
+                            </div>
+                          </div>
 
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {canTakePayment ? (
-                            <button
-                              className="pe-btn"
-                              type="button"
-                              onClick={() => openPaymentModal(invoice)}
-                            >
-                              {getPaymentActionLabel(invoice, lang)}
-                            </button>
-                          ) : null}
-                          {canUseStripe ? (
-                            <button
-                              className="pe-btn pe-btn-ghost"
-                              type="button"
-                              onClick={() => launchStripeCheckout(invoice)}
-                              disabled={stripeCheckoutBusyId === invoiceId}
-                            >
-                              {stripeCheckoutBusyId === invoiceId
-                                ? (lang === "es" ? "Generando Stripe..." : "Generating Stripe...")
-                                : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
-                            </button>
-                          ) : null}
-                          {canUseStripe ? (
-                            <button
-                              className="pe-btn pe-btn-ghost"
-                              type="button"
-                              onClick={() => copyStripeLink(invoice)}
-                              disabled={stripeCopyBusyId === invoiceId}
-                            >
-                              {stripeCopyBusyId === invoiceId
-                                ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
-                                : (lang === "es" ? "Copiar enlace de pago" : "Copy Payment Link")}
-                            </button>
-                          ) : null}
-                          {canCopyExistingStripeLink ? (
-                            <button
-                              className="pe-btn pe-btn-ghost"
-                              type="button"
-                              onClick={() => copyExistingStripeLink(invoice)}
-                              disabled={stripeCopyBusyId === invoiceId}
-                            >
-                              {stripeCopyBusyId === invoiceId
-                                ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
-                                : (lang === "es" ? "Copiar enlace de Stripe existente" : "Copy Existing Stripe Link")}
-                            </button>
-                          ) : null}
-                          {canSyncStripeSession ? (
-                            <button
-                              className="pe-btn pe-btn-ghost"
-                              type="button"
-                              onClick={() => syncStripePayment(invoice)}
-                              disabled={stripeSyncBusyId === invoiceId}
-                            >
-                              {stripeSyncBusyId === invoiceId
-                                ? (lang === "es" ? "Revisando Stripe..." : "Checking Stripe...")
-                                : (lang === "es" ? "Revisar / sincronizar pago de Stripe" : "Check / Sync Stripe Payment")}
-                            </button>
-                          ) : null}
-                          <button
-                            className="pe-btn pe-btn-ghost"
-                            type="button"
-                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.SENT)}
-                            disabled={derivedStatus === INVOICE_STATUSES.SENT || derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
-                          >
-                            {lang === "es" ? "Marcar enviada" : "Mark Sent"}
-                          </button>
-                          <button
-                            className="pe-btn pe-btn-ghost"
-                            type="button"
-                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.PAID)}
-                            disabled={derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
-                          >
-                            {lang === "es" ? "Marcar pagada" : "Mark Paid"}
-                          </button>
-                          <button
-                            className="pe-btn pe-btn-ghost"
-                            type="button"
-                            onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.VOID)}
-                            disabled={derivedStatus === INVOICE_STATUSES.VOID}
-                          >
-                            {lang === "es" ? "Anular" : "Void"}
-                          </button>
-                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateInvoice(invoice)}>
-                            {lang === "es" ? "Duplicar" : "Duplicate"}
-                          </button>
-                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeInvoice(invoice)}>
-                            {lang === "es" ? "Eliminar" : "Delete"}
-                          </button>
-                        </div>
-                        {canTakePayment && !canUseStripe ? (
-                          <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
-                            {lang === "es"
-                              ? "Conecta Stripe en Company Profile para aceptar pagos en línea."
-                              : "Connect Stripe in Company Profile to accept online payments."}
-                          </div>
-                        ) : null}
-                        {canUseStripe ? (
-                          <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
-                            {lang === "es"
-                              ? "Los enlaces de Stripe expiran. Genera uno nuevo si el cliente paga después. Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
-                              : "Stripe links expire. Generate a fresh link if the customer pays later. Payment must still be reconciled in EstiPaid after Stripe confirms."}
-                          </div>
-                        ) : null}
-                        {latestStripeSession ? (
                           <div
                             style={{
-                              borderRadius: 12,
-                              border: "1px solid rgba(255,255,255,0.10)",
-                              background: stripeSessionState === "review"
-                                ? "rgba(248,113,113,0.08)"
-                                : stripeSessionState === "synced"
-                                  ? "rgba(34,197,94,0.08)"
-                                  : "rgba(255,255,255,0.04)",
-                              padding: 10,
                               display: "grid",
+                              gridTemplateColumns: isPhone ? "repeat(2, minmax(0, 1fr))" : "repeat(3, minmax(0, 1fr))",
                               gap: 8,
                             }}
                           >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                              <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
-                                {lang === "es" ? "Sesión de Stripe" : "Stripe session"}
+                            <div style={paymentConsoleMetricCardStyle}>
+                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Total" : "Invoice Total"}</div>
+                              <div style={paymentConsoleMetricValueStyle}>{moneyUSD(invoiceTotal)}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{lang === "es" ? "Monto facturado" : "Original amount billed"}</div>
+                            </div>
+                            <div
+                              style={{
+                                ...paymentConsoleMetricCardStyle,
+                                background: amountPaid > 0 ? "rgba(34,197,94,0.10)" : paymentConsoleMetricCardStyle.background,
+                                border: amountPaid > 0 ? "1px solid rgba(34,197,94,0.18)" : paymentConsoleMetricCardStyle.border,
+                              }}
+                            >
+                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Pagado" : "Paid"}</div>
+                              <div style={{ ...paymentConsoleMetricValueStyle, color: amountPaid > 0 ? "rgba(187,247,208,0.98)" : paymentConsoleMetricValueStyle.color }}>{moneyUSD(amountPaid)}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{amountPaid > 0 ? (lang === "es" ? "Cobrado hasta ahora" : "Collected so far") : (lang === "es" ? "Sin pagos registrados" : "No payment recorded yet")}</div>
+                            </div>
+                            <div
+                              style={{
+                                ...paymentConsoleMetricCardStyle,
+                                background: balanceRemaining > 0 ? "rgba(245,158,11,0.10)" : paymentConsoleMetricCardStyle.background,
+                                border: balanceRemaining > 0 ? "1px solid rgba(245,158,11,0.18)" : paymentConsoleMetricCardStyle.border,
+                                gridColumn: isPhone ? "1 / -1" : "auto",
+                              }}
+                            >
+                              <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Saldo restante" : "Balance Remaining"}</div>
+                              <div style={{ ...paymentConsoleMetricValueStyle, color: balanceRemaining > 0 ? "rgba(253,230,138,0.98)" : paymentConsoleMetricValueStyle.color }}>{moneyUSD(balanceRemaining)}</div>
+                              <div style={paymentConsoleMetricMetaStyle}>{balanceRemaining > 0 ? (lang === "es" ? "Monto pendiente por cobrar" : "Amount still owed") : (lang === "es" ? "Factura liquidada" : "Invoice fully settled")}</div>
+                            </div>
+                          </div>
+
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                              gap: 10,
+                            }}
+                          >
+                            <div style={paymentConsoleActionCardStyle}>
+                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Ruta manual" : "Manual payment path"}</div>
+                              <div style={paymentConsoleActionCopyStyle}>
+                                {canTakePayment
+                                  ? (lang === "es"
+                                    ? "Registra pagos manuales sin cambiar el flujo actual de la factura."
+                                    : "Record manual payments without changing the invoice flow.")
+                                  : (lang === "es"
+                                    ? "No hay cobros manuales principales disponibles para esta factura."
+                                    : "No primary manual collection action is available for this invoice.")}
                               </div>
-                              <div style={{
-                                fontSize: 11.5,
-                                fontWeight: 800,
-                                borderRadius: 999,
-                                border: "1px solid rgba(255,255,255,0.12)",
-                                padding: "3px 9px",
-                                background: stripeSessionState === "review"
-                                  ? "rgba(248,113,113,0.14)"
-                                  : stripeSessionState === "stale"
-                                    ? "rgba(251,146,60,0.14)"
-                                  : stripeSessionState === "synced"
-                                    ? "rgba(34,197,94,0.14)"
-                                    : stripeSessionState === "expired"
-                                      ? "rgba(250,204,21,0.14)"
-                                      : "rgba(59,130,246,0.12)",
-                              }}>
-                                {stripeSessionState === "review"
-                                  ? (lang === "es" ? "Revisión" : "Review")
-                                  : stripeSessionState === "stale"
-                                    ? (lang === "es" ? "Desactualizada" : "Stale or Outdated")
-                                  : stripeSessionState === "synced"
-                                    ? (lang === "es" ? "Sincronizada" : "Synced")
-                                    : stripeSessionState === "expired"
-                                      ? (lang === "es" ? "Expirada" : "Expired")
-                                      : (lang === "es" ? "Pendiente" : "Pending")}
+                              <div style={paymentConsoleButtonGridStyle}>
+                                {canTakePayment ? (
+                                  <button
+                                    className="pe-btn"
+                                    type="button"
+                                    onClick={() => openPaymentModal(invoice)}
+                                  >
+                                    {getPaymentActionLabel(invoice, lang)}
+                                  </button>
+                                ) : null}
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                                <div style={{ opacity: 0.72 }}>{lang === "es" ? "Monto" : "Amount"}</div>
-                                <div style={{ fontWeight: 800 }}>{moneyUSD(latestStripeSession.amount)}</div>
+
+                            <div style={paymentConsoleActionCardStyle}>
+                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Ruta Stripe" : "Stripe payment path"}</div>
+                              <div style={paymentConsoleActionCopyStyle}>
+                                {canUseStripe
+                                  ? (lang === "es"
+                                    ? "Envía al cliente a Stripe, reutiliza enlaces activos y sincroniza solo cuando Stripe confirme el cobro."
+                                    : "Send the customer to Stripe, reuse active links, and sync only after Stripe confirms payment.")
+                                  : canTakePayment
+                                    ? (lang === "es"
+                                      ? "Conecta Stripe en Company Profile para aceptar pagos en línea."
+                                      : "Connect Stripe in Company Profile to accept online payments.")
+                                    : (lang === "es"
+                                      ? "No hay una acción activa de Stripe para esta factura."
+                                      : "There is no active Stripe collection action for this invoice.")}
                               </div>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                                <div style={{ opacity: 0.72 }}>{lang === "es" ? "Creada" : "Created"}</div>
-                                <div style={{ fontWeight: 700 }}>{formatDateTime(latestStripeSession.createdAt) || "—"}</div>
+                              <div style={paymentConsoleButtonGridStyle}>
+                                {canUseStripe ? (
+                                  <button
+                                    className="pe-btn pe-btn-ghost"
+                                    type="button"
+                                    onClick={() => launchStripeCheckout(invoice)}
+                                    disabled={stripeCheckoutBusyId === invoiceId}
+                                  >
+                                    {stripeCheckoutBusyId === invoiceId
+                                      ? (lang === "es" ? "Generando Stripe..." : "Generating Stripe...")
+                                      : (lang === "es" ? "Pagar en línea con Stripe" : "Pay Online with Stripe")}
+                                  </button>
+                                ) : null}
+                                {canUseStripe ? (
+                                  <button
+                                    className="pe-btn pe-btn-ghost"
+                                    type="button"
+                                    onClick={() => copyStripeLink(invoice)}
+                                    disabled={stripeCopyBusyId === invoiceId}
+                                  >
+                                    {stripeCopyBusyId === invoiceId
+                                      ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
+                                      : (lang === "es" ? "Copiar enlace de pago" : "Copy Payment Link")}
+                                  </button>
+                                ) : null}
+                                {canCopyExistingStripeLink ? (
+                                  <button
+                                    className="pe-btn pe-btn-ghost"
+                                    type="button"
+                                    onClick={() => copyExistingStripeLink(invoice)}
+                                    disabled={stripeCopyBusyId === invoiceId}
+                                  >
+                                    {stripeCopyBusyId === invoiceId
+                                      ? (lang === "es" ? "Copiando enlace..." : "Copying link...")
+                                      : (lang === "es" ? "Copiar enlace de Stripe existente" : "Copy Existing Stripe Link")}
+                                  </button>
+                                ) : null}
+                                {canSyncStripeSession ? (
+                                  <button
+                                    className="pe-btn pe-btn-ghost"
+                                    type="button"
+                                    onClick={() => syncStripePayment(invoice)}
+                                    disabled={stripeSyncBusyId === invoiceId}
+                                  >
+                                    {stripeSyncBusyId === invoiceId
+                                      ? (lang === "es" ? "Revisando Stripe..." : "Checking Stripe...")
+                                      : (lang === "es" ? "Revisar / sincronizar pago de Stripe" : "Check / Sync Stripe Payment")}
+                                  </button>
+                                ) : null}
                               </div>
-                              {latestStripeSession.expiresAt ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                                  <div style={{ opacity: 0.72 }}>{lang === "es" ? "Expira" : "Expires"}</div>
-                                  <div style={{ fontWeight: 700 }}>{formatDateTime(Number(latestStripeSession.expiresAt || 0) * 1000) || "—"}</div>
+                              {canUseStripe ? (
+                                <div style={paymentConsoleInlineNoteStyle}>
+                                  {lang === "es"
+                                    ? "Los enlaces de Stripe expiran. Genera uno nuevo si el cliente paga después. Los pagos de Stripe deben conciliarse antes de registrarlos en EstiPaid."
+                                    : "Stripe links expire. Generate a fresh link if the customer pays later. Payment must still be reconciled in EstiPaid after Stripe confirms."}
                                 </div>
                               ) : null}
                             </div>
-                            <div style={{ fontSize: 11.5, opacity: 0.78, lineHeight: 1.45 }}>
-                              {stripeSessionState === "review"
-                                ? (lang === "es"
-                                  ? "Stripe reportó un pago que no se pudo registrar automáticamente. Revísalo manualmente antes de agregarlo."
-                                  : "Stripe reported a payment that could not be safely recorded automatically. Review it manually before adding it.")
-                                : stripeSessionState === "stale"
-                                  ? (lang === "es"
-                                    ? "El saldo de la factura cambió después de generar este enlace. Genera un enlace nuevo si todavía se necesita el pago."
-                                    : "Invoice balance changed after this link was generated. Generate a fresh link if payment is still needed.")
-                                : stripeSessionState === "synced"
-                                  ? (lang === "es"
-                                    ? "Este pago de Stripe ya se registró en EstiPaid."
-                                    : "This Stripe payment has already been recorded in EstiPaid.")
-                                  : stripeSessionState === "expired"
-                                    ? (lang === "es"
-                                      ? "Este enlace de Stripe expiró. Genera un enlace nuevo si el cliente todavía necesita pagar."
-                                      : "This Stripe link expired. Generate a fresh link if the customer still needs to pay.")
-                                    : (lang === "es"
-                                      ? "Pendiente significa que se generó un enlace de Stripe, pero el pago todavía no se registró en EstiPaid."
-                                      : "Pending means a Stripe link was generated, but the payment has not been recorded in EstiPaid yet.")}
-                            </div>
                           </div>
-                        ) : null}
-                        {canSyncStripeSession ? (
-                          <div style={{ fontSize: 11.5, opacity: 0.72, lineHeight: 1.45 }}>
-                            {lang === "es"
-                              ? "Usa Revisar / sincronizar pago de Stripe después de confirmar el cobro en Stripe para registrar el pago de forma segura."
-                              : "Use Check / Sync Stripe Payment after Stripe confirms the charge to record it safely in EstiPaid."}
-                          </div>
-                        ) : null}
-                        {stripeNotice?.message ? (
-                          <div
-                            role="status"
-                            aria-live="polite"
-                            style={{
-                              borderRadius: 12,
-                              border: "1px solid rgba(255,255,255,0.10)",
-                              background: stripeNotice?.tone === "error"
-                                ? "rgba(248,113,113,0.10)"
-                                : stripeNotice?.tone === "warning"
-                                  ? "rgba(250,204,21,0.10)"
-                                  : stripeNotice?.tone === "success"
-                                    ? "rgba(34,197,94,0.10)"
-                                    : "rgba(59,130,246,0.08)",
-                              padding: "9px 10px",
-                              fontSize: 12.5,
-                              lineHeight: 1.45,
-                            }}
-                          >
-                            {stripeNotice.message}
-                          </div>
-                        ) : null}
-                        {paymentLedger.length ? (
-                          <div
-                            style={{
-                              borderRadius: 12,
-                              border: "1px solid rgba(255,255,255,0.10)",
-                              background: "rgba(255,255,255,0.04)",
-                              padding: 10,
-                              display: "grid",
-                              gap: 8,
-                            }}
-                          >
-                            <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85, letterSpacing: "0.8px" }}>
-                              {lang === "es" ? "Pagos" : "Payments"}
-                            </div>
-                            <div style={{ display: "grid", gap: 8 }}>
-                              {paymentLedger.map((payment) => (
-                                (() => {
-                                  const isStripePayment = String(payment?.method || "").trim().toLowerCase() === "stripe";
-                                  const stripeSummary = isStripePayment ? getStripePaymentSummary(payment) : "";
-                                  const receiptEmail = isStripePayment ? String(payment?.receiptEmail || "").trim() : "";
-                                  const receiptUrl = isStripePayment && isSafeReceiptUrl(payment?.receiptUrl)
-                                    ? String(payment?.receiptUrl || "").trim()
-                                    : "";
 
-                                  return (
-                                    <div
-                                      key={String(payment?.id || `${payment?.paidAt || ""}_${payment?.amount || ""}`)}
-                                      style={{
-                                        display: "grid",
-                                        gap: 4,
-                                        borderRadius: 10,
-                                        border: "1px solid rgba(255,255,255,0.08)",
-                                        background: "rgba(255,255,255,0.03)",
-                                        padding: "8px 10px",
-                                      }}
-                                    >
-                                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-                                        <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
-                                        <div style={{ fontSize: 12, opacity: 0.76, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                                          <span>{formatDateOnly(payment?.paidAt) || "—"}</span>
-                                          {isStripePayment ? (
-                                            <span style={{
-                                              borderRadius: 999,
-                                              border: "1px solid rgba(59,130,246,0.18)",
-                                              background: "rgba(59,130,246,0.10)",
-                                              padding: "2px 8px",
-                                              fontSize: 11,
-                                              fontWeight: 800,
-                                              letterSpacing: "0.3px",
-                                            }}>
-                                              Stripe
-                                            </span>
-                                          ) : (
-                                            <span>{formatPaymentMethod(payment?.method, lang)}</span>
-                                          )}
+                          {latestStripeSession ? (
+                            <div
+                              style={{
+                                borderRadius: 14,
+                                border: `1px solid ${stripeSessionMeta.border}`,
+                                background: stripeSessionMeta.background,
+                                padding: 12,
+                                display: "grid",
+                                gap: 10,
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                                <div style={{ display: "grid", gap: 4 }}>
+                                  <div style={invoiceDetailLabelStyle}>{lang === "es" ? "Sesión de Stripe" : "Stripe Session"}</div>
+                                  <div style={{ fontSize: 15, fontWeight: 900, color: stripeSessionMeta.color }}>
+                                    {stripeSessionMeta.label}
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    borderRadius: 999,
+                                    border: `1px solid ${stripeSessionMeta.border}`,
+                                    background: stripeSessionMeta.background,
+                                    color: stripeSessionMeta.color,
+                                    padding: "4px 10px",
+                                    fontSize: 11,
+                                    fontWeight: 800,
+                                  }}
+                                >
+                                  {moneyUSD(latestStripeSession.amount)}
+                                </div>
+                              </div>
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                                  gap: 8,
+                                }}
+                              >
+                                <div style={{ display: "grid", gap: 4 }}>
+                                  <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Creada" : "Created"}</div>
+                                  <div style={{ fontSize: 12.5, fontWeight: 700 }}>{formatDateTime(latestStripeSession.createdAt) || "—"}</div>
+                                </div>
+                                <div style={{ display: "grid", gap: 4 }}>
+                                  <div style={paymentConsoleMetricLabelStyle}>{lang === "es" ? "Expira" : "Expires"}</div>
+                                  <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                                    {latestStripeSession.expiresAt ? (formatDateTime(Number(latestStripeSession.expiresAt || 0) * 1000) || "—") : "—"}
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(226,232,240,0.84)" }}>
+                                {stripeSessionMeta.summary}
+                              </div>
+                              <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(226,232,240,0.7)" }}>
+                                {stripeSessionMeta.nextAction}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {stripeNotice?.message ? (
+                            <div
+                              role="status"
+                              aria-live="polite"
+                              style={{
+                                borderRadius: 12,
+                                border: "1px solid rgba(255,255,255,0.10)",
+                                background: stripeNotice?.tone === "error"
+                                  ? "rgba(248,113,113,0.10)"
+                                  : stripeNotice?.tone === "warning"
+                                    ? "rgba(250,204,21,0.10)"
+                                    : stripeNotice?.tone === "success"
+                                      ? "rgba(34,197,94,0.10)"
+                                      : "rgba(59,130,246,0.08)",
+                                padding: "10px 12px",
+                                fontSize: 12.5,
+                                lineHeight: 1.45,
+                              }}
+                            >
+                              {stripeNotice.message}
+                            </div>
+                          ) : null}
+
+                          {paymentLedger.length ? (
+                            <div style={invoiceDetailCardStyle}>
+                              <div style={invoiceDetailLabelStyle}>{lang === "es" ? "Historial de pagos" : "Payment Ledger"}</div>
+                              <div style={{ display: "grid", gap: 8 }}>
+                                {paymentLedger.map((payment) => (
+                                  (() => {
+                                    const isStripePayment = String(payment?.method || "").trim().toLowerCase() === "stripe";
+                                    const stripeSummary = isStripePayment ? getStripePaymentSummary(payment) : "";
+                                    const receiptEmail = isStripePayment ? String(payment?.receiptEmail || "").trim() : "";
+                                    const receiptUrl = isStripePayment && isSafeReceiptUrl(payment?.receiptUrl)
+                                      ? String(payment?.receiptUrl || "").trim()
+                                      : "";
+
+                                    return (
+                                      <div
+                                        key={String(payment?.id || `${payment?.paidAt || ""}_${payment?.amount || ""}`)}
+                                        style={{
+                                          display: "grid",
+                                          gap: 4,
+                                          borderRadius: 10,
+                                          border: "1px solid rgba(255,255,255,0.08)",
+                                          background: "rgba(255,255,255,0.03)",
+                                          padding: "10px 12px",
+                                        }}
+                                      >
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                                          <div style={{ fontWeight: 800 }}>{moneyUSD(payment?.amount)}</div>
+                                          <div style={{ fontSize: 12, opacity: 0.76, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                            <span>{formatDateOnly(payment?.paidAt) || "—"}</span>
+                                            {isStripePayment ? (
+                                              <span style={{
+                                                borderRadius: 999,
+                                                border: "1px solid rgba(59,130,246,0.18)",
+                                                background: "rgba(59,130,246,0.10)",
+                                                padding: "2px 8px",
+                                                fontSize: 11,
+                                                fontWeight: 800,
+                                                letterSpacing: "0.3px",
+                                              }}>
+                                                Stripe
+                                              </span>
+                                            ) : (
+                                              <span>{formatPaymentMethod(payment?.method, lang)}</span>
+                                            )}
+                                          </div>
                                         </div>
+                                        {payment?.note ? (
+                                          <div style={{ fontSize: 12.5, opacity: 0.84 }}>
+                                            {payment.note}
+                                          </div>
+                                        ) : null}
+                                        {isStripePayment && stripeSummary ? (
+                                          <div style={{ fontSize: 12, opacity: 0.76 }}>
+                                            {stripeSummary}
+                                          </div>
+                                        ) : null}
+                                        {isStripePayment && receiptEmail ? (
+                                          <div style={{ fontSize: 12, opacity: 0.76 }}>
+                                            {receiptEmail}
+                                          </div>
+                                        ) : null}
+                                        {receiptUrl ? (
+                                          <a
+                                            href={receiptUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            style={{ fontSize: 12, fontWeight: 700, color: "#93c5fd", textDecoration: "none" }}
+                                          >
+                                            {lang === "es" ? "Ver recibo de Stripe" : "View Stripe receipt"}
+                                          </a>
+                                        ) : null}
                                       </div>
-                                      {payment?.note ? (
-                                        <div style={{ fontSize: 12.5, opacity: 0.84 }}>
-                                          {payment.note}
-                                        </div>
-                                      ) : null}
-                                      {isStripePayment && stripeSummary ? (
-                                        <div style={{ fontSize: 12, opacity: 0.76 }}>
-                                          {stripeSummary}
-                                        </div>
-                                      ) : null}
-                                      {isStripePayment && receiptEmail ? (
-                                        <div style={{ fontSize: 12, opacity: 0.76 }}>
-                                          {receiptEmail}
-                                        </div>
-                                      ) : null}
-                                      {receiptUrl ? (
-                                        <a
-                                          href={receiptUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          style={{ fontSize: 12, fontWeight: 700, color: "#93c5fd", textDecoration: "none" }}
-                                        >
-                                          {lang === "es" ? "Ver recibo de Stripe" : "View Stripe receipt"}
-                                        </a>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })()
-                              ))}
+                                    );
+                                  })()
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                              gap: 10,
+                            }}
+                          >
+                            <div style={paymentConsoleActionCardStyle}>
+                              <div style={paymentConsoleActionTitleStyle}>{lang === "es" ? "Acciones de factura" : "Invoice management"}</div>
+                              <div style={paymentConsoleActionCopyStyle}>
+                                {lang === "es"
+                                  ? "Mantén el estado y la versión de la factura alineados con el trabajo real."
+                                  : "Keep the invoice state and version aligned with the real job status."}
+                              </div>
+                              <div style={paymentConsoleButtonGridStyle}>
+                                <button
+                                  className="pe-btn pe-btn-ghost"
+                                  type="button"
+                                  onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.SENT)}
+                                  disabled={derivedStatus === INVOICE_STATUSES.SENT || derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
+                                >
+                                  {lang === "es" ? "Marcar enviada" : "Mark Sent"}
+                                </button>
+                                <button
+                                  className="pe-btn pe-btn-ghost"
+                                  type="button"
+                                  onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.PAID)}
+                                  disabled={derivedStatus === INVOICE_STATUSES.PAID || derivedStatus === INVOICE_STATUSES.VOID}
+                                >
+                                  {lang === "es" ? "Marcar pagada" : "Mark Paid"}
+                                </button>
+                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => duplicateInvoice(invoice)}>
+                                  {lang === "es" ? "Duplicar" : "Duplicate"}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div
+                              style={{
+                                ...paymentConsoleActionCardStyle,
+                                background: "rgba(127,29,29,0.14)",
+                                border: "1px solid rgba(248,113,113,0.20)",
+                              }}
+                            >
+                              <div style={{ ...paymentConsoleActionTitleStyle, color: "rgba(254,202,202,0.98)" }}>
+                                {lang === "es" ? "Acciones protegidas" : "Protected actions"}
+                              </div>
+                              <div style={paymentConsoleActionCopyStyle}>
+                                {lang === "es"
+                                  ? "Mantén anulación y eliminación separadas del cobro para evitar errores."
+                                  : "Keep void and delete separated from collection actions to avoid mistakes."}
+                              </div>
+                              <div style={paymentConsoleButtonGridStyle}>
+                                <button
+                                  className="pe-btn pe-btn-ghost"
+                                  type="button"
+                                  onClick={() => requestInvoiceStatusChange(invoice, INVOICE_STATUSES.VOID)}
+                                  disabled={derivedStatus === INVOICE_STATUSES.VOID}
+                                >
+                                  {lang === "es" ? "Anular" : "Void"}
+                                </button>
+                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeInvoice(invoice)}>
+                                  {lang === "es" ? "Eliminar" : "Delete"}
+                                </button>
+                              </div>
                             </div>
                           </div>
-                        ) : null}
+                        </div>
                       </div>
                     </div>
                   </div>
