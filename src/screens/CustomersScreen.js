@@ -5,7 +5,7 @@ import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
-import { readStoredInvoices } from "../utils/invoices";
+import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
@@ -495,6 +495,37 @@ function mainAddressText(c) {
   return joinAddr(a);
 }
 
+function deriveCustomerNextAction(account) {
+  if ((account?.overdueInvoiceCount || 0) > 0) {
+    return {
+      key: "resolve-overdue",
+      tone: "danger",
+    };
+  }
+  if ((account?.balanceDue || 0) > 0) {
+    return {
+      key: "collect-balance",
+      tone: "warning",
+    };
+  }
+  if ((account?.activeProjectCount || 0) > 0) {
+    return {
+      key: "review-active-work",
+      tone: "info",
+    };
+  }
+  if ((account?.openDocumentCount || 0) > 0) {
+    return {
+      key: "review-open-docs",
+      tone: "success",
+    };
+  }
+  return {
+    key: "update-account",
+    tone: "neutral",
+  };
+}
+
 export default function CustomersScreen({
   lang = "en",
   t = (k) => k,
@@ -712,14 +743,35 @@ export default function CustomersScreen({
           profit: 0,
           estimateCount: 0,
           invoiceCount: 0,
+          openInvoiceCount: 0,
+          overdueInvoiceCount: 0,
+          balanceDue: 0,
+          amountPaid: 0,
           lastDate: "",
         };
       }
-      byId[cid].revenue += toNum(b.revenue);
+      const fallbackRevenue = toNum(d?.total || d?.invoiceTotal || d?.approvedTotal || d?.estimateTotal);
+      byId[cid].revenue += toNum(b.revenue) > 0 ? toNum(b.revenue) : fallbackRevenue;
       byId[cid].internal += toNum(b.internal);
       byId[cid].profit += toNum(b.profit);
-      if (isInvoice) byId[cid].invoiceCount += 1;
-      else byId[cid].estimateCount += 1;
+      if (isInvoice) {
+        const balanceRemaining = Math.max(
+          0,
+          toNum(
+            d?.balanceRemaining != null
+              ? d.balanceRemaining
+              : (toNum(d?.invoiceTotal || d?.total) - toNum(d?.amountPaid))
+          )
+        );
+        const paidAmount = Math.max(0, toNum(d?.amountPaid));
+        byId[cid].invoiceCount += 1;
+        byId[cid].balanceDue += balanceRemaining;
+        byId[cid].amountPaid += paidAmount;
+        if (balanceRemaining > 0) byId[cid].openInvoiceCount += 1;
+        if (deriveInvoiceStatus(d) === INVOICE_STATUSES.OVERDUE) byId[cid].overdueInvoiceCount += 1;
+      } else {
+        byId[cid].estimateCount += 1;
+      }
 
       const dt = String(d?.date || "").trim();
       if (dt) {
@@ -754,13 +806,25 @@ export default function CustomersScreen({
       if (!cid) continue;
       const linkedProjects = findLinkedProjectsForCustomer(customer, allProjects, list, allEstimates, allInvoices);
       if (!linkedProjects.length) continue;
-      if (!byId[cid]) byId[cid] = { projectCount: 0, latestProjectName: "", latestProjectDisplayStatus: null, _archName: "", _archStatus: null };
+      if (!byId[cid]) {
+        byId[cid] = {
+          projectCount: 0,
+          activeProjectCount: 0,
+          estimatingProjectCount: 0,
+          latestProjectName: "",
+          latestProjectDisplayStatus: null,
+          _archName: "",
+          _archStatus: null,
+        };
+      }
       byId[cid].projectCount = linkedProjects.length;
       for (const p of linkedProjects) {
         const pName = String(p?.projectName || "").trim();
         if (!pName) continue;
         const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
         const ds = deriveProjectDisplayStatus(view);
+        if (ds.key === "active") byId[cid].activeProjectCount += 1;
+        if (ds.key === "estimating") byId[cid].estimatingProjectCount += 1;
         if (ds.key === "archived") {
           if (!byId[cid]._archName) { byId[cid]._archName = pName; byId[cid]._archStatus = ds; }
         } else {
@@ -819,6 +883,47 @@ export default function CustomersScreen({
     return blob.includes(qq);
   });
 }, [list, q]);
+
+  const customerPortfolioSummary = useMemo(() => {
+    const visible = filtered || [];
+    const totalCustomers = visible.length;
+    const activeAccounts = visible.filter((customer) => {
+      const cid = String(customer?.id || "");
+      return toNum(customerProjectMeta?.[cid]?.activeProjectCount || 0) > 0;
+    }).length;
+    const balanceDue = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerKpis?.[cid]?.balanceDue || 0);
+    }, 0);
+    const linkedProjects = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerProjectMeta?.[cid]?.projectCount || 0);
+    }, 0);
+    const openDocs = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerKpis?.[cid]?.estimateCount || 0) + toNum(customerKpis?.[cid]?.openInvoiceCount || 0);
+    }, 0);
+    const overdueAccounts = visible.filter((customer) => {
+      const cid = String(customer?.id || "");
+      return toNum(customerKpis?.[cid]?.overdueInvoiceCount || 0) > 0;
+    }).length;
+    const topAttentionCustomer = visible
+      .slice()
+      .sort((left, right) => {
+        const leftId = String(left?.id || "");
+        const rightId = String(right?.id || "");
+        return toNum(customerKpis?.[rightId]?.balanceDue || 0) - toNum(customerKpis?.[leftId]?.balanceDue || 0);
+      })[0] || null;
+    return {
+      totalCustomers,
+      activeAccounts,
+      balanceDue,
+      linkedProjects,
+      openDocs,
+      overdueAccounts,
+      topAttentionCustomer,
+    };
+  }, [filtered, customerProjectMeta, customerKpis]);
 
   function clearMissingRequiredField(field) {
     setMissingRequired((prev) => {
@@ -1075,6 +1180,85 @@ export default function CustomersScreen({
               </div>
             </div>
 
+            <div
+              className="pe-card pe-card-content"
+              style={{
+                ...cardBaseStyle,
+                display: "grid",
+                gap: 12,
+                borderRadius: 18,
+                border: "1px solid rgba(168,184,195,0.14)",
+                background: customerPortfolioSummary.overdueAccounts > 0
+                  ? "linear-gradient(135deg, rgba(239,68,68,0.08), rgba(59,130,246,0.07) 48%, rgba(34,197,94,0.05)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))"
+                  : "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+                boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+              }}
+            >
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                  {label("Client account book", "Libro de cuentas de clientes")}
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+                  {label("Customers prioritized by account attention", "Clientes priorizados por atención de cuenta")}
+                </div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+                  {customerPortfolioSummary.topAttentionCustomer
+                    ? `${displayName(customerPortfolioSummary.topAttentionCustomer)} ${label("currently carries the highest visible balance due.", "actualmente tiene el mayor saldo visible pendiente.")}`
+                    : label("Use this view to scan account activity, project context, and next account action quickly.", "Usa esta vista para revisar actividad de cuentas, contexto de proyectos y la siguiente acción rápidamente.")}
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                {[
+                  {
+                    key: "total-customers",
+                    labelText: label("Visible customers", "Clientes visibles"),
+                    value: String(customerPortfolioSummary.totalCustomers),
+                    detail: `${customerPortfolioSummary.activeAccounts} ${label("active accounts", "cuentas activas")}`,
+                    color: "rgba(96,165,250,0.86)",
+                    border: "rgba(59,130,246,0.2)",
+                  },
+                  {
+                    key: "balance-due",
+                    labelText: label("Open balance due", "Saldo pendiente"),
+                    value: moneyUSD(customerPortfolioSummary.balanceDue),
+                    detail: customerPortfolioSummary.overdueAccounts > 0
+                      ? `${customerPortfolioSummary.overdueAccounts} ${label("accounts overdue", "cuentas vencidas")}`
+                      : label("No overdue accounts in view", "No hay cuentas vencidas en vista"),
+                    color: customerPortfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.9)" : "rgba(203,213,225,0.78)",
+                    border: customerPortfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
+                  },
+                  {
+                    key: "projects",
+                    labelText: label("Linked projects", "Proyectos vinculados"),
+                    value: String(customerPortfolioSummary.linkedProjects),
+                    detail: label("Across visible customer accounts", "En cuentas visibles de clientes"),
+                    color: "rgba(74,222,128,0.86)",
+                    border: "rgba(34,197,94,0.2)",
+                  },
+                  {
+                    key: "open-docs",
+                    labelText: label("Open document activity", "Actividad de documentos"),
+                    value: String(customerPortfolioSummary.openDocs),
+                    detail: label("Estimates + unpaid invoices", "Estimados + facturas no pagadas"),
+                    color: "rgba(191,219,254,0.84)",
+                    border: "rgba(148,163,184,0.18)",
+                  },
+                ].map((item) => (
+                  <div key={item.key} style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${item.border}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                      {item.labelText}
+                    </div>
+                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                      {item.value}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                      {item.detail}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {showListSkeleton ? (
               <div className="pe-skeleton-stack" aria-hidden="true">
                 {[0, 1, 2].map((idx) => (
@@ -1108,13 +1292,61 @@ export default function CustomersScreen({
               {filtered.map((c) => {
                 const id = String(c?.id || "");
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
+                const kpi = customerKpis?.[id] || {};
+                const meta = customerProjectMeta?.[id] || {};
+                const accountAction = deriveCustomerNextAction({
+                  overdueInvoiceCount: toNum(kpi.overdueInvoiceCount || 0),
+                  balanceDue: toNum(kpi.balanceDue || 0),
+                  activeProjectCount: toNum(meta.activeProjectCount || 0),
+                  openDocumentCount: toNum(kpi.estimateCount || 0) + toNum(kpi.openInvoiceCount || 0),
+                });
+                const actionTone = accountAction.tone === "danger"
+                  ? { color: "rgba(248,113,113,0.9)", border: "rgba(239,68,68,0.22)", background: "rgba(239,68,68,0.08)" }
+                  : accountAction.tone === "warning"
+                    ? { color: "rgba(251,191,36,0.9)", border: "rgba(245,158,11,0.22)", background: "rgba(245,158,11,0.08)" }
+                    : accountAction.tone === "success"
+                      ? { color: "rgba(74,222,128,0.88)", border: "rgba(34,197,94,0.22)", background: "rgba(34,197,94,0.08)" }
+                      : { color: "rgba(96,165,250,0.9)", border: "rgba(59,130,246,0.22)", background: "rgba(59,130,246,0.08)" };
+                const actionLabel = accountAction.key === "resolve-overdue"
+                  ? label("Next action: resolve overdue", "Siguiente acción: resolver vencidos")
+                  : accountAction.key === "collect-balance"
+                    ? label("Next action: collect balance", "Siguiente acción: cobrar saldo")
+                    : accountAction.key === "review-active-work"
+                      ? label("Next action: review active work", "Siguiente acción: revisar trabajo activo")
+                      : accountAction.key === "review-open-docs"
+                        ? label("Next action: review open docs", "Siguiente acción: revisar documentos abiertos")
+                        : label("Next action: update account", "Siguiente acción: actualizar cuenta");
 
                 return (
-                  <div className="pe-card pe-card-content ep-glass-tile" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10, cursor: "pointer" }}>
+                  <div
+                    className="pe-card pe-card-content ep-glass-tile"
+                    key={id || Math.random()}
+                    style={{
+                      ...cardBaseStyle,
+                      ...(active ? cardActiveStyle : null),
+                      display: "grid",
+                      gap: 12,
+                      cursor: "pointer",
+                      borderRadius: 16,
+                      border: active
+                        ? cardActiveStyle.border
+                        : toNum(kpi.overdueInvoiceCount || 0) > 0
+                          ? "1px solid rgba(239,68,68,0.16)"
+                          : toNum(kpi.balanceDue || 0) > 0
+                            ? "1px solid rgba(245,158,11,0.16)"
+                            : "1px solid rgba(255,255,255,0.08)",
+                      background: toNum(kpi.overdueInvoiceCount || 0) > 0
+                        ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
+                        : toNum(kpi.balanceDue || 0) > 0
+                          ? "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))"
+                          : "linear-gradient(180deg, rgba(59,130,246,0.05), rgba(255,255,255,0.03))",
+                      boxShadow: "0 14px 30px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03)",
+                    }}
+                  >
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
                       <div style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 200px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                          <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 0.2 }}>{displayName(c)}</div>
+                          <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", lineHeight: 1.15 }}>{displayName(c)}</div>
                           <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75 }}>
                             {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
                           </div>
@@ -1124,6 +1356,36 @@ export default function CustomersScreen({
                         {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
                         {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
                         {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+                          <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${actionTone.border}`, background: actionTone.background, color: actionTone.color, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                            {actionLabel}
+                          </span>
+                          {toNum(kpi.amountPaid || 0) > 0 ? (
+                            <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.2)", background: "rgba(34,197,94,0.08)", color: "rgba(74,222,128,0.88)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                              {moneyUSD(kpi.amountPaid)} {label("paid", "pagado")}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {(toNum(kpi.overdueInvoiceCount || 0) > 0 || toNum(kpi.balanceDue || 0) > 0 || toNum(meta.activeProjectCount || 0) > 0) ? (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
+                            {toNum(kpi.overdueInvoiceCount || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
+                                {toNum(kpi.overdueInvoiceCount || 0) === 1 ? label("1 overdue", "1 vencida") : `${toNum(kpi.overdueInvoiceCount || 0)} ${label("overdue", "vencidas")}`}
+                              </span>
+                            ) : null}
+                            {toNum(kpi.balanceDue || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
+                                {moneyUSD(kpi.balanceDue)} {label("due", "pendiente")}
+                              </span>
+                            ) : null}
+                            {toNum(meta.activeProjectCount || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
+                                {toNum(meta.activeProjectCount || 0)} {toNum(meta.activeProjectCount || 0) === 1 ? label("active project", "proyecto activo") : label("active projects", "proyectos activos")}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
 
                         {/* Project context */}
                         {id && customerProjectMeta[id]?.projectCount > 0 ? (
@@ -1168,19 +1430,27 @@ export default function CustomersScreen({
                               paddingTop: 10,
                               borderTop: "1px solid rgba(255,255,255,0.10)",
                               display: "grid",
-                              gridTemplateColumns: "1fr 1fr 1fr",
+                              gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))",
                               gap: 10,
                             }}
                           >
-                            <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Revenue", "Ingresos")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
+                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.revenue || 0)}
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Balance", "Saldo")}
+                              </div>
+                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
+                                {moneyUSD(customerKpis[id]?.balanceDue || 0)}
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Margin", "Margen")}
                               </div>
@@ -1188,7 +1458,7 @@ export default function CustomersScreen({
                                 {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Docs", "Docs")}
                               </div>
