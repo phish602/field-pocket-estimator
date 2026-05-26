@@ -1378,6 +1378,122 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
     const rangeLine = (lang === "es" ? "Rango seleccionado: " : "Selected range: ") + rangeParts.join(" • ");
     return `${allTimeLine} • ${rangeLine}`;
   }, [computed, lang]);
+  const snapshotCockpit = useMemo(() => {
+    const actions = [];
+    if (computed.invoiceTotals.overdueValue > 0) {
+      actions.push({
+        key: "overdue",
+        tone: "bad",
+        title: lang === "es" ? "Cobrar facturas vencidas" : "Collect overdue invoices",
+        detail: lang === "es"
+          ? `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "factura vencida" : "facturas vencidas"} por ${fmtMoney(computed.invoiceTotals.overdueValue)}.`
+          : `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "invoice is" : "invoices are"} overdue for ${fmtMoney(computed.invoiceTotals.overdueValue)}.`,
+      });
+    }
+    if (computed.approvedReadyValue > 0) {
+      actions.push({
+        key: "approved-ready",
+        tone: "ok",
+        title: lang === "es" ? "Facturar trabajo aprobado" : "Invoice approved work",
+        detail: lang === "es"
+          ? `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimado listo" : "estimados listos"} por ${fmtMoney(computed.approvedReadyValue)}.`
+          : `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimate is" : "estimates are"} ready to invoice for ${fmtMoney(computed.approvedReadyValue)}.`,
+      });
+    }
+    if (computed.pendingFollowUpRows.length > 0) {
+      actions.push({
+        key: "pending-follow-up",
+        tone: "info",
+        title: lang === "es" ? "Seguimiento de estimados" : "Follow up on pending estimates",
+        detail: lang === "es"
+          ? `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimado necesita seguimiento" : "estimados necesitan seguimiento"}.`
+          : `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
+      });
+    }
+    if (computed.missingInvoiceDateCount > 0) {
+      actions.push({
+        key: "missing-dates",
+        tone: "warn",
+        title: lang === "es" ? "Completar fechas de factura" : "Complete invoice dates",
+        detail: lang === "es"
+          ? `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "factura está excluida" : "facturas están excluidas"} de los totales por fecha.`
+          : `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "invoice is" : "invoices are"} excluded from date-based totals.`,
+      });
+    }
+    if (actions.length === 0) {
+      actions.push({
+        key: "steady",
+        tone: "ok",
+        title: lang === "es" ? "Sin alertas inmediatas" : "No urgent financial alerts",
+        detail: lang === "es"
+          ? "Las cobranzas y el pipeline están al día en este momento."
+          : "Receivables and pipeline actions are currently under control.",
+      });
+    }
+
+    return {
+      heroLabel: lang === "es" ? "Cabina financiera" : "Financial cockpit",
+      heroTitle: lang === "es" ? "Dinero en juego y siguiente acción" : "Money at stake and next action",
+      heroNote: computed.missingInvoiceDateCount > 0
+        ? (lang === "es"
+          ? `La exposición mostrada aquí usa tus documentos actuales mientras ${computed.missingInvoiceDateCount} facturas siguen sin fecha.`
+          : `The exposure shown here uses your current documents while ${computed.missingInvoiceDateCount} invoices still need invoice dates.`)
+        : (lang === "es"
+          ? "Usa esta vista para pasar de visibilidad financiera a cobro o facturación."
+          : "Use this view to move from visibility into collection or invoicing."),
+      metrics: [
+        {
+          key: "outstanding",
+          label: lang === "es" ? "Outstanding" : "Outstanding",
+          value: fmtMoney(computed.invoiceTotals.outstandingValue),
+          detail: lang === "es"
+            ? `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} abiertas`
+            : `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} open invoices`,
+          tone: computed.invoiceTotals.outstandingValue > 0 ? "warn" : "ok",
+        },
+        {
+          key: "overdue",
+          label: lang === "es" ? "Overdue" : "Overdue",
+          value: fmtMoney(computed.invoiceTotals.overdueValue),
+          detail: computed.invoiceTotals.overdue > 0
+            ? (lang === "es"
+              ? `${computed.invoiceTotals.overdue} vencidas`
+              : `${computed.invoiceTotals.overdue} overdue`)
+            : (lang === "es" ? "Al corriente" : "Caught up"),
+          tone: computed.invoiceTotals.overdueValue > 0 ? "bad" : "ok",
+        },
+        {
+          key: "paid",
+          label: lang === "es" ? "Collected" : "Collected",
+          value: fmtMoney(computed.invoiceTotals.paidValue),
+          detail: computed.invoiceTotals.paid > 0
+            ? (lang === "es"
+              ? `${computed.invoiceTotals.paid} pagadas`
+              : `${computed.invoiceTotals.paid} paid invoices`)
+            : (lang === "es" ? "Sin pagos aún" : "No payments yet"),
+          tone: computed.invoiceTotals.paidValue > 0 ? "ok" : "info",
+        },
+        {
+          key: "projects",
+          label: lang === "es" ? "Project activity" : "Project activity",
+          value: String(computed.projectCounts.active + computed.projectCounts.estimating),
+          detail: computed.approvedReadyCount > 0
+            ? (lang === "es"
+              ? `${computed.approvedReadyCount} listas para facturar`
+              : `${computed.approvedReadyCount} ready to invoice`)
+            : (lang === "es" ? "Trabajos en movimiento" : "Jobs in motion"),
+          tone: computed.projectCounts.active + computed.projectCounts.estimating > 0 ? "info" : "ok",
+        },
+      ],
+      drivers: [
+        { key: "receivables", label: lang === "es" ? "Receivables" : "Receivables", value: computed.arRows.length },
+        { key: "partial", label: lang === "es" ? "Partial" : "Partial", value: computed.invoiceTotals.partial },
+        { key: "approved", label: lang === "es" ? "Approved" : "Approved", value: computed.approvedReadyCount },
+        { key: "pending", label: lang === "es" ? "Pending" : "Pending", value: computed.pendingFollowUpRows.length },
+      ],
+      actions: actions.slice(0, 4),
+    };
+  }, [computed, lang]);
 
   return (
     <section className="pe-section pe-snapshot-screen">
@@ -1441,6 +1557,130 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
           </div>
         </div>
 
+        <div
+          className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm"
+          style={{
+            display: "grid",
+            gap: 14,
+            padding: "14px 14px 16px",
+            border: "1px solid rgba(168,184,195,0.14)",
+            background: computed.invoiceTotals.overdueValue > 0
+              ? "linear-gradient(135deg, rgba(239,68,68,0.12), rgba(59,130,246,0.06) 45%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+              : computed.invoiceTotals.outstandingValue > 0
+              ? "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(59,130,246,0.06) 45%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+              : "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(16,185,129,0.08) 55%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))",
+            boxShadow: "0 24px 54px rgba(0,0,0,0.26), inset 0 1px 0 rgba(255,255,255,0.05)",
+          }}
+        >
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+              {snapshotCockpit.heroLabel}
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+              {snapshotCockpit.heroTitle}
+            </div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 720 }}>
+              {snapshotCockpit.heroNote}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(156px, 1fr))", gap: 10 }}>
+            {snapshotCockpit.metrics.map((item) => {
+              const toneColor = item.tone === "bad"
+                ? "rgba(248,113,113,0.86)"
+                : item.tone === "warn"
+                ? "rgba(251,191,36,0.86)"
+                : item.tone === "info"
+                ? "rgba(96,165,250,0.84)"
+                : "rgba(74,222,128,0.84)";
+              const toneBorder = item.tone === "bad"
+                ? "rgba(239,68,68,0.24)"
+                : item.tone === "warn"
+                ? "rgba(245,158,11,0.22)"
+                : item.tone === "info"
+                ? "rgba(59,130,246,0.22)"
+                : "rgba(34,197,94,0.2)";
+              return (
+                <div
+                  key={item.key}
+                  style={{
+                    minWidth: 0,
+                    display: "grid",
+                    gap: 6,
+                    padding: "12px 12px 11px",
+                    borderRadius: 14,
+                    border: `1px solid ${toneBorder}`,
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+                  }}
+                >
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                    {item.value}
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                    {item.detail}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                {lang === "es" ? "Próximo paso" : "Needs attention"}
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {snapshotCockpit.actions.map((action) => {
+                  const border = action.tone === "bad"
+                    ? "rgba(239,68,68,0.18)"
+                    : action.tone === "warn"
+                    ? "rgba(245,158,11,0.18)"
+                    : action.tone === "info"
+                    ? "rgba(59,130,246,0.18)"
+                    : "rgba(34,197,94,0.16)";
+                  const dot = action.tone === "bad"
+                    ? "rgba(248,113,113,0.9)"
+                    : action.tone === "warn"
+                    ? "rgba(251,191,36,0.9)"
+                    : action.tone === "info"
+                    ? "rgba(96,165,250,0.88)"
+                    : "rgba(74,222,128,0.88)";
+                  return (
+                    <div key={action.key} style={{ display: "grid", gap: 4, padding: "10px 11px", borderRadius: 12, border: `1px solid ${border}`, background: "rgba(5,8,13,0.18)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 999, background: dot, flexShrink: 0 }} />
+                        <div style={{ fontSize: 13, fontWeight: 850, color: "rgba(235,243,248,0.96)" }}>{action.title}</div>
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "rgba(205,217,226,0.7)" }}>{action.detail}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                {lang === "es" ? "Documentos que impulsan los números" : "Document drivers"}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                {snapshotCockpit.drivers.map((item) => (
+                  <div key={item.key} style={{ padding: "10px 11px", borderRadius: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.46)" }}>
+                      {item.label}
+                    </div>
+                    <div style={{ marginTop: 5, fontSize: 18, fontWeight: 900, color: "rgba(239,245,249,0.96)" }}>
+                      {item.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
       <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", padding: "6px 0 8px" }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "nowrap", padding: "0 2px" }}>
           {[
@@ -1464,7 +1704,15 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       </div>
 
       <div ref={overviewRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md pe-snapshot-kpi-panel">
-        <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "grid", gap: 4, marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.46)" }}>
+            {lang === "es" ? "Rendimiento del rango" : "Range performance"}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 850, color: "rgba(239,245,249,0.96)" }}>
+            {lang === "es" ? "Resumen financiero del rango seleccionado" : "Financial summary for the selected range"}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
           <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} numericValue={computed.revenue} formatValue={fmtMoney} tone="ok" />
           <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} numericValue={computed.grossProfit} formatValue={fmtMoney} tone="ok" />
           <KPI
