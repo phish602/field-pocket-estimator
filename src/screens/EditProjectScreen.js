@@ -146,78 +146,77 @@ export default function EditProjectScreen({ onBack, onSave }) {
 
       <div style={S.heroCard}>
         <div style={S.title}>Edit Project</div>
-        <div style={S.subtitle}>Update project details, status, and notes.</div>
+        <div style={S.subtitle}>Refine project metadata and continue in the Project Command Center workflow.</div>
+      </div>
+      <div style={S.workflowHint}>
+        <div style={S.workflowHintTitle}>What happens next</div>
+        <div style={S.workflowHintCopy}>Saving updates keeps this project aligned with Projects portfolio and Project Detail command controls.</div>
       </div>
 
-      {/* ── Project ── */}
-      <div style={S.sectionHeader}>Project</div>
+      <div style={S.sectionCard}>
+        <div style={S.sectionHeader}>Project</div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Project Name <span style={S.required}>*</span></label>
+          <input
+            type="text"
+            style={S.input}
+            placeholder="e.g. Kitchen Remodel, Roof Repair…"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            autoFocus
+          />
+        </div>
 
-      {/* Project Name */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Project Name <span style={S.required}>*</span></label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="e.g. Kitchen Remodel, Roof Repair…"
-          value={projectName}
-          onChange={(e) => setProjectName(e.target.value)}
-          autoFocus
-        />
-      </div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Site / Job Address</label>
+          <input
+            type="text"
+            style={S.input}
+            placeholder="123 Main St, City, State"
+            value={siteAddress}
+            onChange={(e) => setSiteAddress(e.target.value)}
+          />
+        </div>
 
-      {/* Site Address */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Site / Job Address</label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="123 Main St, City, State"
-          value={siteAddress}
-          onChange={(e) => setSiteAddress(e.target.value)}
-        />
-      </div>
-
-      {/* Status */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Status</label>
-        <div style={S.statusGrid}>
-          {STATUS_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              style={{ ...S.statusOption, ...(status === opt.key ? S.statusOptionActive : {}) }}
-              onClick={() => setStatus(opt.key)}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
+          <label style={S.label}>Status</label>
+          <div style={S.statusGrid}>
+            {STATUS_OPTIONS.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                style={{ ...S.statusOption, ...(status === opt.key ? S.statusOptionActive : {}) }}
+                onClick={() => setStatus(opt.key)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* ── Customer ── */}
       {customerLabel ? (
-        <>
-          <div style={S.sectionHeaderDivided}>Customer</div>
-          <div style={S.fieldGroup}>
+        <div style={S.sectionCard}>
+          <div style={S.sectionHeader}>Customer</div>
+          <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
             <div style={S.label}>Linked Customer <span style={S.readOnlyTag}>view only</span></div>
             <div style={S.readOnlyField}>{customerLabel}</div>
           </div>
-        </>
+        </div>
       ) : null}
 
-      {/* ── Additional ── */}
-      <div style={S.sectionHeaderDivided}>Additional</div>
-
-      {/* Notes */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
-        <textarea
-          style={{ ...S.input, ...S.textarea }}
-          placeholder="Scope notes, special instructions…"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={3}
-        />
+      <div style={S.sectionCard}>
+        <div style={S.sectionHeader}>Additional</div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
+          <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
+          <textarea
+            style={{ ...S.input, ...S.textarea }}
+            placeholder="Scope notes, special instructions…"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+          />
+        </div>
       </div>
 
       {/* Save */}
@@ -265,11 +264,12 @@ const S = {
   heroCard: {
     margin: "0 16px 18px",
     padding: "18px 18px 14px",
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 18,
+    background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+    border: "1px solid rgba(168,184,195,0.14)",
+    boxShadow: "0 20px 42px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.04)",
     display: "grid",
-    gap: 4,
+    gap: 6,
   },
   title: {
     fontSize: 18,
@@ -280,11 +280,44 @@ const S = {
   subtitle: {
     fontSize: 12.5,
     fontWeight: 500,
-    color: "rgba(230,241,248,0.42)",
+    color: "rgba(230,241,248,0.66)",
+    lineHeight: 1.45,
+  },
+  workflowHint: {
+    margin: "0 16px 14px",
+    padding: "12px 12px 11px",
+    borderRadius: 14,
+    border: "1px solid rgba(99,179,237,0.2)",
+    background: "rgba(59,130,246,0.08)",
+    display: "grid",
+    gap: 4,
+  },
+  workflowHintTitle: {
+    fontSize: 10.5,
+    fontWeight: 900,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "rgba(147,197,253,0.9)",
+  },
+  workflowHintCopy: {
+    fontSize: 12.5,
+    lineHeight: 1.45,
+    color: "rgba(219,234,254,0.8)",
+  },
+  sectionCard: {
+    margin: "0 16px 12px",
+    padding: "12px 12px 11px",
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.09)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
+    boxShadow: "0 10px 24px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.02)",
   },
   fieldGroup: {
     margin: "0 16px 14px",
     position: "relative",
+  },
+  fieldGroupInCard: {
+    margin: "0 0 12px",
   },
   label: {
     display: "block",
@@ -355,22 +388,12 @@ const S = {
     color: "rgba(99,179,237,0.92)",
   },
   sectionHeader: {
-    margin: "0 16px 10px",
+    margin: "0 0 10px",
     fontSize: 10.5,
-    fontWeight: 800,
-    letterSpacing: "0.1em",
+    fontWeight: 900,
+    letterSpacing: "0.12em",
     textTransform: "uppercase",
-    color: "rgba(230,241,248,0.32)",
-  },
-  sectionHeaderDivided: {
-    margin: "6px 16px 10px",
-    paddingTop: 10,
-    borderTop: "1px solid rgba(255,255,255,0.07)",
-    fontSize: 10.5,
-    fontWeight: 800,
-    letterSpacing: "0.1em",
-    textTransform: "uppercase",
-    color: "rgba(230,241,248,0.32)",
+    color: "rgba(230,241,248,0.48)",
   },
   readOnlyTag: {
     fontWeight: 500,

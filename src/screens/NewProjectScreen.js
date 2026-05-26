@@ -255,158 +255,155 @@ export default function NewProjectScreen({ onBack, onSave }) {
 
       <div style={S.heroCard}>
         <div style={S.title}>New Project</div>
-        <div style={S.subtitle}>Name the job, link a customer, and start tracking.</div>
+        <div style={S.subtitle}>Capture project intake details, then continue in the Project Command Center.</div>
+      </div>
+      <div style={S.workflowHint}>
+        <div style={S.workflowHintTitle}>What happens next</div>
+        <div style={S.workflowHintCopy}>Save this intake to open the project in the same command-center workflow used across Projects and Project Detail.</div>
       </div>
 
-      {/* ── Project Identity ── */}
-      <div style={{ margin: "0 16px 10px", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Project</div>
-
-      {/* Project Name */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Project Name <span style={S.required}>*</span></label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="e.g. Kitchen Remodel, Roof Repair…"
-          value={projectName}
-          onChange={(e) => setProjectName(e.target.value)}
-          autoFocus
-        />
-      </div>
-
-      {/* Site Address */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Site / Job Address</label>
-        <input
-          type="text"
-          style={S.input}
-          placeholder="123 Main St, City, State"
-          value={siteAddress}
-          onChange={(e) => setSiteAddress(e.target.value)}
-        />
-      </div>
-
-      {/* Status */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Status</label>
-        <div style={S.statusRow}>
-          {PROJECT_STATUS_OPTIONS.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
-              onClick={() => setStatus(option.key)}
-            >
-              {option.label}
-            </button>
-          ))}
+      <div style={S.sectionCard}>
+        <div style={S.sectionHeader}>Project</div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Project Name <span style={S.required}>*</span></label>
+          <input
+            type="text"
+            style={S.input}
+            placeholder="e.g. Kitchen Remodel, Roof Repair…"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Site / Job Address</label>
+          <input
+            type="text"
+            style={S.input}
+            placeholder="123 Main St, City, State"
+            value={siteAddress}
+            onChange={(e) => setSiteAddress(e.target.value)}
+          />
+        </div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Status</label>
+          <div style={S.statusRow}>
+            {PROJECT_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
+                onClick={() => setStatus(option.key)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* ── Customer ── */}
-      <div style={{ margin: "6px 16px 10px", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Customer</div>
-
-      {/* Customer */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Customer</label>
-        {!inlineNewMode ? (
-          <>
-            <div style={S.customerInputWrap}>
+      <div style={S.sectionCard}>
+        <div style={S.sectionHeader}>Customer</div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Customer</label>
+          {!inlineNewMode ? (
+            <>
+              <div style={S.customerInputWrap}>
+                <input
+                  type="text"
+                  style={S.input}
+                  placeholder="Search or select customer…"
+                  value={customerSearch}
+                  onChange={(e) => {
+                    setCustomerSearch(e.target.value);
+                    setCustomerDropdownOpen(true);
+                    if (!e.target.value.trim()) setSelectedCustomerId("");
+                  }}
+                  onFocus={() => setCustomerDropdownOpen(true)}
+                />
+                {selectedCustomerId ? (
+                  <button type="button" style={S.clearBtn} onClick={handleClearCustomer} aria-label="Clear customer">✕</button>
+                ) : null}
+              </div>
+              {customerDropdownOpen ? (
+                <div style={S.dropdown}>
+                  {filteredCustomers.slice(0, 8).map((c) => {
+                    const name = customerDisplayName(c);
+                    const isSelected = String(c?.id || "") === selectedCustomerId;
+                    return (
+                      <button
+                        key={c?.id || name}
+                        type="button"
+                        style={{ ...S.dropdownItem, ...(isSelected ? S.dropdownItemActive : {}) }}
+                        onClick={() => handleSelectCustomer(c)}
+                      >
+                        {name || "Unnamed"}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    style={S.dropdownNewCustomer}
+                    onClick={openInlineNew}
+                  >
+                    + New Customer
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div style={S.inlineNewWrap}>
+              <div style={S.inlineNewTitle}>New Customer</div>
               <input
                 type="text"
                 style={S.input}
-                placeholder="Search or select customer…"
-                value={customerSearch}
-                onChange={(e) => {
-                  setCustomerSearch(e.target.value);
-                  setCustomerDropdownOpen(true);
-                  if (!e.target.value.trim()) setSelectedCustomerId("");
-                }}
-                onFocus={() => setCustomerDropdownOpen(true)}
+                placeholder="Full name *"
+                value={inlineName}
+                onChange={(e) => setInlineName(e.target.value)}
+                autoFocus
               />
-              {selectedCustomerId ? (
-                <button type="button" style={S.clearBtn} onClick={handleClearCustomer} aria-label="Clear customer">✕</button>
-              ) : null}
-            </div>
-            {customerDropdownOpen ? (
-              <div style={S.dropdown}>
-                {filteredCustomers.slice(0, 8).map((c) => {
-                  const name = customerDisplayName(c);
-                  const isSelected = String(c?.id || "") === selectedCustomerId;
-                  return (
-                    <button
-                      key={c?.id || name}
-                      type="button"
-                      style={{ ...S.dropdownItem, ...(isSelected ? S.dropdownItemActive : {}) }}
-                      onClick={() => handleSelectCustomer(c)}
-                    >
-                      {name || "Unnamed"}
-                    </button>
-                  );
-                })}
+              <input
+                type="tel"
+                style={{ ...S.input, marginTop: 8 }}
+                placeholder="Phone (optional)"
+                value={inlinePhone}
+                onChange={(e) => setInlinePhone(e.target.value)}
+              />
+              <input
+                type="email"
+                style={{ ...S.input, marginTop: 8 }}
+                placeholder="Email (optional)"
+                value={inlineEmail}
+                onChange={(e) => setInlineEmail(e.target.value)}
+              />
+              <div style={S.inlineNewActions}>
+                <button type="button" style={S.inlineNewCancel} onClick={cancelInlineNew}>Cancel</button>
                 <button
                   type="button"
-                  style={S.dropdownNewCustomer}
-                  onClick={openInlineNew}
+                  style={{ ...S.inlineNewSave, ...(inlineName.trim() ? {} : S.inlineNewSaveDisabled) }}
+                  disabled={!inlineName.trim()}
+                  onClick={handleInlineCreateCustomer}
                 >
-                  + New Customer
+                  Add Customer
                 </button>
               </div>
-            ) : null}
-          </>
-        ) : (
-          <div style={S.inlineNewWrap}>
-            <div style={S.inlineNewTitle}>New Customer</div>
-            <input
-              type="text"
-              style={S.input}
-              placeholder="Full name *"
-              value={inlineName}
-              onChange={(e) => setInlineName(e.target.value)}
-              autoFocus
-            />
-            <input
-              type="tel"
-              style={{ ...S.input, marginTop: 8 }}
-              placeholder="Phone (optional)"
-              value={inlinePhone}
-              onChange={(e) => setInlinePhone(e.target.value)}
-            />
-            <input
-              type="email"
-              style={{ ...S.input, marginTop: 8 }}
-              placeholder="Email (optional)"
-              value={inlineEmail}
-              onChange={(e) => setInlineEmail(e.target.value)}
-            />
-            <div style={S.inlineNewActions}>
-              <button type="button" style={S.inlineNewCancel} onClick={cancelInlineNew}>Cancel</button>
-              <button
-                type="button"
-                style={{ ...S.inlineNewSave, ...(inlineName.trim() ? {} : S.inlineNewSaveDisabled) }}
-                disabled={!inlineName.trim()}
-                onClick={handleInlineCreateCustomer}
-              >
-                Add Customer
-              </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* ── Additional ── */}
-      <div style={{ margin: "6px 16px 10px", paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(230,241,248,0.32)" }}>Additional</div>
-
-      {/* Notes */}
-      <div style={S.fieldGroup}>
-        <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
-        <textarea
-          style={{ ...S.input, ...S.textarea }}
-          placeholder="Scope notes, special instructions…"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={3}
-        />
+      <div style={S.sectionCard}>
+        <div style={S.sectionHeader}>Additional</div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
+          <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
+          <textarea
+            style={{ ...S.input, ...S.textarea }}
+            placeholder="Scope notes, special instructions…"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+          />
+        </div>
       </div>
 
       {/* Save */}
@@ -454,11 +451,12 @@ const S = {
   heroCard: {
     margin: "0 16px 18px",
     padding: "18px 18px 14px",
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 18,
+    background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+    border: "1px solid rgba(168,184,195,0.14)",
+    boxShadow: "0 20px 42px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.04)",
     display: "grid",
-    gap: 4,
+    gap: 6,
   },
   title: {
     fontSize: 18,
@@ -469,11 +467,52 @@ const S = {
   subtitle: {
     fontSize: 12.5,
     fontWeight: 500,
-    color: "rgba(230,241,248,0.42)",
+    color: "rgba(230,241,248,0.66)",
+    lineHeight: 1.45,
+  },
+  workflowHint: {
+    margin: "0 16px 14px",
+    padding: "12px 12px 11px",
+    borderRadius: 14,
+    border: "1px solid rgba(99,179,237,0.2)",
+    background: "rgba(59,130,246,0.08)",
+    display: "grid",
+    gap: 4,
+  },
+  workflowHintTitle: {
+    fontSize: 10.5,
+    fontWeight: 900,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "rgba(147,197,253,0.9)",
+  },
+  workflowHintCopy: {
+    fontSize: 12.5,
+    lineHeight: 1.45,
+    color: "rgba(219,234,254,0.8)",
+  },
+  sectionCard: {
+    margin: "0 16px 12px",
+    padding: "12px 12px 11px",
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.09)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
+    boxShadow: "0 10px 24px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.02)",
+  },
+  sectionHeader: {
+    margin: "0 0 10px",
+    fontSize: 10.5,
+    fontWeight: 900,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    color: "rgba(230,241,248,0.48)",
   },
   fieldGroup: {
     margin: "0 16px 14px",
     position: "relative",
+  },
+  fieldGroupInCard: {
+    margin: "0 0 12px",
   },
   label: {
     display: "block",
