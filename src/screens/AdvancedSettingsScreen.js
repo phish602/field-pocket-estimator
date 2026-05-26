@@ -196,6 +196,43 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
     []
   );
 
+  const controlCenterSummary = useMemo(() => {
+    const pricing = settings?.pricing || {};
+    const internal = settings?.internal || {};
+    const customer = settings?.customer || {};
+    const businessRuleFlags = [
+      !!pricing.lockMarkupToGlobal,
+      !!pricing.roundTotals,
+      Number(pricing.precision) === 0,
+    ].filter(Boolean).length;
+    const customerRequirements = [
+      !!customer.requirePhone ? "Phone" : null,
+      !!customer.requireEmail ? "Email" : null,
+    ].filter(Boolean);
+    const internalState = internal.lockInternalCostFields
+      ? "Locked"
+      : (internal.showInternalCostFields ? "Visible" : "Hidden");
+    return {
+      businessRuleFlags,
+      internalState,
+      customerRequirements,
+      defaultMarkupPct: String(pricing.defaultMarkupPct ?? 0),
+      defaultTaxPct: String(pricing.defaultTaxPct ?? 0),
+      defaultCustomerType: customer.defaultCustomerType === "commercial" ? "Commercial" : "Residential",
+    };
+  }, [settings]);
+
+  const panelStyle = useMemo(
+    () => ({
+      ...sectionStyle,
+      borderRadius: 16,
+      border: "1px solid rgba(255,255,255,0.1)",
+      background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
+      boxShadow: "0 12px 28px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.02)",
+    }),
+    [sectionStyle]
+  );
+
   const writeSettings = (updater) => {
     setSettings((prev) => {
       const base = normalizeSettings(prev);
@@ -356,8 +393,63 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         </div>
 
         <div className="pe-company-form-inner ep-section-gap-sm" style={{ gap: 12, paddingBottom: 8 }}>
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
+          <div
+            className="pe-card pe-card-content"
+            style={{
+              ...sectionStyle,
+              borderRadius: 18,
+              border: "1px solid rgba(168,184,195,0.14)",
+              background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+              boxShadow: "0 22px 48px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+              gap: 14,
+            }}
+          >
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.58)" }}>
+                App control center
+              </div>
+              <div style={{ fontSize: 23, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.06 }}>
+                Advanced settings and business rules
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(215,225,233,0.76)", maxWidth: 760 }}>
+                Manage pricing defaults, internal visibility, PDF output, customer requirements, and local system data tools in one place.
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(59,130,246,0.2)", background: "rgba(7,11,16,0.22)" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(96,165,250,0.86)" }}>Business rules</div>
+                <div style={{ fontSize: 22, fontWeight: 950, lineHeight: 1, color: "rgba(239,245,249,0.98)" }}>{controlCenterSummary.businessRuleFlags}</div>
+                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>high-impact toggles enabled</div>
+              </div>
+              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(34,197,94,0.2)", background: "rgba(7,11,16,0.22)" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(74,222,128,0.86)" }}>Internal controls</div>
+                <div style={{ fontSize: 22, fontWeight: 950, lineHeight: 1, color: "rgba(239,245,249,0.98)" }}>{controlCenterSummary.internalState}</div>
+                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>cost fields default state</div>
+              </div>
+              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(245,158,11,0.2)", background: "rgba(7,11,16,0.22)" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(251,191,36,0.88)" }}>Pricing defaults</div>
+                <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.1, color: "rgba(239,245,249,0.98)" }}>
+                  {controlCenterSummary.defaultMarkupPct}% / {controlCenterSummary.defaultTaxPct}%
+                </div>
+                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>markup and tax baselines</div>
+              </div>
+              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(148,163,184,0.2)", background: "rgba(7,11,16,0.22)" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(191,219,254,0.86)" }}>Customer policy</div>
+                <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.1, color: "rgba(239,245,249,0.98)" }}>
+                  {controlCenterSummary.customerRequirements.length > 0 ? controlCenterSummary.customerRequirements.join(" + ") : "Optional"}
+                </div>
+                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>
+                  default type: {controlCenterSummary.defaultCustomerType}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Business Rules</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Controls that influence estimate and invoice defaults. Safe to adjust as your pricing policy evolves.
+            </div>
             <SettingRow
               title="Default Markup %"
               control={(
@@ -436,8 +528,11 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Document Defaults</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Reusable internal writing defaults for faster estimate preparation.
+            </div>
             <SettingRow
               title="Default Internal Notes (Estimate only)"
               hint="Pre-filled internal notes template for new estimate docs."
@@ -460,8 +555,11 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             </div>
           </div>
 
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Internal Controls</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Set visibility and protection for internal cost details used by your team.
+            </div>
             <SettingRow
               title="Show Internal Cost Fields"
               control={(
@@ -494,8 +592,11 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>PDF / Export</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Output layout preferences for generated documents and customer-facing exports.
+            </div>
             <SettingRow
               title="Include Logo"
               control={(
@@ -534,8 +635,11 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={sectionStyle}>
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Customer Defaults</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Default requirements applied when creating new customer profiles.
+            </div>
             <SettingRow
               title="Default customer type"
               control={(
@@ -578,12 +682,12 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
-          <div className="ep-glass-tile ep-tile-hover" style={{ ...sectionStyle, border: "1px solid rgba(239,68,68,0.38)" }}>
+          <div className="ep-glass-tile ep-tile-hover" style={{ ...panelStyle, border: "1px solid rgba(239,68,68,0.38)", background: "linear-gradient(180deg, rgba(127,29,29,0.22), rgba(15,23,42,0.52))" }}>
             <div className="pe-field-label" style={{ marginBottom: 2, color: "rgba(254,202,202,0.95)" }}>
               System &amp; Data (Danger Zone)
             </div>
             <div className="pe-field-helper">
-              These actions affect local device data only.
+              Advanced maintenance actions for local device data. Review before applying.
             </div>
 
             {isDevBuild ? (
@@ -603,7 +707,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
               </div>
             ) : null}
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 4, borderTop: "1px solid rgba(248,113,113,0.24)" }}>
               <button type="button" className="pe-btn" onClick={exportData}>
                 Export JSON
               </button>
@@ -617,7 +721,12 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
               <button type="button" className="pe-btn pe-btn-ghost" onClick={resetSettings}>
                 Reset Settings
               </button>
-              <button type="button" className="pe-btn pe-btn-ghost" onClick={clearEstiPaidData}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                style={{ borderColor: "rgba(248,113,113,0.34)", color: "rgba(254,202,202,0.94)" }}
+                onClick={clearEstiPaidData}
+              >
                 Clear EstiPaid local data
               </button>
             </div>
