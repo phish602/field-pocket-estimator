@@ -502,6 +502,104 @@ function deriveBusinessPulseCounts(estimates, invoices) {
   return counts;
 }
 
+function deriveHomeDashboardSummary({
+  invoices,
+  projects,
+  businessPulseCounts,
+  companyProfile,
+}) {
+  const invoiceRecords = Array.isArray(invoices) ? invoices : [];
+  const projectRecords = Array.isArray(projects) ? projects : [];
+  const pulse = businessPulseCounts && typeof businessPulseCounts === "object" ? businessPulseCounts : {};
+  let unpaidBalance = 0;
+  let overdueBalance = 0;
+  let paidAmount = 0;
+
+  for (const invoice of invoiceRecords) {
+    const status = deriveInvoiceStatus(invoice);
+    const total = Number(invoice?.invoiceTotal ?? invoice?.total);
+    const paid = Number(invoice?.amountPaid);
+    const balance = Number(
+      invoice?.balanceRemaining !== undefined && invoice?.balanceRemaining !== null
+        ? invoice.balanceRemaining
+        : Math.max(0, (Number.isFinite(total) ? total : 0) - (Number.isFinite(paid) ? paid : 0))
+    );
+
+    paidAmount += Number.isFinite(paid) ? paid : 0;
+    if (status !== INVOICE_STATUSES.PAID && status !== INVOICE_STATUSES.VOID) {
+      const safeBalance = Number.isFinite(balance) ? balance : 0;
+      unpaidBalance += safeBalance;
+      if (status === INVOICE_STATUSES.OVERDUE) overdueBalance += safeBalance;
+    }
+  }
+
+  const activeProjectCount = projectRecords.filter((project) => {
+    const key = String(project?._displayStatus?.key || "").toLowerCase();
+    return key === "active" || key === "estimating";
+  }).length;
+
+  const stripeAccountId = String(companyProfile?.stripeAccountId || "").trim();
+  const stripeConnected = /^acct_/i.test(stripeAccountId);
+  const nextSteps = [];
+
+  if (Number(pulse?.overdueInvoices || 0) > 0) {
+    nextSteps.push({
+      key: "overdue",
+      tone: "danger",
+      title: "Collect overdue invoices",
+      detail: `${Number(pulse.overdueInvoices)} ${Number(pulse.overdueInvoices) === 1 ? "invoice is" : "invoices are"} overdue for ${homeMoney(overdueBalance || unpaidBalance)}.`,
+    });
+  }
+  if (unpaidBalance > 0) {
+    nextSteps.push({
+      key: "receivables",
+      tone: "warning",
+      title: "Follow up on open receivables",
+      detail: `${homeMoney(unpaidBalance)} is still outstanding across ${Number(pulse?.unpaidInvoices || 0)} unpaid ${Number(pulse?.unpaidInvoices || 0) === 1 ? "invoice" : "invoices"}.`,
+    });
+  }
+  if (Number(pulse?.approvedEstimates || 0) > 0) {
+    nextSteps.push({
+      key: "approved",
+      tone: "good",
+      title: "Invoice approved work",
+      detail: `${Number(pulse.approvedEstimates)} approved ${Number(pulse.approvedEstimates) === 1 ? "estimate is" : "estimates are"} ready to move into billing.`,
+    });
+  }
+  if (!stripeConnected) {
+    nextSteps.push({
+      key: "stripe",
+      tone: "info",
+      title: "Connect Stripe",
+      detail: "Enable online invoice payments from Company Profile when you are ready.",
+    });
+  }
+  if (nextSteps.length === 0) {
+    nextSteps.push({
+      key: "steady",
+      tone: "good",
+      title: "Everything is caught up",
+      detail: "No overdue invoices or unpaid balance need immediate attention.",
+    });
+  }
+
+  return {
+    unpaidBalance,
+    overdueBalance,
+    paidAmount,
+    activeProjectCount,
+    unpaidInvoices: Number(pulse?.unpaidInvoices || 0),
+    overdueInvoices: Number(pulse?.overdueInvoices || 0),
+    approvedEstimates: Number(pulse?.approvedEstimates || 0),
+    pendingEstimates: Number(pulse?.pendingEstimates || 0),
+    stripe: {
+      connected: stripeConnected,
+      accountId: stripeAccountId,
+    },
+    nextSteps: nextSteps.slice(0, 3),
+  };
+}
+
 function getSavedLang() {
   try {
     const v = localStorage.getItem(LANG_KEY);
@@ -1283,6 +1381,7 @@ function HomeScreen({
   onLogoLongPress,
   latestSavedEstimate,
   businessPulseCounts,
+  dashboardSummary,
   onResumeLastEstimate,
   onLaunchEstimate,
   recentProjects,
@@ -1363,6 +1462,48 @@ function HomeScreen({
       tone: "invoice",
     },
   ];
+  const dashboard = dashboardSummary && typeof dashboardSummary === "object" ? dashboardSummary : {};
+  const spotlightItems = [
+    {
+      key: "balance-due",
+      label: "Balance due",
+      value: homeMoney(dashboard?.unpaidBalance || 0),
+      detail: Number(dashboard?.unpaidInvoices || 0) > 0
+        ? `${Number(dashboard.unpaidInvoices)} open ${Number(dashboard.unpaidInvoices) === 1 ? "invoice" : "invoices"}`
+        : "No open invoices",
+      tone: Number(dashboard?.unpaidBalance || 0) > 0 ? "warning" : "neutral",
+    },
+    {
+      key: "overdue",
+      label: "Overdue",
+      value: Number(dashboard?.overdueInvoices || 0),
+      detail: Number(dashboard?.overdueBalance || 0) > 0 ? homeMoney(dashboard.overdueBalance) : "Caught up",
+      tone: Number(dashboard?.overdueInvoices || 0) > 0 ? "danger" : "neutral",
+    },
+    {
+      key: "paid",
+      label: "Paid",
+      value: homeMoney(dashboard?.paidAmount || 0),
+      detail: Number(dashboard?.paidAmount || 0) > 0 ? "Collected to date" : "No payments yet",
+      tone: Number(dashboard?.paidAmount || 0) > 0 ? "good" : "neutral",
+    },
+    {
+      key: "active-projects",
+      label: "Active projects",
+      value: Number(dashboard?.activeProjectCount || 0),
+      detail: Number(dashboard?.approvedEstimates || 0) > 0
+        ? `${Number(dashboard.approvedEstimates)} approved ${Number(dashboard.approvedEstimates) === 1 ? "estimate" : "estimates"}`
+        : "Recent jobs in motion",
+      tone: Number(dashboard?.activeProjectCount || 0) > 0 ? "info" : "neutral",
+    },
+  ];
+  const nextSteps = Array.isArray(dashboard?.nextSteps) ? dashboard.nextSteps : [];
+  const stripeCardTone = dashboard?.stripe?.connected ? "good" : "info";
+  const commandAccent = Number(dashboard?.overdueInvoices || 0) > 0
+    ? "linear-gradient(135deg, rgba(239,68,68,0.22), rgba(59,130,246,0.12) 52%, rgba(16,185,129,0.14))"
+    : Number(dashboard?.unpaidBalance || 0) > 0
+      ? "linear-gradient(135deg, rgba(245,158,11,0.2), rgba(59,130,246,0.12) 52%, rgba(16,185,129,0.14))"
+      : "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(99,102,241,0.1) 52%, rgba(16,185,129,0.14))";
 
   const startPress = () => {
     try { if (pressTimerRef.current) clearTimeout(pressTimerRef.current); } catch {}
@@ -1392,13 +1533,16 @@ function HomeScreen({
   return (
     <div className="pe-main pe-home-screen" style={{ paddingTop: 0 }}>
       <div className="pe-home-shell">
-      <div className="pe-card pe-home-hero">
+      <div className="pe-card pe-home-hero" style={{ overflow: "hidden", background: `${commandAccent}, linear-gradient(180deg, rgba(9, 14, 21, 0.98), rgba(7, 10, 15, 0.98))`, borderColor: "rgba(168, 184, 196, 0.14)" }}>
         <div className="pe-home-hero-graphics" aria-hidden="true">
           <span className="pe-home-hero-rail pe-home-hero-rail-left" />
           <span className="pe-home-hero-rail pe-home-hero-rail-right" />
           <span className="pe-home-hero-band" />
         </div>
         <div className="pe-home-hero-stack">
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(7, 11, 16, 0.32)", color: "rgba(226,234,241,0.72)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase" }}>
+            Command Dashboard
+          </div>
           <div
             className="pe-home-wordmark"
             style={{
@@ -1483,69 +1627,182 @@ function HomeScreen({
           >
             Turn Scope into Revenue
           </div>
-        </div>
-      </div>
-
-      <div className="pe-card pe-home-momentum-panel">
-        <div className="pe-home-momentum-primary">
-          <div className="pe-home-momentum-label">Resume</div>
-          {hasLatestEstimate ? (
-            <div className="pe-home-resume-card">
-              {resumeHeadline ? <div className="pe-home-resume-title">{resumeHeadline}</div> : null}
-              {resumeMetaItems.length > 0 ? (
-                <div className="pe-home-resume-meta">
-                  {resumeMetaItems.map((item) => (
-                    <div key={item.key} className={`pe-home-resume-meta-item pe-home-resume-meta-${item.tone}`}>
-                      <span className="pe-home-resume-meta-value">{item.label}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="pe-home-resume-empty">
-              No saved estimates yet. Save one to resume it here.
-            </div>
-          )}
-          <button
-            className="pe-btn pe-home-resume-btn"
-            type="button"
-            disabled={!hasLatestEstimate}
-            onClick={() => {
-              if (!hasLatestEstimate) return;
-              try {
-                onResumeLastEstimate && onResumeLastEstimate();
-              } catch {}
+          <div
+            className="pe-home-subline"
+            style={{
+              marginTop: 10,
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: "rgba(220,229,238,0.72)",
+              maxWidth: 520,
+              textAlign: "center",
             }}
           >
-            Continue Last Estimate
-          </button>
+            See what needs attention, what has been paid, and the safest next move before you open anything else.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, width: "100%", marginTop: 18 }}>
+            {spotlightItems.map((item) => {
+              const toneStyles = item.tone === "danger"
+                ? { border: "rgba(239,68,68,0.28)", glow: "rgba(239,68,68,0.12)", value: "rgba(254,202,202,0.98)", tag: "rgba(248,113,113,0.84)" }
+                : item.tone === "warning"
+                  ? { border: "rgba(245,158,11,0.26)", glow: "rgba(245,158,11,0.1)", value: "rgba(254,240,138,0.98)", tag: "rgba(251,191,36,0.86)" }
+                  : item.tone === "good"
+                    ? { border: "rgba(34,197,94,0.24)", glow: "rgba(34,197,94,0.1)", value: "rgba(187,247,208,0.98)", tag: "rgba(74,222,128,0.82)" }
+                    : item.tone === "info"
+                      ? { border: "rgba(59,130,246,0.24)", glow: "rgba(59,130,246,0.1)", value: "rgba(191,219,254,0.98)", tag: "rgba(96,165,250,0.84)" }
+                      : { border: "rgba(255,255,255,0.1)", glow: "rgba(255,255,255,0.04)", value: "rgba(236,243,248,0.96)", tag: "rgba(203,213,225,0.78)" };
+              return (
+                <div
+                  key={item.key}
+                  style={{
+                    minWidth: 0,
+                    display: "grid",
+                    gap: 6,
+                    padding: "12px 12px 11px",
+                    borderRadius: 16,
+                    border: `1px solid ${toneStyles.border}`,
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.008)), rgba(7, 11, 16, 0.24)",
+                    boxShadow: `inset 0 1px 0 rgba(255,255,255,0.035), 0 10px 22px ${toneStyles.glow}`,
+                    textAlign: "left",
+                  }}
+                >
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: toneStyles.tag }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: "-0.04em", color: toneStyles.value, lineHeight: 1 }}>
+                    {item.value}
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(220,229,238,0.66)" }}>
+                    {item.detail}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      <form className="pe-card pe-home-launcher" onSubmit={submitLaunchPrompt}>
-        <div className="pe-home-launcher-eyebrow">Describe the job</div>
-        <textarea
-          className="pe-input pe-textarea pe-home-launcher-input"
-          value={launchPrompt}
-          onChange={(e) => setLaunchPrompt(e.target.value)}
-          placeholder="Replace the roof, tile the bathroom, repaint exterior... rough scope is enough to start."
-          rows={3}
-        />
-        <button className="pe-btn pe-home-launcher-btn" type="submit">
-          {trimmedLaunchPrompt ? "Start with AI" : "Open Estimate Builder"}
-        </button>
-      </form>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
+        <div className="pe-card pe-home-momentum-panel" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="pe-home-momentum-primary">
+            <div className="pe-home-momentum-label">Resume</div>
+            {hasLatestEstimate ? (
+              <div className="pe-home-resume-card">
+                {resumeHeadline ? <div className="pe-home-resume-title">{resumeHeadline}</div> : null}
+                {resumeMetaItems.length > 0 ? (
+                  <div className="pe-home-resume-meta">
+                    {resumeMetaItems.map((item) => (
+                      <div key={item.key} className={`pe-home-resume-meta-item pe-home-resume-meta-${item.tone}`}>
+                        <span className="pe-home-resume-meta-value">{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="pe-home-resume-empty">
+                No saved estimates yet. Save one to resume it here.
+              </div>
+            )}
+            <button
+              className="pe-btn pe-home-resume-btn"
+              type="button"
+              disabled={!hasLatestEstimate}
+              onClick={() => {
+                if (!hasLatestEstimate) return;
+                try {
+                  onResumeLastEstimate && onResumeLastEstimate();
+                } catch {}
+              }}
+            >
+              Continue Last Estimate
+            </button>
+          </div>
+        </div>
 
-      <div className="pe-card pe-home-pulse-panel">
-        <div className="pe-home-pulse-eyebrow">Business Pulse</div>
-        <div className="pe-home-pulse-strip" role="list" aria-label="Business Pulse">
-          {pulseItems.map((item) => (
-            <div key={item.key} className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`} role="listitem">
-              <div className="pe-home-pulse-value">{item.value}</div>
-              <div className="pe-home-pulse-label">{item.label}</div>
+        <form className="pe-card pe-home-launcher" onSubmit={submitLaunchPrompt} style={{ minWidth: 0 }}>
+          <div className="pe-home-launcher-eyebrow">Describe the job</div>
+          <textarea
+            className="pe-input pe-textarea pe-home-launcher-input"
+            value={launchPrompt}
+            onChange={(e) => setLaunchPrompt(e.target.value)}
+            placeholder="Replace the roof, tile the bathroom, repaint exterior... rough scope is enough to start."
+            rows={3}
+          />
+          <button className="pe-btn pe-home-launcher-btn" type="submit">
+            {trimmedLaunchPrompt ? "Start with AI" : "Open Estimate Builder"}
+          </button>
+        </form>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
+        <div className="pe-card pe-home-pulse-panel" style={{ minWidth: 0 }}>
+          <div className="pe-home-pulse-eyebrow">Business Pulse</div>
+          <div className="pe-home-pulse-strip" role="list" aria-label="Business Pulse">
+            {pulseItems.map((item) => (
+              <div key={item.key} className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`} role="listitem" style={{ padding: "10px 10px 9px" }}>
+                <div className="pe-home-pulse-value">{item.value}</div>
+                <div className="pe-home-pulse-label">{item.label}</div>
+                <div style={{ fontSize: 10.5, lineHeight: 1.3, color: "rgba(190,205,218,0.52)" }}>{item.sublabel}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="pe-card" style={{ display: "grid", gap: 10, padding: "12px 14px", minWidth: 0, borderColor: stripeCardTone === "good" ? "rgba(34,197,94,0.18)" : "rgba(59,130,246,0.16)" }}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+              Next up
             </div>
-          ))}
+            <div style={{ fontSize: 16, fontWeight: 850, color: "rgba(239,245,249,0.97)" }}>
+              What needs attention next
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {nextSteps.map((step) => {
+              const toneStyles = step.tone === "danger"
+                ? { border: "rgba(239,68,68,0.2)", dot: "rgba(248,113,113,0.9)", bg: "rgba(239,68,68,0.06)" }
+                : step.tone === "warning"
+                  ? { border: "rgba(245,158,11,0.2)", dot: "rgba(251,191,36,0.9)", bg: "rgba(245,158,11,0.06)" }
+                  : step.tone === "good"
+                    ? { border: "rgba(34,197,94,0.18)", dot: "rgba(74,222,128,0.88)", bg: "rgba(34,197,94,0.05)" }
+                    : { border: "rgba(59,130,246,0.18)", dot: "rgba(96,165,250,0.88)", bg: "rgba(59,130,246,0.05)" };
+              return (
+                <div key={step.key} style={{ display: "grid", gap: 4, padding: "10px 11px", borderRadius: 14, border: `1px solid ${toneStyles.border}`, background: toneStyles.bg }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: toneStyles.dot, flexShrink: 0 }} />
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(235,243,248,0.96)" }}>{step.title}</div>
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "rgba(205,217,226,0.7)" }}>{step.detail}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "grid", gap: 6, paddingTop: 2, borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                Stripe readiness
+              </div>
+              <span style={{
+                padding: "4px 9px",
+                borderRadius: 999,
+                border: stripeCardTone === "good" ? "1px solid rgba(34,197,94,0.2)" : "1px solid rgba(59,130,246,0.18)",
+                background: stripeCardTone === "good" ? "rgba(34,197,94,0.08)" : "rgba(59,130,246,0.08)",
+                color: stripeCardTone === "good" ? "rgba(74,222,128,0.88)" : "rgba(147,197,253,0.86)",
+                fontSize: 10.5,
+                fontWeight: 800,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}>
+                {dashboard?.stripe?.connected ? "Connected" : "Not connected"}
+              </span>
+            </div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(217,227,235,0.76)" }}>
+              {dashboard?.stripe?.connected
+                ? "Stripe is connected, so online invoice payments can be enabled from your current account setup."
+                : "Connect Stripe in Company Profile when you want customers to pay invoices online."}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2276,6 +2533,21 @@ const [spinTick, setSpinTick] = useState(0);
       return mapped.slice(0, 5);
     } catch { return []; }
   }, [customerHistory, projectHistory, estimateHistory, invoiceHistory]);
+  const homeDashboardSummary = useMemo(() => {
+    let companyProfile = {};
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
+      companyProfile = raw ? (safeParseJson(raw) || {}) : {};
+    } catch {
+      companyProfile = {};
+    }
+    return deriveHomeDashboardSummary({
+      invoices: invoiceHistory,
+      projects: recentProjects,
+      businessPulseCounts,
+      companyProfile,
+    });
+  }, [invoiceHistory, recentProjects, businessPulseCounts]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -3244,6 +3516,7 @@ const gated = false;
         onLogoLongPress={handleHomeLogoLongPress}
         latestSavedEstimate={latestSavedEstimateMeta}
         businessPulseCounts={businessPulseCounts}
+        dashboardSummary={homeDashboardSummary}
         onResumeLastEstimate={() => {
           try {
             window.dispatchEvent(
@@ -3391,8 +3664,8 @@ const gated = false;
         />
       );
     }
-    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
-    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
       <FinancialSnapshotScreen
         onCreateInvoiceFromEstimate={(estimate) => {
@@ -3407,7 +3680,7 @@ const gated = false;
           return true;
         }}
       />
-    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} />;
+    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.JOB_LEARNING_DIAGNOSTICS) {
       if (process.env.NODE_ENV === "production") return null;
       return JobLearningDiagnosticsScreen ? <JobLearningDiagnosticsScreen /> : null;
@@ -3435,6 +3708,7 @@ const gated = false;
         onLogoLongPress={handleHomeLogoLongPress}
         latestSavedEstimate={latestSavedEstimateMeta}
         businessPulseCounts={businessPulseCounts}
+        dashboardSummary={homeDashboardSummary}
         onResumeLastEstimate={() => {
           try {
             window.dispatchEvent(
@@ -3445,6 +3719,10 @@ const gated = false;
           } catch {}
         }}
         onLaunchEstimate={launchEstimateFromHome}
+        recentProjects={recentProjects}
+        onOpenProjectDetail={(projectId) => {
+          openProjectDetail(projectId, ROUTES.HOME);
+        }}
       />
     );
   };
