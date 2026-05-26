@@ -965,6 +965,82 @@ export default function EstimatesScreen({
 
     return totals;
   }, [estimates]);
+  const visibleEstimates = (estimates || []).filter(matchesSearch);
+  const estimatePipelineSummary = useMemo(() => {
+    const approvedVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_APPROVED);
+    const pendingVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_PENDING);
+    const lostVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_LOST);
+    const visibleValue = visibleEstimates.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const pendingValue = pendingVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const lostValue = lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const highestValueEstimate = visibleEstimates
+      .slice()
+      .sort((left, right) => toNum(right?.total) - toNum(left?.total))[0] || null;
+    const approvedReady = approvedVisible.reduce((acc, estimate) => {
+      const summary = buildEstimateInvoiceSummary(estimate, invoices);
+      const remainingToInvoice = toNum(summary?.remainingToInvoice);
+      if (remainingToInvoice > 0) {
+        acc.count += 1;
+        acc.value += remainingToInvoice;
+      }
+      return acc;
+    }, { count: 0, value: 0 });
+    const highValueCount = visibleEstimates.filter((estimate) => toNum(estimate?.total) >= 10000).length;
+    const nextActions = [];
+
+    if (approvedReady.count > 0) {
+      nextActions.push({
+        key: "approved-ready",
+        tone: "approved",
+        title: lang === "es" ? "Crear facturas desde aprobados" : "Create invoices from approved",
+        detail: lang === "es"
+          ? `${approvedReady.count} ${approvedReady.count === 1 ? "estimado listo" : "estimados listos"} por ${money(approvedReady.value)}.`
+          : `${approvedReady.count} ${approvedReady.count === 1 ? "estimate is" : "estimates are"} ready to invoice for ${money(approvedReady.value)}.`,
+      });
+    }
+    if (pendingVisible.length > 0) {
+      nextActions.push({
+        key: "follow-up",
+        tone: "pending",
+        title: lang === "es" ? "Seguimiento de espera" : "Follow up on awaiting response",
+        detail: lang === "es"
+          ? `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimado necesita respuesta" : "estimados necesitan respuesta"}.`
+          : `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
+      });
+    }
+    if (lostVisible.length > 0) {
+      nextActions.push({
+        key: "lost",
+        tone: "lost",
+        title: lang === "es" ? "Revisar pérdida de ingresos" : "Review lost revenue",
+        detail: lang === "es"
+          ? `${lostVisible.length} ${lostVisible.length === 1 ? "estimado perdido" : "estimados perdidos"} por ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`
+          : `${lostVisible.length} ${lostVisible.length === 1 ? "estimate is" : "estimates are"} marked lost for ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`,
+      });
+    }
+    if (nextActions.length === 0) {
+      nextActions.push({
+        key: "steady",
+        tone: "approved",
+        title: lang === "es" ? "Pipeline estable" : "Pipeline is steady",
+        detail: lang === "es" ? "No hay acciones inmediatas visibles en los filtros actuales." : "No immediate revenue action is surfacing in the current filters.",
+      });
+    }
+
+    return {
+      totalCount: visibleEstimates.length,
+      totalValue: visibleValue,
+      pendingCount: pendingVisible.length,
+      pendingValue,
+      approvedCount: approvedVisible.length,
+      lostCount: lostVisible.length,
+      lostValue,
+      approvedReady,
+      highValueCount,
+      highestValueEstimate,
+      nextActions: nextActions.slice(0, 3),
+    };
+  }, [visibleEstimates, invoices, lang]);
 
   useEffect(() => {
     const prev = prevRevenueRef.current;
@@ -1464,7 +1540,7 @@ export default function EstimatesScreen({
   const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
   const labelProfit = lang === "es" ? "Ganancia" : "Profit";
   const labelMargin = lang === "es" ? "Margen" : "Margin";
-  const visibleEstimatesCount = (estimates || []).filter(matchesSearch).length;
+  const visibleEstimatesCount = visibleEstimates.length;
   const labelSavedWithCount = `${labelSaved} (${visibleEstimatesCount})`;
   const deleteTargetNumber = String(
     deleteTarget?.estimateNumber
@@ -1884,6 +1960,122 @@ export default function EstimatesScreen({
         >
 
           <div
+            className="pe-card pe-card-content"
+            style={{
+              width: "100%",
+              marginBottom: "18px",
+              padding: "14px 14px 16px",
+              borderRadius: 18,
+              border: "1px solid rgba(168,184,195,0.14)",
+              background: estimatePipelineSummary.approvedReady.value > 0
+                ? "linear-gradient(135deg, rgba(34,197,94,0.12), rgba(59,130,246,0.08) 46%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+                : estimatePipelineSummary.pendingCount > 0
+                ? "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(245,158,11,0.08) 52%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+                : "linear-gradient(135deg, rgba(148,163,184,0.1), rgba(59,130,246,0.06) 46%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))",
+              boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+              display: "grid",
+              gap: 14,
+            }}
+          >
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                {lang === "es" ? "Pipeline de ingresos" : "Revenue pipeline"}
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+                {lang === "es" ? "Estimados listos para avanzar" : "Estimates ready to move revenue forward"}
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+                {estimatePipelineSummary.highestValueEstimate
+                  ? (lang === "es"
+                    ? `El estimado más grande visible es ${money(estimatePipelineSummary.highestValueEstimate?.total)} para ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "este trabajo"}.`
+                    : `The highest visible estimate is ${money(estimatePipelineSummary.highestValueEstimate?.total)} for ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "this job"}.`)
+                  : (lang === "es" ? "Usa esta vista para priorizar seguimiento, aprobación y facturación." : "Use this view to prioritize follow-up, approval, and invoicing.")}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              {[
+                {
+                  key: "visible-value",
+                  label: lang === "es" ? "Visible value" : "Visible value",
+                  value: money(estimatePipelineSummary.totalValue),
+                  detail: `${estimatePipelineSummary.totalCount} ${estimatePipelineSummary.totalCount === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  tone: "neutral",
+                },
+                {
+                  key: "awaiting-response",
+                  label: lang === "es" ? "Awaiting response" : "Awaiting response",
+                  value: String(estimatePipelineSummary.pendingCount),
+                  detail: money(estimatePipelineSummary.pendingValue),
+                  tone: "pending",
+                },
+                {
+                  key: "approved-ready",
+                  label: lang === "es" ? "Ready for invoice" : "Ready for invoice",
+                  value: money(estimatePipelineSummary.approvedReady.value),
+                  detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  tone: "approved",
+                },
+                {
+                  key: "high-value",
+                  label: lang === "es" ? "High value" : "High value",
+                  value: String(estimatePipelineSummary.highValueCount),
+                  detail: lang === "es" ? "por encima de $10k" : "over $10k",
+                  tone: "approved",
+                },
+              ].map((item) => {
+                const toneColor = item.tone === "approved"
+                  ? "rgba(74,222,128,0.84)"
+                  : item.tone === "pending"
+                  ? "rgba(96,165,250,0.84)"
+                  : "rgba(203,213,225,0.78)";
+                const toneBorder = item.tone === "approved"
+                  ? "rgba(34,197,94,0.2)"
+                  : item.tone === "pending"
+                  ? "rgba(59,130,246,0.22)"
+                  : "rgba(255,255,255,0.1)";
+                return (
+                  <div key={item.key} style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${toneBorder}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
+                      {item.label}
+                    </div>
+                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                      {item.value}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                      {item.detail}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+              {estimatePipelineSummary.nextActions.map((action) => {
+                const border = action.tone === "approved"
+                  ? "rgba(34,197,94,0.18)"
+                  : action.tone === "pending"
+                  ? "rgba(59,130,246,0.18)"
+                  : "rgba(239,68,68,0.18)";
+                const dot = action.tone === "approved"
+                  ? "rgba(74,222,128,0.88)"
+                  : action.tone === "pending"
+                  ? "rgba(96,165,250,0.88)"
+                  : "rgba(248,113,113,0.88)";
+                return (
+                  <div key={action.key} style={{ display: "grid", gap: 4, padding: "10px 11px", borderRadius: 12, border: `1px solid ${border}`, background: "rgba(5,8,13,0.18)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: dot, flexShrink: 0 }} />
+                      <div style={{ fontSize: 13, fontWeight: 850, color: "rgba(235,243,248,0.96)" }}>{action.title}</div>
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "rgba(205,217,226,0.7)" }}>{action.detail}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div
             className="pe-estimates-search"
             style={{
               width: "100%",
@@ -2140,7 +2332,25 @@ export default function EstimatesScreen({
                     <div
                       className="pe-pipeline-dropzone"
                     >
-                      <div className="pe-pipeline-header" style={{ display: "grid", gap: 2 }}>
+                      <div
+                        className="pe-pipeline-header"
+                        style={{
+                          display: "grid",
+                          gap: 6,
+                          padding: "12px 12px 10px",
+                          borderRadius: 14,
+                          border: section.key === STATUS_APPROVED
+                            ? "1px solid rgba(34,197,94,0.18)"
+                            : section.key === STATUS_LOST
+                            ? "1px solid rgba(239,68,68,0.18)"
+                            : "1px solid rgba(59,130,246,0.18)",
+                          background: section.key === STATUS_APPROVED
+                            ? "rgba(34,197,94,0.06)"
+                            : section.key === STATUS_LOST
+                            ? "rgba(239,68,68,0.06)"
+                            : "rgba(59,130,246,0.06)",
+                        }}
+                      >
                         <div
                           className="pe-pipeline-tile-drop"
                         >
@@ -2159,6 +2369,13 @@ export default function EstimatesScreen({
                         </div>
                         <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.74 }}>
                           {money(sectionRevenue)} {sectionRevenueText}
+                        </div>
+                        <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(205,217,226,0.64)" }}>
+                          {section.key === STATUS_APPROVED
+                            ? (lang === "es" ? "Los aprobados con saldo por facturar muestran la siguiente acción primero." : "Approved estimates with value left to invoice surface the next action first.")
+                            : section.key === STATUS_LOST
+                            ? (lang === "es" ? "Los perdidos permanecen visibles para revisar ingresos caídos." : "Lost estimates stay visible so dropped revenue is easy to review.")
+                            : (lang === "es" ? "Arrastra aquí para mantener el pipeline y seguimiento al día." : "Drag here to keep follow-up and pipeline status current.")}
                         </div>
                       </div>
                     </div>
@@ -2206,11 +2423,52 @@ export default function EstimatesScreen({
                       const projectTitle = displayMeta.projectName || (lang === "es" ? "Sin proyecto" : "No project");
                       const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
 
+              const pipelineValue = status === STATUS_APPROVED
+                ? toNum(invoiceSummary?.approvedTotal || e?.total)
+                : toNum(e?.total);
+              const remainingToInvoice = toNum(invoiceSummary?.remainingToInvoice || 0);
+              const isHighValue = pipelineValue >= 10000;
+              const actionMeta = status === STATUS_APPROVED
+                ? remainingToInvoice > 0
+                  ? {
+                      label: lang === "es" ? "Siguiente acción: crear factura" : "Next action: create invoice",
+                      tone: "rgba(74,222,128,0.9)",
+                      border: "rgba(34,197,94,0.22)",
+                      background: "rgba(34,197,94,0.08)",
+                    }
+                  : {
+                      label: lang === "es" ? "Completamente facturado" : "Fully invoiced",
+                      tone: "rgba(96,165,250,0.9)",
+                      border: "rgba(59,130,246,0.2)",
+                      background: "rgba(59,130,246,0.08)",
+                    }
+                : status === STATUS_LOST
+                  ? {
+                      label: lang === "es" ? "Revisar oportunidad perdida" : "Review lost opportunity",
+                      tone: "rgba(248,113,113,0.9)",
+                      border: "rgba(239,68,68,0.22)",
+                      background: "rgba(239,68,68,0.08)",
+                    }
+                  : {
+                      label: lang === "es" ? "Siguiente acción: seguimiento" : "Next action: follow up",
+                      tone: "rgba(96,165,250,0.9)",
+                      border: "rgba(59,130,246,0.2)",
+                      background: "rgba(59,130,246,0.08)",
+                    };
+
               const card = {
                 padding: 16,
                 borderRadius: 16,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.04)",
+                border: status === STATUS_APPROVED
+                  ? "1px solid rgba(34,197,94,0.16)"
+                  : status === STATUS_LOST
+                  ? "1px solid rgba(239,68,68,0.16)"
+                  : "1px solid rgba(59,130,246,0.14)",
+                background: status === STATUS_APPROVED
+                  ? "linear-gradient(180deg, rgba(34,197,94,0.07), rgba(255,255,255,0.035))"
+                  : status === STATUS_LOST
+                  ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
+                  : "linear-gradient(180deg, rgba(59,130,246,0.05), rgba(255,255,255,0.03))",
                 boxSizing: "border-box",
                 overflow: "hidden",
                 display: "flex",
@@ -2509,15 +2767,35 @@ export default function EstimatesScreen({
                           </div>
                         </div>
                         {updatedLine ? <div className="pe-estimate-card-updated" style={updatedTextLine}>{updatedLine}</div> : null}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${actionMeta.border}`, background: actionMeta.background, color: actionMeta.tone, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                            {actionMeta.label}
+                          </span>
+                          {isHighValue ? (
+                            <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(245,158,11,0.2)", background: "rgba(245,158,11,0.08)", color: "rgba(251,191,36,0.88)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                              {lang === "es" ? "Alto valor" : "High value"}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                      <div
-                        className={`pe-estimate-status pe-estimate-card-status ${statusClassName}`}
-                        style={{
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {statusLabel}
+                      <div style={{ display: "grid", gap: 8, justifyItems: "end", minWidth: 0 }}>
+                        <div
+                          className={`pe-estimate-status pe-estimate-card-status ${statusClassName}`}
+                          style={{
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {statusLabel}
+                        </div>
+                        <div style={{ textAlign: "right", minWidth: 0 }}>
+                          <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                            {lang === "es" ? "Pipeline value" : "Pipeline value"}
+                          </div>
+                          <div style={{ marginTop: 4, fontSize: 20, fontWeight: 950, color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                            {money(pipelineValue)}
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", width: "100%", minWidth: 0 }}>
