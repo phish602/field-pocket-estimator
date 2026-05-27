@@ -16,6 +16,8 @@ const PROJECT_STATUS_OPTIONS = [
   { key: "archived", label: "Archived" },
 ];
 
+const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"];
+
 function readCustomers() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
@@ -111,7 +113,10 @@ export default function NewProjectScreen({ onBack, onSave }) {
   const [customers, setCustomers] = useState(() => readCustomers());
 
   const [projectName, setProjectName] = useState("");
-  const [siteAddress, setSiteAddress] = useState("");
+  const [addrStreet, setAddrStreet] = useState("");
+  const [addrCity, setAddrCity] = useState("");
+  const [addrState, setAddrState] = useState("");
+  const [addrZip, setAddrZip] = useState("");
   const [status, setStatus] = useState("active");
   const [notes, setNotes] = useState("");
 
@@ -246,6 +251,13 @@ export default function NewProjectScreen({ onBack, onSave }) {
 
   const canSave = projectName.trim().length > 0;
 
+  function composeSiteAddress(street, city, state, zip) {
+    const line1 = street.trim();
+    const line2parts = [city.trim(), state.trim()].filter(Boolean).join(", ");
+    const line2 = [line2parts, zip.trim()].filter(Boolean).join(" ");
+    return [line1, line2].filter(Boolean).join(", ");
+  }
+
   const handleSave = useCallback(() => {
     if (!canSave) return;
     const now = Date.now();
@@ -253,7 +265,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       customerId: selectedCustomer ? String(selectedCustomer?.id || "") : "",
       customerName: selectedCustomer ? customerDisplayName(selectedCustomer) : "",
       projectName: projectName.trim(),
-      siteAddress: siteAddress.trim(),
+      siteAddress: composeSiteAddress(addrStreet, addrCity, addrState, addrZip),
       status,
       notes: notes.trim(),
       createdAt: now,
@@ -264,7 +276,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     writeStoredProjects(next);
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     if (onSave) onSave(project.id);
-  }, [canSave, selectedCustomerId, selectedCustomer, projectName, siteAddress, status, notes, onSave]);
+  }, [canSave, selectedCustomerId, selectedCustomer, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave]);
 
   return (
     <div style={S.screen}>
@@ -299,10 +311,39 @@ export default function NewProjectScreen({ onBack, onSave }) {
           <input
             type="text"
             style={S.input}
-            placeholder="123 Main St, City, State"
-            value={siteAddress}
-            onChange={(e) => setSiteAddress(e.target.value)}
+            placeholder="Street address"
+            value={addrStreet}
+            onChange={(e) => setAddrStreet(e.target.value)}
+            autoComplete="street-address"
           />
+          <div style={S.addrRow}>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 2 }}
+              placeholder="City"
+              value={addrCity}
+              onChange={(e) => setAddrCity(e.target.value)}
+              autoComplete="address-level2"
+            />
+            <select
+              style={{ ...S.input, flex: 1, minWidth: 72 }}
+              value={addrState}
+              onChange={(e) => setAddrState(e.target.value)}
+              autoComplete="address-level1"
+            >
+              <option value="">State</option>
+              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 1, minWidth: 72 }}
+              placeholder="ZIP"
+              value={addrZip}
+              onChange={(e) => setAddrZip(e.target.value)}
+              autoComplete="postal-code"
+              inputMode="numeric"
+            />
+          </div>
         </div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
           <label style={S.label}>Status</label>
@@ -429,7 +470,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       <div style={S.actionWrap}>
         {canSave ? (
           <div style={{ fontSize: 12, color: "rgba(230,241,248,0.42)", marginBottom: 8, lineHeight: 1.35 }}>
-            {projectName.trim()}{selectedCustomer ? ` · ${customerDisplayName(selectedCustomer)}` : ""}{siteAddress.trim() ? ` · ${siteAddress.trim()}` : ""}
+            {projectName.trim()}{selectedCustomer ? ` · ${customerDisplayName(selectedCustomer)}` : ""}{composeSiteAddress(addrStreet, addrCity, addrState, addrZip) ? ` · ${composeSiteAddress(addrStreet, addrCity, addrState, addrZip)}` : ""}
           </div>
         ) : null}
         <button
@@ -673,6 +714,12 @@ const S = {
   inlineNewSaveDisabled: {
     opacity: 0.38,
     cursor: "default",
+  },
+  addrRow: {
+    display: "flex",
+    gap: 8,
+    marginTop: 8,
+    flexWrap: "wrap",
   },
   statusRow: {
     display: "grid",

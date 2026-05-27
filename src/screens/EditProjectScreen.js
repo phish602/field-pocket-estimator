@@ -15,6 +15,40 @@ const STATUS_OPTIONS = [
   { key: "archived", label: "Archived" },
 ];
 
+const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"];
+
+function composeSiteAddress(street, city, state, zip) {
+  const line1 = street.trim();
+  const line2parts = [city.trim(), state.trim()].filter(Boolean).join(", ");
+  const line2 = [line2parts, zip.trim()].filter(Boolean).join(" ");
+  return [line1, line2].filter(Boolean).join(", ");
+}
+
+// Parses an existing one-line address into structured fields.
+// City/state/zip parsing is best-effort; unrecognized strings go into street.
+function parseSiteAddress(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { street: "", city: "", state: "", zip: "" };
+  // If it has a comma, attempt to split street / "City, ST ZIP"
+  const commaIdx = s.indexOf(",");
+  if (commaIdx > 0) {
+    const street = s.slice(0, commaIdx).trim();
+    const rest = s.slice(commaIdx + 1).trim();
+    // Match "City, ST ZIP" or "City ST ZIP"
+    const stateZipMatch = rest.match(/^(.*?),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+    if (stateZipMatch) {
+      return { street, city: stateZipMatch[1].trim(), state: stateZipMatch[2], zip: stateZipMatch[3] };
+    }
+    // Match "City, ST" without zip
+    const stateOnlyMatch = rest.match(/^(.*?),?\s+([A-Z]{2})$/);
+    if (stateOnlyMatch) {
+      return { street, city: stateOnlyMatch[1].trim(), state: stateOnlyMatch[2], zip: "" };
+    }
+  }
+  // Fallback: put entire string in street
+  return { street: s, city: "", state: "", zip: "" };
+}
+
 function readProjectById(projectId) {
   if (!projectId) return null;
   try {
@@ -37,7 +71,10 @@ export default function EditProjectScreen({ onBack, onSave }) {
   const [project, setProject] = useState(() => readProjectById(projectId));
 
   const [projectName, setProjectName] = useState(() => String(project?.projectName || ""));
-  const [siteAddress, setSiteAddress] = useState(() => String(project?.siteAddress || ""));
+  const [addrStreet, setAddrStreet] = useState(() => parseSiteAddress(project?.siteAddress).street);
+  const [addrCity, setAddrCity] = useState(() => parseSiteAddress(project?.siteAddress).city);
+  const [addrState, setAddrState] = useState(() => parseSiteAddress(project?.siteAddress).state);
+  const [addrZip, setAddrZip] = useState(() => parseSiteAddress(project?.siteAddress).zip);
   const [status, setStatus] = useState(() => normalizeStatusValue(project?.status));
   const [notes, setNotes] = useState(() => String(project?.notes || ""));
 
@@ -59,7 +96,10 @@ export default function EditProjectScreen({ onBack, onSave }) {
 
         if (!latestProject) {
           if (projectName === currentName) setProjectName("");
-          if (siteAddress === currentAddress) setSiteAddress("");
+          if (composeSiteAddress(addrStreet, addrCity, addrState, addrZip) === currentAddress) {
+            const p = parseSiteAddress("");
+            setAddrStreet(p.street); setAddrCity(p.city); setAddrState(p.state); setAddrZip(p.zip);
+          }
           if (status === currentStatus) setStatus("active");
           if (notes === currentNotes) setNotes("");
           return null;
@@ -71,7 +111,10 @@ export default function EditProjectScreen({ onBack, onSave }) {
         const nextNotes = String(latestProject?.notes || "");
 
         if (projectName === currentName) setProjectName(nextName);
-        if (siteAddress === currentAddress) setSiteAddress(nextAddress);
+        if (composeSiteAddress(addrStreet, addrCity, addrState, addrZip) === currentAddress) {
+          const p = parseSiteAddress(nextAddress);
+          setAddrStreet(p.street); setAddrCity(p.city); setAddrState(p.state); setAddrZip(p.zip);
+        }
         if (status === currentStatus) setStatus(nextStatus);
         if (notes === currentNotes) setNotes(nextNotes);
         return latestProject;
@@ -105,7 +148,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
       window.removeEventListener("focus", syncProject);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [notes, projectId, projectName, siteAddress, status]);
+  }, [notes, projectId, projectName, addrStreet, addrCity, addrState, addrZip, status]);
 
   const canSave = projectName.trim().length > 0;
 
@@ -115,7 +158,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
     if (!latestProject) return;
     const updated = updateProjectMetadata(projectId, {
       projectName: projectName.trim(),
-      siteAddress: siteAddress.trim(),
+      siteAddress: composeSiteAddress(addrStreet, addrCity, addrState, addrZip),
       status,
       notes: notes.trim(),
     });
@@ -123,7 +166,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
       window.dispatchEvent(new Event("estipaid:projects-changed"));
       if (onSave) onSave(projectId);
     }
-  }, [canSave, projectId, projectName, siteAddress, status, notes, onSave]);
+  }, [canSave, projectId, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave]);
 
   if (!project) {
     return (
@@ -172,10 +215,39 @@ export default function EditProjectScreen({ onBack, onSave }) {
           <input
             type="text"
             style={S.input}
-            placeholder="123 Main St, City, State"
-            value={siteAddress}
-            onChange={(e) => setSiteAddress(e.target.value)}
+            placeholder="Street address"
+            value={addrStreet}
+            onChange={(e) => setAddrStreet(e.target.value)}
+            autoComplete="street-address"
           />
+          <div style={S.addrRow}>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 2 }}
+              placeholder="City"
+              value={addrCity}
+              onChange={(e) => setAddrCity(e.target.value)}
+              autoComplete="address-level2"
+            />
+            <select
+              style={{ ...S.input, flex: 1, minWidth: 72 }}
+              value={addrState}
+              onChange={(e) => setAddrState(e.target.value)}
+              autoComplete="address-level1"
+            >
+              <option value="">State</option>
+              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 1, minWidth: 72 }}
+              placeholder="ZIP"
+              value={addrZip}
+              onChange={(e) => setAddrZip(e.target.value)}
+              autoComplete="postal-code"
+              inputMode="numeric"
+            />
+          </div>
         </div>
 
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
@@ -223,7 +295,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
       <div style={S.actionWrap}>
         {canSave ? (
           <div style={S.preSaveSummary}>
-            {projectName.trim()}{customerLabel ? ` · ${customerLabel}` : ""}{siteAddress.trim() ? ` · ${siteAddress.trim()}` : ""}
+            {projectName.trim()}{customerLabel ? ` · ${customerLabel}` : ""}{composeSiteAddress(addrStreet, addrCity, addrState, addrZip) ? ` · ${composeSiteAddress(addrStreet, addrCity, addrState, addrZip)}` : ""}
           </div>
         ) : null}
         <button
@@ -364,6 +436,12 @@ const S = {
     resize: "vertical",
     minHeight: 60,
     lineHeight: 1.45,
+  },
+  addrRow: {
+    display: "flex",
+    gap: 8,
+    marginTop: 8,
+    flexWrap: "wrap",
   },
   statusGrid: {
     display: "grid",
