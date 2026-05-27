@@ -3617,25 +3617,41 @@ export default function EstimateForm(props) {
     if (!showExistingProjectSelector) return [];
 
     const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
-    const selectedNameKey = String(
+    const normalize = (s) => String(s || "").trim().toLowerCase();
+    const selectedNameKey = normalize(
       selectedProfile?.displayName
       || selectedProfile?.companyName
+      || selectedProfile?.fullName
       || state?.customer?.name
       || ""
-    ).trim().toLowerCase();
+    );
 
+    // No customer context — show nothing to avoid cross-customer pollution
     if (!selectedId && !selectedNameKey) return [];
 
+    const seenIds = new Set();
     return (Array.isArray(allProjects) ? allProjects : [])
       .filter((project) => {
         const projectId = String(project?.id || "").trim();
         if (!projectId) return false;
+        if (seenIds.has(projectId)) return false;
 
         const projectCustomerId = String(project?.customerId || "").trim();
-        const projectCustomerName = String(project?.customerName || "").trim().toLowerCase();
+        const projectCustomerName = normalize(
+          project?.customerName
+          || project?.customer?.name
+          || project?.customer?.companyName
+          || project?.customer?.fullName
+          || project?.customer?.displayName
+          || ""
+        );
 
-        if (selectedId && projectCustomerId) return projectCustomerId === selectedId;
-        return !!selectedNameKey && projectCustomerName === selectedNameKey;
+        const matchesById = !!selectedId && !!projectCustomerId && projectCustomerId === selectedId;
+        const matchesByName = !!selectedNameKey && !!projectCustomerName && projectCustomerName === selectedNameKey;
+
+        if (!matchesById && !matchesByName) return false;
+        seenIds.add(projectId);
+        return true;
       })
       .slice()
       .sort((a, b) => {
@@ -3873,14 +3889,6 @@ export default function EstimateForm(props) {
       : (!!selectedNameKey && projectCustomerName === selectedNameKey);
     if (!matchesSelectedCustomer) return;
 
-    const previousContext = selectedLinkedProjectContextRef.current;
-    const currentProjectName = String(state?.customer?.projectName || "").trim();
-    const currentProjectNumber = String(state?.customer?.projectNumber || "").trim();
-    const currentProjectAddress = String(state?.customer?.projectAddress || "").trim();
-    const generatedProjectName = String(projectNameAutoStateRef.current.auto || "").trim();
-    const previousAutofilledProjectName = String(previousContext?.autofilledProjectName || "").trim();
-    const previousAutofilledProjectNumber = String(previousContext?.autofilledProjectNumber || "").trim();
-    const previousAutofilledProjectAddress = String(previousContext?.autofilledProjectAddress || "").trim();
     const nextContext = {
       projectId: nextProjectId,
       customerId: projectCustomerId || selectedId,
@@ -3889,34 +3897,6 @@ export default function EstimateForm(props) {
       autofilledProjectNumber: "",
       autofilledProjectAddress: "",
     };
-
-    const projectName = String(project?.projectName || "").trim();
-    if (
-      projectName
-      && (!currentProjectName || currentProjectName === generatedProjectName || currentProjectName === previousAutofilledProjectName)
-    ) {
-      patch("customer.projectName", projectName);
-      projectNameAutoStateRef.current.auto = "";
-      nextContext.autofilledProjectName = projectName;
-    } else if (!projectName && previousAutofilledProjectName && currentProjectName === previousAutofilledProjectName) {
-      patch("customer.projectName", "");
-    }
-
-    const projectNumber = String(project?.projectNumber || "").trim();
-    if (projectNumber && (!currentProjectNumber || currentProjectNumber === previousAutofilledProjectNumber)) {
-      patch("customer.projectNumber", projectNumber);
-      nextContext.autofilledProjectNumber = projectNumber;
-    } else if (!projectNumber && previousAutofilledProjectNumber && currentProjectNumber === previousAutofilledProjectNumber) {
-      patch("customer.projectNumber", "");
-    }
-
-    const siteAddress = String(project?.siteAddress || "").trim();
-    if (siteAddress && (!currentProjectAddress || currentProjectAddress === previousAutofilledProjectAddress)) {
-      patch("customer.projectAddress", siteAddress);
-      nextContext.autofilledProjectAddress = siteAddress;
-    } else if (!siteAddress && previousAutofilledProjectAddress && currentProjectAddress === previousAutofilledProjectAddress) {
-      patch("customer.projectAddress", "");
-    }
 
     patch("projectId", nextProjectId);
     selectedLinkedProjectContextRef.current = nextContext;
@@ -4658,16 +4638,18 @@ export default function EstimateForm(props) {
         updatedAt,
       };
       const currentProjects = readStoredProjects();
-      const { project: resolvedProject } = resolveProjectPersistenceTarget(projectContext, currentProjects, { nowTs: updatedAt });
-      const projectRecord = resolvedProject && typeof resolvedProject === "object"
-        ? resolvedProject
+      const explicitProjectId = String(projectContext?.projectId || "").trim();
+      const existingExplicitProject = explicitProjectId
+        ? currentProjects.find((project) => String(project?.id || "").trim() === explicitProjectId) || null
         : null;
+      const { project: resolvedProject } = existingExplicitProject
+        ? { project: existingExplicitProject }
+        : resolveProjectPersistenceTarget(projectContext, currentProjects, { nowTs: updatedAt });
+      const projectRecord = resolvedProject && typeof resolvedProject === "object" ? resolvedProject : null;
       if (!projectRecord || !String(projectRecord.id || "").trim()) {
         setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
         return;
       }
-      projectName = String(projectRecord.projectName || projectName).trim();
-      projectNumber = String(projectRecord.projectNumber || projectNumber).trim();
       const resolvedCustomerId = liveCustomerId;
       const previousEstimateProjectId = saveDocType === "estimate"
         ? String(existingMatch?.projectId || "").trim()
@@ -4689,7 +4671,9 @@ export default function EstimateForm(props) {
           if (!confirmed) return;
         }
       }
-      const nextProjects = upsertProject(currentProjects, projectRecord);
+      const nextProjects = existingExplicitProject
+        ? currentProjects
+        : upsertProject(currentProjects, projectRecord);
       const shouldUseLinkedInvoiceFinancials = (
         saveDocType === "invoice"
         && !!linkedEstimateId
@@ -5915,13 +5899,11 @@ export default function EstimateForm(props) {
                   className="pe-input"
                   value={selectedExistingProjectId}
                   onChange={(e) => handleSelectExistingProject(e.target.value)}
-                  disabled={!selectedCustomerId || availableExistingProjects.length === 0}
+                  disabled={availableExistingProjects.length === 0}
                 >
                   <option value="">
-                    {!selectedCustomerId
-                      ? "Select customer first"
-                      : availableExistingProjects.length === 0
-                      ? "No saved projects for this customer"
+                    {availableExistingProjects.length === 0
+                      ? "No saved projects yet"
                       : "No linked project"}
                   </option>
                   {availableExistingProjects.map((project) => {
@@ -5938,21 +5920,19 @@ export default function EstimateForm(props) {
                   })}
                 </select>
                 <div className="pe-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                  {!selectedCustomerId
-                    ? "Choose a customer first to link this document to one of their existing projects."
-                    : isEstimateProjectReassignment
+                  {isEstimateProjectReassignment
                     ? (
                       selectedExistingProject
                         ? "Move this estimate to the selected existing project when you save."
                         : availableExistingProjects.length === 0
-                          ? "No saved projects are available for the selected customer yet."
-                          : "Select an existing project to move this estimate. Empty auto-created project will be removed; otherwise the original project remains."
+                          ? "No saved projects yet."
+                          : "Select an existing project to move this estimate."
                     )
                     : selectedExistingProject
                       ? "This document will stay linked to the selected existing project when you save."
                       : availableExistingProjects.length === 0
-                        ? "No saved projects are available for the selected customer yet."
-                        : "Optional: link this document to one existing project for the selected customer."}
+                        ? "No saved projects yet."
+                        : "Optional: link this document to an existing project."}
                 </div>
               </div>
             ) : null}
