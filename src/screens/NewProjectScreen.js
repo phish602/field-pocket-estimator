@@ -68,6 +68,24 @@ function toEstimatorFlat(c) {
   };
 }
 
+function getCustomerAddress(c) {
+  if (!c) return null;
+  const svc = c.resService || {};
+  const job = c.jobsite || {};
+  const primary = (svc.street || svc.city) ? svc : (job.street || job.city) ? job : null;
+  if (primary) {
+    return {
+      street: String(primary.street || "").trim(),
+      city: String(primary.city || "").trim(),
+      state: String(primary.state || "").trim(),
+      zip: String(primary.zip || "").trim(),
+    };
+  }
+  const flat = String(c.address || "").trim();
+  if (flat) return { street: flat, city: "", state: "", zip: "" };
+  return null;
+}
+
 function buildInlineResidentialCustomer({ id, name, phone, email, now }) {
   const nextItem = {
     id,
@@ -117,6 +135,8 @@ export default function NewProjectScreen({ onBack, onSave }) {
   const [addrCity, setAddrCity] = useState("");
   const [addrState, setAddrState] = useState("");
   const [addrZip, setAddrZip] = useState("");
+  const [addrSource, setAddrSource] = useState("custom"); // "customer" | "custom"
+  const addrUserOwnedRef = useRef(false); // true once user explicitly chooses "Different job site" or edits manually
   const [status, setStatus] = useState("active");
   const [notes, setNotes] = useState("");
 
@@ -201,6 +221,17 @@ export default function NewProjectScreen({ onBack, onSave }) {
     setCustomerSearch(customerDisplayName(c));
     setCustomerDropdownOpen(false);
     setInlineNewMode(false);
+    // Auto-populate address if user hasn't already manually committed to a custom address
+    if (!addrUserOwnedRef.current) {
+      const cAddr = getCustomerAddress(c);
+      if (cAddr) {
+        setAddrStreet(cAddr.street);
+        setAddrCity(cAddr.city);
+        setAddrState(cAddr.state);
+        setAddrZip(cAddr.zip);
+        setAddrSource("customer");
+      }
+    }
   }, []);
 
   const handleClearCustomer = useCallback(() => {
@@ -208,7 +239,16 @@ export default function NewProjectScreen({ onBack, onSave }) {
     setCustomerSearch("");
     setCustomerDropdownOpen(false);
     setInlineNewMode(false);
-  }, []);
+    // If we were showing the customer's address, clear it
+    if (addrSource === "customer") {
+      setAddrStreet("");
+      setAddrCity("");
+      setAddrState("");
+      setAddrZip("");
+      setAddrSource("custom");
+      addrUserOwnedRef.current = false;
+    }
+  }, [addrSource]);
 
   const openInlineNew = useCallback(() => {
     setCustomerDropdownOpen(false);
@@ -224,6 +264,25 @@ export default function NewProjectScreen({ onBack, onSave }) {
     setInlinePhone("");
     setInlineEmail("");
   }, []);
+
+  const handleUseCustomerAddress = useCallback(() => {
+    const cAddr = getCustomerAddress(selectedCustomer);
+    if (cAddr) {
+      setAddrStreet(cAddr.street);
+      setAddrCity(cAddr.city);
+      setAddrState(cAddr.state);
+      setAddrZip(cAddr.zip);
+    }
+    setAddrSource("customer");
+    addrUserOwnedRef.current = false;
+  }, [selectedCustomer]);
+
+  const handleUseDifferentAddress = useCallback(() => {
+    setAddrSource("custom");
+    addrUserOwnedRef.current = true;
+  }, []);
+
+  const customerAddr = useMemo(() => getCustomerAddress(selectedCustomer), [selectedCustomer]);
 
   const handleInlineCreateCustomer = useCallback(() => {
     const name = inlineName.trim();
@@ -247,6 +306,8 @@ export default function NewProjectScreen({ onBack, onSave }) {
     setInlineName("");
     setInlinePhone("");
     setInlineEmail("");
+    setAddrSource("custom"); // inline new customers have no address yet
+    addrUserOwnedRef.current = false;
   }, [customers, inlineName, inlinePhone, inlineEmail]);
 
   const canSave = projectName.trim().length > 0;
@@ -306,64 +367,6 @@ export default function NewProjectScreen({ onBack, onSave }) {
             autoFocus
           />
         </div>
-        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Site / Job Address</label>
-          <input
-            type="text"
-            style={S.input}
-            placeholder="Street address"
-            value={addrStreet}
-            onChange={(e) => setAddrStreet(e.target.value)}
-            autoComplete="street-address"
-          />
-          <div style={S.addrRow}>
-            <input
-              type="text"
-              style={{ ...S.input, flex: 2 }}
-              placeholder="City"
-              value={addrCity}
-              onChange={(e) => setAddrCity(e.target.value)}
-              autoComplete="address-level2"
-            />
-            <select
-              style={{ ...S.input, flex: 1, minWidth: 72 }}
-              value={addrState}
-              onChange={(e) => setAddrState(e.target.value)}
-              autoComplete="address-level1"
-            >
-              <option value="">State</option>
-              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <input
-              type="text"
-              style={{ ...S.input, flex: 1, minWidth: 72 }}
-              placeholder="ZIP"
-              value={addrZip}
-              onChange={(e) => setAddrZip(e.target.value)}
-              autoComplete="postal-code"
-              inputMode="numeric"
-            />
-          </div>
-        </div>
-        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Status</label>
-          <div style={S.statusRow}>
-            {PROJECT_STATUS_OPTIONS.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
-                onClick={() => setStatus(option.key)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div style={S.sectionCard}>
-        <div style={S.sectionHeader}>Customer</div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
           <label style={S.label}>Customer</label>
           {!inlineNewMode ? (
@@ -449,6 +452,82 @@ export default function NewProjectScreen({ onBack, onSave }) {
               </div>
             </div>
           )}
+        </div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Site / Job Address</label>
+          {selectedCustomer && customerAddr ? (
+            <div style={S.addrModeRow}>
+              <button
+                type="button"
+                style={{ ...S.addrModeBtn, ...(addrSource === "customer" ? S.addrModeBtnActive : {}) }}
+                onClick={handleUseCustomerAddress}
+              >
+                Use customer address
+              </button>
+              <button
+                type="button"
+                style={{ ...S.addrModeBtn, ...(addrSource === "custom" ? S.addrModeBtnActive : {}) }}
+                onClick={handleUseDifferentAddress}
+              >
+                Different job site
+              </button>
+            </div>
+          ) : null}
+          <input
+            type="text"
+            style={{ ...S.input, ...(addrSource === "customer" ? S.inputDisabled : {}), marginTop: selectedCustomer && customerAddr ? 8 : 0 }}
+            placeholder="Street address"
+            value={addrStreet}
+            onChange={(e) => { setAddrStreet(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
+            disabled={addrSource === "customer"}
+            autoComplete="street-address"
+          />
+          <div style={S.addrRow}>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 2, ...(addrSource === "customer" ? S.inputDisabled : {}) }}
+              placeholder="City"
+              value={addrCity}
+              onChange={(e) => { setAddrCity(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
+              disabled={addrSource === "customer"}
+              autoComplete="address-level2"
+            />
+            <select
+              style={{ ...S.input, flex: 1, minWidth: 72, ...(addrSource === "customer" ? S.inputDisabled : {}) }}
+              value={addrState}
+              onChange={(e) => { setAddrState(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
+              disabled={addrSource === "customer"}
+              autoComplete="address-level1"
+            >
+              <option value="">State</option>
+              {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input
+              type="text"
+              style={{ ...S.input, flex: 1, minWidth: 72, ...(addrSource === "customer" ? S.inputDisabled : {}) }}
+              placeholder="ZIP"
+              value={addrZip}
+              onChange={(e) => { setAddrZip(e.target.value); addrUserOwnedRef.current = true; setAddrSource("custom"); }}
+              disabled={addrSource === "customer"}
+              autoComplete="postal-code"
+              inputMode="numeric"
+            />
+          </div>
+        </div>
+        <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+          <label style={S.label}>Status</label>
+          <div style={S.statusRow}>
+            {PROJECT_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                style={{ ...S.statusOption, ...(status === option.key ? S.statusOptionActive : {}) }}
+                onClick={() => setStatus(option.key)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -720,6 +799,33 @@ const S = {
     gap: 8,
     marginTop: 8,
     flexWrap: "wrap",
+  },
+  addrModeRow: {
+    display: "flex",
+    gap: 6,
+    marginBottom: 0,
+    flexWrap: "wrap",
+  },
+  addrModeBtn: {
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 6,
+    color: "rgba(190,210,230,0.7)",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 500,
+    padding: "5px 12px",
+    transition: "background 0.15s, border-color 0.15s, color 0.15s",
+  },
+  addrModeBtnActive: {
+    background: "rgba(99,179,237,0.15)",
+    borderColor: "rgba(99,179,237,0.5)",
+    color: "rgba(147,210,255,0.95)",
+    fontWeight: 600,
+  },
+  inputDisabled: {
+    opacity: 0.45,
+    cursor: "not-allowed",
   },
   statusRow: {
     display: "grid",

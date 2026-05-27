@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { readStoredProjects, updateProjectMetadata } from "../utils/projects";
 
@@ -49,6 +49,31 @@ function parseSiteAddress(raw) {
   return { street: s, city: "", state: "", zip: "" };
 }
 
+function readCustomers() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+    return Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function getCustomerAddress(c) {
+  if (!c) return null;
+  const svc = c.resService || {};
+  const job = c.jobsite || {};
+  const primary = (svc.street || svc.city) ? svc : (job.street || job.city) ? job : null;
+  if (primary) {
+    return {
+      street: String(primary.street || "").trim(),
+      city: String(primary.city || "").trim(),
+      state: String(primary.state || "").trim(),
+      zip: String(primary.zip || "").trim(),
+    };
+  }
+  const flat = String(c.address || "").trim();
+  if (flat) return { street: flat, city: "", state: "", zip: "" };
+  return null;
+}
+
 function readProjectById(projectId) {
   if (!projectId) return null;
   try {
@@ -69,6 +94,15 @@ export default function EditProjectScreen({ onBack, onSave }) {
     try { return String(localStorage.getItem(DETAIL_TARGET_KEY) || "").trim(); } catch { return ""; }
   });
   const [project, setProject] = useState(() => readProjectById(projectId));
+  const [customers] = useState(() => readCustomers());
+
+  const linkedCustomer = useMemo(() => {
+    const id = String(project?.customerId || "").trim();
+    if (!id) return null;
+    return customers.find((c) => String(c?.id || "") === id) || null;
+  }, [project, customers]);
+
+  const linkedCustomerAddr = useMemo(() => getCustomerAddress(linkedCustomer), [linkedCustomer]);
 
   const [projectName, setProjectName] = useState(() => String(project?.projectName || ""));
   const [addrStreet, setAddrStreet] = useState(() => parseSiteAddress(project?.siteAddress).street);
@@ -152,6 +186,14 @@ export default function EditProjectScreen({ onBack, onSave }) {
 
   const canSave = projectName.trim().length > 0;
 
+  const handleUseCustomerAddress = useCallback(() => {
+    if (!linkedCustomerAddr) return;
+    setAddrStreet(linkedCustomerAddr.street);
+    setAddrCity(linkedCustomerAddr.city);
+    setAddrState(linkedCustomerAddr.state);
+    setAddrZip(linkedCustomerAddr.zip);
+  }, [linkedCustomerAddr]);
+
   const handleSave = useCallback(() => {
     if (!canSave || !projectId) return;
     const latestProject = readProjectById(projectId);
@@ -210,8 +252,24 @@ export default function EditProjectScreen({ onBack, onSave }) {
           />
         </div>
 
+        {customerLabel ? (
+          <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
+            <div style={S.label}>Linked Customer <span style={S.readOnlyTag}>view only</span></div>
+            <div style={S.readOnlyField}>{customerLabel}</div>
+          </div>
+        ) : null}
+
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
           <label style={S.label}>Site / Job Address</label>
+          {linkedCustomer && linkedCustomerAddr && !composeSiteAddress(addrStreet, addrCity, addrState, addrZip) ? (
+            <button
+              type="button"
+              style={S.useCustomerAddrBtn}
+              onClick={handleUseCustomerAddress}
+            >
+              Use customer address
+            </button>
+          ) : null}
           <input
             type="text"
             style={S.input}
@@ -266,16 +324,6 @@ export default function EditProjectScreen({ onBack, onSave }) {
           </div>
         </div>
       </div>
-
-      {customerLabel ? (
-        <div style={S.sectionCard}>
-          <div style={S.sectionHeader}>Customer</div>
-          <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
-            <div style={S.label}>Linked Customer <span style={S.readOnlyTag}>view only</span></div>
-            <div style={S.readOnlyField}>{customerLabel}</div>
-          </div>
-        </div>
-      ) : null}
 
       <div style={S.sectionCard}>
         <div style={S.sectionHeader}>Additional</div>
@@ -442,6 +490,18 @@ const S = {
     gap: 8,
     marginTop: 8,
     flexWrap: "wrap",
+  },
+  useCustomerAddrBtn: {
+    background: "rgba(99,179,237,0.08)",
+    border: "1px solid rgba(99,179,237,0.3)",
+    borderRadius: 6,
+    color: "rgba(147,210,255,0.9)",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 500,
+    padding: "5px 12px",
+    marginBottom: 8,
+    alignSelf: "flex-start",
   },
   statusGrid: {
     display: "grid",
