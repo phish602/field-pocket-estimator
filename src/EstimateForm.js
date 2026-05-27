@@ -1640,6 +1640,26 @@ export default function EstimateForm(props) {
   const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
   const scopeImages = Array.isArray(state?.scopeImages) ? state.scopeImages.filter(Boolean) : [];
+  const scopeImageUsage = useMemo(() => {
+    const totalBytes = scopeImages.reduce((sum, img) => {
+      const storedBytes = Number(img?.storedSizeBytes || 0);
+      if (storedBytes > 0) return sum + storedBytes;
+      return sum + estimateDataUrlBytes(String(img?.dataUrl || ""));
+    }, 0);
+    return {
+      count: scopeImages.length,
+      totalBytes,
+      countLabel: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT
+        ? `Scope photos: ${scopeImages.length} of ${MAX_SCOPE_IMAGES_PER_DOCUMENT} used — remove a photo before adding another.`
+        : `Scope photos: ${scopeImages.length} of ${MAX_SCOPE_IMAGES_PER_DOCUMENT} used`,
+      storageLabel: totalBytes > 0
+        ? `Photo storage: ${(totalBytes / 1000000).toFixed(1)} MB of ${(MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES / 1000000).toFixed(1)} MB`
+        : "",
+      isNearCountLimit: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT - 1,
+      isAtCountLimit: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT,
+      isNearStorageLimit: totalBytes >= (MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES * 0.8),
+    };
+  }, [scopeImages]);
   const additionalNotes = String(state?.additionalNotes || "");
   const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
@@ -6703,11 +6723,27 @@ export default function EstimateForm(props) {
               style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none", whiteSpace: "pre-wrap", outline: "none" }}
             />
           </div>
-          {scopeImages.length ? (
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div className="pe-muted" style={{ fontSize: 12, fontWeight: 600 }}>
-                Attached images
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            <div style={{
+              display: "grid",
+              gap: 3,
+              padding: "2px 0 1px",
+              color: scopeImageUsage.isAtCountLimit
+                ? "rgba(180,83,9,0.95)"
+                : scopeImageUsage.isNearCountLimit || scopeImageUsage.isNearStorageLimit
+                  ? "rgba(180,83,9,0.78)"
+                  : "rgba(71,85,105,0.84)",
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>
+                {scopeImageUsage.countLabel}
               </div>
+              {scopeImageUsage.storageLabel ? (
+                <div style={{ fontSize: 11, lineHeight: 1.35, color: scopeImageUsage.isNearStorageLimit ? "rgba(180,83,9,0.82)" : "rgba(71,85,105,0.7)" }}>
+                  {scopeImageUsage.storageLabel}
+                </div>
+              ) : null}
+            </div>
+            {scopeImages.length ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                 {scopeImages.map((img) => {
                   const imgLayout = (img?.layout && typeof img.layout === "object")
@@ -6808,8 +6844,8 @@ export default function EstimateForm(props) {
                   );
                 })}
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "" : "pe-open"}`}
