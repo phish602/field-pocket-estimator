@@ -3652,6 +3652,14 @@ export default function EstimateForm(props) {
         ? allProjects.find((project) => String(project?.id || "").trim() === selectedExistingProjectId) || null
         : null);
   }, [allProjects, availableExistingProjects, selectedExistingProjectId]);
+  const isEstimateProjectReassignment = isEditMode && !isInvoiceEditMode && showExistingProjectSelector;
+  const currentLinkedProjectId = isEstimateProjectReassignment ? String(state?.projectId || "").trim() : "";
+  const currentLinkedProject = useMemo(() => {
+    if (!currentLinkedProjectId) return null;
+    return (Array.isArray(allProjects) ? allProjects : []).find(
+      (project) => String(project?.id || "").trim() === currentLinkedProjectId
+    ) || null;
+  }, [allProjects, currentLinkedProjectId]);
   const guidedBuildContext = useMemo(() => ({
     customers: allCustomers,
     selectedCustomer: selectedCustomerProfile,
@@ -4661,6 +4669,26 @@ export default function EstimateForm(props) {
       projectName = String(projectRecord.projectName || projectName).trim();
       projectNumber = String(projectRecord.projectNumber || projectNumber).trim();
       const resolvedCustomerId = liveCustomerId;
+      const previousEstimateProjectId = saveDocType === "estimate"
+        ? String(existingMatch?.projectId || "").trim()
+        : "";
+      const targetEstimateProjectId = String(projectRecord?.id || "").trim();
+      if (
+        saveDocType === "estimate"
+        && isEditMode
+        && previousEstimateProjectId
+        && previousEstimateProjectId !== targetEstimateProjectId
+      ) {
+        const targetExistingProject = currentProjects.find(
+          (project) => String(project?.id || "").trim() === targetEstimateProjectId
+        );
+        if (targetExistingProject) {
+          const confirmed = window.confirm(
+            "Move this estimate to an existing project?\n\nEmpty auto-created project will be removed.\nOriginal project will remain."
+          );
+          if (!confirmed) return;
+        }
+      }
       const nextProjects = upsertProject(currentProjects, projectRecord);
       const shouldUseLinkedInvoiceFinancials = (
         saveDocType === "invoice"
@@ -4797,11 +4825,17 @@ export default function EstimateForm(props) {
           estimateNumber,
           invoiceNumber: "",
         };
-        writeStoredProjects(nextProjects);
+        const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
+        const reassignmentCleanup = {
+          projects: nextProjects,
+          removed: false,
+          removedProjectId: "",
+          reason: "orphan-cleanup-disabled-safety",
+        };
+        writeStoredProjects(reassignmentCleanup.projects);
         try {
           window.dispatchEvent(new Event("estipaid:projects-changed"));
         } catch {}
-        const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         writeStoredEstimatesLocal(nextEstimates);
         captureDocumentSave({
           docType: "estimate",
@@ -5865,7 +5899,18 @@ export default function EstimateForm(props) {
           <div style={styles.jobInfoContentWrap}>
             {showExistingProjectSelector ? (
               <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
-                <label style={styles.label}>Link existing project</label>
+                <label style={styles.label}>{isEstimateProjectReassignment ? "Move to Project" : "Link existing project"}</label>
+                {isEstimateProjectReassignment && currentLinkedProject ? (
+                  <div style={{ margin: "0 0 4px", padding: "6px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", fontSize: 12, color: "rgba(230,241,248,0.72)", lineHeight: 1.55 }}>
+                    <span style={{ color: "rgba(230,241,248,0.46)" }}>Current linked project: </span>
+                    <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.88)" }}>
+                      {String(currentLinkedProject?.projectName || "").trim() || "Untitled Project"}
+                    </span>
+                    {String(currentLinkedProject?.projectNumber || "").trim()
+                      ? ` • ${String(currentLinkedProject?.projectNumber || "").trim()}`
+                      : ""}
+                  </div>
+                ) : null}
                 <select
                   className="pe-input"
                   value={selectedExistingProjectId}
@@ -5895,11 +5940,19 @@ export default function EstimateForm(props) {
                 <div className="pe-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
                   {!selectedCustomerId
                     ? "Choose a customer first to link this document to one of their existing projects."
+                    : isEstimateProjectReassignment
+                    ? (
+                      selectedExistingProject
+                        ? "Move this estimate to the selected existing project when you save."
+                        : availableExistingProjects.length === 0
+                          ? "No saved projects are available for the selected customer yet."
+                          : "Select an existing project to move this estimate. Empty auto-created project will be removed; otherwise the original project remains."
+                    )
                     : selectedExistingProject
-                    ? "This document will stay linked to the selected existing project when you save."
-                    : availableExistingProjects.length === 0
-                    ? "No saved projects are available for the selected customer yet."
-                    : "Optional: link this document to one existing project for the selected customer."}
+                      ? "This document will stay linked to the selected existing project when you save."
+                      : availableExistingProjects.length === 0
+                        ? "No saved projects are available for the selected customer yet."
+                        : "Optional: link this document to one existing project for the selected customer."}
                 </div>
               </div>
             ) : null}

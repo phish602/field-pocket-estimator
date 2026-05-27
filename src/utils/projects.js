@@ -681,3 +681,126 @@ export function resolveProjectPersistenceTarget(doc = {}, projects = [], options
     needsBackfill: !existing,
   };
 }
+
+function isDerivedAutoProjectId(value) {
+  const id = asText(value);
+  if (!id) return false;
+  if (!/^proj_[a-z0-9]+$/i.test(id)) return false;
+  return id.split("_").length === 2;
+}
+
+function projectHasMeaningfulDataBeyondMovedEstimate(project = {}, movedEstimate = {}) {
+  const projectNotes = asText(project?.notes);
+  const projectScopeSummary = asText(project?.scopeSummary);
+  if (projectNotes || projectScopeSummary) return true;
+
+  const projectStatus = normalizeProjectStatus(project?.status);
+  if (projectStatus && projectStatus !== "active") return true;
+
+  const movedProjectName = asText(movedEstimate?.projectName);
+  const movedProjectNumber = asText(movedEstimate?.projectNumber);
+  const movedSiteAddress = asText(
+    movedEstimate?.siteAddress
+    || movedEstimate?.customer?.projectAddress
+    || movedEstimate?.customer?.address
+  );
+  const movedCustomerId = asText(movedEstimate?.customerId || movedEstimate?.customer?.id);
+  const movedCustomerName = asText(
+    movedEstimate?.customerName
+    || movedEstimate?.customer?.name
+    || movedEstimate?.customer?.companyName
+    || movedEstimate?.customer?.fullName
+  );
+
+  const projectName = asText(project?.projectName);
+  const projectNumber = asText(project?.projectNumber);
+  const siteAddress = asText(project?.siteAddress);
+  const customerId = asText(project?.customerId);
+  const customerName = asText(project?.customerName);
+
+  if (projectName && movedProjectName && projectName !== movedProjectName) return true;
+  if (projectNumber && movedProjectNumber && projectNumber !== movedProjectNumber) return true;
+  if (siteAddress && movedSiteAddress && siteAddress !== movedSiteAddress) return true;
+  if (customerId && movedCustomerId && customerId !== movedCustomerId) return true;
+  if (customerName && movedCustomerName && normalizeTextKey(customerName) !== normalizeTextKey(movedCustomerName)) return true;
+
+  return false;
+}
+
+export function cleanupOrphanProjectAfterEstimateMove({
+  projects = [],
+  estimates = [],
+  invoices = [],
+  fromProjectId = "",
+  toProjectId = "",
+  movedEstimate = {},
+} = {}) {
+  const sourceProjectId = asText(fromProjectId);
+  const targetProjectId = asText(toProjectId);
+  if (!sourceProjectId || !targetProjectId || sourceProjectId === targetProjectId) {
+    return {
+      projects: normalizeProjectList(projects),
+      removedProjectId: "",
+      removed: false,
+      reason: "not-applicable",
+    };
+  }
+
+  const projectList = normalizeProjectList(projects);
+  const sourceProject = projectList.find((project) => asText(project?.id) === sourceProjectId) || null;
+  if (!sourceProject) {
+    return {
+      projects: projectList,
+      removedProjectId: "",
+      removed: false,
+      reason: "source-missing",
+    };
+  }
+  if (sourceProjectId === targetProjectId) {
+    return {
+      projects: projectList,
+      removedProjectId: "",
+      removed: false,
+      reason: "same-project",
+    };
+  }
+
+  const sourceEstimateCount = (Array.isArray(estimates) ? estimates : []).filter(
+    (estimate) => asText(estimate?.projectId) === sourceProjectId
+  ).length;
+  const sourceInvoiceCount = (Array.isArray(invoices) ? invoices : []).filter(
+    (invoice) => asText(invoice?.projectId) === sourceProjectId
+  ).length;
+  if (sourceEstimateCount > 0 || sourceInvoiceCount > 0) {
+    return {
+      projects: projectList,
+      removedProjectId: "",
+      removed: false,
+      reason: "still-has-documents",
+    };
+  }
+
+  if (!isDerivedAutoProjectId(sourceProjectId)) {
+    return {
+      projects: projectList,
+      removedProjectId: "",
+      removed: false,
+      reason: "not-derived-auto-project",
+    };
+  }
+  if (projectHasMeaningfulDataBeyondMovedEstimate(sourceProject, movedEstimate)) {
+    return {
+      projects: projectList,
+      removedProjectId: "",
+      removed: false,
+      reason: "has-meaningful-data",
+    };
+  }
+
+  return {
+    projects: projectList.filter((project) => asText(project?.id) !== sourceProjectId),
+    removedProjectId: sourceProjectId,
+    removed: true,
+    reason: "removed-empty-derived-project",
+  };
+}
