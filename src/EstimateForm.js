@@ -848,8 +848,11 @@ function buildCleanBuilderState(docType = "estimate") {
     ...(next.ui || {}),
     docType: normalizedDocType,
     materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
+    includeInvoiceScopeNotes: normalizedDocType === "invoice"
+      ? Boolean(next?.ui?.includeInvoiceScopeNotes)
+      : false,
   };
-  next.scopeNotes = normalizedDocType === "invoice" ? "" : String(next.scopeNotes || "");
+  next.scopeNotes = String(next.scopeNotes || "");
   next.tradeInsert = { key: "", text: "" };
   next.meta = { lastSavedAt: 0 };
 
@@ -1579,6 +1582,17 @@ export default function EstimateForm(props) {
   const isEditModeRef = useRef(isEditMode);
   const openedEditIdRef = useRef(editingRecordId);
   const openedDocNumberRef = useRef("");
+  const initialDraftDocType = useMemo(() => {
+    if (isEditMode) return "estimate";
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return "estimate";
+      const parsed = JSON.parse(raw);
+      return parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+    } catch {
+      return "estimate";
+    }
+  }, [isEditMode]);
   const lang = useMemo(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
@@ -1612,12 +1626,14 @@ export default function EstimateForm(props) {
     clearAll,
     saveNow,
     replaceState,
-  } = hook({ persistDraft: !isEditMode });
+  } = hook({ persistDraft: !isEditMode && initialDraftDocType !== "invoice" });
   const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
   const additionalNotes = String(state?.additionalNotes || "");
   const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  const invoiceScopeNotesEnabled = guidedDocType === "invoice" && Boolean(state?.ui?.includeInvoiceScopeNotes);
+  const showScopeNotesEditor = guidedDocType === "estimate" || invoiceScopeNotesEnabled;
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
   const laborAssist = useAiAssist("labor", state);
@@ -4381,6 +4397,11 @@ export default function EstimateForm(props) {
 
       const now = Date.now();
       const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      const liveScopeNotes = (() => {
+        if (saveDocType !== "invoice") return String(state?.scopeNotes || "");
+        const editorText = extractScopeTextFromElement(scopeNotesRef.current).replace(/\n+$/, "");
+        return String(editorText || state?.scopeNotes || "");
+      })();
       const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
       const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
       const openedEditId = String(openedEditIdRef.current || "").trim();
@@ -4453,6 +4474,22 @@ export default function EstimateForm(props) {
       if ((!persistedState || typeof persistedState !== "object") && !isEditMode) {
         const raw = localStorage.getItem(STORAGE_KEY);
         persistedState = raw ? JSON.parse(raw) : null;
+      }
+      if (saveDocType === "invoice" && persistedState && typeof persistedState === "object") {
+        persistedState = {
+          ...persistedState,
+          scopeNotes: liveScopeNotes,
+          tradeInsert: {
+            ...(persistedState?.tradeInsert || {}),
+            ...(state?.tradeInsert || {}),
+          },
+          ui: {
+            ...(persistedState?.ui || {}),
+            ...(state?.ui || {}),
+            docType: "invoice",
+            includeInvoiceScopeNotes: Boolean(state?.ui?.includeInvoiceScopeNotes),
+          },
+        };
       }
       if (!persistedState || typeof persistedState !== "object") {
         setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
@@ -4870,12 +4907,22 @@ export default function EstimateForm(props) {
       const projectNumber = String(exportState?.customer?.projectNumber || "").trim();
       const poNumber = String(exportState?.job?.poNumber || "").trim();
       const docDate = String(exportState?.job?.date || "").trim();
-      const includeNotes = uiDocType === "estimate";
+      const invoiceScopeNotesEnabled = uiDocType === "invoice" && Boolean(exportState?.ui?.includeInvoiceScopeNotes);
+      const includeNotes = uiDocType === "estimate" || invoiceScopeNotesEnabled;
       const additionalNotesText = String(exportState?.additionalNotes || "").trim();
       const materialsBlanketDescription = String(exportState?.materials?.materialsBlanketDescription || "").trim();
-      const tradeBlocks = extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text);
-      const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
-      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(exportState?.scopeNotes, tradeBlocks) : "";
+      const tradeBlocks = uiDocType === "estimate"
+        ? extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text)
+        : [];
+      const tradeRawForPdf = uiDocType === "estimate" ? tradeBlocks.join("\n\n") : "";
+      const scopeWithoutTrade = includeNotes
+        ? (
+            uiDocType === "estimate"
+              ? stripTradeInsertBlocksFromScope(exportState?.scopeNotes, tradeBlocks)
+              : String(exportState?.scopeNotes || "")
+          )
+        : "";
+      const printableScopeNotes = String(scopeWithoutTrade || "").trim();
       const companyAddressLine1 = String(companyProfile?.addressLine1 || "").trim();
       const companyAddressLine2 = String(companyProfile?.addressLine2 || "").trim();
       const companyCity = String(companyProfile?.city || "").trim();
@@ -4994,7 +5041,8 @@ export default function EstimateForm(props) {
         invoiceStatus: uiDocType === "invoice" ? String(exportState?.status || "").trim() : "",
         paymentStatus: uiDocType === "invoice" ? String(exportState?.paymentStatus || "").trim() : "",
         summaryRows,
-        scopeNotes: includeNotes ? scopeWithoutTrade : "",
+        scopeNotes: printableScopeNotes,
+        includeInvoiceScopeNotes: invoiceScopeNotesEnabled,
         additionalNotes: additionalNotesText,
       }, mode);
     } catch (err) {
@@ -5953,24 +6001,68 @@ export default function EstimateForm(props) {
         </div>
         </section>
 
-        {uiDocType === "estimate" ? (
+        {uiDocType === "estimate" || uiDocType === "invoice" ? (
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
           <div style={{ display: "grid", gap: 2 }}>
-            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope of Work" styles={styles} stackStyle={{ marginBottom: 0 }} />
-            <div style={styles.scopeSubtitle}>Describe the job — what you're doing, where, and roughly how much.</div>
+            <SectionTitleWithIcon
+              icon={<IconSpecialConditions />}
+              title={uiDocType === "invoice" ? "Scope Notes" : "Scope of Work"}
+              styles={styles}
+              stackStyle={{ marginBottom: 0 }}
+            />
+            <div style={styles.scopeSubtitle}>
+              {uiDocType === "invoice"
+                ? "Optional work notes."
+                : "Describe the job — what you're doing, where, and roughly how much."}
+            </div>
           </div>
-          <button
-            type="button"
-            className="pe-btn pe-btn-ghost"
-            style={styles.aiAssistBtn}
-            onClick={openScopeAssist}
-            title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
-          >
-            ✦ AI Assist
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {uiDocType === "invoice" ? (
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 12px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(148,163,184,0.2)",
+                  background: invoiceScopeNotesEnabled ? "rgba(59,130,246,0.14)" : "rgba(15,23,42,0.32)",
+                  color: "rgba(230,241,248,0.92)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={invoiceScopeNotesEnabled}
+                  onChange={(e) => {
+                    const checked = Boolean(e.target.checked);
+                    patch("ui.includeInvoiceScopeNotes", checked);
+                    if (checked) setNotesOpen(true);
+                  }}
+                />
+                Include on Invoice
+              </label>
+            ) : null}
+            {showScopeNotesEditor ? (
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                style={styles.aiAssistBtn}
+                onClick={openScopeAssist}
+                title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
+              >
+                ✦ AI Assist
+              </button>
+            ) : null}
+          </div>
         </div>
+        {showScopeNotesEditor ? (
+        <>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
           style={{ ...styles.notesCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
@@ -6261,6 +6353,8 @@ export default function EstimateForm(props) {
             </button>
           )}
         </div>
+        </>
+        ) : null}
         </section>
         ) : null}
 

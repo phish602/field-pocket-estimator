@@ -269,6 +269,46 @@ function normalizeMaterialRow(row) {
   };
 }
 
+function normalizeLaborRow(row) {
+  if (Array.isArray(row)) {
+    return {
+      label: asText(row?.[0]),
+      qty: asText(row?.[1], "-"),
+      hours: asText(row?.[2], "-"),
+      rate: asText(row?.[3], "-"),
+      total: asText(row?.[4], "-"),
+    };
+  }
+
+  if (row && typeof row === "object") {
+    return {
+      label: asText(row?.label, asText(row?.role)),
+      qty: asText(row?.qty, "-"),
+      hours: asText(row?.hours, "-"),
+      rate: asText(row?.rate, asText(row?.billRate, "-")),
+      total: asText(row?.total, asText(row?.lineTotal, asText(row?.amount, "-"))),
+    };
+  }
+
+  return {
+    label: "",
+    qty: "-",
+    hours: "-",
+    rate: "-",
+    total: "-",
+  };
+}
+
+function toNumericAmount(value) {
+  const parsed = parseFloat(String(value ?? "").replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isPlaceholderBlanketDescription(value) {
+  const normalized = asText(value).toLowerCase();
+  return normalized === "blanket materials";
+}
+
 function buildFooterLine(company) {
   const address = ensureArray(company?.addressLines)
     .map((line) => asText(line))
@@ -414,10 +454,10 @@ function buildLogoFallbackInitials(company) {
 }
 
 function drawLogoFallbackBadge(doc, company, x, y) {
-  const badgeWidth = 48;
-  const badgeHeight = 22;
+  const badgeWidth = 90;
+  const badgeHeight = 50;
   const initials = buildLogoFallbackInitials(company);
-  const fontSize = initials.length >= 3 ? 12.6 : 14.6;
+  const fontSize = initials.length >= 3 ? 18.0 : 21.0;
 
   doc.setDrawColor(165, 165, 165);
   doc.setFillColor(245, 245, 245);
@@ -444,8 +484,8 @@ function drawLogo(doc, company, x, y) {
     const props = doc.getImageProperties(logoDataUrl);
     const width = Number(props?.width) || 1;
     const height = Number(props?.height) || 1;
-    const maxWidth = 48;
-    const maxHeight = 22;
+    const maxWidth = 90;
+    const maxHeight = 50;
     const scale = Math.min(maxWidth / width, maxHeight / height);
     const drawWidth = width * scale;
     const drawHeight = height * scale;
@@ -669,24 +709,58 @@ function buildPdfDoc(payload) {
   const company = payload?.company || {};
   const customer = payload?.customer || {};
   const job = payload?.job || {};
+  const laborRows = ensureArray(payload?.laborRows);
   const materialRows = ensureArray(payload?.materialRows);
   const isItemizedMaterials = payload?.materialsMode === "itemized";
-  const normalizedMaterialRows = (
-    isItemizedMaterials
-      ? materialRows
-      : (materialRows.length ? materialRows : [["-", "-", "-", "-"]])
-  )
+  const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
+  const normalizedLaborRows = laborRows
+    .map(normalizeLaborRow)
+    .filter((row) => (
+      row.label
+      || row.qty !== "-"
+      || row.hours !== "-"
+      || row.rate !== "-"
+      || row.total !== "-"
+    ));
+  const hasMeaningfulLaborContent = normalizedLaborRows.some((row) => {
+    return (
+      toNumericAmount(row.hours) !== 0
+      || toNumericAmount(row.total) !== 0
+    );
+  });
+
+  const normalizedMaterialRows = materialRows
     .map(normalizeMaterialRow)
     .filter((row) => !isItemizedMaterials || !!asText(row?.desc));
+  const hasMeaningfulItemizedMaterials = normalizedMaterialRows.some((row) => !!asText(row?.desc) && asText(row?.desc) !== "-");
+  const hasMeaningfulBlanketMaterials = (
+    !!materialsBlanketDescription
+    || normalizedMaterialRows.some((row) => (
+      toNumericAmount(row?.total) !== 0
+      || toNumericAmount(row?.each) !== 0
+      || (!!asText(row?.desc) && !isPlaceholderBlanketDescription(row?.desc))
+    ))
+  );
+  const hasMeaningfulMaterialsContent = isItemizedMaterials
+    ? hasMeaningfulItemizedMaterials
+    : hasMeaningfulBlanketMaterials;
   const summaryRows = ensureArray(payload?.summaryRows);
   const scopeNotesText = formatLongFormPdfText(stripScopeMarkdownMarkers(payload?.scopeNotes));
   const scopeBlocks = parseScopeBlocks(payload?.scopeNotes);
+  const shouldRenderScopeNotes = Boolean(scopeNotesText)
+    && scopeBlocks.length > 0
+    && (
+      payload?.docType === "estimate"
+      || (payload?.docType === "invoice" && payload?.includeInvoiceScopeNotes === true)
+    );
   const tradeInsertText = formatLongFormPdfText(payload?.tradeInsertText);
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
-  const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
   const displayedSummaryRows = (summaryRows.length ? summaryRows : [["Total", "$0.00"]]).filter((row) => {
     const label = asText(row?.[0]).toLowerCase();
-    return !label.startsWith("hazard") && !label.startsWith("risk");
+    if (label.startsWith("hazard") || label.startsWith("risk")) return false;
+    if (!hasMeaningfulLaborContent && label === "labor") return false;
+    if (!hasMeaningfulMaterialsContent && label === "materials") return false;
+    return true;
   });
   const safeSummaryRows = displayedSummaryRows.length ? displayedSummaryRows : [["Total", "$0.00"]];
   const subtotalRowIndex = safeSummaryRows.findIndex((row) => asText(row?.[0]).toLowerCase() === "subtotal");
@@ -708,7 +782,7 @@ function buildPdfDoc(payload) {
   const CENTER = 105;
   const LOGO_Y = 15.5;
   const META_Y = 18;
-  const CLIENT_Y = 48;
+  const CLIENT_Y = 69;
   const MATERIAL_HEADER_Y = 80.5;
   const ROW_HEIGHT = 5;
   const FOOTER_Y = pageHeight - 18.2;
@@ -744,7 +818,7 @@ function buildPdfDoc(payload) {
   const TEXT_SECTION_GAP = 5.1;
   const MATERIAL_SECTION_GAP = 5.9;
   const SECTION_PREVIEW_LINES = 2;
-  const SECTION_LINE_HEIGHT_FACTOR = 1.15;
+  const SECTION_LINE_HEIGHT_FACTOR = 1.19;
   const SECTION_HEADER_MIN_HEIGHT = 5.8;
   const SECTION_BODY_PREVIEW_PADDING = 2.6;
   const MATERIAL_KEEP_BUFFER = 5.8;
@@ -766,7 +840,7 @@ function buildPdfDoc(payload) {
   const TERMS_HEADER_TEXT = "TERMS & CONDITIONS";
   const TERMS_HEADER_FONT_SIZE = 7.1;
   const TERMS_BODY_FONT_SIZE = 9.85;
-  const TERMS_LINE_HEIGHT_FACTOR = 1.12;
+  const TERMS_LINE_HEIGHT_FACTOR = 1.16;
   const INVOICE_NOTES_BOX_GAP = 12.8;
   const INVOICE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
   const ESTIMATE_NOTES_BOX_GAP = 16;
@@ -781,7 +855,7 @@ function buildPdfDoc(payload) {
   const ESTIMATE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
   const ESTIMATE_NOTES_HEADER_FONT_SIZE = 7.1;
   const ESTIMATE_NOTES_BODY_FONT_SIZE = 9.4;
-  const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.14;
+  const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.18;
   const sectionTextWidth = Math.max(60, pageWidth - LEFT - RIGHT_GUTTER - 4.5);
   const footerTextWidth = RIGHT - LEFT - 14;
 
@@ -965,7 +1039,7 @@ function buildPdfDoc(payload) {
 
   let y = (doc.lastAutoTable?.finalY || CLIENT_Y) + 9.6;
 
-  if (payload?.docType === "estimate" && scopeBlocks.length > 0) {
+  if (shouldRenderScopeNotes) {
     let estimatedScopeHeight = SECTION_HEADER_MIN_HEIGHT + 1.8;
     for (const blk of scopeBlocks) {
       if (blk.type === "divider") estimatedScopeHeight += 3.8;
@@ -1001,21 +1075,21 @@ function buildPdfDoc(payload) {
           ...SCOPE_COMMON, startY: y,
           ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
           body: [[blk.text]],
-          styles: { ...SCOPE_BASE, fontStyle: "bold", fontSize: 10.2, cellPadding: { top: 2.4, bottom: 1, left: 0.9, right: 0.9 }, minCellHeight: 4.5 },
+          styles: { ...SCOPE_BASE, fontStyle: "bold", fontSize: 10.2, cellPadding: { top: 2.8, bottom: 1.3, left: 1.0, right: 1.0 }, minCellHeight: 4.9 },
         });
       } else if (blk.type === "list") {
         autoTable(doc, {
           ...SCOPE_COMMON, startY: y,
           ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
           body: blk.items.map((item) => [item]),
-          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: { top: 0.6, bottom: 0.6, left: 4.5, right: 0.9 }, minCellHeight: 3 },
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: { top: 0.85, bottom: 0.85, left: 4.6, right: 1.0 }, minCellHeight: 3.5 },
         });
       } else {
         autoTable(doc, {
           ...SCOPE_COMMON, startY: y,
           ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
           body: [[blk.text]],
-          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0.9, minCellHeight: 3.7 },
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 1.15, minCellHeight: 4.1 },
         });
       }
       y = doc.lastAutoTable?.finalY ?? y;
@@ -1057,148 +1131,150 @@ function buildPdfDoc(payload) {
     y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
   }
 
-  y += MATERIAL_SECTION_GAP;
-  y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
-  y = ensureSectionFits(
-    y,
-    MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + estimateFirstMaterialRowHeight() + MATERIAL_KEEP_BUFFER,
-    SECTION_PAGE_TOP
-  );
-  const materialsSectionStartPage = doc.getNumberOfPages();
-  const materialsTitleY = y + 1.2;
-  const materialsSectionTop = materialsTitleY - 3;
-  const materialsSectionLeft = LEFT;
-  const materialsSectionRight = Math.max(contentRightEdge, RIGHT);
-  const materialsSectionWidth = materialsSectionRight - materialsSectionLeft;
-  doc.setFillColor(...HEADER_FILL);
-  doc.rect(materialsSectionLeft, materialsSectionTop, materialsSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9.4);
-  doc.text("Material Schedule", LEFT + 3, materialsTitleY);
-  y = materialsSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
-  const materialTableBody = normalizedMaterialRows.map((row) => ([
-    { content: row.desc || "-", materialRow: row },
-    row.qty,
-    row.each,
-    row.total,
-  ]));
-
-  autoTable(doc, {
-    startY: y,
-    head: [["", "QTY", "PRICE (each)", "TOTAL"]],
-    body: materialTableBody,
-    theme: "plain",
-    tableLineWidth: 0,
-    styles: {
-      fontSize: MATERIAL_DESC_FONT_SIZE,
-      cellPadding: 1.45,
-      minCellHeight: 4.2,
-      overflow: "linebreak",
-      lineWidth: 0,
-      textColor: [20, 20, 20],
-      valign: "top",
-    },
-    headStyles: {
-      fontStyle: "bold",
-      textColor: [20, 20, 20],
-      lineWidth: 0,
-      cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
-      minCellHeight: 4.3,
-    },
-    columnStyles: {
-      0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
-      1: { cellWidth: 20, halign: "right" },
-      2: { cellWidth: 33, halign: "right" },
-      3: { cellWidth: 37, halign: "right" },
-    },
-    margin: { left: LEFT, right: RIGHT_GUTTER },
-    didParseCell: (hookData) => {
-      if (hookData.section === "head") {
-        if (hookData.column.index < 1 || hookData.column.index > 3) return;
-        hookData.cell.styles.halign = "right";
-        return;
-      }
-
-      if (hookData.section !== "body") return;
-      if (hookData.column.index !== 0) return;
-
-      const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
-      if (!materialRow.note) return;
-
-      const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
-      hookData.cell.text = [""];
-      hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), layout.height);
-      hookData.row.height = Math.max(Number(hookData.row.height || 0), layout.height);
-    },
-    didDrawCell: (hookData) => {
-      if (hookData.section !== "body") return;
-      if (hookData.column.index !== 0) return;
-
-      const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
-      if (!materialRow.note) return;
-
-      const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
-      const textX = hookData.cell.x + layout.paddingLeft;
-      const textY = hookData.cell.y + layout.paddingTop;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(MATERIAL_DESC_FONT_SIZE);
-      doc.setTextColor(20, 20, 20);
-      doc.text(
-        layout.descLines.length ? layout.descLines : [materialRow.desc || "-"],
-        textX,
-        textY,
-        { baseline: "top", lineHeightFactor: MATERIAL_DESC_LINE_HEIGHT_FACTOR }
-      );
-
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(MATERIAL_NOTE_FONT_SIZE);
-      doc.setTextColor(106, 106, 106);
-      doc.text(
-        layout.noteLines,
-        textX + MATERIAL_NOTE_INDENT,
-        textY + (Math.max(layout.descLines.length, 1) * layout.descLineHeight) + MATERIAL_NOTE_GAP,
-        { baseline: "top", lineHeightFactor: MATERIAL_NOTE_LINE_HEIGHT_FACTOR }
-      );
-      doc.setTextColor(20, 20, 20);
-    },
-  });
-
-  y = (doc.lastAutoTable?.finalY || y);
-
-  if (materialsBlanketDescription) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.25);
-    const materialsDescriptionLines = splitText(doc, materialsBlanketDescription, 182);
-    doc.text(materialsDescriptionLines, LEFT + 4, y);
-    y += (materialsDescriptionLines.length || 1) * 3.6 + 0.05;
-  }
-
-  const materialsSectionEndPage = doc.getNumberOfPages();
-  const materialsSectionBottom = y - 0.2;
-  doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
-  doc.setLineWidth(BORDER_LINE_WIDTH);
-
-  if (materialsSectionStartPage === materialsSectionEndPage) {
-    doc.rect(
-      materialsSectionLeft,
-      materialsSectionTop,
-      materialsSectionWidth,
-      materialsSectionBottom - materialsSectionTop
+  if (hasMeaningfulMaterialsContent && normalizedMaterialRows.length) {
+    y += MATERIAL_SECTION_GAP;
+    y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
+    y = ensureSectionFits(
+      y,
+      MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + estimateFirstMaterialRowHeight() + MATERIAL_KEEP_BUFFER,
+      SECTION_PAGE_TOP
     );
-  } else {
-    for (let page = materialsSectionStartPage; page <= materialsSectionEndPage; page += 1) {
-      doc.setPage(page);
-      const top = page === materialsSectionStartPage ? materialsSectionTop : 4.5;
-      const bottom = page === materialsSectionEndPage ? materialsSectionBottom : pageHeight - 19;
+    const materialsSectionStartPage = doc.getNumberOfPages();
+    const materialsTitleY = y + 1.2;
+    const materialsSectionTop = materialsTitleY - 3;
+    const materialsSectionLeft = LEFT;
+    const materialsSectionRight = Math.max(contentRightEdge, RIGHT);
+    const materialsSectionWidth = materialsSectionRight - materialsSectionLeft;
+    doc.setFillColor(...HEADER_FILL);
+    doc.rect(materialsSectionLeft, materialsSectionTop, materialsSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.4);
+    doc.text("Material Schedule", LEFT + 3, materialsTitleY);
+    y = materialsSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
+    const materialTableBody = normalizedMaterialRows.map((row) => ([
+      { content: row.desc || "-", materialRow: row },
+      row.qty,
+      row.each,
+      row.total,
+    ]));
+
+    autoTable(doc, {
+      startY: y,
+      head: [["", "QTY", "PRICE (each)", "TOTAL"]],
+      body: materialTableBody,
+      theme: "plain",
+      tableLineWidth: 0,
+      styles: {
+        fontSize: MATERIAL_DESC_FONT_SIZE,
+        cellPadding: 1.45,
+        minCellHeight: 4.2,
+        overflow: "linebreak",
+        lineWidth: 0,
+        textColor: [20, 20, 20],
+        valign: "top",
+      },
+      headStyles: {
+        fontStyle: "bold",
+        textColor: [20, 20, 20],
+        lineWidth: 0,
+        cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
+        minCellHeight: 4.3,
+      },
+      columnStyles: {
+        0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
+        1: { cellWidth: 20, halign: "right" },
+        2: { cellWidth: 33, halign: "right" },
+        3: { cellWidth: 37, halign: "right" },
+      },
+      margin: { left: LEFT, right: RIGHT_GUTTER },
+      didParseCell: (hookData) => {
+        if (hookData.section === "head") {
+          if (hookData.column.index < 1 || hookData.column.index > 3) return;
+          hookData.cell.styles.halign = "right";
+          return;
+        }
+
+        if (hookData.section !== "body") return;
+        if (hookData.column.index !== 0) return;
+
+        const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
+        if (!materialRow.note) return;
+
+        const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
+        hookData.cell.text = [""];
+        hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), layout.height);
+        hookData.row.height = Math.max(Number(hookData.row.height || 0), layout.height);
+      },
+      didDrawCell: (hookData) => {
+        if (hookData.section !== "body") return;
+        if (hookData.column.index !== 0) return;
+
+        const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
+        if (!materialRow.note) return;
+
+        const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
+        const textX = hookData.cell.x + layout.paddingLeft;
+        const textY = hookData.cell.y + layout.paddingTop;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(MATERIAL_DESC_FONT_SIZE);
+        doc.setTextColor(20, 20, 20);
+        doc.text(
+          layout.descLines.length ? layout.descLines : [materialRow.desc || "-"],
+          textX,
+          textY,
+          { baseline: "top", lineHeightFactor: MATERIAL_DESC_LINE_HEIGHT_FACTOR }
+        );
+
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(MATERIAL_NOTE_FONT_SIZE);
+        doc.setTextColor(106, 106, 106);
+        doc.text(
+          layout.noteLines,
+          textX + MATERIAL_NOTE_INDENT,
+          textY + (Math.max(layout.descLines.length, 1) * layout.descLineHeight) + MATERIAL_NOTE_GAP,
+          { baseline: "top", lineHeightFactor: MATERIAL_NOTE_LINE_HEIGHT_FACTOR }
+        );
+        doc.setTextColor(20, 20, 20);
+      },
+    });
+
+    y = (doc.lastAutoTable?.finalY || y);
+
+    if (materialsBlanketDescription) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.25);
+      const materialsDescriptionLines = splitText(doc, materialsBlanketDescription, 182);
+      doc.text(materialsDescriptionLines, LEFT + 4, y);
+      y += (materialsDescriptionLines.length || 1) * 3.6 + 0.05;
+    }
+
+    const materialsSectionEndPage = doc.getNumberOfPages();
+    const materialsSectionBottom = y - 0.2;
+    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+    doc.setLineWidth(BORDER_LINE_WIDTH);
+
+    if (materialsSectionStartPage === materialsSectionEndPage) {
       doc.rect(
         materialsSectionLeft,
-        top,
+        materialsSectionTop,
         materialsSectionWidth,
-        Math.max(0, bottom - top)
+        materialsSectionBottom - materialsSectionTop
       );
+    } else {
+      for (let page = materialsSectionStartPage; page <= materialsSectionEndPage; page += 1) {
+        doc.setPage(page);
+        const top = page === materialsSectionStartPage ? materialsSectionTop : 4.5;
+        const bottom = page === materialsSectionEndPage ? materialsSectionBottom : pageHeight - 19;
+        doc.rect(
+          materialsSectionLeft,
+          top,
+          materialsSectionWidth,
+          Math.max(0, bottom - top)
+        );
+      }
+      doc.setPage(materialsSectionEndPage);
     }
-    doc.setPage(materialsSectionEndPage);
   }
 
   const totalsStartY = ensureSectionFits(y, estimateTotalsBlockHeight(), SECTION_PAGE_TOP) + TOTALS_TOP_OFFSET;
