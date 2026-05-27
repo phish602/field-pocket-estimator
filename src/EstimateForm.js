@@ -80,6 +80,9 @@ const SCOPE_IMAGE_UPLOAD_MAX_DIMENSION = 1600;
 const SCOPE_IMAGE_UPLOAD_HARD_LIMIT_BYTES = 25 * 1024 * 1024;
 const SCOPE_IMAGE_UPLOAD_COMPRESS_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
 const SCOPE_IMAGE_UPLOAD_JPEG_QUALITY = 0.82;
+const MAX_SCOPE_IMAGES_PER_DOCUMENT = 8;
+const MAX_SCOPE_IMAGE_STORED_BYTES = 900000;
+const MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES = 3500000;
 const I18N = {
   en: {
     standard: "Standard (1.00×)",
@@ -3521,7 +3524,27 @@ export default function EstimateForm(props) {
     if (!file) return;
 
     try {
+      if (scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT) {
+        window.alert(`This document already has ${MAX_SCOPE_IMAGES_PER_DOCUMENT} scope photos. Remove one before adding another.`);
+        return;
+      }
+
       const normalized = await normalizeScopeImageForStorage(file);
+
+      if (normalized.storedSizeBytes > MAX_SCOPE_IMAGE_STORED_BYTES) {
+        window.alert("This photo is still too large after compression. Try a smaller image.");
+        return;
+      }
+
+      const currentTotalBytes = scopeImages.reduce((sum, img) => {
+        const bytes = Number(img?.storedSizeBytes || 0) || estimateDataUrlBytes(String(img?.dataUrl || ""));
+        return sum + bytes;
+      }, 0);
+      if (currentTotalBytes + normalized.storedSizeBytes > MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES) {
+        window.alert("Scope photos are at the document storage limit. Remove a photo before adding another.");
+        return;
+      }
+
       const imageId = getNextScopeImageId();
       const marker = `[scope-image:${imageId}]`;
       const createdAt = Date.now();
