@@ -910,6 +910,16 @@ export default function EstimatesScreen({
 
     const projectName =
       String(displayMeta.projectName || estimate?.projectName || "").toLowerCase();
+    const workTitle =
+      String(
+        estimate?.workTitle
+        || estimate?.jobTitle
+        || estimate?.jobName
+        || estimate?.job?.title
+        || estimate?.title
+        || estimate?.name
+        || ""
+      ).toLowerCase();
 
     const customer =
       String(
@@ -928,6 +938,7 @@ export default function EstimatesScreen({
 
     const matchesText = !q
       || name.includes(q)
+      || workTitle.includes(q)
       || projectName.includes(q)
       || customer.includes(q)
       || number.includes(q);
@@ -2420,12 +2431,22 @@ export default function EstimatesScreen({
                         : null;
                       const isActiveCard = isOpen;
                       const siteAddr = String(displayMeta.siteAddress || e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
-                      const projectTitle = displayMeta.projectName
-                        || e?.projectName
-                        || String(e?.jobName || e?.job?.title || "").trim()
-                        || customerLabel
-                        || (lang === "es" ? "Sin título" : "Untitled Project");
                       const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
+                      const projectLabel = String(displayMeta.projectName || e?.projectName || "").trim();
+                      const workTitle = String(
+                        e?.workTitle
+                        || e?.jobTitle
+                        || e?.jobName
+                        || e?.job?.title
+                        || e?.title
+                        || e?.name
+                        || e?.projectName
+                        || ""
+                      ).trim();
+                      const projectTitle = workTitle
+                        || projectLabel
+                        || customerLabel
+                        || (lang === "es" ? "Trabajo sin título" : "Untitled Job");
 
               const pipelineValue = status === STATUS_APPROVED
                 ? toNum(invoiceSummary?.approvedTotal || e?.total)
@@ -2743,6 +2764,11 @@ export default function EstimatesScreen({
                           {projectTitle}
                         </div>
                         <div className="pe-estimate-card-customer-row" style={customerEstimateRow}>
+                          {projectLabel ? (
+                            <div style={{ ...cardBodyLine, fontSize: 12.5, lineHeight: 1.28, color: "rgba(226,232,240,0.76)" }}>
+                              {`${lang === "es" ? "Proyecto" : "Project"}: ${projectLabel}`}
+                            </div>
+                          ) : null}
                           <div className="pe-estimate-card-customer" style={customerField}>
                             {customerLabel}
                           </div>

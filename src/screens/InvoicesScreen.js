@@ -347,15 +347,16 @@ const invoiceEstimateNumberStyle = {
 };
 
 const invoiceDocLineStyle = {
-  fontSize: 12,
+  fontSize: 12.5,
   lineHeight: 1.3,
-  fontWeight: 700,
-  opacity: 0.72,
+  fontWeight: 800,
+  opacity: 0.92,
   display: "flex",
   flexWrap: "wrap",
-  gap: 6,
+  gap: 8,
   alignItems: "baseline",
   minWidth: 0,
+  color: "rgba(241,245,249,0.95)",
 };
 
 const invoiceSecondaryLineStyle = {
@@ -1425,11 +1426,21 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
       const customerName = String(displayMeta.customerName || invoice?.customerName || "").toLowerCase();
       const projectName = String(displayMeta.projectName || invoice?.projectName || "").toLowerCase();
+      const workTitle = String(
+        invoice?.workTitle
+        || invoice?.jobTitle
+        || invoice?.jobName
+        || invoice?.job?.title
+        || invoice?.title
+        || invoice?.name
+        || ""
+      ).toLowerCase();
       const estimateNumber = String(invoice?.estimateNumber || "").toLowerCase();
       const searchMatch = !search
         || invoiceNumber.includes(search)
         || customerName.includes(search)
         || projectName.includes(search)
+        || workTitle.includes(search)
         || estimateNumber.includes(search);
       const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
       return searchMatch && statusMatch;
@@ -2898,11 +2909,42 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   && getStripeSessionDisplayState(latestActionableStripeSession, invoice) === "pending";
                 const paymentStatusKey = String(invoice?.paymentStatus || "").trim().toLowerCase();
                 const dueDate = formatDateOnly(invoice?.dueDate);
+                const invoiceDate = formatDateOnly(invoice?.invoiceDate || invoice?.date || invoice?.job?.date);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
-                const projectLabel = displayMeta.projectName
+                const projectLabel = String(
+                  displayMeta.projectName
                   || invoice?.projectName
-                  || String(invoice?.jobName || invoice?.job?.title || "").trim();
+                  || ""
+                ).trim();
                 const customerLabel = displayMeta.customerName || invoice?.customerName || "";
+                const invoiceIdentityTitle = String(
+                  invoice?.invoiceTitle
+                  || invoice?.title
+                  || invoice?.invoiceName
+                  || invoice?.name
+                  || invoice?.invoiceLabel
+                  || invoice?.label
+                  || ""
+                ).trim();
+                const workTitle = String(
+                  invoice?.workTitle
+                  || invoice?.jobTitle
+                  || invoice?.jobName
+                  || invoice?.job?.title
+                  || invoiceIdentityTitle
+                  || invoice?.projectName
+                  || ""
+                ).trim();
+                const invoiceNumberText = String(invoice?.invoiceNumber || "").trim();
+                const estimateNumberText = String(invoice?.estimateNumber || "").trim();
+                const invoiceIdentityParts = [
+                  invoiceIdentityTitle && invoiceIdentityTitle !== workTitle ? invoiceIdentityTitle : "",
+                  invoiceNumberText,
+                  estimateNumberText ? `${t("estimateNumLabel")} ${estimateNumberText}` : "",
+                  invoiceDate,
+                  dueDate ? `${lang === "es" ? "Vence" : "Due"} ${dueDate}` : "",
+                  formatPaymentStatus(invoice?.paymentStatus, lang),
+                ].filter(Boolean);
                 const stripeSessionMeta = latestStripeSession ? getStripeSessionStateMeta(stripeSessionState, lang) : null;
                 const paymentConsoleState = getInvoicePaymentConsoleState({
                   derivedStatus,
@@ -2959,19 +3001,21 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           <div style={invoicePrimaryLineStyle}>
                             <div style={invoiceEyebrowStyle}>{lang === "es" ? "Actividad de facturas" : "Invoice Activity"}</div>
                             <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
-                              {projectLabel || customerLabel || (lang === "es" ? "Sin título" : "Untitled Project")}
+                              {workTitle || projectLabel || customerLabel || (lang === "es" ? "Trabajo sin título" : "Untitled Job")}
                             </span>
                           </div>
                           <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
+                            {projectLabel ? (
+                              <div style={invoiceProjectLineStyle}>
+                                {`${lang === "es" ? "Proyecto" : "Project"}: ${projectLabel}`}
+                              </div>
+                            ) : null}
                             <div className="pe-estimate-card-customer" style={invoiceSecondaryLineStyle}>
                               {customerLabel || (lang === "es" ? "Sin cliente" : "No customer")}
                             </div>
                             {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
                             <div style={invoiceDocLineStyle}>
-                              <span className="pe-estimate-card-number">{t("invoiceNumLabel")} {invoice?.invoiceNumber || ""}</span>
-                              {invoice?.estimateNumber ? (
-                                <span className="pe-estimate-card-number">{"• "}{t("estimateNumLabel")} {invoice.estimateNumber}</span>
-                              ) : null}
+                              {invoiceIdentityParts.join(" · ")}
                             </div>
                           </div>
                           <div className="pe-estimate-card-updated" style={invoiceMetaLineStyle}>

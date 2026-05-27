@@ -4578,6 +4578,25 @@ export default function EstimateForm(props) {
         || linkedEstimateSnapshot?.projectName
         || ""
       ).trim();
+      const workTitle = String(
+        state?.customer?.projectName
+        || persistedState?.workTitle
+        || persistedState?.jobTitle
+        || persistedState?.jobName
+        || persistedState?.job?.title
+        || persistedState?.title
+        || existingMatch?.workTitle
+        || existingMatch?.jobTitle
+        || existingMatch?.jobName
+        || existingMatch?.job?.title
+        || existingMatch?.title
+        || linkedEstimateSnapshot?.workTitle
+        || linkedEstimateSnapshot?.jobTitle
+        || linkedEstimateSnapshot?.jobName
+        || linkedEstimateSnapshot?.job?.title
+        || linkedEstimateSnapshot?.title
+        || projectName
+      ).trim();
       projectNumber = String(
         projectNumber
         || persistedState?.projectNumber
@@ -4732,6 +4751,9 @@ export default function EstimateForm(props) {
         customerId: resolvedCustomerId,
         customerName,
         projectName,
+        workTitle,
+        jobTitle: workTitle,
+        jobName: workTitle,
         projectNumber,
         estimateNumber,
         invoiceNumber,
@@ -4762,6 +4784,7 @@ export default function EstimateForm(props) {
         job: {
           ...(persistedState?.job || {}),
           ...(state?.job || {}),
+          title: String(state?.job?.title || workTitle).trim(),
           date: String(state?.job?.date || "").trim(),
           due: String(state?.job?.due || "").trim(),
           poNumber: String(state?.job?.poNumber || "").trim(),
@@ -5993,12 +6016,12 @@ export default function EstimateForm(props) {
 
             <div className={jobInfoTopGridClassName}>
               <div>
-                <label style={styles.label}>Project name{projectSeedSummary ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: "rgba(99,179,237,0.55)" }}>from project</span> : null}</label>
+                <label style={styles.label}>Job / Work Title{projectSeedSummary ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: "rgba(99,179,237,0.55)" }}>from project</span> : null}</label>
                 <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => {
                   projectNameAutoStateRef.current.manual = true;
                   projectNameAutoStateRef.current.auto = "";
                   patch("customer.projectName", e.target.value);
-                }} placeholder="Project name (optional)" />
+                }} placeholder="Job / Work Title (optional)" />
               </div>
               {isCommercialJob ? (
                 <div>
