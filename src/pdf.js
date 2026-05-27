@@ -766,6 +766,7 @@ function buildPdfDoc(payload) {
   const subtotalRowIndex = safeSummaryRows.findIndex((row) => asText(row?.[0]).toLowerCase() === "subtotal");
   const grandTotalRowIndex = safeSummaryRows.length - 1;
   const estimateLabel = payload?.docType === "invoice" ? "INVOICE #" : "ESTIMATE #";
+  const documentTypeLabel = payload?.docType === "invoice" ? "INVOICE" : "ESTIMATE";
   const estimateNumber = asText(payload?.documentNumber, "Draft");
   const date = asText(job?.dateDisplay, asText(job?.date, "-"));
   const po = asText(job?.poNumber, "-");
@@ -969,8 +970,16 @@ function buildPdfDoc(payload) {
     metaBoxX + estimateCellWidth + dateCellWidth + (poCellWidth / 2),
   ];
   const TERMS_BOX_WIDTH = Math.max(contentRightEdge - LEFT + 2, RIGHT - LEFT + 2);
+  const documentTypeLabelY = 10.8;
   const labelCenterY = META_Y + (META_ROW_HEIGHT / 2) + 0.05;
   const valueCenterY = META_Y + META_ROW_HEIGHT + (META_ROW_HEIGHT / 2) + 0.05;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13.2);
+  doc.text(documentTypeLabel, CENTER, documentTypeLabelY, {
+    align: "center",
+    baseline: "middle",
+  });
 
   doc.setFillColor(...HEADER_FILL);
   doc.rect(metaBoxX, META_Y, metaBoxWidth, META_ROW_HEIGHT, "F");
@@ -1498,6 +1507,28 @@ function buildPdfDoc(payload) {
     doc.setFontSize(PAGE_NUMBER_FONT_SIZE);
     doc.setTextColor(PAGE_NUMBER_TEXT_COLOR);
     doc.text(`Page ${page} of ${pageCount}`, RIGHT, PAGE_NUMBER_Y, { align: "right" });
+
+    if (page > 1) {
+      const CONT_TITLE_Y = 11;
+      const CONT_NUMBER_Y = 17.8;
+      const CONT_DIVIDER_Y = 21.5;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13.2);
+      doc.setTextColor(20, 20, 20);
+      doc.text(documentTypeLabel, CENTER, CONT_TITLE_Y, { align: "center", baseline: "middle" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.1);
+      doc.setTextColor(80, 80, 80);
+      doc.text(estimateNumber, RIGHT, CONT_NUMBER_Y, { align: "right", baseline: "middle" });
+
+      doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+      doc.setLineWidth(BORDER_LINE_WIDTH);
+      doc.line(LEFT, CONT_DIVIDER_Y, RIGHT, CONT_DIVIDER_Y);
+
+      doc.setTextColor(20, 20, 20);
+    }
   }
 
   if (footerLine) {
