@@ -1607,6 +1607,7 @@ export default function EstimateForm(props) {
   );
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
+  const customerDropdownPortalRef = useRef(null);
   const scopeNotesRef = useRef(null);
   const additionalNotesRef = useRef(null);
   const actionBarRef = useRef(null);
@@ -3213,6 +3214,26 @@ export default function EstimateForm(props) {
   useEffect(() => {
     if (dropdownOpen) return;
     setDropdownHoverKey("");
+  }, [dropdownOpen]);
+
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    function handlePointerDown(e) {
+      if (
+        customerNameRef.current?.contains(e.target) ||
+        customerDropdownPortalRef.current?.contains(e.target)
+      ) return;
+      setDropdownOpen(false);
+    }
+    function handleKeyDown(e) {
+      if (e.key === "Escape") setDropdownOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [dropdownOpen]);
 
   useEffect(() => {
@@ -5688,6 +5709,7 @@ export default function EstimateForm(props) {
               autoComplete="off"
               onFocus={() => setDropdownOpen(true)}
               onBlur={() => setTimeout(() => setDropdownOpen(false), DROPDOWN_BLUR_DELAY)}
+              onKeyDown={(e) => { if (e.key === "Escape") setDropdownOpen(false); }}
               onChange={(e) => {
                 const nextValue = e.target.value;
                 setSearchCustomerText(nextValue);
@@ -5696,7 +5718,7 @@ export default function EstimateForm(props) {
               }}
             />
             {dropdownOpen && dropdownRect.width > 0 && typeof document !== "undefined" && createPortal(
-              <div style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
+              <div ref={customerDropdownPortalRef} style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
                 <div
                   key={CREATE_NEW_CUSTOMER_VALUE}
                   style={{

@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   createManualProject,
@@ -119,6 +119,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const customerContainerRef = useRef(null);
 
   // Inline new customer
   const [inlineNewMode, setInlineNewMode] = useState(false);
@@ -156,6 +157,24 @@ export default function NewProjectScreen({ onBack, onSave }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (!customerDropdownOpen) return;
+    function handlePointerDown(e) {
+      if (customerContainerRef.current && !customerContainerRef.current.contains(e.target)) {
+        setCustomerDropdownOpen(false);
+      }
+    }
+    function handleKeyDown(e) {
+      if (e.key === "Escape") setCustomerDropdownOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [customerDropdownOpen]);
 
   const selectedCustomer = useMemo(() => {
     if (!selectedCustomerId) return null;
@@ -307,7 +326,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
           <label style={S.label}>Customer</label>
           {!inlineNewMode ? (
-            <>
+            <div ref={customerContainerRef}>
               <div style={S.customerInputWrap}>
                 <input
                   type="text"
@@ -350,7 +369,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
                   </button>
                 </div>
               ) : null}
-            </>
+            </div>
           ) : (
             <div style={S.inlineNewWrap}>
               <div style={S.inlineNewTitle}>New Customer</div>
