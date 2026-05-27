@@ -174,7 +174,7 @@ function formatLongFormPdfText(value) {
   return formattedBlocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function parseScopeBlocks(rawText) {
+function parsePlainScopeBlocks(rawText) {
   if (!rawText) return [];
   const normalized = String(rawText)
     .replace(/\r\n?/g, "\n")
@@ -222,6 +222,92 @@ function parseScopeBlocks(rawText) {
     }
   }
   return blocks;
+}
+
+function parseScopeBlocks(rawText) {
+  if (!rawText) return [];
+  const normalized = String(rawText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  const blocks = [];
+  const imageMarkerPattern = /\[scope-image:([a-zA-Z0-9_-]+)\]/g;
+  let lastIndex = 0;
+  let match = null;
+
+  while ((match = imageMarkerPattern.exec(normalized))) {
+    const before = normalized.slice(lastIndex, match.index);
+    if (before) blocks.push(...parsePlainScopeBlocks(before));
+    if (match[1]) blocks.push({ type: "image", id: match[1] });
+    lastIndex = match.index + match[0].length;
+  }
+
+  const tail = normalized.slice(lastIndex);
+  if (tail) blocks.push(...parsePlainScopeBlocks(tail));
+  return blocks;
+}
+
+function buildScopeImageLookup(scopeImages) {
+  const lookup = new Map();
+  for (const image of ensureArray(scopeImages)) {
+    const id = asText(image?.id);
+    if (!id) continue;
+    lookup.set(id, image);
+  }
+  return lookup;
+}
+
+function getScopeImageRenderSpec(doc, imageRecord, maxWidth, maxHeight) {
+  const dataUrl = asText(imageRecord?.dataUrl);
+  if (!dataUrl) return null;
+
+  try {
+    const props = doc.getImageProperties(dataUrl);
+    const width = Number(props?.width) || 1;
+    const height = Number(props?.height) || 1;
+    const widthCap = Math.max(1, Number(maxWidth) || 0);
+    const heightCap = Math.max(1, Number(maxHeight) || 0);
+    const scale = Math.min(
+      widthCap / width,
+      heightCap / height,
+      1
+    );
+    return {
+      format: detectDataUrlType(dataUrl),
+      dataUrl,
+      drawWidth: width * scale,
+      drawHeight: height * scale,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getScopeImageCaption(imageRecord) {
+  const rawName = asText(
+    imageRecord?.fileName
+    || imageRecord?.filename
+    || imageRecord?.name
+    || imageRecord?.label
+    || imageRecord?.title
+  );
+  if (!rawName) return "Reference photo";
+
+  const cleanedName = rawName
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\?.*$/, "")
+    .replace(/[^a-zA-Z0-9._ -]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleanedName || /^(image|photo|attachment)$/i.test(cleanedName)) {
+    return "Reference photo";
+  }
+
+  const shortened = cleanedName.length > 44
+    ? `${cleanedName.slice(0, 41).trimEnd()}...`
+    : cleanedName;
+  return `Reference photo: ${shortened}`;
 }
 
 function cleanMaterialNoteText(value) {
@@ -745,10 +831,9 @@ function buildPdfDoc(payload) {
     ? hasMeaningfulItemizedMaterials
     : hasMeaningfulBlanketMaterials;
   const summaryRows = ensureArray(payload?.summaryRows);
-  const scopeNotesText = formatLongFormPdfText(stripScopeMarkdownMarkers(payload?.scopeNotes));
   const scopeBlocks = parseScopeBlocks(payload?.scopeNotes);
-  const shouldRenderScopeNotes = Boolean(scopeNotesText)
-    && scopeBlocks.length > 0
+  const scopeImageLookup = buildScopeImageLookup(payload?.scopeImages);
+  const shouldRenderScopeNotes = scopeBlocks.length > 0
     && (
       payload?.docType === "estimate"
       || (payload?.docType === "invoice" && payload?.includeInvoiceScopeNotes === true)
@@ -822,6 +907,15 @@ function buildPdfDoc(payload) {
   const SECTION_LINE_HEIGHT_FACTOR = 1.19;
   const SECTION_HEADER_MIN_HEIGHT = 5.8;
   const SECTION_BODY_PREVIEW_PADDING = 2.6;
+  const SCOPE_IMAGE_MAX_WIDTH = 83.5;
+  const SCOPE_IMAGE_MAX_HEIGHT = 54.2;
+  const SCOPE_IMAGE_VERTICAL_GAP = 4.2;
+  const SCOPE_IMAGE_CELL_PADDING = 2.6;
+  const SCOPE_IMAGE_FRAME_PADDING = 2.2;
+  const SCOPE_IMAGE_FRAME_RADIUS = 1.6;
+  const SCOPE_IMAGE_FRAME_INSET = 6.2;
+  const SCOPE_IMAGE_CAPTION_GAP = 1.3;
+  const SCOPE_IMAGE_CAPTION_HEIGHT = 3.2;
   const MATERIAL_KEEP_BUFFER = 5.8;
   const TOTALS_KEEP_BUFFER = 8.8;
   const TOTALS_HEIGHT_SAFETY = 4.6;
@@ -1049,15 +1143,6 @@ function buildPdfDoc(payload) {
   let y = (doc.lastAutoTable?.finalY || CLIENT_Y) + 9.6;
 
   if (shouldRenderScopeNotes) {
-    let estimatedScopeHeight = SECTION_HEADER_MIN_HEIGHT + 1.8;
-    for (const blk of scopeBlocks) {
-      if (blk.type === "divider") estimatedScopeHeight += 3.8;
-      else if (blk.type === "heading") estimatedScopeHeight += estimatePreviewTextHeight(blk.text, 10.2, 4.5);
-      else if (blk.type === "list") estimatedScopeHeight += estimatePreviewTextHeight(blk.items.join("\n"), 8.95, 3.7);
-      else estimatedScopeHeight += estimatePreviewTextHeight(blk.text, 8.95, 3.7);
-    }
-    y = ensureSectionFits(y, estimatedScopeHeight);
-
     const SCOPE_MARGIN = { left: LEFT, right: RIGHT_GUTTER };
     const SCOPE_HEAD = [["SCOPE / NOTES"]];
     const SCOPE_HEAD_STYLES = { fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
@@ -1066,6 +1151,141 @@ function buildPdfDoc(payload) {
     let scopeHeaderPending = true;
 
     for (const blk of scopeBlocks) {
+      if (blk.type === "image") {
+        const imageRecord = scopeImageLookup.get(blk.id);
+        const imgLayout = (imageRecord?.layout && typeof imageRecord.layout === "object")
+          ? imageRecord.layout
+          : {};
+        const imgSize = String(imgLayout.size || "medium").toLowerCase();
+        const imgAlign = String(imgLayout.align || "center").toLowerCase();
+        const imgShowCaption = imgLayout.caption === true;
+        const [resolvedMaxW, resolvedMaxH] = imgSize === "small"
+          ? [55.0, 36.0]
+          : imgSize === "large"
+            ? [112.0, 73.0]
+            : [SCOPE_IMAGE_MAX_WIDTH, SCOPE_IMAGE_MAX_HEIGHT];
+        const imageSpec = getScopeImageRenderSpec(doc, imageRecord, resolvedMaxW, resolvedMaxH);
+        const imageCaption = imgShowCaption ? getScopeImageCaption(imageRecord) : null;
+        if (scopeHeaderPending) {
+          autoTable(doc, { ...SCOPE_COMMON, startY: y, head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES, body: [], styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0, minCellHeight: 0 } });
+          y = doc.lastAutoTable?.finalY ?? y;
+          scopeHeaderPending = false;
+        }
+
+        if (imageSpec) {
+          const imageCellMinHeight = Math.max(
+            22,
+            imageSpec.drawHeight
+              + (SCOPE_IMAGE_CELL_PADDING * 2)
+              + (SCOPE_IMAGE_FRAME_PADDING * 2)
+              + (imgShowCaption ? SCOPE_IMAGE_CAPTION_GAP + SCOPE_IMAGE_CAPTION_HEIGHT : 0)
+          );
+          y = ensureSectionFits(y, imageCellMinHeight + 1.2);
+          autoTable(doc, {
+            ...SCOPE_COMMON,
+            startY: y,
+            body: [[""]],
+            ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+            styles: {
+              ...SCOPE_BASE,
+              fontSize: 8.95,
+              cellPadding: { top: SCOPE_IMAGE_CELL_PADDING, bottom: SCOPE_IMAGE_CELL_PADDING, left: SCOPE_IMAGE_CELL_PADDING, right: SCOPE_IMAGE_CELL_PADDING },
+              minCellHeight: imageCellMinHeight,
+            },
+            didParseCell: (hookData) => {
+              if (hookData.section !== "body") return;
+              if (hookData.column.index !== 0) return;
+              hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), imageCellMinHeight);
+              hookData.row.height = Math.max(Number(hookData.row.height || 0), imageCellMinHeight);
+            },
+            didDrawCell: (hookData) => {
+              if (hookData.section !== "body") return;
+              if (hookData.column.index !== 0) return;
+              try {
+                const cellPadding = hookData.cell.styles.cellPadding;
+                const padTop = getCellPaddingValue(cellPadding, "top", SCOPE_IMAGE_CELL_PADDING);
+                const padRight = getCellPaddingValue(cellPadding, "right", SCOPE_IMAGE_CELL_PADDING);
+                const padBottom = getCellPaddingValue(cellPadding, "bottom", SCOPE_IMAGE_CELL_PADDING);
+                const padLeft = getCellPaddingValue(cellPadding, "left", SCOPE_IMAGE_CELL_PADDING);
+                const availableWidth = Math.max(12, hookData.cell.width - padLeft - padRight);
+                const availableHeight = Math.max(
+                  12,
+                  hookData.cell.height - padTop - padBottom - (imgShowCaption ? SCOPE_IMAGE_CAPTION_GAP + SCOPE_IMAGE_CAPTION_HEIGHT : 0)
+                );
+                const frameMaxWidth = Math.max(
+                  24,
+                  Math.min(availableWidth - SCOPE_IMAGE_FRAME_INSET, imageSpec.drawWidth + (SCOPE_IMAGE_FRAME_PADDING * 2))
+                );
+                const frameMaxHeight = Math.max(
+                  18,
+                  Math.min(availableHeight, imageSpec.drawHeight + (SCOPE_IMAGE_FRAME_PADDING * 2))
+                );
+                const scale = Math.min(
+                  Math.max(12, frameMaxWidth - (SCOPE_IMAGE_FRAME_PADDING * 2)) / Math.max(1, imageSpec.drawWidth),
+                  Math.max(12, frameMaxHeight - (SCOPE_IMAGE_FRAME_PADDING * 2)) / Math.max(1, imageSpec.drawHeight),
+                  1
+                );
+                const drawWidth = imageSpec.drawWidth * scale;
+                const drawHeight = imageSpec.drawHeight * scale;
+                const frameWidth = Math.min(frameMaxWidth, drawWidth + (SCOPE_IMAGE_FRAME_PADDING * 2));
+                const frameHeight = Math.min(frameMaxHeight, drawHeight + (SCOPE_IMAGE_FRAME_PADDING * 2));
+                const frameXLeft = hookData.cell.x + padLeft;
+                const frameXCenter = hookData.cell.x + padLeft + Math.max(0, (availableWidth - frameWidth) / 2);
+                const frameXRight = hookData.cell.x + padLeft + Math.max(0, availableWidth - frameWidth);
+                const frameX = imgAlign === "left"
+                  ? frameXLeft
+                  : imgAlign === "right"
+                    ? frameXRight
+                    : frameXCenter;
+                const frameY = hookData.cell.y + padTop + Math.max(0, (availableHeight - frameHeight) / 2);
+                const drawX = frameX + Math.max(SCOPE_IMAGE_FRAME_PADDING, (frameWidth - drawWidth) / 2);
+                const drawY = frameY + Math.max(SCOPE_IMAGE_FRAME_PADDING, (frameHeight - drawHeight) / 2);
+                doc.setFillColor(247, 247, 247);
+                doc.setDrawColor(198, 203, 208);
+                doc.setLineWidth(0.22);
+                doc.roundedRect(frameX, frameY, frameWidth, frameHeight, SCOPE_IMAGE_FRAME_RADIUS, SCOPE_IMAGE_FRAME_RADIUS, "FD");
+                doc.addImage(imageSpec.dataUrl, imageSpec.format, drawX, drawY, drawWidth, drawHeight);
+                if (imgShowCaption && imageCaption) {
+                  doc.setFont("helvetica", "normal");
+                  doc.setFontSize(7.1);
+                  doc.setTextColor(112, 118, 126);
+                  doc.text(
+                    imageCaption,
+                    hookData.cell.x + (hookData.cell.width / 2),
+                    frameY + frameHeight + SCOPE_IMAGE_CAPTION_GAP + 2.1,
+                    { align: "center", baseline: "top" }
+                  );
+                  doc.setTextColor(20, 20, 20);
+                }
+              } catch {
+                doc.setFont("helvetica", "normal");
+                doc.setFontSize(8.6);
+                doc.setTextColor(20, 20, 20);
+                doc.text("[Image unavailable]", hookData.cell.x + 2.2, hookData.cell.y + 4.8);
+              }
+            },
+          });
+        } else {
+          y = ensureSectionFits(y, 12.2);
+          autoTable(doc, {
+            ...SCOPE_COMMON,
+            startY: y,
+            body: [["[Image unavailable]"]],
+            ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+            styles: {
+              ...SCOPE_BASE,
+              fontSize: 8.95,
+              cellPadding: 1.15,
+              minCellHeight: 4.1,
+            },
+          });
+        }
+        y = doc.lastAutoTable?.finalY ?? y;
+        y += SCOPE_IMAGE_VERTICAL_GAP;
+        scopeHeaderPending = false;
+        continue;
+      }
+
       if (blk.type === "divider") {
         if (scopeHeaderPending) {
           autoTable(doc, { ...SCOPE_COMMON, startY: y, head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES, body: [], styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0, minCellHeight: 0 } });

@@ -1609,6 +1609,8 @@ export default function EstimateForm(props) {
   const customerNameRef = useRef(null);
   const customerDropdownPortalRef = useRef(null);
   const scopeNotesRef = useRef(null);
+  const scopeImageInputRef = useRef(null);
+  const scopeImageSelectionRef = useRef(null);
   const additionalNotesRef = useRef(null);
   const actionBarRef = useRef(null);
   const didNormalizeLaborRef = useRef(false);
@@ -1630,6 +1632,7 @@ export default function EstimateForm(props) {
   } = hook({ persistDraft: !isEditMode && initialDraftDocType !== "invoice" });
   const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
+  const scopeImages = Array.isArray(state?.scopeImages) ? state.scopeImages.filter(Boolean) : [];
   const additionalNotes = String(state?.additionalNotes || "");
   const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
@@ -3327,6 +3330,7 @@ export default function EstimateForm(props) {
     const ok = window.confirm("Unsaved notes will be lost. Clear notes?");
     if (!ok) return;
     patch("scopeNotes", "");
+    patch("scopeImages", []);
   }
 
   function handleSaveScopeTemplate() {
@@ -3358,6 +3362,152 @@ export default function EstimateForm(props) {
     const template = scopeTemplates.find((entry) => String(entry?.id || "").trim() === nextId);
     if (!template) return;
     patch("scopeNotes", String(template.scopeText || ""));
+  }
+
+  function getNextScopeImageId(existingImages = scopeImages) {
+    const used = new Set(
+      (Array.isArray(existingImages) ? existingImages : [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+    );
+    let index = 1;
+    while (used.has(`scope-image-${index}`)) index += 1;
+    return `scope-image-${index}`;
+  }
+
+  function updateScopeNotesEmptyFlag(el, text) {
+    if (!el) return;
+    if (String(text || "").trim()) el.removeAttribute("data-empty");
+    else el.setAttribute("data-empty", "true");
+  }
+
+  function cacheScopeImageSelection() {
+    const el = scopeNotesRef.current;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!el || !sel || sel.rangeCount < 1) {
+      scopeImageSelectionRef.current = null;
+      return;
+    }
+    try {
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) {
+        scopeImageSelectionRef.current = null;
+        return;
+      }
+      scopeImageSelectionRef.current = range.cloneRange();
+    } catch {
+      scopeImageSelectionRef.current = null;
+    }
+  }
+
+  function focusScopeImageUpload() {
+    cacheScopeImageSelection();
+    if (scopeImageInputRef.current?.click) {
+      scopeImageInputRef.current.click();
+    }
+  }
+
+  function handleScopeImageFileSelected(event) {
+    const input = event?.currentTarget || event?.target || null;
+    const file = input?.files?.[0] || null;
+    if (input) input.value = "";
+    if (!file) return;
+
+    const mimeType = String(file.type || "").trim().toLowerCase();
+    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
+      window.alert("Please choose a PNG, JPEG, or WebP image.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => {
+      window.alert("Unable to read that image.");
+    };
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(dataUrl)) {
+        window.alert("That image could not be loaded.");
+        return;
+      }
+
+      const imageId = getNextScopeImageId();
+      const marker = `[scope-image:${imageId}]`;
+      const createdAt = Date.now();
+      const imageRecord = {
+        id: imageId,
+        name: String(file.name || imageId).trim() || imageId,
+        mimeType,
+        dataUrl,
+        createdAt,
+        layout: { size: "medium", align: "center", caption: false },
+      };
+
+      const el = scopeNotesRef.current;
+      const savedRange = scopeImageSelectionRef.current;
+      const selection = typeof window !== "undefined" ? window.getSelection() : null;
+      let insertedAtCursor = false;
+
+      if (el && savedRange && el.contains(savedRange.commonAncestorContainer)) {
+        try {
+          const range = savedRange.cloneRange();
+          range.deleteContents();
+          const textNode = document.createTextNode(marker);
+          range.insertNode(textNode);
+          range.setStartAfter(textNode);
+          range.collapse(true);
+          if (selection) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          const nextText = extractScopeTextFromElement(el);
+          patch("scopeNotes", nextText);
+          updateScopeNotesEmptyFlag(el, nextText);
+          autoResizeScopeNotes(el);
+          insertedAtCursor = true;
+        } catch {}
+      }
+
+      if (!insertedAtCursor) {
+        const currentText = el ? extractScopeTextFromElement(el) : String(scopeNotes || "");
+        const trimmedCurrent = String(currentText || "").trim();
+        const nextText = trimmedCurrent
+          ? `${String(currentText || "").replace(/\s+$/, "")}\n\n${marker}`
+          : marker;
+        if (el) {
+          el.innerText = nextText;
+          updateScopeNotesEmptyFlag(el, nextText);
+          autoResizeScopeNotes(el);
+        }
+        patch("scopeNotes", nextText);
+      }
+
+      const nextImages = [...scopeImages, imageRecord];
+      patch("scopeImages", nextImages);
+      scopeImageSelectionRef.current = null;
+    };
+    try {
+      reader.readAsDataURL(file);
+    } catch {
+      window.alert("Unable to read that image.");
+    }
+  }
+
+  function handleRemoveScopeImage(imageId) {
+    const nextId = String(imageId || "").trim();
+    if (!nextId) return;
+    const nextImages = scopeImages.filter((item) => String(item?.id || "").trim() !== nextId);
+    patch("scopeImages", nextImages);
+  }
+
+  function handleUpdateScopeImageLayout(imageId, key, value) {
+    const nextId = String(imageId || "").trim();
+    if (!nextId) return;
+    const nextImages = scopeImages.map((item) => {
+      if (String(item?.id || "").trim() !== nextId) return item;
+      const prevLayout = (item?.layout && typeof item.layout === "object") ? item.layout : {};
+      return { ...item, layout: { size: "medium", align: "center", caption: false, ...prevLayout, [key]: value } };
+    });
+    patch("scopeImages", nextImages);
   }
 
   function isMeaningfulLaborLine(line) {
@@ -5130,6 +5280,7 @@ export default function EstimateForm(props) {
           ["PO #", poNumber || "-"],
         ],
         tradeInsertText: tradeRawForPdf,
+        scopeImages: Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
         laborRows,
         materialRows: materialsRows,
         materialsMode: exportMaterialsMode,
@@ -6389,6 +6540,22 @@ export default function EstimateForm(props) {
                 onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("redo"); }}
                 title="Redo"
               >↪</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Insert scope image"
+                onMouseDown={(e) => { e.preventDefault(); cacheScopeImageSelection(); }}
+                onClick={focusScopeImageUpload}
+                title="Insert image"
+              >Img</button>
+              <input
+                ref={scopeImageInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                style={{ display: "none" }}
+                onChange={handleScopeImageFileSelected}
+              />
             </div>
             <div
               ref={scopeNotesRef}
@@ -6418,6 +6585,113 @@ export default function EstimateForm(props) {
               style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none", whiteSpace: "pre-wrap", outline: "none" }}
             />
           </div>
+          {scopeImages.length ? (
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <div className="pe-muted" style={{ fontSize: 12, fontWeight: 600 }}>
+                Attached images
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                {scopeImages.map((img) => {
+                  const imgLayout = (img?.layout && typeof img.layout === "object")
+                    ? img.layout
+                    : { size: "medium", align: "center", caption: false };
+                  const imgSize = String(imgLayout.size || "medium");
+                  const imgAlign = String(imgLayout.align || "center");
+                  const imgCaption = Boolean(imgLayout.caption);
+                  const layoutBtnBase = {
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    padding: "2px 6px",
+                    borderRadius: 5,
+                    border: "1px solid rgba(148,163,184,0.32)",
+                    background: "rgba(255,255,255,0.7)",
+                    cursor: "pointer",
+                    lineHeight: 1.4,
+                    color: "rgba(30,41,59,0.75)",
+                    flex: "0 0 auto",
+                  };
+                  const layoutBtnActive = {
+                    ...layoutBtnBase,
+                    background: "rgba(59,130,246,0.12)",
+                    border: "1px solid rgba(59,130,246,0.36)",
+                    color: "rgba(30,58,138,0.92)",
+                    fontWeight: 700,
+                  };
+                  return (
+                  <div
+                    key={String(img?.id || "")}
+                    style={{
+                      width: 168,
+                      border: "1px solid rgba(148,163,184,0.34)",
+                      borderRadius: 10,
+                      padding: 8,
+                      background: "rgba(255,255,255,0.75)",
+                      boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "100%",
+                        minHeight: 96,
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        background: "rgba(248,250,252,0.96)",
+                        border: "1px solid rgba(148,163,184,0.24)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <img
+                        src={String(img?.dataUrl || "")}
+                        alt={String(img?.name || img?.id || "Scope image")}
+                        style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+                      />
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.35, wordBreak: "break-word" }}>
+                      {String(img?.name || img?.id || "Scope image")}
+                    </div>
+                    <div style={{ marginTop: 7, display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Size</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {["small", "medium", "large"].map((sz) => (
+                          <button key={sz} type="button" style={imgSize === sz ? layoutBtnActive : layoutBtnBase}
+                            onClick={() => handleUpdateScopeImageLayout(img?.id, "size", sz)}>
+                            {sz.charAt(0).toUpperCase() + sz.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Align</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {["left", "center", "right"].map((al) => (
+                          <button key={al} type="button" style={imgAlign === al ? layoutBtnActive : layoutBtnBase}
+                            onClick={() => handleUpdateScopeImageLayout(img?.id, "align", al)}>
+                            {al.charAt(0).toUpperCase() + al.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Caption</div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button type="button" style={imgCaption ? layoutBtnActive : layoutBtnBase}
+                          onClick={() => handleUpdateScopeImageLayout(img?.id, "caption", true)}>On</button>
+                        <button type="button" style={!imgCaption ? layoutBtnActive : layoutBtnBase}
+                          onClick={() => handleUpdateScopeImageLayout(img?.id, "caption", false)}>Off</button>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      style={{ marginTop: 8, width: "100%" }}
+                      onClick={() => handleRemoveScopeImage(img?.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "" : "pe-open"}`}
