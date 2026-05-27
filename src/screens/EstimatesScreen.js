@@ -2420,7 +2420,11 @@ export default function EstimatesScreen({
                         : null;
                       const isActiveCard = isOpen;
                       const siteAddr = String(displayMeta.siteAddress || e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
-                      const projectTitle = displayMeta.projectName || (lang === "es" ? "Sin proyecto" : "No project");
+                      const projectTitle = displayMeta.projectName
+                        || e?.projectName
+                        || String(e?.jobName || e?.job?.title || "").trim()
+                        || customerLabel
+                        || (lang === "es" ? "Sin título" : "Untitled Project");
                       const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
 
               const pipelineValue = status === STATUS_APPROVED

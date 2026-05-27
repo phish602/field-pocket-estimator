@@ -241,6 +241,40 @@ const searchFieldStyle = {
   paddingRight: 42,
 };
 
+const invoiceCockpitStyle = {
+  borderRadius: 18,
+  border: "1px solid rgba(168,184,195,0.14)",
+  background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(245,158,11,0.08) 48%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))",
+  boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+  display: "grid",
+  gap: 14,
+  padding: 16,
+};
+
+const invoiceCockpitStatGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+  gap: 10,
+};
+
+const invoiceCockpitStatStyle = {
+  minWidth: 0,
+  display: "grid",
+  gap: 6,
+  padding: "12px 12px 11px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.1)",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+};
+
+const invoiceSectionHeaderStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
 const filtersRowStyle = {
   display: "flex",
   gap: "10px",
@@ -250,10 +284,10 @@ const filtersRowStyle = {
 };
 
 const invoiceCardStyle = {
-  padding: "14px 16px",
-  borderRadius: 14,
+  padding: "15px 16px",
+  borderRadius: 16,
   border: "1px solid rgba(255,255,255,0.08)",
-  background: "rgba(255,255,255,0.04)",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)), rgba(7,11,16,0.26)",
   boxSizing: "border-box",
   overflow: "hidden",
   display: "flex",
@@ -262,6 +296,7 @@ const invoiceCardStyle = {
   width: "100%",
   maxWidth: "100%",
   minWidth: 0,
+  boxShadow: "0 16px 34px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.04)",
 };
 
 const invoiceCardTopStyle = {
@@ -277,11 +312,19 @@ const invoicePrimaryLineStyle = {
   minWidth: 0,
 };
 
+const invoiceEyebrowStyle = {
+  fontSize: 10.5,
+  fontWeight: 900,
+  letterSpacing: "0.16em",
+  textTransform: "uppercase",
+  color: "rgba(180,196,208,0.56)",
+};
+
 const invoiceTitleStyle = {
-  fontSize: 15.5,
-  lineHeight: 1.3,
-  fontWeight: 800,
-  letterSpacing: 0.2,
+  fontSize: 17,
+  lineHeight: 1.25,
+  fontWeight: 900,
+  letterSpacing: 0.1,
   minWidth: 0,
   display: "block",
   whiteSpace: "normal",
@@ -306,8 +349,8 @@ const invoiceEstimateNumberStyle = {
 const invoiceDocLineStyle = {
   fontSize: 12,
   lineHeight: 1.3,
-  fontWeight: 600,
-  opacity: 0.65,
+  fontWeight: 700,
+  opacity: 0.72,
   display: "flex",
   flexWrap: "wrap",
   gap: 6,
@@ -318,8 +361,8 @@ const invoiceDocLineStyle = {
 const invoiceSecondaryLineStyle = {
   fontSize: 13,
   lineHeight: 1.3,
-  fontWeight: 500,
-  color: "rgba(99,179,237,0.84)",
+  fontWeight: 700,
+  color: "rgba(125,211,252,0.88)",
   minWidth: 0,
   whiteSpace: "normal",
   overflow: "visible",
@@ -340,12 +383,49 @@ const invoiceProjectLineStyle = {
 const invoiceMetaLineStyle = {
   display: "flex",
   flexWrap: "wrap",
-  gap: 6,
+  gap: 8,
   alignItems: "baseline",
   fontSize: 11.5,
   lineHeight: 1.35,
   color: "rgba(226,232,240,0.68)",
   minWidth: 0,
+};
+
+const invoiceSignalGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gap: 8,
+};
+
+const invoiceSignalCardStyle = {
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(255,255,255,0.03)",
+  padding: "10px 11px",
+  display: "grid",
+  gap: 4,
+  minWidth: 0,
+};
+
+const invoiceSignalLabelStyle = {
+  fontSize: 10.5,
+  fontWeight: 900,
+  letterSpacing: "0.1em",
+  textTransform: "uppercase",
+  color: "rgba(180,196,208,0.56)",
+};
+
+const invoiceSignalValueStyle = {
+  fontSize: 14,
+  lineHeight: 1.2,
+  fontWeight: 850,
+  color: "rgba(239,245,249,0.98)",
+};
+
+const invoiceSignalMetaStyle = {
+  fontSize: 11.5,
+  lineHeight: 1.35,
+  color: "rgba(215,225,233,0.64)",
 };
 
 const invoiceDateStyle = {
@@ -371,11 +451,10 @@ const invoiceMetricRowStyle = {
 };
 
 const invoiceMetricLabelStyle = {
-  fontSize: 10,
+  fontSize: 10.5,
   fontWeight: 900,
-  opacity: 0.72,
-  letterSpacing: "0.9px",
-  textTransform: "uppercase",
+  opacity: 0.68,
+  letterSpacing: "0.08em",
   textAlign: "center",
   lineHeight: 1.1,
 };
@@ -389,13 +468,13 @@ const invoiceMetricColumnStyle = {
 };
 
 const invoiceMetricPillStyle = (highlight) => ({
-  padding: "6px 12px",
-  borderRadius: 999,
-  border: "1px solid rgba(255,255,255,0.14)",
-  background: highlight ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
+  padding: "7px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: highlight ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.05)",
   boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
-  fontSize: 12.5,
-  fontWeight: 800,
+  fontSize: 13,
+  fontWeight: 850,
   letterSpacing: "0.3px",
   flexShrink: 0,
   whiteSpace: "nowrap",
@@ -722,6 +801,122 @@ function getInvoicePaymentConsoleState({
       border: "rgba(148,163,184,0.18)",
       color: "rgba(226,232,240,0.88)",
     },
+  };
+}
+
+function getInvoiceCardActionMeta({
+  derivedStatus,
+  paymentStatus,
+  stripeSessionState,
+  canTakePayment,
+  canSyncStripeSession,
+  lang,
+}) {
+  if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
+    return {
+      label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+      detail: lang === "es" ? "Prioridad de cobranza" : "Collection priority",
+      color: "rgba(248,113,113,0.92)",
+      border: "rgba(239,68,68,0.2)",
+      background: "rgba(239,68,68,0.08)",
+    };
+  }
+  if (stripeSessionState === "review" || stripeSessionState === "expired" || canSyncStripeSession) {
+    return {
+      label: lang === "es" ? "Estado de pago" : "Payment Status",
+      detail: stripeSessionState === "review"
+        ? (lang === "es" ? "Revisar Stripe" : "Review Stripe")
+        : stripeSessionState === "expired"
+          ? (lang === "es" ? "Enlace expirado" : "Link expired")
+          : (lang === "es" ? "Seguimiento de Stripe" : "Stripe follow-up"),
+      color: "rgba(96,165,250,0.92)",
+      border: "rgba(59,130,246,0.2)",
+      background: "rgba(59,130,246,0.08)",
+    };
+  }
+  if (String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL) {
+    return {
+      label: lang === "es" ? "Saldo abierto" : "Open Balance",
+      detail: lang === "es" ? "Cobro pendiente" : "Balance to collect",
+      color: "rgba(251,191,36,0.92)",
+      border: "rgba(245,158,11,0.22)",
+      background: "rgba(245,158,11,0.08)",
+    };
+  }
+  if (derivedStatus === INVOICE_STATUSES.PAID || String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID) {
+    return {
+      label: lang === "es" ? "Pagado" : "Paid",
+      detail: lang === "es" ? "Cobro completo" : "Collection complete",
+      color: "rgba(74,222,128,0.92)",
+      border: "rgba(34,197,94,0.2)",
+      background: "rgba(34,197,94,0.08)",
+    };
+  }
+  if (canTakePayment) {
+    return {
+      label: lang === "es" ? "Cobros" : "Receivables",
+      detail: lang === "es" ? "Lista para cobrar" : "Ready to collect",
+      color: "rgba(125,211,252,0.92)",
+      border: "rgba(59,130,246,0.2)",
+      background: "rgba(59,130,246,0.08)",
+    };
+  }
+  return {
+    label: lang === "es" ? "Actividad" : "Invoice Activity",
+    detail: lang === "es" ? "Solo referencia" : "Reference only",
+    color: "rgba(203,213,225,0.88)",
+    border: "rgba(148,163,184,0.18)",
+    background: "rgba(148,163,184,0.08)",
+  };
+}
+
+function getInvoiceCardSurfaceTone({
+  derivedStatus,
+  paymentStatus,
+  stripeSessionState,
+}) {
+  if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
+    return {
+      border: "rgba(239,68,68,0.22)",
+      background: "linear-gradient(180deg, rgba(239,68,68,0.08), rgba(255,255,255,0.03)), rgba(7,11,16,0.28)",
+      shadow: "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+    };
+  }
+  if (derivedStatus === INVOICE_STATUSES.PAID || String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID) {
+    return {
+      border: "rgba(34,197,94,0.22)",
+      background: "linear-gradient(180deg, rgba(34,197,94,0.08), rgba(255,255,255,0.03)), rgba(7,11,16,0.28)",
+      shadow: "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+    };
+  }
+  if (
+    String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PARTIAL
+    || stripeSessionState === "expired"
+  ) {
+    return {
+      border: "rgba(245,158,11,0.22)",
+      background: "linear-gradient(180deg, rgba(245,158,11,0.08), rgba(255,255,255,0.03)), rgba(7,11,16,0.28)",
+      shadow: "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+    };
+  }
+  if (derivedStatus === INVOICE_STATUSES.VOID || String(paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.VOID) {
+    return {
+      border: "rgba(148,163,184,0.18)",
+      background: "linear-gradient(180deg, rgba(148,163,184,0.06), rgba(255,255,255,0.02)), rgba(7,11,16,0.24)",
+      shadow: "0 18px 36px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03)",
+    };
+  }
+  if (stripeSessionState === "review" || stripeSessionState === "pending") {
+    return {
+      border: "rgba(59,130,246,0.22)",
+      background: "linear-gradient(180deg, rgba(59,130,246,0.08), rgba(255,255,255,0.03)), rgba(7,11,16,0.28)",
+      shadow: "0 18px 36px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
+    };
+  }
+  return {
+    border: "rgba(255,255,255,0.08)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)), rgba(7,11,16,0.26)",
+    shadow: "0 16px 34px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.04)",
   };
 }
 
@@ -1622,6 +1817,91 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       }) || null;
   };
 
+  const invoiceBoardSummary = useMemo(() => {
+    let openBalance = 0;
+    let openCount = 0;
+    let overdueBalance = 0;
+    let overdueCount = 0;
+    let paidAmount = 0;
+    let paidCount = 0;
+    let stripeFollowUpCount = 0;
+
+    filtered.forEach((invoice) => {
+      const derivedStatus = deriveInvoiceStatus(invoice);
+      const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
+      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || invoice?.total || 0);
+      const amountPaid = roundCurrency(invoice?.amountPaid || 0);
+      const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? Math.max(0, invoiceTotal - amountPaid));
+      const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
+      const latestStripeSession = latestActionableStripeSession || getLatestStripeCheckoutSessionForInvoice(String(invoice?.id || "").trim());
+      const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
+
+      paidAmount += amountPaid;
+      if (derivedStatus === INVOICE_STATUSES.PAID || paymentStatus === PAYMENT_STATUSES.PAID) paidCount += 1;
+      if (derivedStatus !== INVOICE_STATUSES.VOID && paymentStatus !== PAYMENT_STATUSES.VOID && balanceRemaining > 0) {
+        openBalance += balanceRemaining;
+        openCount += 1;
+      }
+      if (derivedStatus === INVOICE_STATUSES.OVERDUE && balanceRemaining > 0) {
+        overdueBalance += balanceRemaining;
+        overdueCount += 1;
+      }
+      if (balanceRemaining > 0 && latestStripeSession && ["pending", "review", "expired"].includes(stripeSessionState)) {
+        stripeFollowUpCount += 1;
+      }
+    });
+
+    const nextAction = overdueCount > 0
+      ? {
+          label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+          detail: lang === "es"
+            ? `${overdueCount} ${overdueCount === 1 ? "factura vencida" : "facturas vencidas"} por ${moneyUSD(overdueBalance)}.`
+            : `${overdueCount} ${overdueCount === 1 ? "overdue invoice" : "overdue invoices"} for ${moneyUSD(overdueBalance)}.`,
+          color: "rgba(248,113,113,0.88)",
+        }
+      : stripeFollowUpCount > 0
+        ? {
+            label: lang === "es" ? "Estado de pago" : "Payment Status",
+            detail: lang === "es"
+              ? `${stripeFollowUpCount} ${stripeFollowUpCount === 1 ? "factura lista" : "facturas listas"} para seguimiento de Stripe o cobro.`
+              : `${stripeFollowUpCount} ${stripeFollowUpCount === 1 ? "invoice is" : "invoices are"} ready for Stripe or payment follow-up.`,
+            color: "rgba(96,165,250,0.88)",
+          }
+        : openCount > 0
+          ? {
+              label: lang === "es" ? "Saldo abierto" : "Open Balance",
+              detail: lang === "es"
+                ? `${openCount} ${openCount === 1 ? "factura mantiene" : "facturas mantienen"} ${moneyUSD(openBalance)} por cobrar.`
+                : `${openCount} ${openCount === 1 ? "invoice carries" : "invoices carry"} ${moneyUSD(openBalance)} in receivables.`,
+              color: "rgba(251,191,36,0.88)",
+            }
+          : paidCount > 0
+            ? {
+                label: lang === "es" ? "Pagado" : "Paid",
+                detail: lang === "es"
+                  ? `${paidCount} ${paidCount === 1 ? "factura está liquidada" : "facturas están liquidadas"} en esta vista.`
+                  : `${paidCount} ${paidCount === 1 ? "invoice is" : "invoices are"} fully settled in this view.`,
+                color: "rgba(74,222,128,0.88)",
+              }
+            : {
+                label: lang === "es" ? "Actividad de facturas" : "Invoice Activity",
+                detail: lang === "es" ? "No hay facturas visibles en este momento." : "No visible invoices in this view right now.",
+                color: "rgba(203,213,225,0.78)",
+              };
+
+    return {
+      visibleCount: filtered.length,
+      openBalance,
+      openCount,
+      overdueBalance,
+      overdueCount,
+      paidAmount,
+      paidCount,
+      stripeFollowUpCount,
+      nextAction,
+    };
+  }, [filtered, lang, stripeCheckoutSessions]);
+
   const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
     return findReusableStripeCheckoutSessionInEntries(stripeCheckoutSessions, invoice, balanceRemaining, currency, stripeAccountId);
   };
@@ -2360,6 +2640,75 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         </div>
 
         <div className="pe-grid" style={{ gap: 12 }}>
+          <div style={invoiceCockpitStyle}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                {lang === "es" ? "Cobros" : "Receivables"}
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+                {invoiceBoardSummary.nextAction.label}
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+                {invoiceBoardSummary.nextAction.detail}
+              </div>
+            </div>
+
+            <div style={invoiceCockpitStatGridStyle}>
+              {[
+                {
+                  key: "receivables",
+                  label: lang === "es" ? "Cobros" : "Receivables",
+                  value: moneyUSD(invoiceBoardSummary.openBalance),
+                  detail: invoiceBoardSummary.openCount > 0
+                    ? `${invoiceBoardSummary.openCount} ${invoiceBoardSummary.openCount === 1 ? (lang === "es" ? "abierta" : "open") : (lang === "es" ? "abiertas" : "open")}`
+                    : (lang === "es" ? "Sin saldo por cobrar" : "No open balance in view"),
+                  color: invoiceBoardSummary.openBalance > 0 ? "rgba(251,191,36,0.88)" : "rgba(203,213,225,0.78)",
+                  border: invoiceBoardSummary.openBalance > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
+                },
+                {
+                  key: "overdue",
+                  label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+                  value: moneyUSD(invoiceBoardSummary.overdueBalance),
+                  detail: invoiceBoardSummary.overdueCount > 0
+                    ? `${invoiceBoardSummary.overdueCount} ${invoiceBoardSummary.overdueCount === 1 ? (lang === "es" ? "vencida" : "overdue") : (lang === "es" ? "vencidas" : "overdue")}`
+                    : (lang === "es" ? "Nada vencido en vista" : "No overdue balance in view"),
+                  color: invoiceBoardSummary.overdueBalance > 0 ? "rgba(248,113,113,0.88)" : "rgba(203,213,225,0.78)",
+                  border: invoiceBoardSummary.overdueBalance > 0 ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.1)",
+                },
+                {
+                  key: "paid",
+                  label: lang === "es" ? "Pagado" : "Paid",
+                  value: moneyUSD(invoiceBoardSummary.paidAmount),
+                  detail: `${invoiceBoardSummary.paidCount} ${invoiceBoardSummary.paidCount === 1 ? (lang === "es" ? "factura liquidada" : "paid invoice") : (lang === "es" ? "facturas liquidadas" : "paid invoices")}`,
+                  color: "rgba(74,222,128,0.84)",
+                  border: "rgba(34,197,94,0.2)",
+                },
+                {
+                  key: "payment-status",
+                  label: lang === "es" ? "Estado de pago" : "Payment Status",
+                  value: String(invoiceBoardSummary.stripeFollowUpCount),
+                  detail: invoiceBoardSummary.stripeFollowUpCount > 0
+                    ? (lang === "es" ? "Listas para seguimiento" : "Ready for follow-up")
+                    : (lang === "es" ? "Sin seguimiento pendiente" : "No Stripe follow-up in view"),
+                  color: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(96,165,250,0.84)" : "rgba(203,213,225,0.78)",
+                  border: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.1)",
+                },
+              ].map((item) => (
+                <div key={item.key} style={{ ...invoiceCockpitStatStyle, border: `1px solid ${item.border}` }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                    {item.value}
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                    {item.detail}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="pe-estimates-search" style={filterPanelStyle}>
             <div className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
               <input
@@ -2479,6 +2828,21 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           </div>
 
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+            <div style={invoiceSectionHeaderStyle}>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                  {lang === "es" ? "Actividad de facturas" : "Invoice Activity"}
+                </div>
+                <div style={{ fontSize: 14.5, fontWeight: 850, color: "rgba(239,245,249,0.96)" }}>
+                  {invoiceBoardSummary.visibleCount > 0
+                    ? `${invoiceBoardSummary.visibleCount} ${invoiceBoardSummary.visibleCount === 1 ? (lang === "es" ? "factura visible" : "visible invoice") : (lang === "es" ? "facturas visibles" : "visible invoices")}`
+                    : (lang === "es" ? "Sin facturas visibles" : "No visible invoices")}
+                </div>
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.4, color: invoiceBoardSummary.nextAction.color }}>
+                {invoiceBoardSummary.nextAction.label}
+              </div>
+            </div>
             {showListSkeleton ? (
               <div className="pe-skeleton-stack" aria-hidden="true">
                 {[0, 1, 2].map((idx) => (
@@ -2535,7 +2899,9 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 const paymentStatusKey = String(invoice?.paymentStatus || "").trim().toLowerCase();
                 const dueDate = formatDateOnly(invoice?.dueDate);
                 const siteAddr = String(invoice?.siteAddress || invoice?.job?.address || invoice?.customer?.address || "").trim();
-                const projectLabel = displayMeta.projectName || invoice?.projectName || "";
+                const projectLabel = displayMeta.projectName
+                  || invoice?.projectName
+                  || String(invoice?.jobName || invoice?.job?.title || "").trim();
                 const customerLabel = displayMeta.customerName || invoice?.customerName || "";
                 const stripeSessionMeta = latestStripeSession ? getStripeSessionStateMeta(stripeSessionState, lang) : null;
                 const paymentConsoleState = getInvoicePaymentConsoleState({
@@ -2546,6 +2912,19 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   canUseStripe,
                   canSyncStripeSession,
                   lang,
+                });
+                const cardActionMeta = getInvoiceCardActionMeta({
+                  derivedStatus,
+                  paymentStatus: paymentStatusKey,
+                  stripeSessionState,
+                  canTakePayment,
+                  canSyncStripeSession,
+                  lang,
+                });
+                const cardSurfaceTone = getInvoiceCardSurfaceTone({
+                  derivedStatus,
+                  paymentStatus: paymentStatusKey,
+                  stripeSessionState,
                 });
                 const statusTone = derivedStatus === INVOICE_STATUSES.PAID
                   ? "rgba(34,197,94,0.14)"
@@ -2562,6 +2941,9 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                     style={{
                       ...invoiceCardStyle,
                       cursor: "default",
+                      border: `1px solid ${cardSurfaceTone.border}`,
+                      background: cardSurfaceTone.background,
+                      boxShadow: cardSurfaceTone.shadow,
                       ...(isOpen
                         ? {
                             border: "1px solid rgba(34,197,94,0.42)",
@@ -2575,8 +2957,9 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                       <div className="pe-estimate-card-header" style={invoiceCardTopStyle}>
                         <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
                           <div style={invoicePrimaryLineStyle}>
+                            <div style={invoiceEyebrowStyle}>{lang === "es" ? "Actividad de facturas" : "Invoice Activity"}</div>
                             <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
-                              {projectLabel || (lang === "es" ? "Sin proyecto" : "No project")}
+                              {projectLabel || customerLabel || (lang === "es" ? "Sin título" : "Untitled Project")}
                             </span>
                           </div>
                           <div className="pe-estimate-card-customer-row" style={invoiceCustomerProjectWrapStyle}>
@@ -2629,32 +3012,56 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           {formatStatusLabel(derivedStatus, lang)}
                         </div>
                       </div>
+                      <div style={invoiceSignalGridStyle}>
+                        <div style={{ ...invoiceSignalCardStyle, border: `1px solid ${cardActionMeta.border}`, background: cardActionMeta.background }}>
+                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Estado de pago" : "Payment Status"}</div>
+                          <div style={{ ...invoiceSignalValueStyle, color: cardActionMeta.color }}>{cardActionMeta.label}</div>
+                          <div style={invoiceSignalMetaStyle}>{cardActionMeta.detail}</div>
+                        </div>
+                        <div style={invoiceSignalCardStyle}>
+                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Vence" : "Due"}</div>
+                          <div style={invoiceSignalValueStyle}>{dueDate || "—"}</div>
+                          <div style={invoiceSignalMetaStyle}>
+                            {derivedStatus === INVOICE_STATUSES.OVERDUE
+                              ? (lang === "es" ? "Cobro vencido" : "Overdue Collection")
+                              : balanceRemaining > 0
+                                ? moneyUSD(balanceRemaining)
+                                : (lang === "es" ? "Liquidada" : "Settled")}
+                          </div>
+                        </div>
+                        <div style={invoiceSignalCardStyle}>
+                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Actividad" : "Invoice Activity"}</div>
+                          <div style={invoiceSignalValueStyle}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
+                          <div style={invoiceSignalMetaStyle}>
+                            {stripeSessionMeta?.label
+                              ? `${stripeSessionMeta.label}${customerLabel ? ` • ${customerLabel}` : ""}`
+                              : (customerLabel || (lang === "es" ? "Sin cliente vinculado" : "No linked customer"))}
+                          </div>
+                        </div>
+                      </div>
                       <div className="pe-estimate-card-metrics-wrap" style={invoiceMetricsWrapStyle}>
                         <div className="pe-estimate-card-metrics" style={invoiceMetricRowStyleLocal}>
                           <div style={invoiceMetricColumnStyleLocal}>
-                            <div style={invoiceMetricLabelStyle}>{labelTotalMetric}</div>
+                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Total" : "Total"}</div>
                             <div style={invoiceMetricPillStyleLocal(true)} title={labelRevenue}>
                               {moneyUSD(invoiceTotal)}
                             </div>
                           </div>
-                          {balanceRemaining > 0 ? (
-                            <div style={invoiceMetricColumnStyleLocal}>
-                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "SALDO" : "BALANCE"}</div>
-                              <div style={invoiceMetricPillStyleLocal(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
-                                {moneyUSD(balanceRemaining)}
-                              </div>
+                          <div style={invoiceMetricColumnStyleLocal}>
+                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Pagado" : "Paid"}</div>
+                            <div style={{ ...invoiceMetricPillStyleLocal(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
+                              {moneyUSD(amountPaid)}
                             </div>
-                          ) : amountPaid > 0 ? (
-                            <div style={invoiceMetricColumnStyleLocal}>
-                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "PAGADO" : "PAID"}</div>
-                              <div style={{ ...invoiceMetricPillStyleLocal(false), background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.22)" }} title={lang === "es" ? "Pagado" : "Amount paid"}>
-                                {moneyUSD(amountPaid)}
-                              </div>
+                          </div>
+                          <div style={invoiceMetricColumnStyleLocal}>
+                            <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Saldo" : "Balance"}</div>
+                            <div style={invoiceMetricPillStyleLocal(false)} title={lang === "es" ? "Saldo restante" : "Balance remaining"}>
+                              {moneyUSD(balanceRemaining)}
                             </div>
-                          ) : null}
+                          </div>
                           {invoiceMarginValue !== null ? (
                             <div style={invoiceMetricColumnStyleLocal}>
-                              <div style={invoiceMetricLabelStyle}>{labelMarginMetric}</div>
+                              <div style={invoiceMetricLabelStyle}>{lang === "es" ? "Margen" : "Margin"}</div>
                               <div style={invoiceMetricPillStyleLocal(false)} title={labelMargin}>
                                 {invoiceMarginValue.toFixed(1)}%
                               </div>
