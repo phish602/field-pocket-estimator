@@ -3636,20 +3636,32 @@ export default function EstimateForm(props) {
         if (!projectId) return false;
         if (seenIds.has(projectId)) return false;
 
-        const projectCustomerId = String(project?.customerId || "").trim();
-        const projectCustomerName = normalize(
-          project?.customerName
-          || project?.customer?.name
-          || project?.customer?.companyName
-          || project?.customer?.fullName
-          || project?.customer?.displayName
-          || ""
-        );
+        const projectCustomerIds = [
+          String(project?.customerId || "").trim(),
+          String(project?.customer?.id || "").trim(),
+          String(project?.clientId || "").trim(),
+        ].filter(Boolean);
+        const projectCustomerNames = [
+          project?.customerName,
+          project?.customer?.name,
+          project?.customer?.companyName,
+          project?.customer?.fullName,
+          project?.customer?.displayName,
+          project?.billingCustomerName,
+          project?.billing?.customerName,
+          project?.billing?.customer?.name,
+          project?.billing?.customer?.companyName,
+          project?.billing?.customer?.fullName,
+          project?.billing?.customer?.displayName,
+        ]
+          .map(normalize)
+          .filter(Boolean);
 
-        const matchesById = !!selectedId && !!projectCustomerId && projectCustomerId === selectedId;
-        const matchesByName = !!selectedNameKey && !!projectCustomerName && projectCustomerName === selectedNameKey;
+        const matchesById = !!selectedId && projectCustomerIds.some((id) => id === selectedId);
+        const matchesByName = !!selectedNameKey && projectCustomerNames.some((name) => name === selectedNameKey);
+        const isUnassigned = projectCustomerIds.length === 0 && projectCustomerNames.length === 0;
+        if (!matchesById && !matchesByName && !isUnassigned) return false;
 
-        if (!matchesById && !matchesByName) return false;
         seenIds.add(projectId);
         return true;
       })
@@ -3876,19 +3888,41 @@ export default function EstimateForm(props) {
     if (!project) return;
 
     const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
-    const selectedNameKey = String(
+    const normalize = (s) => String(s || "").trim().toLowerCase();
+    const selectedNameKey = normalize(
       selectedProfile?.displayName
       || selectedProfile?.companyName
+      || selectedProfile?.fullName
       || state?.customer?.name
       || ""
-    ).trim().toLowerCase();
-    const projectCustomerId = String(project?.customerId || "").trim();
-    const projectCustomerName = String(project?.customerName || "").trim().toLowerCase();
-    const matchesSelectedCustomer = projectCustomerId
-      ? projectCustomerId === selectedId
-      : (!!selectedNameKey && projectCustomerName === selectedNameKey);
+    );
+    const projectCustomerIds = [
+      String(project?.customerId || "").trim(),
+      String(project?.customer?.id || "").trim(),
+      String(project?.clientId || "").trim(),
+    ].filter(Boolean);
+    const projectCustomerNames = [
+      project?.customerName,
+      project?.customer?.name,
+      project?.customer?.companyName,
+      project?.customer?.fullName,
+      project?.customer?.displayName,
+      project?.billingCustomerName,
+      project?.billing?.customerName,
+      project?.billing?.customer?.name,
+      project?.billing?.customer?.companyName,
+      project?.billing?.customer?.fullName,
+      project?.billing?.customer?.displayName,
+    ]
+      .map(normalize)
+      .filter(Boolean);
+    const matchesById = !!selectedId && projectCustomerIds.some((id) => id === selectedId);
+    const matchesByName = !!selectedNameKey && projectCustomerNames.some((name) => name === selectedNameKey);
+    const isUnassigned = projectCustomerIds.length === 0 && projectCustomerNames.length === 0;
+    const matchesSelectedCustomer = matchesById || matchesByName || isUnassigned;
     if (!matchesSelectedCustomer) return;
 
+    const projectCustomerId = projectCustomerIds[0] || "";
     const nextContext = {
       projectId: nextProjectId,
       customerId: projectCustomerId || selectedId,
@@ -5902,7 +5936,9 @@ export default function EstimateForm(props) {
                   disabled={availableExistingProjects.length === 0}
                 >
                   <option value="">
-                    {availableExistingProjects.length === 0
+                    {(!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                      ? "Select customer first"
+                      : availableExistingProjects.length === 0
                       ? "No saved projects yet"
                       : "No linked project"}
                   </option>
@@ -5924,12 +5960,16 @@ export default function EstimateForm(props) {
                     ? (
                       selectedExistingProject
                         ? "Move this estimate to the selected existing project when you save."
+                        : (!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                          ? "Select a customer first to choose a project."
                         : availableExistingProjects.length === 0
                           ? "No saved projects yet."
                           : "Select an existing project to move this estimate."
                     )
                     : selectedExistingProject
                       ? "This document will stay linked to the selected existing project when you save."
+                      : (!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                        ? "Select a customer first to choose a project."
                       : availableExistingProjects.length === 0
                         ? "No saved projects yet."
                         : "Optional: link this document to an existing project."}
