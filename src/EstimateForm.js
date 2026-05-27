@@ -6743,6 +6743,9 @@ export default function EstimateForm(props) {
                 </div>
               ) : null}
             </div>
+            <div style={{ fontSize: 11, lineHeight: 1.35, color: "rgba(71,85,105,0.68)" }}>
+              Photos appear in the PDF and may increase file size.
+            </div>
             {scopeImages.length ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                 {scopeImages.map((img) => {
