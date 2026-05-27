@@ -76,6 +76,10 @@ const CREATE_CUSTOM_TRADE_STARTER_VALUE = "__create_custom_trade_starter__";
 const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
 const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
 const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
+const SCOPE_IMAGE_UPLOAD_MAX_DIMENSION = 1600;
+const SCOPE_IMAGE_UPLOAD_HARD_LIMIT_BYTES = 25 * 1024 * 1024;
+const SCOPE_IMAGE_UPLOAD_COMPRESS_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
+const SCOPE_IMAGE_UPLOAD_JPEG_QUALITY = 0.82;
 const I18N = {
   en: {
     standard: "Standard (1.00×)",
@@ -3407,39 +3411,133 @@ export default function EstimateForm(props) {
     }
   }
 
-  function handleScopeImageFileSelected(event) {
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Unable to read that image."));
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("That image could not be loaded."));
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  function estimateDataUrlBytes(dataUrl) {
+    const base64 = String(dataUrl || "").split(",")[1] || "";
+    if (!base64) return 0;
+    const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+  }
+
+  async function normalizeScopeImageForStorage(file) {
+    const mimeType = String(file?.type || "").trim().toLowerCase();
+    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
+      throw new Error("Please choose a PNG, JPEG, or WebP image.");
+    }
+    if (Number(file?.size || 0) > SCOPE_IMAGE_UPLOAD_HARD_LIMIT_BYTES) {
+      throw new Error("That image is too large to process safely. Please choose a smaller photo.");
+    }
+
+    const image = await loadImageFromFile(file);
+    const originalWidth = Number(image.naturalWidth || image.width || 0);
+    const originalHeight = Number(image.naturalHeight || image.height || 0);
+    if (!originalWidth || !originalHeight) {
+      throw new Error("That image is missing dimensions.");
+    }
+
+    const scale = Math.min(
+      1,
+      SCOPE_IMAGE_UPLOAD_MAX_DIMENSION / originalWidth,
+      SCOPE_IMAGE_UPLOAD_MAX_DIMENSION / originalHeight
+    );
+    const storedWidth = Math.max(1, Math.round(originalWidth * scale));
+    const storedHeight = Math.max(1, Math.round(originalHeight * scale));
+    const needsResize = scale < 1;
+    const needsCompression = needsResize || Number(file?.size || 0) > SCOPE_IMAGE_UPLOAD_COMPRESS_THRESHOLD_BYTES;
+
+    if (!needsCompression && mimeType === "image/png") {
+      const dataUrl = await readFileAsDataUrl(file);
+      return {
+        mimeType,
+        dataUrl,
+        originalSizeBytes: Number(file?.size || 0),
+        storedSizeBytes: Number(file?.size || 0),
+        originalWidth,
+        originalHeight,
+        storedWidth: originalWidth,
+        storedHeight: originalHeight,
+      };
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = storedWidth;
+    canvas.height = storedHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("That image could not be processed.");
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, storedWidth, storedHeight);
+    ctx.drawImage(image, 0, 0, storedWidth, storedHeight);
+
+    const storedMimeType = "image/jpeg";
+    const dataUrl = canvas.toDataURL(storedMimeType, SCOPE_IMAGE_UPLOAD_JPEG_QUALITY);
+    if (!/^data:image\/jpeg;base64,/i.test(dataUrl)) {
+      throw new Error("That image could not be saved safely.");
+    }
+
+    return {
+      mimeType: storedMimeType,
+      dataUrl,
+      originalSizeBytes: Number(file?.size || 0),
+      storedSizeBytes: estimateDataUrlBytes(dataUrl),
+      originalWidth,
+      originalHeight,
+      storedWidth,
+      storedHeight,
+    };
+  }
+
+  async function handleScopeImageFileSelected(event) {
     const input = event?.currentTarget || event?.target || null;
     const file = input?.files?.[0] || null;
     if (input) input.value = "";
     if (!file) return;
 
-    const mimeType = String(file.type || "").trim().toLowerCase();
-    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
-      window.alert("Please choose a PNG, JPEG, or WebP image.");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onerror = () => {
-      window.alert("Unable to read that image.");
-    };
-    reader.onload = () => {
-      const dataUrl = String(reader.result || "");
-      if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(dataUrl)) {
-        window.alert("That image could not be loaded.");
-        return;
-      }
-
+    try {
+      const normalized = await normalizeScopeImageForStorage(file);
       const imageId = getNextScopeImageId();
       const marker = `[scope-image:${imageId}]`;
       const createdAt = Date.now();
       const imageRecord = {
         id: imageId,
         name: String(file.name || imageId).trim() || imageId,
-        mimeType,
-        dataUrl,
+        mimeType: normalized.mimeType,
+        dataUrl: normalized.dataUrl,
         createdAt,
         layout: { size: "medium", align: "center", caption: false },
+        originalSizeBytes: normalized.originalSizeBytes,
+        storedSizeBytes: normalized.storedSizeBytes,
+        originalWidth: normalized.originalWidth,
+        originalHeight: normalized.originalHeight,
+        storedWidth: normalized.storedWidth,
+        storedHeight: normalized.storedHeight,
       };
 
       const el = scopeNotesRef.current;
@@ -3484,11 +3582,8 @@ export default function EstimateForm(props) {
       const nextImages = [...scopeImages, imageRecord];
       patch("scopeImages", nextImages);
       scopeImageSelectionRef.current = null;
-    };
-    try {
-      reader.readAsDataURL(file);
-    } catch {
-      window.alert("Unable to read that image.");
+    } catch (error) {
+      window.alert(error?.message || "Unable to process that image.");
     }
   }
 
