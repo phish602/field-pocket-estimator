@@ -6,6 +6,7 @@ import {
   readStoredProjects,
   buildNormalizedProjectView,
   deriveProjectDisplayStatus,
+  deleteStoredProject,
   updateProjectStoredStatus,
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
@@ -540,6 +541,9 @@ export default function ProjectDetailScreen({
 }) {
   const [projectId] = useState(() => readProjectDetailTarget());
   const [refreshSeq, setRefreshSeq] = useState(0);
+  const [deleteConfirmValue, setDeleteConfirmValue] = useState("");
+  const [deleteMessage, setDeleteMessage] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [isPhone, setIsPhone] = useState(
     typeof window !== "undefined" ? window.innerWidth < 480 : false
   );
@@ -620,6 +624,12 @@ export default function ProjectDetailScreen({
 
   const displayStatus = useMemo(() => deriveProjectDisplayStatus(view || {}), [view]);
 
+  useEffect(() => {
+    setDeleteConfirmValue("");
+    setDeleteMessage("");
+    setDeleteBusy(false);
+  }, [projectId]);
+
   if (!view || !view.project) {
     return (
       <div style={S.screen}>
@@ -642,6 +652,13 @@ export default function ProjectDetailScreen({
   const documentCount = totals.estimateCount + totals.invoiceCount;
   const hasPaid = totals.amountPaid > 0;
   const hasBalanceDue = totals.balanceRemaining > 0;
+  const hasLinkedDocuments = documentCount > 0 || estimates.length > 0 || invoices.length > 0;
+  const canHardDelete = !hasLinkedDocuments
+    && Number(totals.estimateTotal || 0) === 0
+    && Number(totals.invoiceTotal || 0) === 0
+    && Number(totals.amountPaid || 0) === 0
+    && Number(totals.balanceRemaining || 0) === 0;
+  const isArchivedProject = storedProjectStatus === "archived";
   const overviewValueStyle = isPhone ? { ...S.overviewValue, fontSize: 17 } : S.overviewValue;
   const projectNameStyle = isPhone ? { ...S.projectName, fontSize: 24 } : S.projectName;
   const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.heroFinancialGrid;
@@ -1031,6 +1048,148 @@ export default function ProjectDetailScreen({
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      <div style={S.sectionWrap}>
+        <div style={S.sectionTitle}>Danger Zone</div>
+        <div style={{
+          padding: "14px 14px 16px",
+          borderRadius: 14,
+          background: "rgba(239,68,68,0.05)",
+          border: "1px solid rgba(239,68,68,0.16)",
+          display: "grid",
+          gap: 10,
+        }}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "rgba(248,113,113,0.96)" }}>Danger Zone</div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(230,241,248,0.62)" }}>
+              {canHardDelete
+                ? "This project has no saved estimates or invoices. You can permanently delete it."
+                : "This project has saved documents. Archive it instead to keep your records safe."}
+            </div>
+          </div>
+          {!canHardDelete ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {!isArchivedProject ? (
+                <button
+                  type="button"
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(99,179,237,0.24)",
+                    background: "rgba(99,179,237,0.08)",
+                    color: "rgba(99,179,237,0.92)",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    letterSpacing: "0.02em",
+                  }}
+                  onClick={() => {
+                    const updated = updateProjectStoredStatus(project.id, "archived");
+                    if (updated) {
+                      setRefreshSeq((value) => value + 1);
+                      window.dispatchEvent(new Event("estipaid:projects-changed"));
+                    }
+                  }}
+                >
+                  Archive Project
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 8, maxWidth: 420 }}>
+              <label style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(230,241,248,0.72)" }}>
+                  Type DELETE to permanently delete this empty project.
+                </div>
+                <input
+                  className="pe-input"
+                  value={deleteConfirmValue}
+                  onChange={(e) => setDeleteConfirmValue(String(e.target.value || "").toUpperCase())}
+                  placeholder="DELETE"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(239,68,68,0.24)",
+                    color: "rgba(230,241,248,0.92)",
+                  }}
+                />
+              </label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {!isArchivedProject ? (
+                  <button
+                    type="button"
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(99,179,237,0.24)",
+                      background: "rgba(99,179,237,0.08)",
+                      color: "rgba(99,179,237,0.92)",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      letterSpacing: "0.02em",
+                    }}
+                    onClick={() => {
+                      const updated = updateProjectStoredStatus(project.id, "archived");
+                      if (updated) {
+                        setRefreshSeq((value) => value + 1);
+                        window.dispatchEvent(new Event("estipaid:projects-changed"));
+                      }
+                    }}
+                  >
+                    Archive Project
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={deleteBusy || deleteConfirmValue !== "DELETE"}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: `1px solid ${deleteConfirmValue === "DELETE" ? "rgba(239,68,68,0.34)" : "rgba(239,68,68,0.16)"}`,
+                    background: deleteConfirmValue === "DELETE" ? "rgba(239,68,68,0.14)" : "rgba(239,68,68,0.08)",
+                    color: deleteConfirmValue === "DELETE" ? "rgba(248,113,113,0.96)" : "rgba(248,113,113,0.6)",
+                    fontSize: 13,
+                    fontWeight: 800,
+                    cursor: deleteBusy || deleteConfirmValue !== "DELETE" ? "not-allowed" : "pointer",
+                    fontFamily: "inherit",
+                    letterSpacing: "0.02em",
+                  }}
+                  onClick={() => {
+                    if (deleteBusy || deleteConfirmValue !== "DELETE") return;
+                    setDeleteBusy(true);
+                    setDeleteMessage("");
+                    try {
+                      const result = deleteStoredProject(project.id);
+                      if (!result?.removed) {
+                        setDeleteMessage("Unable to delete this project right now.");
+                        setDeleteBusy(false);
+                        return;
+                      }
+                      try { localStorage.removeItem(PROJECT_DETAIL_TARGET_KEY); } catch {}
+                      window.dispatchEvent(new Event("estipaid:projects-changed"));
+                      onBack && onBack();
+                    } catch {
+                      setDeleteMessage("Unable to delete this project right now.");
+                      setDeleteBusy(false);
+                    }
+                  }}
+                >
+                  Permanently Delete Project
+                </button>
+              </div>
+            </div>
+          )}
+          {deleteMessage ? (
+            <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(248,113,113,0.9)" }}>
+              {deleteMessage}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

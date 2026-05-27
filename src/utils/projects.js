@@ -343,6 +343,24 @@ export function writeStoredProjects(projects) {
   return next;
 }
 
+export function deleteStoredProject(projectId) {
+  const id = asText(projectId);
+  if (!id) {
+    return { removed: false, reason: "missing-project-id" };
+  }
+
+  const projects = readStoredProjects();
+  const index = projects.findIndex((entry) => asText(entry?.id) === id);
+  if (index < 0) {
+    return { removed: false, reason: "project-not-found" };
+  }
+
+  const next = projects.slice();
+  next.splice(index, 1);
+  writeStoredProjects(next);
+  return { removed: true, removedProjectId: id };
+}
+
 export function updateProjectStoredStatus(projectId, nextStatus) {
   const id = asText(projectId);
   if (!id) return null;
