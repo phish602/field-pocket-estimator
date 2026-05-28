@@ -64,6 +64,13 @@ function projSortPriority(proj) {
   return 3;
 }
 
+function deriveProjectColorLane(proj) {
+  if ((proj.overdueCount || 0) > 0) return "overdue";
+  if ((proj.totals?.balanceRemaining || 0) > 0) return "balance";
+  if ((proj.approvedEstCount || 0) > 0) return "approved";
+  return "standard";
+}
+
 function deriveProjectNextAction(proj) {
   if ((proj?.overdueCount || 0) > 0) {
     return {
@@ -125,6 +132,14 @@ const STATUS_COLORS = {
   completed: { bg: "rgba(99,179,237,0.1)", border: "rgba(99,179,237,0.22)", color: "rgba(99,179,237,0.84)" },
   archived: { bg: "rgba(230,241,248,0.04)", border: "rgba(230,241,248,0.1)", color: "rgba(230,241,248,0.35)" },
 };
+
+const COLOR_LANES = [
+  { key: "all",      label: "All colors",     swatch: "rgba(99,179,237,0.72)" },
+  { key: "overdue",  label: "Overdue",        swatch: "rgba(248,113,113,0.88)" },
+  { key: "balance",  label: "Balance due",    swatch: "rgba(251,191,36,0.88)" },
+  { key: "approved", label: "Approved ready", swatch: "rgba(74,222,128,0.88)" },
+  { key: "standard", label: "Standard",       swatch: "rgba(148,163,184,0.55)" },
+];
 
 const S = {
   container: { display: "flex", flexDirection: "column", gap: 16, padding: "0 4px" },
@@ -240,6 +255,7 @@ const S = {
 export default function ProjectsScreen({ onOpenProjectDetail }) {
   const [q, setQ] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
+  const [activeColorLane, setActiveColorLane] = useState("all");
   const [refreshSeq, setRefreshSeq] = useState(0);
 
   useEffect(() => {
@@ -334,7 +350,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
     return { ...counts, all: allData.length - counts.archived };
   }, [allData]);
 
-  const filtered = useMemo(() => {
+  const baseFiltered = useMemo(() => {
     const term = q.trim().toLowerCase();
     let list = activeFilter === "all"
       ? allData.filter((p) => p.status !== "archived")
@@ -351,6 +367,26 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
       return (b.latestActivityAt || 0) - (a.latestActivityAt || 0);
     });
   }, [allData, q, activeFilter]);
+
+  const colorBreakdown = useMemo(() => {
+    const counts = { overdue: 0, balance: 0, approved: 0, standard: 0 };
+    let totalOverdueInvoices = 0;
+    let totalBalance = 0;
+    let totalApproved = 0;
+    for (const proj of baseFiltered) {
+      const lane = deriveProjectColorLane(proj);
+      counts[lane] = (counts[lane] || 0) + 1;
+      if (lane === "overdue") totalOverdueInvoices += proj.overdueCount || 0;
+      if (lane === "balance") totalBalance += Number(proj.totals?.balanceRemaining || 0);
+      if (lane === "approved") totalApproved += proj.approvedEstCount || 0;
+    }
+    return { counts, totalOverdueInvoices, totalBalance, totalApproved };
+  }, [baseFiltered]);
+
+  const filtered = useMemo(() => {
+    if (activeColorLane === "all") return baseFiltered;
+    return baseFiltered.filter((p) => deriveProjectColorLane(p) === activeColorLane);
+  }, [baseFiltered, activeColorLane]);
 
   const portfolioSummary = useMemo(() => {
     const visible = filtered;
@@ -483,6 +519,55 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
         })}
       </div>
 
+      {/* Color lane filter + breakdown */}
+      <div style={{ display: "grid", gap: 8, padding: "10px 12px 9px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.025)" }}>
+        <div style={{ fontSize: 9.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.45)" }}>
+          Color breakdown
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {COLOR_LANES.map(({ key, label, swatch }) => {
+            const isActive = activeColorLane === key;
+            const count = key === "all" ? baseFiltered.length : (colorBreakdown.counts[key] || 0);
+            const secondary = key === "overdue" && colorBreakdown.totalOverdueInvoices > 0
+              ? `${colorBreakdown.totalOverdueInvoices} inv.`
+              : key === "balance" && colorBreakdown.totalBalance > 0
+                ? formatMoney(colorBreakdown.totalBalance)
+                : key === "approved" && colorBreakdown.totalApproved > 0
+                  ? `${colorBreakdown.totalApproved} est.`
+                  : null;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActiveColorLane(key)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "4px 9px",
+                  borderRadius: 999,
+                  fontSize: 11.5,
+                  fontWeight: isActive ? 800 : 600,
+                  cursor: "pointer",
+                  border: `1px solid ${isActive ? swatch.replace(/[\d.]+\)$/, "0.36)") : "rgba(255,255,255,0.1)"}`,
+                  background: isActive ? swatch.replace(/[\d.]+\)$/, "0.1)") : "rgba(255,255,255,0.03)",
+                  color: isActive ? swatch : "rgba(230,241,248,0.44)",
+                  fontFamily: "inherit",
+                  whiteSpace: "nowrap",
+                  flexShrink: 0,
+                  lineHeight: 1.4,
+                }}
+              >
+                <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: count > 0 ? swatch : "rgba(148,163,184,0.28)", flexShrink: 0 }} />
+                {label}
+                {count > 0 ? <span style={{ opacity: 0.72, fontVariantNumeric: "tabular-nums" }}>{count}</span> : null}
+                {secondary ? <span style={{ opacity: 0.58, fontSize: 10.5 }}>· {secondary}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {allData.length > 3 ? (
         <div style={S.searchWrap}>
           <input
@@ -540,20 +625,20 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                 className="pe-card pe-card-content ep-glass-tile"
                 style={{
                   ...S.card,
-                  border: (proj.overdueCount || 0) > 0
-                    ? "1px solid rgba(239,68,68,0.16)"
-                    : (proj.totals?.balanceRemaining || 0) > 0
-                      ? "1px solid rgba(245,158,11,0.16)"
-                      : proj.approvedEstCount > 0
-                        ? "1px solid rgba(34,197,94,0.16)"
-                        : S.card.border,
-                  background: (proj.overdueCount || 0) > 0
-                    ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
-                    : (proj.totals?.balanceRemaining || 0) > 0
-                      ? "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))"
-                      : proj.approvedEstCount > 0
-                        ? "linear-gradient(180deg, rgba(34,197,94,0.06), rgba(255,255,255,0.03))"
-                        : S.card.background,
+                  border: (() => {
+                    const lane = deriveProjectColorLane(proj);
+                    if (lane === "overdue")  return "1px solid rgba(239,68,68,0.16)";
+                    if (lane === "balance")  return "1px solid rgba(245,158,11,0.16)";
+                    if (lane === "approved") return "1px solid rgba(34,197,94,0.16)";
+                    return S.card.border;
+                  })(),
+                  background: (() => {
+                    const lane = deriveProjectColorLane(proj);
+                    if (lane === "overdue")  return "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))";
+                    if (lane === "balance")  return "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))";
+                    if (lane === "approved") return "linear-gradient(180deg, rgba(34,197,94,0.06), rgba(255,255,255,0.03))";
+                    return S.card.background;
+                  })(),
                 }}
                 onClick={() => {
                   if (onOpenProjectDetail && proj.id) onOpenProjectDetail(proj.id);
