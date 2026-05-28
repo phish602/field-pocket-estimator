@@ -617,9 +617,7 @@ function ScopeDiffReview({
   const displayedScope = overrideScope !== null ? overrideScope : scopeNotes;
 
   const submitRefineAction = (chip) => {
-    if (process.env.NODE_ENV === "development") console.log("[SCOPE_AMEND_CLICK]", { chip, amendLocked, ts: Date.now() });
     if (amendLocked || !onSubmit) {
-      if (process.env.NODE_ENV === "development") console.log("[SCOPE_AMEND_PANEL_BLOCKED]", { chip, amendLocked, ts: Date.now() });
       return;
     }
     setPreviousScope(displayedScope);

@@ -186,15 +186,12 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
       }
 
       const requestPromise = (async () => {
-        if (DEV && sectionKey === "scope" && normalizedMode === "refine") console.log("[SCOPE_AMEND_SUBMIT_ENTER_USE_AI_ASSIST]", { section: sectionKey, mode: normalizedMode, chip: userInput, seq: mySeq, ts: Date.now() });
         setAssistState({ phase: "requesting", input: userInput });
-        if (DEV) console.log(`[ai-assist:${traceId}] submit_start`, { section: sectionKey, seq: mySeq, inputLen: String(userInput || "").length });
         try {
           captureAiAssistRequest(buildAiAssistRequestCapturePayload(sectionKey, userInput, state, assistCaptureMeta));
           const result = await requestSectionAssist({ sectionKey, userInput, state, ...serviceOptions, _traceId: traceId });
           // Pass 18: discard stale response — a newer submit already owns the state
           if (submitSeqRef.current !== mySeq) {
-            if (DEV) console.log(`[ai-assist:${traceId}] stale_discarded`, { seq: mySeq, current: submitSeqRef.current });
             return;
           }
           captureAiAssistResult(buildAiAssistResultCapturePayload(sectionKey, userInput, state, assistCaptureMeta, result));
@@ -215,13 +212,11 @@ export function useAiAssist(sectionKey, state, captureMeta = {}) {
             });
             return;
           }
-          if (DEV) console.log(`[ai-assist:${traceId}] success`, { seq: mySeq, writeKeys: Object.keys(result.writes || {}) });
           latestAssistCaptureMetaRef.current = assistCaptureMeta;
           setAssistState({ phase: "review", input: userInput, result });
         } catch (e) {
           // Pass 18: discard stale error — newer request owns the state
           if (submitSeqRef.current !== mySeq) {
-            if (DEV) console.log(`[ai-assist:${traceId}] stale_error_discarded`, { seq: mySeq, current: submitSeqRef.current });
             return;
           }
           if (DEV) console.log(`[ai-assist:${traceId}] error`, { seq: mySeq, code: e?.assistErrorCode, class: e?.assistFailureClass, msg: String(e?.assistSafeMessage || "").slice(0, 80) });
