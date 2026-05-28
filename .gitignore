@@ -28,3 +28,6 @@ yarn-error.log*
 .env*
 fpe-src.zip
 nohup.out
+field-pocket-estimator-backup-*.zip
+EstiPaid-latest-*.zip
+*.zip
