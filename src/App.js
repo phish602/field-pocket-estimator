@@ -891,11 +891,6 @@ function TopBar({
     restartSpin(estiLogoRef.current);
   }, [routeEnterKey, isHome]);
 
-  useEffect(() => {
-    console.log("TopBar MOUNT");
-    return () => console.log("TopBar UNMOUNT");
-  }, []);
-
   return (
     <div
       style={{
