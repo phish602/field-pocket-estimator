@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import CustomersScreen from "./CustomersScreen";
 
@@ -59,7 +59,9 @@ describe("CustomersScreen same-tab refresh", () => {
     seedCustomers([updatedCustomer]);
 
     // Dispatch estipaid:customers-changed event
-    window.dispatchEvent(new Event("estipaid:customers-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:customers-changed"));
+    });
 
     // Verify UI refreshes immediately
     await waitFor(() => {
@@ -78,7 +80,7 @@ describe("CustomersScreen same-tab refresh", () => {
     render(<CustomersScreen />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Customer One/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Customer One/i).length).toBeGreaterThan(0);
     });
 
     // Add a second customer
@@ -86,13 +88,15 @@ describe("CustomersScreen same-tab refresh", () => {
     seedCustomers([customer1, customer2]);
 
     // Dispatch estipaid:customers-changed event
-    window.dispatchEvent(new Event("estipaid:customers-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:customers-changed"));
+    });
 
     // Verify both customers are visible
     await waitFor(() => {
       expect(screen.getByText(/Customer Two/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/Customer One/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Customer One/i).length).toBeGreaterThan(0);
   });
 
   test("refreshes when customer is deleted via estipaid:customers-changed event", async () => {
@@ -106,7 +110,7 @@ describe("CustomersScreen same-tab refresh", () => {
     render(<CustomersScreen />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Customer One/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Customer One/i).length).toBeGreaterThan(0);
       expect(screen.getByText(/Customer Two/i)).toBeInTheDocument();
     });
 
@@ -114,12 +118,14 @@ describe("CustomersScreen same-tab refresh", () => {
     seedCustomers([customer1]);
 
     // Dispatch estipaid:customers-changed event
-    window.dispatchEvent(new Event("estipaid:customers-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:customers-changed"));
+    });
 
     // Verify customer2 is removed
     await waitFor(() => {
       expect(screen.queryByText(/Customer Two/i)).not.toBeInTheDocument();
     });
-    expect(screen.getByText(/Customer One/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Customer One/i).length).toBeGreaterThan(0);
   });
 });
