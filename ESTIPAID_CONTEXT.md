@@ -238,6 +238,27 @@ Acceptance:
 
 ## Mobile protection rules
 - Mobile estimator flow is fragile and high priority
+
+---
+
+## Codebase Boundaries / Cleanup Rules
+- `src/EstimateForm.js` is still large, functional, and protected.
+- Safe extracted utilities now include:
+  - `src/utils/customLaborRoles.js`
+  - `src/utils/estimatorCustomers.js`
+  - `src/utils/scopeTradeStarters.js`
+- Protected zones:
+  - AI Assist
+  - save/export flow
+  - PDF payload shaping
+  - scope images
+  - project linking/reassignment
+  - storage writes/reads
+  - Guided Build
+- Future refactors must proceed one utility/component boundary at a time.
+- No broad `EstimateForm` rewrite.
+- No behavior cleanup without tests.
+- Prefer an audit-only pass before each extraction.
 - Do not introduce tap misroutes
 - Do not let fixed nav or footer layers interfere with form controls
 - Protect builder/edit screens from footer/nav hit-area regressions
