@@ -319,7 +319,7 @@ describe("EstimateForm labor AI assist writeback", () => {
     render(<EstimateForm />);
     mockPatch.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: /suggest labor from scope/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^ai assist$/i }));
 
     expect(mockSubmitLaborAssist).toHaveBeenCalledTimes(1);
     expect(mockSubmitLaborAssist).toHaveBeenCalledWith("", { laborRequestMode: "from_scope" });
