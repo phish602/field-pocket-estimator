@@ -3,7 +3,12 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
 
 export function readCustomerRecents() {
-  try { return JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]") || []; } catch { return []; }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 export function addToCustomerRecents(id) {
