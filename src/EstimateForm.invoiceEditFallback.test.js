@@ -643,7 +643,7 @@ describe("EstimateForm invoice edit fallback", () => {
       expect(screen.queryByText("EDIT INVOICE")).not.toBeInTheDocument();
       expect(screen.getByText("Invoice not found. Switched to new mode.")).toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("");
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("");
       expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
       expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
     });
@@ -679,7 +679,7 @@ describe("EstimateForm invoice edit fallback", () => {
     await waitFor(() => {
       expect(screen.queryByText("Invoice not found. Switched to new mode.")).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Invoice Verify Project");
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
     });
 
     expect(screen.queryByText("Start here")).not.toBeInTheDocument();
@@ -715,7 +715,7 @@ describe("EstimateForm invoice edit fallback", () => {
     await screen.findByText("EDIT INVOICE");
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Invoice Verify Project");
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
     });
 
