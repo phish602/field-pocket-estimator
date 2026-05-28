@@ -509,7 +509,7 @@ describe("App approved estimate invoice builder handoff", () => {
       expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
       expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue(customer.projectName);
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
     });
 
     const invoices = readStoredInvoices();
@@ -629,7 +629,7 @@ describe("App approved estimate invoice builder handoff", () => {
       expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
       expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue(customer.projectName);
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
     });
 
     const invoices = readStoredInvoices();
