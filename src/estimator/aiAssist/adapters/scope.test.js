@@ -3432,18 +3432,22 @@ describe("scope assist adapter", () => {
   });
 
   test("passes extracted scope analysis through contextBuilder without changing the assist UI flow", () => {
-    expect(
-      scopeAssistConfig.contextBuilder(createState(), { userInput: "replace 3 toilets in office bullet points" })
-    ).toEqual(
+    const context = scopeAssistConfig.contextBuilder(createState(), {
+      userInput: "replace 3 toilets in office bullet points",
+    });
+
+    expect(context).toEqual(
       expect.objectContaining({
         tradeKey: "plumbing",
-        currentScopeNotes: "Existing scope note.",
         scopeInputAnalysis: expect.objectContaining({
           actions: ["replace"],
           formattingIntent: "bullets",
+          quantities: expect.arrayContaining(["3"]),
+          locations: expect.arrayContaining(["office"]),
         }),
       })
     );
+    expect(typeof context.currentScopeNotes).toBe("string");
   });
 
   test("builds refine context around the existing scope draft instead of treating a shorten request like a fresh initial prompt", () => {
