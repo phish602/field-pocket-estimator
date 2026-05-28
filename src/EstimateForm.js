@@ -40,6 +40,13 @@ import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
 import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
 import {
+  findSavedCustomLaborRoleLabel,
+  getLegacyLaborRoleLabel,
+  readStoredCustomLaborRoles,
+  resolveLaborRoleSelectValue,
+  writeStoredCustomLaborRoles,
+} from "./utils/customLaborRoles";
+import {
   createScopeTemplate,
   readStoredScopeTemplates,
   writeStoredScopeTemplates,
@@ -915,64 +922,10 @@ function findLaborPresetByLabel(label = "") {
   return LABOR_PRESET_BY_NORMALIZED_LABEL.get(normalizeLaborRoleLabelKey(label)) || null;
 }
 
-function normalizeCustomLaborRoleList(records = []) {
-  const seen = new Set();
-  const next = [];
-  for (const record of Array.isArray(records) ? records : []) {
-    const rawLabel = typeof record === "string" ? record : record?.label;
-    const label = normalizeLaborRoleLabel(rawLabel);
-    const labelKey = normalizeLaborRoleLabelKey(label);
-    if (!labelKey || seen.has(labelKey) || LABOR_PRESET_BY_NORMALIZED_LABEL.has(labelKey)) continue;
-    seen.add(labelKey);
-    next.push(label);
-  }
-  return next;
-}
-
-function readStoredCustomLaborRoles() {
-  try {
-    const raw = localStorage.getItem(CUSTOM_LABOR_ROLES_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return normalizeCustomLaborRoleList(parsed);
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredCustomLaborRoles(labels = []) {
-  const next = normalizeCustomLaborRoleList(labels);
-  try {
-    const value = JSON.stringify(next);
-    localStorage.setItem(CUSTOM_LABOR_ROLES_KEY, value);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: CUSTOM_LABOR_ROLES_KEY, value } }));
-    }
-  } catch {}
-  return next;
-}
-
-function findSavedCustomLaborRoleLabel(label = "", customLaborRoles = []) {
-  const labelKey = normalizeLaborRoleLabelKey(label);
-  if (!labelKey) return "";
-  return customLaborRoles.find((savedLabel) => normalizeLaborRoleLabelKey(savedLabel) === labelKey) || "";
-}
-
-function getLegacyLaborRoleLabel(label = "", customLaborRoles = []) {
-  const rawLabel = String(label || "").trim();
-  const labelKey = normalizeLaborRoleLabelKey(rawLabel);
-  if (!labelKey) return "";
-  if (LABOR_PRESET_BY_NORMALIZED_LABEL.has(labelKey)) return "";
-  if (findSavedCustomLaborRoleLabel(rawLabel, customLaborRoles)) return "";
-  return rawLabel;
-}
-
-function resolveLaborRoleSelectValue(label = "", customLaborRoles = []) {
-  const legacyLabel = getLegacyLaborRoleLabel(label, customLaborRoles);
-  if (legacyLabel) return legacyLabel;
-  const preset = findLaborPresetByLabel(label);
-  if (preset) return preset.label;
-  return findSavedCustomLaborRoleLabel(label, customLaborRoles) || String(label || "").trim();
-}
+const CUSTOM_LABOR_ROLE_HELPER_OPTIONS = Object.freeze({
+  storageKey: CUSTOM_LABOR_ROLES_KEY,
+  presetByNormalizedLabel: LABOR_PRESET_BY_NORMALIZED_LABEL,
+});
 
 // TEMPLATE ADD-ONS (TRADE INSERTS)
 const SCOPE_TRADE_INSERTS = [
@@ -1847,11 +1800,11 @@ export default function EstimateForm(props) {
   useEffect(() => {
     const refreshCustomLaborRoles = (e) => {
       if (e?.key && e.key !== CUSTOM_LABOR_ROLES_KEY) return;
-      setCustomLaborRoles(readStoredCustomLaborRoles());
+      setCustomLaborRoles(readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
     };
     const onLocalStorage = (event) => {
       if (event?.detail?.key === CUSTOM_LABOR_ROLES_KEY) {
-        setCustomLaborRoles(readStoredCustomLaborRoles());
+        setCustomLaborRoles(readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
       }
     };
     window.addEventListener("storage", refreshCustomLaborRoles);
@@ -1905,7 +1858,7 @@ export default function EstimateForm(props) {
   const [projectSeedSummary, setProjectSeedSummary] = useState(null);
   const [scopeTemplates, setScopeTemplates] = useState(() => readStoredScopeTemplates());
   const [customTradeStarters, setCustomTradeStarters] = useState(() => readStoredCustomTradeStarters());
-  const [customLaborRoles, setCustomLaborRoles] = useState(() => readStoredCustomLaborRoles());
+  const [customLaborRoles, setCustomLaborRoles] = useState(() => readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
   const [customTradeStarterEditorOpen, setCustomTradeStarterEditorOpen] = useState(false);
   const [customTradeStarterName, setCustomTradeStarterName] = useState("");
   const [customTradeStarterText, setCustomTradeStarterText] = useState("");
@@ -4306,7 +4259,7 @@ export default function EstimateForm(props) {
   }
 
   function buildLaborRoleOptions(lineLabel = "") {
-    const legacyLabel = getLegacyLaborRoleLabel(lineLabel, customLaborRoles);
+    const legacyLabel = getLegacyLaborRoleLabel(lineLabel, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
     const options = [];
     if (legacyLabel) {
       options.push({ value: legacyLabel, label: legacyLabel });
@@ -4328,7 +4281,7 @@ export default function EstimateForm(props) {
   function handleCreateCustomLaborRole(i) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const currentLabel = lines[i]?.label;
-    const defaultLabel = getLegacyLaborRoleLabel(currentLabel, customLaborRoles) || normalizeLaborRoleLabel(currentLabel);
+    const defaultLabel = getLegacyLaborRoleLabel(currentLabel, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS) || normalizeLaborRoleLabel(currentLabel);
     const enteredLabel = window.prompt(
       lang === "es" ? "Nombra este rol de mano de obra:" : "Name this labor role:",
       defaultLabel
@@ -4353,7 +4306,7 @@ export default function EstimateForm(props) {
       return;
     }
 
-    const nextCustomLaborRoles = writeStoredCustomLaborRoles([...customLaborRoles, nextLabel]);
+    const nextCustomLaborRoles = writeStoredCustomLaborRoles([...customLaborRoles, nextLabel], CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
     setCustomLaborRoles(nextCustomLaborRoles);
     applyLaborPresetByLabel(i, findSavedCustomLaborRoleLabel(nextLabel, nextCustomLaborRoles) || nextLabel);
   }
@@ -6957,7 +6910,7 @@ export default function EstimateForm(props) {
           </div>
           {laborLines.map((l, i) => {
             const roleOptions = buildLaborRoleOptions(l.label);
-            const selectedRoleValue = resolveLaborRoleSelectValue(l.label, customLaborRoles);
+            const selectedRoleValue = resolveLaborRoleSelectValue(l.label, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
 
               return (
                 <div
