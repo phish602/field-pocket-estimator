@@ -473,7 +473,7 @@ async function expectSeededBuilderUi({ builderTitle, staleMaterialDesc }) {
 
   await waitFor(() => {
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(mockProjectSeed.customerName);
-    expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue(mockProjectSeed.projectName);
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(mockProjectSeed.projectName);
     expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
     expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
     expect(screen.queryByText(staleMaterialDesc)).not.toBeInTheDocument();
@@ -757,7 +757,7 @@ function readLastMountedBuilderState() {
 async function expectBuilderFieldValues({ customerName, projectName, laborHours, laborRate }) {
   await waitFor(() => {
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customerName);
-    expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue(projectName);
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(projectName);
     expect(screen.getByPlaceholderText("Hours")).toHaveValue(laborHours);
     expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue(laborRate);
   });
@@ -766,7 +766,7 @@ async function expectBuilderFieldValues({ customerName, projectName, laborHours,
 async function expectBlankBuilderFields() {
   await waitFor(() => {
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
-    expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("");
     expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
     expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
   });
@@ -1023,7 +1023,7 @@ describe("App Continue Create draft handoff", () => {
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Open Existing Customer");
-      expect(screen.getByPlaceholderText("Project name (optional)")).toHaveValue("Open Existing Project");
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Open Existing Project");
       expect(screen.queryByText("Stale blank invoice material")).not.toBeInTheDocument();
       expect(screen.getByText("Open existing material")).toBeInTheDocument();
     });
