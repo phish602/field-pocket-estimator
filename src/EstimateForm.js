@@ -52,6 +52,13 @@ import {
   writeStoredScopeTemplates,
 } from "./utils/scopeTemplates";
 import {
+  extractTradeInsertBlocksForPdf,
+  normalizeCustomTradeStarterRecord,
+  readStoredCustomTradeStarters,
+  stripTradeInsertBlocksFromScope,
+  writeStoredCustomTradeStarters,
+} from "./utils/scopeTradeStarters";
+import {
   addToCustomerRecents,
   buildSelectedCustomerProfileFromDraft,
   flattenCustomerForEstimator,
@@ -1041,104 +1048,6 @@ const TRADE_INSERT_TEXT_BY_KEY = SCOPE_TRADE_INSERTS.reduce((acc, item) => {
   acc[item.key] = String(item?.text || "");
   return acc;
 }, {});
-
-function createCustomTradeStarterId() {
-  return `trade_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function normalizeCustomTradeStarterRecord(record = {}) {
-  const source = record && typeof record === "object" ? record : {};
-  const label = String(source.label || source.name || "").replace(/\s+/g, " ").trim();
-  const text = String(source.text || source.body || source.description || "").replace(/\r\n?/g, "\n").trim();
-  if (!label || !text) return null;
-  const createdAtRaw = Number(source.createdAt || Date.now());
-  const createdAt = Number.isFinite(createdAtRaw) && createdAtRaw > 0 ? createdAtRaw : Date.now();
-  const updatedAtRaw = Number(source.updatedAt || createdAt);
-  const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : createdAt;
-  return {
-    id: String(source.id || "").trim() || createCustomTradeStarterId(),
-    label,
-    text,
-    createdAt,
-    updatedAt,
-  };
-}
-
-function normalizeCustomTradeStarterList(records = []) {
-  const seen = new Set();
-  const next = [];
-  for (const record of Array.isArray(records) ? records : []) {
-    const normalized = normalizeCustomTradeStarterRecord(record);
-    if (!normalized || seen.has(normalized.id)) continue;
-    seen.add(normalized.id);
-    next.push(normalized);
-  }
-  next.sort((a, b) => {
-    const delta = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
-    if (delta !== 0) return delta;
-    return String(a.label || "").localeCompare(String(b.label || ""));
-  });
-  return next;
-}
-
-function readStoredCustomTradeStarters() {
-  try {
-    const raw = localStorage.getItem(CUSTOM_TRADE_STARTERS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return normalizeCustomTradeStarterList(parsed);
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredCustomTradeStarters(starters = []) {
-  const next = normalizeCustomTradeStarterList(starters);
-  try {
-    const value = JSON.stringify(next);
-    localStorage.setItem(CUSTOM_TRADE_STARTERS_KEY, value);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: CUSTOM_TRADE_STARTERS_KEY, value } }));
-    }
-  } catch {}
-  return next;
-}
-
-function extractTradeInsertBlocksForPdf(scopeText, explicitTradeText) {
-  const fromScope = String(scopeText || "");
-  const unique = new Set();
-  const out = [];
-  const push = (text) => {
-    const val = String(text || "").trim();
-    if (!val || unique.has(val)) return;
-    unique.add(val);
-    out.push(val);
-  };
-
-  // Known curated trade inserts
-  for (const item of SCOPE_TRADE_INSERTS) {
-    const txt = String(item?.text || "").trim();
-    if (txt && fromScope.includes(txt)) push(txt);
-  }
-
-  // Manual "Trade Insert:" blocks
-  const tradeBlockPattern = /(Trade Insert:[\s\S]*?)(?=\n{2,}Trade Insert:|\s*$)/gi;
-  const manualBlocks = fromScope.match(tradeBlockPattern) || [];
-  manualBlocks.forEach((block) => push(block));
-
-  // Explicit tracked insert
-  push(explicitTradeText);
-  return out;
-}
-
-function stripTradeInsertBlocksFromScope(scopeText, tradeBlocks) {
-  let next = String(scopeText || "");
-  for (const block of tradeBlocks || []) {
-    const txt = String(block || "").trim();
-    if (!txt) continue;
-    next = next.replace(txt, "\n\n");
-  }
-  return next.replace(/\n{3,}/g, "\n\n").trim();
-}
 
 // Additional notes quick-insert snippets
 const ADDITIONAL_NOTES_SNIPPETS = [
@@ -5178,7 +5087,7 @@ export default function EstimateForm(props) {
       const additionalNotesText = String(exportState?.additionalNotes || "").trim();
       const materialsBlanketDescription = String(exportState?.materials?.materialsBlanketDescription || "").trim();
       const tradeBlocks = uiDocType === "estimate"
-        ? extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text)
+        ? extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text, SCOPE_TRADE_INSERTS)
         : [];
       const tradeRawForPdf = uiDocType === "estimate" ? tradeBlocks.join("\n\n") : "";
       const scopeWithoutTrade = includeNotes
