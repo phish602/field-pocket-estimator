@@ -28,7 +28,7 @@ export function requireCompanyProfile(options = {}) {
     onBlock,
     onRequireProfile,
     confirmFn,
-    message = "User Profile required. Open User Profile?",
+    message = "Company Profile required. Open Company Profile?",
   } = options;
 
   const currentProfile = profile ? normalizeCompanyProfile(profile) : loadCompanyProfile();
