@@ -573,7 +573,7 @@ export default function CompanyProfileScreen() {
         same = false;
       }
       if (!same) {
-        const ok = window.confirm("Overwrite saved User Profile?");
+        const ok = window.confirm("Overwrite saved Company Profile?");
         if (!ok) return;
       }
     }
@@ -793,7 +793,7 @@ const stripeActionGroupStyle = {
       {showClearConfirm ? (
         <div style={modalOverlay} role="dialog" aria-modal="true">
           <div style={modalCard}>
-            <div style={modalTitle}>Clear all User Profile fields?</div>
+            <div style={modalTitle}>Clear all Company Profile fields?</div>
             <div style={modalText}>Unsaved changes will be lost.</div>
             <div style={modalActions}>
               <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(false)}>
@@ -816,7 +816,7 @@ const stripeActionGroupStyle = {
               className="pe-company-header-logo esti-spin"
               draggable={false}
             />
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="User Profile">User Profile</h1>
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="Company Profile">Company Profile</h1>
           </div>
 
           <div className="pe-company-header-controls pe-company-header-controls-profile">
@@ -836,7 +836,7 @@ const stripeActionGroupStyle = {
           <div className="pe-company-missing-banner" role="alert" aria-live="assertive">
             <div className="pe-company-missing-banner-title">Missing required information</div>
             <div className="pe-company-missing-banner-body">
-              Please complete the highlighted fields to save your User Profile.
+              Please complete the highlighted fields to save your Company Profile.
             </div>
             <ul className="pe-company-missing-list">
               {missingRequiredFields.map((fieldKey) => (

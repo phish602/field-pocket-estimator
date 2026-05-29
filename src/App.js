@@ -962,7 +962,7 @@ function TopBar({
         type="button"
         style={styles.headerIconBtn}
         onClick={onProfile}
-  aria-label="Open User Profile"
+  aria-label="Open Company Profile"
       >
         <div style={styles.profileLogoWrap}>
           {showAddLogoCue ? <span style={styles.profileLogoCueRing} aria-hidden="true" /> : null}
@@ -1107,7 +1107,7 @@ function QuickMenu({ open, onClose, onSelect }) {
     { key: ROUTES.CREATE, label: "Create" },
     { key: ROUTES.ESTIMATES, label: "Estimates" },
     { key: ROUTES.INVOICES, label: "Invoices" },
-    { key: ROUTES.COMPANY_PROFILE, label: "User Profile" },
+    { key: ROUTES.COMPANY_PROFILE, label: "Company Profile" },
   ];
 
   return (
@@ -1245,7 +1245,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             onClick={() => onSelect("company")}
             disabled={disabled}
           >
-            User Profile
+            Company Profile
           </button>
 
           <button
@@ -2610,7 +2610,7 @@ const [spinTick, setSpinTick] = useState(0);
 
   const ensureBuilderAccess = useCallback((requestedTab = "") => {
     const gate = requireCompanyProfile({
-      message: "User Profile required. Open User Profile?",
+      message: "Company Profile required. Open Company Profile?",
       onRequireProfile: () => {
         prepareCompanyProfileReturnTarget(requestedTab);
         enterTab(ROUTES.COMPANY_PROFILE);
@@ -4042,7 +4042,7 @@ const gated = false;
           <div style={unsavedModalCard}>
             <div style={unsavedModalTitle}>Unsaved changes</div>
             <div style={unsavedModalText}>
-              You have unsaved changes in your User Profile. If you leave this page, they will be lost.
+              You have unsaved changes in your Company Profile. If you leave this page, they will be lost.
             </div>
             <div style={unsavedModalActions}>
               <button
