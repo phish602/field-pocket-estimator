@@ -1384,7 +1384,7 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       actions.push({
         key: "overdue",
         tone: "bad",
-        title: lang === "es" ? "Cobrar facturas vencidas" : "Overdue Collection",
+        title: lang === "es" ? "Cobrar facturas vencidas" : "Follow Up on Overdue Invoices",
         detail: lang === "es"
           ? `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "factura vencida" : "facturas vencidas"} por ${fmtMoney(computed.invoiceTotals.overdueValue)}.`
           : `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "invoice is" : "invoices are"} overdue for ${fmtMoney(computed.invoiceTotals.overdueValue)}.`,
