@@ -860,7 +860,7 @@ function getInvoiceCardActionMeta({
     };
   }
   return {
-    label: lang === "es" ? "Actividad" : "Invoice Activity",
+    label: lang === "es" ? "Actividad" : "Activity",
     detail: lang === "es" ? "Solo referencia" : "Reference only",
     color: "rgba(203,213,225,0.88)",
     border: "rgba(148,163,184,0.18)",
@@ -1892,7 +1892,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 color: "rgba(74,222,128,0.88)",
               }
             : {
-                label: lang === "es" ? "Actividad de facturas" : "Invoice Activity",
+                label: lang === "es" ? "Actividad de facturas" : "Activity",
                 detail: lang === "es" ? "No hay facturas visibles en este momento." : "No visible invoices in this view right now.",
                 color: "rgba(203,213,225,0.78)",
               };
@@ -2830,7 +2830,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
             <div style={invoiceSectionHeaderStyle}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-                  {lang === "es" ? "Actividad de facturas" : "Invoice Activity"}
+                  {lang === "es" ? "Actividad de facturas" : "Invoices"}
                 </div>
                 <div style={{ fontSize: 14.5, fontWeight: 850, color: "rgba(239,245,249,0.96)" }}>
                   {invoiceBoardSummary.visibleCount > 0
