@@ -227,9 +227,6 @@ const filterPanelStyle = {
 const statusSelectStyle = {
 };
 
-const valueSelectStyle = {
-};
-
 const clearButtonStyle = {
 };
 
@@ -2622,8 +2619,6 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     }
   };
 
-  const valueFilter = "all";
-
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
@@ -2775,13 +2770,6 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 <option value={INVOICE_STATUSES.PAID}>{formatStatusLabel(INVOICE_STATUSES.PAID, lang)}</option>
                 <option value={INVOICE_STATUSES.OVERDUE}>{formatStatusLabel(INVOICE_STATUSES.OVERDUE, lang)}</option>
                 <option value={INVOICE_STATUSES.VOID}>{formatStatusLabel(INVOICE_STATUSES.VOID, lang)}</option>
-              </select>
-
-              <select value={valueFilter} onChange={() => {}} style={valueSelectStyle}>
-                <option value="all">{lang === "es" ? "Todos los valores" : "All Values"}</option>
-                <option value="small">{lang === "es" ? "Menos de $1k" : "Under $1k"}</option>
-                <option value="medium">{lang === "es" ? "$1k-$10k" : "$1k-$10k"}</option>
-                <option value="large">{lang === "es" ? "$10k+" : "$10k+"}</option>
               </select>
 
               <button
