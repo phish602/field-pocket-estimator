@@ -732,7 +732,7 @@ export default function ProjectDetailScreen({
     {
       label: "Balance Due",
       value: money(totals.balanceRemaining),
-      meta: hasBalanceDue ? "Outstanding receivable" : "Paid or no balance remaining",
+      meta: hasBalanceDue ? "Unpaid balance" : "No balance remaining",
       tone: hasBalanceDue ? {
         background: "rgba(245,158,11,0.1)",
         border: "1px solid rgba(245,158,11,0.26)",
@@ -752,7 +752,7 @@ export default function ProjectDetailScreen({
         <div style={S.heroHeader}>
           <div style={S.heroHeaderTop}>
             <div style={S.heroIdentity}>
-              <div style={S.heroEyebrow}>Job Overview</div>
+              <div style={S.heroEyebrow}>Project</div>
               <div style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
               {project.projectNumber ? <div style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(230,241,248,0.4)", letterSpacing: "0.05em" }}>Project #{project.projectNumber}</div> : null}
               {customer ? (
@@ -835,13 +835,13 @@ export default function ProjectDetailScreen({
               }}
               onClick={onEditProject}
             >
-              Edit Project Details
+              Edit Details
             </button>
           ) : null}
         </div>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "10px 0 4px" : "6px 0 2px" }} />
         <div style={S.statusControlWrap}>
-          <div style={S.statusControlLabel}>Project lifecycle</div>
+          <div style={S.statusControlLabel}>Project status</div>
           <div style={isPhone ? { ...S.statusControlRow, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.statusControlRow}>
             {PROJECT_STATUS_CONTROLS.map((option) => {
               const selected = storedProjectStatus === option.key;
@@ -945,10 +945,10 @@ export default function ProjectDetailScreen({
         <div style={S.sectionTitle}>Documents</div>
         <div style={S.docFlowShell}>
           <div style={S.docFlowSummary}>
-            <div style={S.docFlowTitle}>Project document flow</div>
+            <div style={S.docFlowTitle}>Document flow</div>
             <div style={S.docFlowMeta}>
               {documentCount === 0
-                ? "No estimates or invoices have been created for this project yet."
+                ? "No estimates or invoices on this project yet."
                 : `${documentCount} project documents across estimating and billing. Estimated ${money(totals.estimateTotal)} · Invoiced ${money(totals.invoiceTotal)}.`}
             </div>
           </div>
@@ -956,7 +956,7 @@ export default function ProjectDetailScreen({
             <div style={S.docFlowColumn}>
               <div style={S.docFlowColumnHeader}>
                 <div style={S.docFlowColumnTitle}>Estimates</div>
-                <div style={S.docFlowColumnCount}>{estimates.length === 1 ? "1 document" : `${estimates.length} documents`}</div>
+                <div style={S.docFlowColumnCount}>{estimates.length === 1 ? "1 estimate" : `${estimates.length} estimates`}</div>
               </div>
               {estimates.length === 0 ? (
                 <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
@@ -1002,7 +1002,7 @@ export default function ProjectDetailScreen({
             <div style={S.docFlowColumn}>
               <div style={S.docFlowColumnHeader}>
                 <div style={S.docFlowColumnTitle}>Invoices</div>
-                <div style={S.docFlowColumnCount}>{invoices.length === 1 ? "1 document" : `${invoices.length} documents`}</div>
+                <div style={S.docFlowColumnCount}>{invoices.length === 1 ? "1 invoice" : `${invoices.length} invoices`}</div>
               </div>
               {invoices.length === 0 ? (
                 <div style={{ padding: "14px 16px", borderRadius: 10, border: "1px dashed rgba(255,255,255,0.07)", display: "grid", gap: 10, alignItems: "start" }}>
@@ -1101,7 +1101,7 @@ export default function ProjectDetailScreen({
             <div style={{ display: "grid", gap: 8, maxWidth: 420 }}>
               <label style={{ display: "grid", gap: 6 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(230,241,248,0.72)" }}>
-                  Type DELETE to permanently delete this empty project.
+                  Type DELETE to confirm permanent deletion.
                 </div>
                 <input
                   className="pe-input"
