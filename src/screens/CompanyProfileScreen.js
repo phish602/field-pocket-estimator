@@ -299,7 +299,7 @@ export default function CompanyProfileScreen() {
       background: "rgba(59,130,246,0.12)",
       border: "rgba(59,130,246,0.22)",
       color: "rgba(191,219,254,0.98)",
-      summary: "Stripe is not connected yet, so this contractor cannot accept online invoice payments.",
+      summary: "Stripe is not connected yet. Online invoice payments are unavailable.",
       helper: "Connect Stripe to let customers pay invoices online without changing invoice or payment flows.",
       nextAction: "Connect Stripe to start onboarding and create a payment-ready account link.",
     };
@@ -925,11 +925,11 @@ const stripeActionGroupStyle = {
                     </div>
                   )}
                 </div>
-                <div className="pe-field-helper pe-company-branding-helper">Used on PDFs/exports</div>
+                <div className="pe-field-helper pe-company-branding-helper">Used on PDF exports</div>
                 {!profile.logoDataUrl ? (
                   <>
                     <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 6 }}>
-                      No logo uploaded yet - your PDF will use a branded initials badge until you add one.
+                      No logo uploaded yet. Your PDF will use a branded initials badge until you add one.
                     </div>
                     <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 2, opacity: 0.78 }}>
                       Upload a logo anytime to replace it.
@@ -1068,7 +1068,7 @@ const stripeActionGroupStyle = {
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                     <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-                      <div style={stripeEyebrowStyle}>Stripe onboarding</div>
+                      <div style={stripeEyebrowStyle}>Stripe connection</div>
                       <div style={stripeHeadlineStyle}>{stripeStateMeta.summary}</div>
                       <div className="pe-field-helper" style={{ ...stripeBodyStyle, marginBottom: 0 }}>
                         Connect your own Stripe account for future online invoice payments. EstiPaid stores your connected account ID only and never stores Stripe secret keys.
@@ -1157,7 +1157,7 @@ const stripeActionGroupStyle = {
                     </div>
 
                     <div style={stripeDetailBlockStyle}>
-                      <div style={stripeEyebrowStyle}>Next safest action</div>
+                      <div style={stripeEyebrowStyle}>Next step</div>
                       <div style={{ fontSize: 15, fontWeight: 900, color: stripeStateMeta.color }}>
                         {stripeConnected ? (stripeReady ? "Refresh Stripe Status" : "Continue Stripe Setup") : "Connect Stripe"}
                       </div>
