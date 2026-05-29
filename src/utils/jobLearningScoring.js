@@ -210,7 +210,7 @@ export function deriveWorkflowScoringRisk(entry) {
     const sections = SECTION_PREFIXES.filter((p) => tokens.some((t) => t.startsWith(p))).length;
     if (sections < 2) return "moderate";
 
-    // Normalization cleanup required: tokens not already trimmed/lowercased.
+    // Normalization assumes tokens have already been trimmed and lowercased.
     if (Array.isArray(entry.sequence)) {
       for (let i = 0; i < entry.sequence.length; i++) {
         const t = entry.sequence[i];
