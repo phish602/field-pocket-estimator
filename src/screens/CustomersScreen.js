@@ -1287,6 +1287,15 @@ export default function CustomersScreen({
                   {label("Add Customer", "Agregar cliente")}
                 </button>
               </div>
+            ) : String(q || "").trim() && filtered.length === 0 ? (
+              <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                  {label("No matching customers", "No hay clientes que coincidan")}
+                </div>
+                <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45 }}>
+                  {label("Try a different name, phone number, email, or project.", "Prueba con otro nombre, teléfono, correo o proyecto.")}
+                </div>
+              </div>
             ) : (
               <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(min(340px, 100%), 1fr))" }}>
               {filtered.map((c) => {
