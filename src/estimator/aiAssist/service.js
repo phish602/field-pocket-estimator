@@ -592,7 +592,7 @@ export async function requestSectionAssist({
   }
   const validation = config.validationRules(writes, state);
 
-  // Dev diagnostics — adapter/validation outcome
+  // Dev-only diagnostics for adapter/validation outcomes.
   if (process.env.NODE_ENV === "development") {
     const _tid = _traceId || "?";
     if (writes === null) {
