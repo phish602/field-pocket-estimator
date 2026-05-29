@@ -24,17 +24,17 @@ describe("scopeTradeStarters utility", () => {
     const records = [
       null,
       {},
-      { id: "a", label: "  Demo  ", text: "  Trade Insert: Demo\n- line  " },
-      { id: "b", name: "Paint", body: "Trade Insert: Paint\n- coat" },
+      { id: "a", label: "  Demo  ", text: "  Trade Insert: Demo\n- line  ", updatedAt: 100 },
+      { id: "b", name: "Paint", body: "Trade Insert: Paint\n- coat", updatedAt: 200 },
       { id: "c", label: "NoText", text: "   " },
     ];
     const result = normalizeCustomTradeStarterList(records);
     expect(result).toHaveLength(2);
-    expect(result.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(result[0].label).toBe("Demo");
-    expect(result[0].text).toBe("Trade Insert: Demo\n- line");
-    expect(result[1].label).toBe("Paint");
-    expect(result[1].text).toBe("Trade Insert: Paint\n- coat");
+    expect(result.map((r) => r.id)).toEqual(["b", "a"]);
+    expect(result[0].label).toBe("Paint");
+    expect(result[0].text).toBe("Trade Insert: Paint\n- coat");
+    expect(result[1].label).toBe("Demo");
+    expect(result[1].text).toBe("Trade Insert: Demo\n- line");
   });
 
   test("normalizeCustomTradeStarterList dedupes by id and sorts by updatedAt desc then label", () => {
