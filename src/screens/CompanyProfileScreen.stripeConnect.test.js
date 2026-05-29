@@ -9,6 +9,12 @@ function readStoredProfile() {
   return JSON.parse(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE) || "{}");
 }
 
+async function renderCompanyProfileScreen() {
+  await act(async () => {
+    render(<CompanyProfileScreen />);
+  });
+}
+
 describe("CompanyProfileScreen Stripe Connect", () => {
   const originalFetch = global.fetch;
   const originalOpen = window.open;
@@ -39,9 +45,8 @@ describe("CompanyProfileScreen Stripe Connect", () => {
     expect(DEFAULT_COMPANY_PROFILE.stripeAccountId).toBe("");
   });
 
-  test("renders Stripe Payments section with Connect Stripe button", () => {
-    render(<CompanyProfileScreen />);
-
+  test("renders Stripe Payments section with Connect Stripe button", async () => {
+    await renderCompanyProfileScreen();
     expect(screen.getByText("STRIPE PAYMENTS")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Connect Stripe/i })).toBeInTheDocument();
   });
@@ -67,7 +72,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
         }),
       });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Connect Stripe/i }));
@@ -106,7 +111,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
       }),
     });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     expect(await screen.findByTestId("stripe-account-id")).toHaveTextContent("acct_existing_123");
     await waitFor(() => {
@@ -149,7 +154,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
         }),
       });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     await waitFor(() => {
       expect(screen.getByText(/Charges enabled:/i)).toHaveTextContent("No");
@@ -188,7 +193,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
       }),
     });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     expect(await screen.findByTestId("stripe-account-id")).toHaveTextContent("acct_existing_123");
     expect(screen.getByRole("button", { name: /Disconnect Stripe/i })).toBeInTheDocument();
@@ -223,7 +228,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
       }),
     });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     expect(await screen.findByTestId("stripe-account-id")).toHaveTextContent("acct_existing_123");
 
@@ -269,7 +274,7 @@ describe("CompanyProfileScreen Stripe Connect", () => {
       }),
     });
 
-    render(<CompanyProfileScreen />);
+    await renderCompanyProfileScreen();
 
     expect(await screen.findByTestId("stripe-account-id")).toHaveTextContent("acct_existing_123");
 
@@ -288,8 +293,8 @@ describe("CompanyProfileScreen Stripe Connect", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  test("does not refresh Stripe status without stripeAccountId", () => {
-    render(<CompanyProfileScreen />);
+  test("does not refresh Stripe status without stripeAccountId", async () => {
+    await renderCompanyProfileScreen();
 
     expect(global.fetch).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /Connect Stripe/i })).toBeInTheDocument();
