@@ -132,6 +132,7 @@ Use UI engines for:
 ## Product polish baseline
 - Treat the saved Customers, Projects, Project Detail, Estimates, Invoices, and Company Profile UI/copy cleanups as protected baseline behavior.
 - Do not revert the inactive invoice value filter removal, Customers empty-state polish, Project Detail Danger Zone cleanup, Company Profile naming/copy updates, Estimates copy polish, Projects copy polish, or Invoices copy polish in future passes.
+- Also treat the later saved copy cleanups as protected baseline behavior: remaining Invoices activity copy polish, Financial Snapshot "Follow Up on Overdue Invoices", App/Home overdue and approved-estimate wording polish, and the Company Profile prompt in `guards.js`.
 - Preserve these as intentional UI/copy baselines unless a future task explicitly targets them.
 
 ---
