@@ -202,6 +202,7 @@ function normalizeEditContext(value) {
 function normalizeProfileReturnTarget(value) {
   if (!value || typeof value !== "object") return null;
 
+  // Compatibility path: accept older edit-context shapes and normalize them into the current route payload.
   const legacyEditContext = normalizeEditContext(value);
   if (legacyEditContext) {
     return {
@@ -3478,9 +3479,8 @@ const gated = false;
     } catch {
       return { src: DEFAULT, hasCustomLogo: false };
     }
-  // activeTab intentionally triggers a re-read of localStorage when the user
-  // navigates between tabs (e.g. after saving a new company logo); activeTab is
-  // not referenced inside the callback body so exhaustive-deps flags it.
+  // Intentionally depend on activeTab so this effect re-reads localStorage on tab changes
+  // (for example after saving a new company logo); the callback body does not use it directly.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
   const topRightLogoSrc = topRightLogoMeta.src;
