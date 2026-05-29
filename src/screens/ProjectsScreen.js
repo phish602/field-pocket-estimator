@@ -86,7 +86,7 @@ function deriveProjectNextAction(proj) {
   }
   if ((proj?.approvedEstCount || 0) > 0) {
     return {
-      label: "Invoice Approved",
+      label: "Ready to Invoice",
       tone: "success",
     };
   }
@@ -137,7 +137,7 @@ const COLOR_LANES = [
   { key: "all",      label: "All colors",     swatch: "rgba(99,179,237,0.72)" },
   { key: "overdue",  label: "Overdue",        swatch: "rgba(248,113,113,0.88)" },
   { key: "balance",  label: "Balance due",    swatch: "rgba(251,191,36,0.88)" },
-  { key: "approved", label: "Approved ready", swatch: "rgba(74,222,128,0.88)" },
+  { key: "approved", label: "Ready to invoice", swatch: "rgba(74,222,128,0.88)" },
   { key: "standard", label: "Standard",       swatch: "rgba(148,163,184,0.55)" },
 ];
 
@@ -436,7 +436,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
       <div style={S.portfolioHero}>
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-            Active work portfolio
+            Portfolio overview
           </div>
           <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
             Projects prioritized by what needs attention next
@@ -444,7 +444,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
           <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
             {portfolioSummary.highestBalanceProject && Number(portfolioSummary.highestBalanceProject?.totals?.balanceRemaining || 0) > 0
               ? `${portfolioSummary.highestBalanceProject.projectName || "This project"} carries the highest visible balance due at ${formatMoney(portfolioSummary.highestBalanceProject.totals.balanceRemaining)}.`
-              : "Use this view to scan active jobs, document load, and the next project action without leaving the portfolio."}
+              : "Open any project to view estimates, invoices, and full job details."}
           </div>
         </div>
 
@@ -462,13 +462,13 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
               key: "balance",
               label: "Balance due",
               value: formatMoney(portfolioSummary.balanceDue),
-              detail: portfolioSummary.balanceDue > 0 ? "Outstanding across visible projects" : "No balance due in view",
+              detail: portfolioSummary.balanceDue > 0 ? "Across visible projects" : "No balance due in view",
               color: portfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.88)" : "rgba(203,213,225,0.78)",
               border: portfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
             },
             {
               key: "overdue",
-              label: "Overdue attention",
+              label: "Overdue invoices",
               value: String(portfolioSummary.overdueInvoices),
               detail: portfolioSummary.overdueProjects > 0 ? `${portfolioSummary.overdueProjects} project${portfolioSummary.overdueProjects !== 1 ? "s" : ""}` : "No overdue invoices in view",
               color: portfolioSummary.overdueInvoices > 0 ? "rgba(248,113,113,0.88)" : "rgba(203,213,225,0.78)",
@@ -476,9 +476,9 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
             },
             {
               key: "approved",
-              label: "Approved estimate ready",
+              label: "Ready to invoice",
               value: String(portfolioSummary.approvedReadyProjects),
-              detail: `${portfolioSummary.totalDocuments} docs in visible portfolio`,
+              detail: `${portfolioSummary.totalDocuments} docs across visible projects`,
               color: "rgba(96,165,250,0.84)",
               border: "rgba(59,130,246,0.2)",
             },
@@ -683,7 +683,7 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
                     ) : null}
                     {proj.approvedEstCount > 0 ? (
                       <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
-                        {proj.approvedEstCount === 1 ? "1 est. approved" : `${proj.approvedEstCount} ests. approved`}
+                        {proj.approvedEstCount === 1 ? "1 est. approved" : `${proj.approvedEstCount} est. approved`}
                       </span>
                     ) : null}
                   </div>
