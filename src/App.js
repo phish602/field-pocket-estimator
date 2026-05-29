@@ -546,7 +546,7 @@ function deriveHomeDashboardSummary({
     nextSteps.push({
       key: "overdue",
       tone: "danger",
-      title: "Overdue Collection",
+      title: "Follow Up on Overdue Invoices",
       detail: `${Number(pulse.overdueInvoices)} ${Number(pulse.overdueInvoices) === 1 ? "invoice is" : "invoices are"} overdue for ${homeMoney(overdueBalance || unpaidBalance)}.`,
     });
   }
@@ -1890,7 +1890,7 @@ function HomeScreen({
                       ) : null}
                       {approvedEstCount > 0 ? (
                         <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
-                          {approvedEstCount === 1 ? "1 est. approved" : `${approvedEstCount} ests. approved`}
+                          {approvedEstCount === 1 ? "1 estimate approved" : `${approvedEstCount} estimates approved`}
                         </span>
                       ) : null}
                     </div>
@@ -3741,7 +3741,7 @@ const gated = false;
           return;
         }
 
-// User Profile / Templates
+// Company Profile / Templates
     if (key === "company") {
       navigateToCompanyProfile();
       return;
