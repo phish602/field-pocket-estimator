@@ -193,6 +193,20 @@ When I ask for repo help:
 
 ---
 
+## May 28, 2026 — Actionable Test Baseline
+- Build passes cleanly.
+- 44 of 45 test suites are currently actionable-clean.
+- 1642 of 1642 actionable tests pass.
+- No open-handle diagnostics were reported in the final actionable run.
+- `src/server.devAi.stripeCheckoutConnect.test.js` is intentionally excluded for now because Stripe checkout/connect is still in build status.
+- The Stripe suite should be tested later by running it alone first, then against the clean actionable baseline after Stripe work resumes.
+- Do not treat the excluded Stripe suite as a cleanup blocker.
+- Current clean actionable baseline excludes only:
+  - `src/server.devAi.stripeCheckoutConnect.test.js`
+- Future cleanup/product work should start from this 44-suite actionable baseline unless Stripe work is the active task.
+
+---
+
 ## Preferred task prompt format
 Use this structure for new work:
 
