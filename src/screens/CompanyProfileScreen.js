@@ -273,7 +273,9 @@ export default function CompanyProfileScreen() {
   const stripeDetailsSubmitted = stripeStatus ? !!stripeStatus.detailsSubmitted : null;
   const stripeReady = stripeConnected && !!stripeChargesEnabled && !!stripePayoutsEnabled && !!stripeDetailsSubmitted;
   const stripeCanAcceptPayments = stripeConnected && !!stripeChargesEnabled;
-  const stripePrimaryActionLabel = stripeConnected ? "Continue Stripe Setup" : "Connect Stripe";
+  const stripePrimaryActionLabel = stripeConnected
+    ? (stripeReady ? "Update Stripe Setup" : "Continue Stripe Setup")
+    : "Connect Stripe";
   const stripeStateMeta = stripeConnected
     ? (stripeReady
       ? {
@@ -1223,7 +1225,6 @@ const stripeActionGroupStyle = {
           </div>
 
           <div className="pe-field-helper pe-company-meta">
-            Storage key: <span style={{ opacity: 0.8, fontWeight: 700 }}>{PROFILE_KEY}</span>
             {savedAt ? (
               <span style={{ display: "block", marginTop: 4, opacity: 0.8 }}>
                 Saved {new Date(savedAt).toLocaleString()}
