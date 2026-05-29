@@ -2008,28 +2008,28 @@ export default function EstimatesScreen({
               {[
                 {
                   key: "visible-value",
-                  label: lang === "es" ? "Visible value" : "Visible value",
+                  label: lang === "es" ? "Valor visible" : "Visible value",
                   value: money(estimatePipelineSummary.totalValue),
                   detail: `${estimatePipelineSummary.totalCount} ${estimatePipelineSummary.totalCount === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
                   tone: "neutral",
                 },
                 {
                   key: "awaiting-response",
-                  label: lang === "es" ? "Awaiting response" : "Awaiting response",
+                  label: lang === "es" ? "En espera de respuesta" : "Awaiting response",
                   value: String(estimatePipelineSummary.pendingCount),
                   detail: money(estimatePipelineSummary.pendingValue),
                   tone: "pending",
                 },
                 {
                   key: "approved-ready",
-                  label: lang === "es" ? "Ready for invoice" : "Ready for invoice",
+                  label: lang === "es" ? "Listo para facturar" : "Ready for invoice",
                   value: money(estimatePipelineSummary.approvedReady.value),
                   detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
                   tone: "approved",
                 },
                 {
                   key: "high-value",
-                  label: lang === "es" ? "High value" : "High value",
+                  label: lang === "es" ? "Alto valor" : "High value",
                   value: String(estimatePipelineSummary.highValueCount),
                   detail: lang === "es" ? "por encima de $10k" : "over $10k",
                   tone: "approved",
@@ -2155,7 +2155,7 @@ export default function EstimatesScreen({
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
-                <option value="all">All Status</option>
+                <option value="all">All Statuses</option>
                 <option value="pending">Pending</option>
                 <option value="approved">Approved</option>
                 <option value="lost">Lost</option>
