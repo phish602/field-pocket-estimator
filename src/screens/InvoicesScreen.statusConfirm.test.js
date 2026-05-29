@@ -210,7 +210,7 @@ describe("InvoicesScreen status confirm dialog", () => {
       sessionId: "cs_mark_paid_stale",
       status: "stale",
     }));
-    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Stale$/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
@@ -424,7 +424,7 @@ describe("InvoicesScreen manual payments", () => {
       status: "stale",
       amount: 500,
     }));
-    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Stale$/i)).toBeInTheDocument();
     expect(screen.getByText(/Invoice balance changed after this link was generated\./i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
     expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
@@ -568,7 +568,7 @@ describe("InvoicesScreen manual payments", () => {
       sessionId: "cs_void_stale_123",
       status: "stale",
     }));
-    expect(screen.getByText(/^Stale or Outdated$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Stale$/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pay Online with Stripe/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Copy Payment Link/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();

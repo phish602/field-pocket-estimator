@@ -615,7 +615,7 @@ function getStripeSessionStateMeta(state, lang) {
   }
   if (state === "stale") {
     return {
-      label: lang === "es" ? "Desactualizada" : "Stale or Outdated",
+      label: lang === "es" ? "Desactualizada" : "Stale",
       background: "rgba(251,146,60,0.10)",
       border: "rgba(251,146,60,0.24)",
       color: "rgba(254,215,170,0.98)",
@@ -812,7 +812,7 @@ function getInvoiceCardActionMeta({
 }) {
   if (derivedStatus === INVOICE_STATUSES.OVERDUE) {
     return {
-      label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+      label: lang === "es" ? "Cobro vencido" : "Past Due",
       detail: lang === "es" ? "Prioridad de cobranza" : "Collection priority",
       color: "rgba(248,113,113,0.92)",
       border: "rgba(239,68,68,0.2)",
@@ -1861,7 +1861,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
 
     const nextAction = overdueCount > 0
       ? {
-          label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+          label: lang === "es" ? "Cobro vencido" : "Overdue invoices",
           detail: lang === "es"
             ? `${overdueCount} ${overdueCount === 1 ? "factura vencida" : "facturas vencidas"} por ${moneyUSD(overdueBalance)}.`
             : `${overdueCount} ${overdueCount === 1 ? "overdue invoice" : "overdue invoices"} for ${moneyUSD(overdueBalance)}.`,
@@ -2673,7 +2673,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 },
                 {
                   key: "overdue",
-                  label: lang === "es" ? "Cobro vencido" : "Overdue Collection",
+                  label: lang === "es" ? "Cobro vencido" : "Overdue",
                   value: moneyUSD(invoiceBoardSummary.overdueBalance),
                   detail: invoiceBoardSummary.overdueCount > 0
                     ? `${invoiceBoardSummary.overdueCount} ${invoiceBoardSummary.overdueCount === 1 ? (lang === "es" ? "vencida" : "overdue") : (lang === "es" ? "vencidas" : "overdue")}`
@@ -2865,7 +2865,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 <div style={{ opacity: 0.68 }}>
                   <EmptyInvoiceIcon />
                 </div>
-                <div>{lang === "es" ? "Aún no hay facturas. Crea una factura manual o desde una estimación aprobada." : "No invoices yet. Create a manual invoice or create one from an approved estimate."}</div>
+                <div>{lang === "es" ? "Aún no hay facturas. Crea una factura manual o desde una estimación aprobada." : "No invoices yet. Create a manual invoice or convert an approved estimate."}</div>
               </div>
             ) : filtered.length === 0 ? (
               <div style={{ opacity: 0.75, textAlign: "center" }}>
@@ -2987,7 +2987,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                       <div className="pe-estimate-card-header" style={invoiceCardTopStyle}>
                         <div className="pe-estimate-card-info" style={invoiceHeaderInfoStyle}>
                           <div style={invoicePrimaryLineStyle}>
-                            <div style={invoiceEyebrowStyle}>{lang === "es" ? "Actividad de facturas" : "Invoice Activity"}</div>
+                            <div style={invoiceEyebrowStyle}>{lang === "es" ? "Actividad de facturas" : "Invoice"}</div>
                             <span className="pe-estimate-card-title" style={invoiceTitleStyle}>
                               {workTitle || projectLabel || customerLabel || (lang === "es" ? "Trabajo sin título" : "Untitled Job")}
                             </span>
@@ -3055,14 +3055,14 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                           <div style={invoiceSignalValueStyle}>{dueDate || "—"}</div>
                           <div style={invoiceSignalMetaStyle}>
                             {derivedStatus === INVOICE_STATUSES.OVERDUE
-                              ? (lang === "es" ? "Cobro vencido" : "Overdue Collection")
+                              ? (lang === "es" ? "Cobro vencido" : "Past due")
                               : balanceRemaining > 0
                                 ? moneyUSD(balanceRemaining)
                                 : (lang === "es" ? "Liquidada" : "Settled")}
                           </div>
                         </div>
                         <div style={invoiceSignalCardStyle}>
-                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Actividad" : "Invoice Activity"}</div>
+                          <div style={invoiceSignalLabelStyle}>{lang === "es" ? "Actividad" : "Activity"}</div>
                           <div style={invoiceSignalValueStyle}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
                           <div style={invoiceSignalMetaStyle}>
                             {stripeSessionMeta?.label
