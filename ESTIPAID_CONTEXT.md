@@ -129,6 +129,11 @@ Use UI engines for:
 - Prioritize mobile saved estimate/invoice readability
 - Keep desktop unchanged unless explicitly asked
 
+## Product polish baseline
+- Treat the saved Customers, Projects, Project Detail, Estimates, Invoices, and Company Profile UI/copy cleanups as protected baseline behavior.
+- Do not revert the inactive invoice value filter removal, Customers empty-state polish, Project Detail Danger Zone cleanup, Company Profile naming/copy updates, Estimates copy polish, Projects copy polish, or Invoices copy polish in future passes.
+- Preserve these as intentional UI/copy baselines unless a future task explicitly targets them.
+
 ---
 
 ## App architecture baseline
