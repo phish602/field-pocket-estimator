@@ -79,7 +79,9 @@ describe("EstimatesScreen status reversion guard", () => {
 
   afterEach(() => {
     alertSpy.mockRestore();
-    jest.runOnlyPendingTimers();
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
     jest.useRealTimers();
   });
 
