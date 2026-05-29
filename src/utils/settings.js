@@ -75,7 +75,7 @@ export function normalizeSettings(input) {
   const pdf = asObject(src.pdf);
   const customer = asObject(src.customer);
 
-  // Backward compatibility: migrate legacy documents.defaultInternalNotes
+  // Legacy compatibility: prefer documents.defaultInternalNotes over older fields.
   const defaultInternalNotesEstimate = asText(
     docDefaults.defaultInternalNotesEstimate
       ?? docDefaults.defaultInternalNotes

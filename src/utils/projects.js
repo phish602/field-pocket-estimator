@@ -137,8 +137,7 @@ function pickDeterministicSignatureOwner(projects = [], candidateProject = {}) {
   ));
   if (matches.length === 0) return null;
   if (matches.length === 1) return matches[0];
-  // When unlinked legacy docs match multiple manual duplicate projects, pin them to one
-  // stable owner so they do not attach to every duplicate or route arbitrarily.
+  // Legacy duplicate matches are pinned to one stable owner to avoid arbitrary routing.
   return matches.slice().sort((a, b) => {
     const aCreatedAt = normalizeTimestamp(a?.createdAt || a?.savedAt || a?.updatedAt, Number.MAX_SAFE_INTEGER);
     const bCreatedAt = normalizeTimestamp(b?.createdAt || b?.savedAt || b?.updatedAt, Number.MAX_SAFE_INTEGER);
