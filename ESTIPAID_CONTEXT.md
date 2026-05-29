@@ -210,6 +210,13 @@ When I ask for repo help:
   - `src/server.devAi.stripeCheckoutConnect.test.js`
 - Future cleanup/product work should start from this 44-suite actionable baseline unless Stripe work is the active task.
 
+## Post-warning-cleanup baseline
+- The actionable suite is now clean after test-only hardening.
+- 44 of 44 actionable suites pass and 1642 of 1642 actionable tests pass.
+- The excluded Stripe checkout/connect server test remains intentionally excluded.
+- Actionable logs contain no React `act(...)` or `Warning:` groups.
+- Test-only hardening covered Projects same-tab events, Estimates status timer cleanup, Company Profile Stripe render settle, and scopeTradeStarters deterministic ordering.
+
 ---
 
 ## Preferred task prompt format
