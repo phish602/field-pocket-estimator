@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import ProjectsScreen from "./ProjectsScreen";
 
@@ -57,7 +57,9 @@ describe("ProjectsScreen same-tab refresh", () => {
     seedProjects([updatedProject]);
 
     // Dispatch estipaid:projects-changed event
-    window.dispatchEvent(new Event("estipaid:projects-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:projects-changed"));
+    });
 
     // Verify UI refreshes immediately
     await waitFor(() => {
@@ -84,7 +86,9 @@ describe("ProjectsScreen same-tab refresh", () => {
     seedProjects([project1, project2]);
 
     // Dispatch estipaid:projects-changed event
-    window.dispatchEvent(new Event("estipaid:projects-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:projects-changed"));
+    });
 
     // Verify both projects are visible
     await waitFor(() => {
@@ -112,7 +116,9 @@ describe("ProjectsScreen same-tab refresh", () => {
     seedProjects([project1]);
 
     // Dispatch estipaid:projects-changed event
-    window.dispatchEvent(new Event("estipaid:projects-changed"));
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:projects-changed"));
+    });
 
     // Verify project2 is removed
     await waitFor(() => {
