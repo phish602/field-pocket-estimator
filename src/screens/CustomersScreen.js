@@ -1282,7 +1282,8 @@ export default function CustomersScreen({
                 <div style={{ display: "grid", placeItems: "center", marginBottom: 8, opacity: 0.68 }}>
                   <EmptyCustomersIcon />
                 </div>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet. Add your first customer to begin.</div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet</div>
+                <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45, marginBottom: 6 }}>Add your first customer so estimates, invoices, and projects have a billing contact.</div>
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
                   {label("Add Customer", "Agregar cliente")}
                 </button>
