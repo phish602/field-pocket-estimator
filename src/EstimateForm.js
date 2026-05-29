@@ -5016,7 +5016,7 @@ export default function EstimateForm(props) {
 
     const companyGate = requireCompanyProfile({
       profile: loadCompanyProfile(),
-      message: "User Profile required. Open User Profile?",
+      message: "Company Profile required. Open Company Profile?",
       onRequireProfile: () => {
         writeProfileReturnTarget({
           route: ROUTES.CREATE,
