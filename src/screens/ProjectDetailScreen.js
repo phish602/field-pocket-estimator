@@ -1062,7 +1062,6 @@ export default function ProjectDetailScreen({
           gap: 10,
         }}>
           <div style={{ display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: "rgba(248,113,113,0.96)" }}>Danger Zone</div>
             <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(230,241,248,0.62)" }}>
               {canHardDelete
                 ? "This project has no saved estimates or invoices. You can permanently delete it."
