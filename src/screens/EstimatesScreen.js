@@ -631,6 +631,26 @@ export default function EstimatesScreen({
   const [boardCols, setBoardCols] = useState(
     typeof window !== "undefined" ? (window.innerWidth >= 860 ? 3 : window.innerWidth >= 480 ? 2 : 1) : 3
   );
+  const isPhone = boardCols === 1;
+  const estimatePrimaryActionStyle = {
+    flex: isPhone ? "1 1 100%" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "11px 16px" : undefined,
+    fontWeight: 800,
+    background: isPhone ? "linear-gradient(180deg, rgba(99,179,237,0.24), rgba(99,179,237,0.14))" : undefined,
+    borderColor: isPhone ? "rgba(99,179,237,0.42)" : undefined,
+    boxShadow: isPhone ? "0 10px 22px rgba(0,0,0,0.16)" : undefined,
+  };
+  const estimateSecondaryActionStyle = {
+    flex: isPhone ? "1 1 calc(50% - 5px)" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "10px 12px" : undefined,
+    opacity: isPhone ? 0.92 : undefined,
+    background: isPhone ? "rgba(255,255,255,0.04)" : undefined,
+    borderColor: isPhone ? "rgba(255,255,255,0.11)" : undefined,
+  };
   useEffect(() => {
     const onResize = () => {
       const w = window.innerWidth;
@@ -2892,6 +2912,7 @@ export default function EstimatesScreen({
                         onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "open")}
                         onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "open")}
                         onClick={(evt) => runEstimateCardAction(evt, id, "open", () => openEstimate(e))}
+                        style={estimatePrimaryActionStyle}
                       >
                         {labelOpen}
                       </button>
@@ -2901,6 +2922,7 @@ export default function EstimatesScreen({
                         onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "details")}
                         onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "details")}
                         onClick={(evt) => runEstimateCardAction(evt, id, "details", () => toggle(id))}
+                        style={estimateSecondaryActionStyle}
                       >
                         {isOpen ? labelHide : labelDetails}
                       </button>
@@ -2920,6 +2942,7 @@ export default function EstimatesScreen({
                             }
                             if (target?.projectId) onOpenProjectDetail(target.projectId);
                           })}
+                          style={estimateSecondaryActionStyle}
                         >
                           Project
                         </button>

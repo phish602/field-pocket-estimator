@@ -1207,6 +1207,25 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     padding: isPhone ? "5px 8px" : "6px 12px",
     fontSize: isPhone ? 11.5 : 12.5,
   });
+  const invoicePrimaryActionStyle = {
+    flex: isPhone ? "1 1 100%" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "11px 16px" : undefined,
+    fontWeight: 800,
+    background: isPhone ? "linear-gradient(180deg, rgba(99,179,237,0.24), rgba(99,179,237,0.14))" : undefined,
+    borderColor: isPhone ? "rgba(99,179,237,0.42)" : undefined,
+    boxShadow: isPhone ? "0 10px 22px rgba(0,0,0,0.16)" : undefined,
+  };
+  const invoiceSecondaryActionStyle = {
+    flex: isPhone ? "1 1 calc(50% - 5px)" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "10px 12px" : undefined,
+    opacity: isPhone ? 0.92 : undefined,
+    background: isPhone ? "rgba(255,255,255,0.04)" : undefined,
+    borderColor: isPhone ? "rgba(255,255,255,0.11)" : undefined,
+  };
 
   const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
   const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
@@ -3116,6 +3135,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
                             onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "open")}
                             onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "open", () => openInvoice(invoice))}
+                            style={invoicePrimaryActionStyle}
                           >
                             {lang === "es" ? "Abrir" : "Open"}
                           </button>
@@ -3125,6 +3145,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "details")}
                             onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "details")}
                             onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "details", () => toggleDetails(invoiceId))}
+                            style={invoiceSecondaryActionStyle}
                           >
                             {isOpen ? (lang === "es" ? "Ocultar" : "Hide") : (lang === "es" ? "Detalles" : "Details")}
                           </button>
@@ -3144,6 +3165,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 }
                                 if (target?.projectId) onOpenProjectDetail(target.projectId);
                               })}
+                              style={invoiceSecondaryActionStyle}
                             >
                               Project
                             </button>
