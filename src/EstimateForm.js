@@ -7163,6 +7163,7 @@ export default function EstimateForm(props) {
               key={s.key}
               className="pe-btn pe-btn-ghost"
               type="button"
+              style={styles.additionalNotesSnippetBtn}
               onClick={() => {
                 const existing = state.additionalNotes || "";
                 const sep = existing.trim().length > 0 ? "\n\n" : "";
@@ -7175,6 +7176,7 @@ export default function EstimateForm(props) {
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
+            style={styles.additionalNotesClearBtn}
             onClick={() => patch("additionalNotes", "")}
           >
             Clear Notes
@@ -7569,6 +7571,19 @@ const styles = {
   notesCollapsedPreviewWrap: {
     "--collapse-max": "180px",
     willChange: "max-height, opacity, transform",
+  },
+  additionalNotesSnippetBtn: {
+    fontWeight: 700,
+    background: "rgba(99,179,237,0.08)",
+    borderColor: "rgba(99,179,237,0.18)",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.1)",
+  },
+  additionalNotesClearBtn: {
+    fontWeight: 700,
+    color: "rgba(248,113,113,0.96)",
+    background: "rgba(248,113,113,0.06)",
+    borderColor: "rgba(248,113,113,0.18)",
+    opacity: 0.94,
   },
   laborLineFieldStack: { display: "grid", gap: 4 },
   laborLineGrid: { gap: 10 },
