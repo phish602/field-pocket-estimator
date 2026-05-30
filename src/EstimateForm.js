@@ -6915,7 +6915,7 @@ export default function EstimateForm(props) {
               className="pe-btn pe-btn-ghost"
               onClick={() => setLaborOpen(false)}
               title={lang === "es" ? "Colapsar" : "Collapse"}
-              style={styles.sectionFooterBtn}
+              style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterSecondaryBtn }}
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
@@ -6924,7 +6924,7 @@ export default function EstimateForm(props) {
               data-shortcut="+"
               onClick={handleLaborPrimary}
               type="button"
-              style={styles.sectionFooterBtn}
+              style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterPrimaryBtn }}
             >
               {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
@@ -7640,6 +7640,17 @@ const styles = {
     borderTop: "1px solid rgba(255,255,255,0.08)",
   },
   sectionFooterBtn: { padding: "8px 12px", minHeight: 36, borderRadius: 12 },
+  sectionFooterPrimaryBtn: {
+    fontWeight: 800,
+    borderColor: "rgba(99,179,237,0.34)",
+    background: "linear-gradient(180deg, rgba(99,179,237,0.16), rgba(99,179,237,0.08))",
+    boxShadow: "0 10px 22px rgba(0,0,0,0.14)",
+  },
+  sectionFooterSecondaryBtn: {
+    opacity: 0.92,
+    background: "rgba(255,255,255,0.03)",
+    borderColor: "rgba(255,255,255,0.1)",
+  },
   laborHeaderToggleBtn: { width: 36, minWidth: 36, height: 36, padding: 0, display: "grid", placeItems: "center", lineHeight: 1, fontSize: 14 },
   laborCornerWrap: { display: "flex", justifyContent: "flex-end", marginTop: 8 },
   laborCornerToggle: {
