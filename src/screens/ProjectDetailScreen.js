@@ -706,6 +706,56 @@ export default function ProjectDetailScreen({
               value: "Project is moving",
               meta: latestActivityAt ? `Latest recorded activity was ${fmtDate(latestActivityAt)}.` : "Documents and billing are up to date.",
             };
+  // Derive the first overdue invoice and first actionable estimate for CTA wiring
+  const overdueInvoice = overdueCount > 0
+    ? invoices.find((inv) => deriveInvoiceStatus(inv) === INVOICE_STATUSES.OVERDUE) || null
+    : null;
+  const firstActionableEstimate = (() => {
+    const actionable = estimates.filter((est) => {
+      const s = String(est?.status || "").toLowerCase();
+      return s === "draft" || s === "pending" || s === "sent";
+    });
+    return actionable.length > 0
+      ? [...actionable].sort((a, b) => estSortPriority(a) - estSortPriority(b))[0]
+      : null;
+  })();
+
+  // Next-action CTA — wires to existing handlers only, no new state
+  const nextActionCta = (() => {
+    if (overdueCount > 0 && overdueInvoice && onOpenInvoice) {
+      return {
+        label: overdueCount > 1 ? "Review Overdue Invoices" : "Review Overdue Invoice",
+        handler: () => onOpenInvoice(overdueInvoice),
+      };
+    }
+    if (hasBalanceDue && invoices.length > 0 && onOpenInvoice) {
+      const target = [...invoices].sort((a, b) => invSortPriority(a) - invSortPriority(b))[0];
+      return { label: "Review Invoice", handler: () => onOpenInvoice(target) };
+    }
+    if (approvedEstCount > 0 && onNewInvoice) {
+      return {
+        label: "Create Invoice",
+        handler: () => { writeProjectCreateSeed(view); onNewInvoice(); },
+      };
+    }
+    if (firstActionableEstimate && onOpenEstimate) {
+      return { label: "Review Estimate", handler: () => onOpenEstimate(firstActionableEstimate) };
+    }
+    if (totals.estimateCount === 0 && onNewEstimate) {
+      return {
+        label: "Create First Estimate",
+        handler: () => { writeProjectCreateSeed(view); onNewEstimate(); },
+      };
+    }
+    if (totals.invoiceCount === 0 && onNewInvoice) {
+      return {
+        label: "Create First Invoice",
+        handler: () => { writeProjectCreateSeed(view); onNewInvoice(); },
+      };
+    }
+    return null;
+  })();
+
   const heroMetrics = [
     {
       label: "Estimated",
@@ -790,6 +840,29 @@ export default function ProjectDetailScreen({
             <div style={S.heroAttentionLabel}>{nextStep.label}</div>
             <div style={{ ...S.heroAttentionValue, color: nextStepTone.value }}>{nextStep.value}</div>
             <div style={S.heroAttentionMeta}>{nextStep.meta}</div>
+            {nextActionCta ? (
+              <button
+                type="button"
+                style={{
+                  marginTop: 8,
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: `1px solid ${nextStepTone.border}`,
+                  background: "rgba(0,0,0,0.18)",
+                  color: nextStepTone.value,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  letterSpacing: "0.03em",
+                  alignSelf: "flex-start",
+                  display: "inline-block",
+                }}
+                onClick={nextActionCta.handler}
+              >
+                {nextActionCta.label} →
+              </button>
+            ) : null}
           </div>
         </div>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", margin: isPhone ? "2px 0 0" : "0" }} />
