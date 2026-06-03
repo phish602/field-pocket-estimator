@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
+import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const NOTES_TEXTAREA_MIN_HEIGHT = 170;
@@ -15,6 +16,18 @@ function safeJsonParse(raw) {
     return JSON.parse(raw);
   } catch {
     return null;
+  }
+}
+
+function readStoredJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null || raw === "") return fallback;
+    const parsed = safeJsonParse(raw);
+    if (parsed == null) return fallback;
+    return parsed;
+  } catch {
+    return fallback;
   }
 }
 
@@ -38,6 +51,14 @@ function toFileStamp(date = new Date()) {
 }
 
 function downloadJson(payload, filename) {
+  if (
+    typeof Blob === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof document === "undefined" ||
+    typeof document.createElement !== "function"
+  ) {
+    throw new Error("Browser export unavailable");
+  }
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -145,8 +166,11 @@ function ToggleButton({ value, onClick, disabled = false }) {
 export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const importInputRef = useRef(null);
   const defaultInternalNotesRef = useRef(null);
+  const diagnosticsMessageTimerRef = useRef(null);
   const defaultInternalNotes = String(settings?.docDefaults?.defaultInternalNotesEstimate || "");
   const isDevBuild = process.env.NODE_ENV !== "production";
 
@@ -185,6 +209,13 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       }
     };
   }, [defaultInternalNotes]);
+
+  useEffect(() => () => {
+    if (diagnosticsMessageTimerRef.current) {
+      clearTimeout(diagnosticsMessageTimerRef.current);
+      diagnosticsMessageTimerRef.current = null;
+    }
+  }, []);
 
   const sectionStyle = useMemo(
     () => ({
@@ -268,6 +299,50 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       window.alert("Export failed.");
     } finally {
       setBusyLabel("");
+    }
+  };
+
+  const clearDiagnosticsMessage = () => {
+    if (diagnosticsMessageTimerRef.current) {
+      clearTimeout(diagnosticsMessageTimerRef.current);
+      diagnosticsMessageTimerRef.current = null;
+    }
+  };
+
+  const showDiagnosticsMessage = (message) => {
+    clearDiagnosticsMessage();
+    setDiagnosticsMessage(message);
+    diagnosticsMessageTimerRef.current = setTimeout(() => {
+      setDiagnosticsMessage("");
+      diagnosticsMessageTimerRef.current = null;
+    }, 1800);
+  };
+
+  const exportDiagnosticsJson = () => {
+    try {
+      setDiagnosticsBusy(true);
+      const snapshot = {
+        companyProfile: readStoredJson(STORAGE_KEYS.COMPANY_PROFILE, null),
+        customers: readStoredJson(STORAGE_KEYS.CUSTOMERS, []),
+        projects: readStoredJson(STORAGE_KEYS.PROJECTS, []),
+        estimates: readStoredJson(STORAGE_KEYS.ESTIMATES, []),
+        invoices: readStoredJson(STORAGE_KEYS.INVOICES, []),
+        settings,
+        scopeTemplates: readStoredJson(STORAGE_KEYS.SCOPE_TEMPLATES, []),
+        auditEvents: [],
+      };
+      const bundle = buildDiagnosticBundle(snapshot, {
+        includeSensitive: false,
+        routeContext: "advanced_settings",
+      });
+      const generatedAt = String(bundle?.bundleMeta?.generatedAt || new Date().toISOString());
+      const filename = `estipaid-diagnostics-${generatedAt.slice(0, 10)}.json`;
+      downloadJson(bundle, filename);
+      showDiagnosticsMessage("Diagnostics JSON exported.");
+    } catch {
+      showDiagnosticsMessage("Unable to export diagnostics.");
+    } finally {
+      setDiagnosticsBusy(false);
     }
   };
 
@@ -708,6 +783,14 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             ) : null}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 4, borderTop: "1px solid rgba(248,113,113,0.24)" }}>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={exportDiagnosticsJson}
+                disabled={diagnosticsBusy}
+              >
+                {diagnosticsBusy ? "Exporting..." : "Export Diagnostics JSON"}
+              </button>
               <button type="button" className="pe-btn" onClick={exportData}>
                 Export JSON
               </button>
@@ -730,6 +813,14 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
                 Clear EstiPaid local data
               </button>
             </div>
+            <div className="pe-field-helper" style={{ marginTop: 2 }}>
+              Exports a redacted support bundle for troubleshooting. Sensitive fields are redacted by default.
+            </div>
+            {diagnosticsMessage ? (
+              <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: diagnosticsMessage.includes("Unable") ? "rgba(248,113,113,0.95)" : "rgba(187,247,208,0.95)" }}>
+                {diagnosticsMessage}
+              </div>
+            ) : null}
             <input
               ref={importInputRef}
               type="file"
