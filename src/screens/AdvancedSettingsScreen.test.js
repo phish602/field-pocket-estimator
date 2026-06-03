@@ -61,6 +61,26 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       STORAGE_KEYS.SCOPE_TEMPLATES,
       JSON.stringify([{ id: "tmpl_1", name: "Support scope", scopeNotes: "Hidden notes" }]),
     );
+    localStorage.setItem(
+      STORAGE_KEYS.AUDIT_EVENTS,
+      JSON.stringify({
+        schemaVersion: "1.0.0",
+        updatedAt: 1710000000000,
+        events: [
+          {
+            id: "evt_existing",
+            type: "invoice.created",
+            targetType: "invoice",
+            targetId: "inv_1",
+            createdAt: 1710000000000,
+            metadata: {
+              invoiceId: "inv_1",
+              projectId: "proj_1",
+            },
+          },
+        ],
+      }),
+    );
 
     capturedBlob = null;
     jest.useFakeTimers();
@@ -103,7 +123,6 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     fireEvent.click(screen.getByRole("button", { name: /export diagnostics json/i }));
 
     expect(screen.getByRole("status")).toHaveTextContent("Diagnostics JSON exported.");
-    expect(setItemSpy).not.toHaveBeenCalled();
     expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
     expect(capturedBlob).toBeTruthy();
 
@@ -119,11 +138,42 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(payload.recordInventory.projects.count).toBe(1);
     expect(payload.recordInventory.estimates.count).toBe(1);
     expect(payload.recordInventory.invoices.count).toBe(1);
+    expect(payload.recordInventory.auditEvents.count).toBe(1);
     expect(payload.sourceSnapshots.companyProfile.email).toBe("[redacted]");
     expect(payload.sourceSnapshots.companyProfile.notes).toBe("[redacted]");
     expect(payload.sourceSnapshots.customers[0].address).toBe("[redacted]");
     expect(payload.sourceSnapshots.scopeTemplates[0].scopeNotes).toBe("[redacted]");
     expect(payload.sourceSnapshots.invoices[0].invoiceTotal).toBe(100);
+    expect(payload.sourceSnapshots.auditEvents).toEqual([
+      expect.objectContaining({
+        id: "evt_existing",
+        type: "invoice.created",
+      }),
+    ]);
+    expect(payload.recentEvents).toEqual([
+      expect.objectContaining({
+        id: "evt_existing",
+        type: "invoice.created",
+      }),
+    ]);
+
+    const storedAuditEvents = JSON.parse(localStorage.getItem(STORAGE_KEYS.AUDIT_EVENTS) || "{}");
+    expect(storedAuditEvents.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "evt_existing",
+        type: "invoice.created",
+      }),
+      expect.objectContaining({
+        type: "diagnostic_bundle.exported",
+        targetType: "diagnostic_bundle",
+        source: "advanced_settings",
+        reason: "manual_export",
+      }),
+    ]));
+    expect(setItemSpy).toHaveBeenCalledWith(
+      STORAGE_KEYS.AUDIT_EVENTS,
+      expect.stringContaining("\"diagnostic_bundle.exported\""),
+    );
 
     act(() => {
       jest.runOnlyPendingTimers();

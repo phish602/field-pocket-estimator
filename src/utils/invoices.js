@@ -4,6 +4,7 @@
 import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { appendAuditEvents, createStoredAuditEvent } from "./auditStore";
 import {
   backfillProjectCollections,
   createProjectRecord,
@@ -503,6 +504,95 @@ function readLegacyEstimateInvoices() {
     .filter((entry) => asText(entry?.docType).toLowerCase() === "invoice");
 }
 
+function createInvoiceAuditMetadata(invoice, extra = {}) {
+  return {
+    invoiceId: asText(invoice?.id),
+    projectId: asText(invoice?.projectId),
+    paymentStatus: asText(invoice?.paymentStatus),
+    invoiceTotal: roundCurrency(invoice?.invoiceTotal ?? invoice?.total),
+    amountPaid: roundCurrency(invoice?.amountPaid),
+    balanceRemaining: roundCurrency(invoice?.balanceRemaining),
+    ...extra,
+  };
+}
+
+function collectAddedPayments(previousInvoice, nextInvoice) {
+  const previousPayments = normalizePayments(previousInvoice?.payments);
+  const nextPayments = normalizePayments(nextInvoice?.payments);
+  const previousIds = new Set(previousPayments.map((payment) => asText(payment?.id)).filter(Boolean));
+  return nextPayments.filter((payment) => {
+    const paymentId = asText(payment?.id);
+    return paymentId && !previousIds.has(paymentId);
+  });
+}
+
+function buildInvoiceAuditEvents(previousInvoices = [], nextInvoices = []) {
+  const previousMap = new Map(
+    normalizeInvoiceList(previousInvoices).map((invoice) => [asText(invoice?.id), invoice])
+  );
+
+  return normalizeInvoiceList(nextInvoices).reduce((events, invoice) => {
+    const invoiceId = asText(invoice?.id);
+    if (!invoiceId) return events;
+
+    const previousInvoice = previousMap.get(invoiceId) || null;
+    const nextDerivedStatus = deriveInvoiceStatus(invoice);
+
+    if (!previousInvoice) {
+      const createdEvent = createStoredAuditEvent("invoice.created", {
+        targetType: "invoice",
+        targetId: invoiceId,
+        relatedIds: [asText(invoice?.projectId)].filter(Boolean),
+        source: "invoice_write_boundary",
+        reason: "persisted",
+        metadata: createInvoiceAuditMetadata(invoice, {
+          nextStatus: nextDerivedStatus,
+        }),
+      });
+      if (createdEvent) events.push(createdEvent);
+      return events;
+    }
+
+    const previousDerivedStatus = deriveInvoiceStatus(previousInvoice);
+    if (previousDerivedStatus !== nextDerivedStatus) {
+      const statusEvent = createStoredAuditEvent("invoice.status_changed", {
+        targetType: "invoice",
+        targetId: invoiceId,
+        relatedIds: [asText(invoice?.projectId)].filter(Boolean),
+        source: "invoice_write_boundary",
+        reason: "status_transition",
+        metadata: createInvoiceAuditMetadata(invoice, {
+          previousStatus: previousDerivedStatus,
+          nextStatus: nextDerivedStatus,
+        }),
+      });
+      if (statusEvent) events.push(statusEvent);
+    }
+
+    const addedPayments = collectAddedPayments(previousInvoice, invoice);
+    if (addedPayments.length > 0) {
+      const hasStripePayment = addedPayments.some((payment) => asText(payment?.method).toLowerCase() === "stripe");
+      const paymentEvent = createStoredAuditEvent(
+        hasStripePayment ? "invoice.payment_synced" : "invoice.payment_added",
+        {
+          targetType: "invoice",
+          targetId: invoiceId,
+          relatedIds: [asText(invoice?.projectId)].filter(Boolean),
+          source: "invoice_write_boundary",
+          reason: hasStripePayment ? "stripe_sync" : "manual_payment",
+          metadata: createInvoiceAuditMetadata(invoice, {
+            previousStatus: previousDerivedStatus,
+            nextStatus: nextDerivedStatus,
+          }),
+        }
+      );
+      if (paymentEvent) events.push(paymentEvent);
+    }
+
+    return events;
+  }, []);
+}
+
 function collectInvoiceIdentityKeys(invoice) {
   const keys = new Set();
   const id = asText(invoice?.id);
@@ -585,6 +675,7 @@ export function readStoredInvoices() {
 }
 
 export function writeStoredInvoices(invoices) {
+  const previousInvoices = readStoredInvoices();
   const next = normalizeInvoiceList(invoices);
   const sync = backfillProjectCollections({
     customers: readStoredCustomers(),
@@ -596,6 +687,10 @@ export function writeStoredInvoices(invoices) {
   }
   localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
   reconcileLegacyEstimateInvoices(sync.invoices);
+  try {
+    const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
+    if (auditEvents.length > 0) appendAuditEvents(auditEvents);
+  } catch {}
   return sync.invoices;
 }
 

@@ -1,4 +1,12 @@
-import { validateInvoiceAgainstEstimate } from "./invoices";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { readStoredAuditEvents } from "./auditStore";
+import {
+  appendStripeInvoicePayment,
+  addManualInvoicePayment,
+  updateInvoiceLifecycleStatus,
+  validateInvoiceAgainstEstimate,
+  writeStoredInvoices,
+} from "./invoices";
 
 function createEstimate(overrides = {}) {
   return {
@@ -177,5 +185,132 @@ describe("validateInvoiceAgainstEstimate void invoice exclusion", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/remaining/i);
+  });
+});
+
+describe("invoice audit events", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      STORAGE_KEYS.PROJECTS,
+      JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof", status: "active" }]),
+    );
+    localStorage.setItem(
+      STORAGE_KEYS.CUSTOMERS,
+      JSON.stringify([{ id: "cust_1", name: "Acme" }]),
+    );
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test("emits invoice.created through the invoice write boundary", () => {
+    writeStoredInvoices([
+      createLinkedInvoice({
+        id: "inv_created",
+        projectId: "proj_1",
+      }),
+    ]);
+
+    expect(readStoredAuditEvents()).toEqual([
+      expect.objectContaining({
+        type: "invoice.created",
+        targetType: "invoice",
+        targetId: "inv_created",
+        metadata: expect.objectContaining({
+          invoiceId: "inv_created",
+          projectId: "proj_1",
+          nextStatus: "sent",
+        }),
+      }),
+    ]);
+  });
+
+  test("emits payment and status events without storing raw invoice bodies", () => {
+    const baseInvoice = createLinkedInvoice({
+      id: "inv_status",
+      projectId: "proj_1",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 0,
+      balanceRemaining: 500,
+      status: "sent",
+    });
+    writeStoredInvoices([baseInvoice]);
+    localStorage.removeItem(STORAGE_KEYS.AUDIT_EVENTS);
+
+    const manualResult = addManualInvoicePayment(baseInvoice, {
+      amount: 125,
+      note: "Should not be logged",
+    });
+    expect(manualResult.ok).toBe(true);
+    writeStoredInvoices([manualResult.invoice]);
+
+    let auditEvents = readStoredAuditEvents();
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        type: "invoice.payment_added",
+        targetId: "inv_status",
+        metadata: expect.objectContaining({
+          invoiceId: "inv_status",
+          amountPaid: 125,
+          balanceRemaining: 375,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain("Should not be logged");
+
+    const paidInvoice = updateInvoiceLifecycleStatus(manualResult.invoice, "paid", { note: "Hidden note" });
+    writeStoredInvoices([paidInvoice]);
+
+    auditEvents = readStoredAuditEvents();
+    expect(auditEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "invoice.status_changed",
+        targetId: "inv_status",
+        metadata: expect.objectContaining({
+          previousStatus: "sent",
+          nextStatus: "paid",
+        }),
+      }),
+    ]));
+  });
+
+  test("emits invoice.payment_synced for stripe payment persistence", () => {
+    const baseInvoice = createLinkedInvoice({
+      id: "inv_stripe",
+      projectId: "proj_1",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 0,
+      balanceRemaining: 500,
+      status: "sent",
+    });
+    writeStoredInvoices([baseInvoice]);
+    localStorage.removeItem(STORAGE_KEYS.AUDIT_EVENTS);
+
+    const stripeResult = appendStripeInvoicePayment(baseInvoice, {
+      amount: 100,
+      stripePaymentIntentId: "pi_123",
+      stripeSessionId: "cs_123",
+      receiptEmail: "sensitive@example.com",
+    });
+    expect(stripeResult.ok).toBe(true);
+    writeStoredInvoices([stripeResult.invoice]);
+
+    const auditEvents = readStoredAuditEvents();
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        type: "invoice.payment_synced",
+        targetId: "inv_stripe",
+        metadata: expect.objectContaining({
+          invoiceId: "inv_stripe",
+          amountPaid: 100,
+          balanceRemaining: 400,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(auditEvents)).not.toContain("sensitive@example.com");
   });
 });

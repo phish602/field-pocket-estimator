@@ -1,4 +1,6 @@
-import { buildNormalizedProjectView } from "./projects";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { readStoredAuditEvents } from "./auditStore";
+import { buildNormalizedProjectView, updateProjectStoredStatus, writeStoredProjects } from "./projects";
 
 function createProject(overrides = {}) {
   return {
@@ -127,5 +129,52 @@ describe("buildNormalizedProjectView invoice money rollups", () => {
     expect(view.totals.invoiceTotal).toBe(500);
     expect(view.totals.amountPaid).toBe(300);
     expect(view.totals.balanceRemaining).toBe(200);
+  });
+});
+
+describe("project audit events", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    writeStoredProjects([createProject()]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test("emits archive and restore events only at the status transition boundary", () => {
+    const archived = updateProjectStoredStatus("proj_1", "archived");
+    expect(archived.status).toBe("archived");
+
+    let auditEvents = readStoredAuditEvents();
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        type: "project.archived",
+        targetType: "project",
+        targetId: "proj_1",
+        metadata: {
+          projectId: "proj_1",
+          previousStatus: "active",
+          nextStatus: "archived",
+        },
+      }),
+    ]);
+
+    const restored = updateProjectStoredStatus("proj_1", "active");
+    expect(restored.status).toBe("active");
+
+    auditEvents = readStoredAuditEvents();
+    expect(auditEvents).toHaveLength(2);
+    expect(auditEvents[1]).toEqual(expect.objectContaining({
+      type: "project.restored",
+      targetType: "project",
+      targetId: "proj_1",
+      metadata: {
+        projectId: "proj_1",
+        previousStatus: "archived",
+        nextStatus: "active",
+      },
+    }));
+    expect(localStorage.getItem(STORAGE_KEYS.AUDIT_EVENTS)).toContain("\"project.restored\"");
   });
 });

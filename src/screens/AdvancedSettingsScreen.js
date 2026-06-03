@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
+import { appendAuditEvent, createStoredAuditEvent, readStoredAuditEvents } from "../utils/auditStore";
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 
 const ESTIPAID_PREFIX = "estipaid-";
@@ -329,7 +330,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         invoices: readStoredJson(STORAGE_KEYS.INVOICES, []),
         settings,
         scopeTemplates: readStoredJson(STORAGE_KEYS.SCOPE_TEMPLATES, []),
-        auditEvents: [],
+        auditEvents: readStoredAuditEvents(),
       };
       const bundle = buildDiagnosticBundle(snapshot, {
         includeSensitive: false,
@@ -338,6 +339,20 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       const generatedAt = String(bundle?.bundleMeta?.generatedAt || new Date().toISOString());
       const filename = `estipaid-diagnostics-${generatedAt.slice(0, 10)}.json`;
       downloadJson(bundle, filename);
+      try {
+        const auditEvent = createStoredAuditEvent("diagnostic_bundle.exported", {
+          targetType: "diagnostic_bundle",
+          targetId: String(bundle?.bundleMeta?.supportId || ""),
+          source: "advanced_settings",
+          reason: "manual_export",
+          metadata: {
+            bundleSchemaVersion: String(bundle?.bundleMeta?.bundleSchemaVersion || ""),
+            supportId: String(bundle?.bundleMeta?.supportId || ""),
+            issueCount: Number(bundle?.healthSummary?.issueCount || 0),
+          },
+        });
+        if (auditEvent) appendAuditEvent(auditEvent);
+      } catch {}
       showDiagnosticsMessage("Diagnostics JSON exported.");
     } catch {
       showDiagnosticsMessage("Unable to export diagnostics.");

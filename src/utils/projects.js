@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { appendAuditEvent, createStoredAuditEvent } from "./auditStore";
 import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
 
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -382,6 +383,25 @@ export function updateProjectStoredStatus(projectId, nextStatus) {
   const next = projects.slice();
   next[index] = updated;
   writeStoredProjects(next);
+  try {
+    const eventType = normalizedStatus === "archived"
+      ? "project.archived"
+      : (currentStatus === "archived" ? "project.restored" : "");
+    if (eventType) {
+      const auditEvent = createStoredAuditEvent(eventType, {
+        targetType: "project",
+        targetId: id,
+        source: "project_status_update",
+        reason: "status_transition",
+        metadata: {
+          projectId: id,
+          previousStatus: currentStatus,
+          nextStatus: normalizedStatus,
+        },
+      });
+      if (auditEvent) appendAuditEvent(auditEvent);
+    }
+  } catch {}
   return updated;
 }
 
