@@ -80,6 +80,56 @@ Recommended entity intent:
 - `diagnostic_exports`: optional support artifacts for traceability
 - `support_cases`: optional future support workflow records
 
+## 4. Pure Mapper Output Contract
+
+The committed backend mapper is a read-only adapter layer. It does not write storage, call network APIs, or depend on Supabase. Its job is to translate current local snapshot data into backend-ready draft objects that can be validated before any runtime wiring exists.
+
+Mapper context:
+
+- `createBackendMappingContext(options)` returns:
+  - `mappingVersion`
+  - `companyId`
+  - `userId`
+  - `generatedAt`
+  - `source: "local_storage_export"`
+  - `warnings: []`
+
+Snapshot mapper:
+
+- `mapLocalSnapshotToBackendDraft(snapshot, options)` returns:
+  - `mappingMeta`
+  - `companies`
+  - `customers`
+  - `projects`
+  - `estimates`
+  - `invoices`
+  - `invoicePayments`
+  - `scopeTemplates`
+  - `settings`
+  - `auditEvents`
+  - `warnings`
+
+Mapper rules:
+
+- Preserve legacy local IDs in `legacy_local_id` fields.
+- Keep `company_id` and `user_id` ownership fields explicit.
+- Keep document numbers separate from database IDs.
+- Keep invoice payment rows separate from invoice header rows.
+- Preserve only safe top-level fields and obvious line-item structure.
+- Treat warnings as pre-migration validation, not runtime repair logic.
+
+Entity output intent:
+
+- Company drafts represent the company ownership record plus contact/profile data.
+- Customer drafts represent company-scoped customer records with preserved local IDs.
+- Project drafts represent company-scoped work records with customer linkage.
+- Estimate drafts represent backend-ready estimate documents with preserved legacy linkage and safe financial summary data.
+- Invoice drafts represent backend-ready invoice documents with preserved estimate linkage, payment state, and safe line-item data.
+- Invoice payment drafts represent normalized ledger entries only.
+- Scope template drafts represent reusable scope content records.
+- Settings drafts represent company-scoped configuration data.
+- Audit event drafts represent immutable operational event records.
+
 ## 4. Ownership Model
 
 The backend should use the following ownership boundaries:
@@ -333,4 +383,3 @@ That future work should validate:
 - Legacy IDs and document numbers survive migration cleanly
 - Audit events can be imported as read-only support data
 - Redacted diagnostics exports still match the backend contract shape
-
