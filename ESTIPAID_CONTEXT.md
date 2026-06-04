@@ -350,6 +350,8 @@ Delete or refresh it when priorities change.
 ## Optional architecture snapshot
 Update this only when the baseline truly changes.
 
+- Canonical backend data contract reference: `docs/backend-data-contract.md`
+
 ### Core files
 - `src/EstimateForm.js`
 - `src/pdf.js`
