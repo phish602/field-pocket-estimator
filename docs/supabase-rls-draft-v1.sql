@@ -538,6 +538,9 @@ for delete
 using (can_manage_company(company_id));
 
 -- Authenticated grants
+revoke all privileges on all tables in schema public from authenticated;
+revoke all privileges on all functions in schema public from authenticated;
+
 grant usage on schema public to authenticated;
 grant select, insert, update on table public.companies to authenticated;
 grant select, insert, update, delete on table public.company_users to authenticated;

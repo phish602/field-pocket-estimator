@@ -2,9 +2,9 @@
 
 ## Summary
 
-- Result status: Passed with grant correction required
-- The corrected package reran cleanly from scratch in the disposable project after a manual least-privilege grant patch was applied in the disposable context.
-- Production remains blocked until this least-privilege grant correction is reviewed and rerun cleanly from scratch.
+- Result status: Failed on least-privilege grants
+- The final clean scratch rerun still produced broad authenticated privileges for `authenticated` on the corrected package.
+- Production remains blocked until the SQL correction is reviewed and the package is rerun cleanly from scratch.
 
 ## Environment
 
@@ -24,33 +24,40 @@
 
 ## Finding: Authenticated Grants Too Broad
 
-- Authenticated grants were present but too broad in the first clean scratch rerun
+- Authenticated grants were present but too broad in the final clean scratch rerun
 - Broad unwanted privileges observed:
   - TRUNCATE
   - TRIGGER
   - REFERENCES
-- A manual disposable-project patch was applied to remove the broad behavior and reapply least-privilege grants
+- The package still produced these broad privileges for `authenticated`
+
+## SQL Correction Applied After the Failure
+
+- Added a defensive revoke/reset before explicit grants in the executable package draft
+- Added matching revoke/reset guidance in the RLS draft
+- Replaced any broad authenticated function execution behavior with explicit helper function grants only
 
 ## Patch Verification
 
-- No TRUNCATE: pass
-- No TRIGGER: pass
-- No REFERENCES: pass
-- DELETE only on `company_users`: pass
-- SELECT / INSERT / UPDATE on expected app tables: pass
-- Explicit execute grants only on the four public helper functions: pass
+- No TRUNCATE: not yet proven in a fresh rerun after this correction
+- No TRIGGER: not yet proven in a fresh rerun after this correction
+- No REFERENCES: not yet proven in a fresh rerun after this correction
+- DELETE only on `company_users`: not yet proven in a fresh rerun after this correction
+- SELECT / INSERT / UPDATE on expected app tables: not yet proven in a fresh rerun after this correction
+- Explicit execute grants only on the four public helper functions: not yet proven in a fresh rerun after this correction
 
 ## Retest Result
 
-- The corrected package reran cleanly from scratch after the grant correction
-- RLS and policy behavior remained intact after the grant correction
-- viewer remains read-only
-- owner/admin/member behavior remained aligned with the documented policy model
+- A fresh clean-scratch rerun is still required after this SQL correction
+- RLS and policy behavior were not revalidated after the latest correction
+- viewer behavior remains expected by policy, but the corrected package still needs a fresh from-scratch rerun
 
 ## Required Repo SQL Corrections
 
-- Keep explicit least-privilege grants in `docs/supabase-executable-migration-package-draft-v1.sql`
-- Keep equivalent least-privilege grants in `docs/supabase-rls-draft-v1.sql`
+- Keep the defensive revoke/reset before explicit grants in `docs/supabase-executable-migration-package-draft-v1.sql`
+- Keep the defensive revoke/reset before explicit grants in `docs/supabase-rls-draft-v1.sql`
+- Keep explicit least-privilege table grants only
+- Keep explicit helper function execute grants only
 - Keep the human-readable RLS policy doc aligned with the corrected grant behavior
 - Keep `audit_events` insert limited to `can_write_company_records(company_id)` and `actor_id = auth.uid()`
 
@@ -58,12 +65,12 @@
 
 - Production wiring remains blocked
 - Production deployment remains blocked
-- The least-privilege grant correction must be reviewed again
+- The SQL correction must be reviewed again
 - The corrected package must be rerun cleanly from scratch before any production consideration
 
 ## Approval Recommendation
 
-- Recommended status: Passed with grant correction required
+- Recommended status: Failed on least-privilege grants
 - Recommendation: do not promote to production until the corrected least-privilege package is reviewed and rerun cleanly from scratch in disposable non-production
 
 ## Non-Goals
@@ -78,4 +85,4 @@
 
 ## Exact Next Step
 
-- Review the least-privilege correction, rerun the corrected package cleanly from scratch in disposable non-production, and then decide whether production wiring may proceed
+- Review the SQL correction, rerun the corrected package cleanly from scratch in disposable non-production, and then decide whether production wiring may proceed
