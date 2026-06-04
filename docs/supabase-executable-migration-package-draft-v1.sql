@@ -769,7 +769,10 @@ grant select, insert, update on table public.app_settings to authenticated;
 grant select, insert on table public.audit_events to authenticated;
 grant select, insert, update on table public.migration_batches to authenticated;
 grant select, insert, update on table public.migration_write_results to authenticated;
-grant execute on all functions in schema public to authenticated;
+grant execute on function public.is_company_member(uuid) to authenticated;
+grant execute on function public.company_role(uuid) to authenticated;
+grant execute on function public.can_manage_company(uuid) to authenticated;
+grant execute on function public.can_write_company_records(uuid) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Comments / Safety Notes

@@ -156,6 +156,10 @@ Recommended roles:
 - Audit events should be append-only.
 - Migration reports should be owner/admin visible.
 - Hard delete should remain restricted.
+- Authenticated app users should not receive TRUNCATE, TRIGGER, or REFERENCES grants.
+- DELETE is granted only on `company_users`, and RLS still limits it to owner/admin policy.
+- `audit_events` receives SELECT and INSERT only, with INSERT limited by `can_write_company_records(company_id)` and `actor_id = auth.uid()`.
+- Helper function execute grants are explicit for the four public helper functions only, not all future functions.
 
 ## 5. Dangerous Action Policy Notes
 
