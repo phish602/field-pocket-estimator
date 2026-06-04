@@ -481,7 +481,11 @@ using (is_company_member(company_id));
 create policy audit_events_insert_append_only_draft
 on audit_events
 for insert
-with check (company_id is null or is_company_member(company_id));
+to authenticated
+with check (
+  can_write_company_records(company_id)
+  and actor_id = auth.uid()
+);
 
 -- No update/delete policies for audit_events in the draft; append-only by design.
 
@@ -533,10 +537,27 @@ on migration_write_results
 for delete
 using (can_manage_company(company_id));
 
+-- Authenticated grants
+grant usage on schema public to authenticated;
+grant select, insert, update on table public.companies to authenticated;
+grant select, insert, update, delete on table public.company_users to authenticated;
+grant select, insert, update on table public.customers to authenticated;
+grant select, insert, update on table public.projects to authenticated;
+grant select, insert, update on table public.estimates to authenticated;
+grant select, insert, update on table public.estimate_line_items to authenticated;
+grant select, insert, update on table public.invoices to authenticated;
+grant select, insert, update on table public.invoice_line_items to authenticated;
+grant select, insert, update on table public.invoice_payments to authenticated;
+grant select, insert, update on table public.scope_templates to authenticated;
+grant select, insert, update on table public.app_settings to authenticated;
+grant select, insert on table public.audit_events to authenticated;
+grant select, insert, update on table public.migration_batches to authenticated;
+grant select, insert, update on table public.migration_write_results to authenticated;
+grant execute on all functions in schema public to authenticated;
+
 -- Draft-only notes:
 -- - viewer remains read-only.
 -- - sent/approved estimates and paid/partial/void invoices should receive stricter runtime handling later.
 -- - payment deletion should not be encouraged by future UI or policy work.
 -- - migration approvals remain owner/admin controlled.
 -- - runtime wiring remains blocked.
-

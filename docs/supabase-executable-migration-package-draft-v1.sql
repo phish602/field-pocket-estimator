@@ -710,7 +710,11 @@ using (public.is_company_member(company_id));
 create policy audit_events_insert_member_path
 on public.audit_events
 for insert
-with check (public.is_company_member(company_id));
+to authenticated
+with check (
+  public.can_write_company_records(company_id)
+  and actor_id = auth.uid()
+);
 
 -- migration_batches
 create policy migration_batches_select_owner_admin
@@ -745,6 +749,27 @@ on public.migration_write_results
 for update
 using (public.can_manage_company(company_id))
 with check (public.can_manage_company(company_id));
+
+-- -----------------------------------------------------------------------------
+-- Authenticated Grants
+-- -----------------------------------------------------------------------------
+
+grant usage on schema public to authenticated;
+grant select, insert, update on table public.companies to authenticated;
+grant select, insert, update, delete on table public.company_users to authenticated;
+grant select, insert, update on table public.customers to authenticated;
+grant select, insert, update on table public.projects to authenticated;
+grant select, insert, update on table public.estimates to authenticated;
+grant select, insert, update on table public.estimate_line_items to authenticated;
+grant select, insert, update on table public.invoices to authenticated;
+grant select, insert, update on table public.invoice_line_items to authenticated;
+grant select, insert, update on table public.invoice_payments to authenticated;
+grant select, insert, update on table public.scope_templates to authenticated;
+grant select, insert, update on table public.app_settings to authenticated;
+grant select, insert on table public.audit_events to authenticated;
+grant select, insert, update on table public.migration_batches to authenticated;
+grant select, insert, update on table public.migration_write_results to authenticated;
+grant execute on all functions in schema public to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Comments / Safety Notes

@@ -121,7 +121,9 @@ Recommended roles:
 ### audit_events
 
 - Read rule: owner/admin and possibly member read access; viewer read access if allowed by policy.
-- Insert rule: append-only by system or approved backend processes.
+- Insert rule: owner/admin/member can insert audit events for their company where `actor_id = auth.uid()`.
+- Viewer cannot insert audit events.
+- Outsider cannot insert audit events for another company.
 - Update rule: none; audit events should be append-only.
 - Delete/archive rule: do not delete casually.
 - Special restrictions: audit_events should resist mutation.
@@ -189,4 +191,3 @@ Do not build any of the following yet:
 - Backend writes
 
 This draft is intended to review the future RLS direction before any policy code exists.
-
