@@ -376,7 +376,7 @@ const S = {
   },
   overviewGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
     gap: 8,
   },
   overviewCard: {
@@ -386,6 +386,9 @@ const S = {
     border: "1px solid rgba(255,255,255,0.08)",
     display: "grid",
     gap: 3,
+    minWidth: 0,
+    maxWidth: "100%",
+    alignContent: "start",
   },
   overviewLabel: {
     fontSize: 10.5,
@@ -395,10 +398,17 @@ const S = {
     color: "rgba(230,241,248,0.38)",
   },
   overviewValue: {
-    fontSize: 20,
+    fontSize: "clamp(0.96rem, 0.28vw + 0.92rem, 1.16rem)",
     fontWeight: 800,
     color: "rgba(230,241,248,0.94)",
     fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.035em",
+    lineHeight: 1.08,
+    minWidth: 0,
+    maxWidth: "100%",
+    overflowWrap: "normal",
+    wordBreak: "normal",
+    whiteSpace: "nowrap",
   },
   docCard: {
     padding: "12px 14px",
@@ -659,10 +669,10 @@ export default function ProjectDetailScreen({
     && Number(totals.amountPaid || 0) === 0
     && Number(totals.balanceRemaining || 0) === 0;
   const isArchivedProject = storedProjectStatus === "archived";
-  const overviewValueStyle = isPhone ? { ...S.overviewValue, fontSize: 17 } : S.overviewValue;
+  const overviewValueStyle = S.overviewValue;
   const projectNameStyle = isPhone ? { ...S.projectName, fontSize: 24 } : S.projectName;
   const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.heroFinancialGrid;
-  const overviewGridStyle = isPhone ? { ...S.overviewGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.overviewGrid;
+  const overviewGridStyle = S.overviewGrid;
   const docFlowGridStyle = isPhone ? { ...S.docFlowGrid, gridTemplateColumns: "1fr" } : S.docFlowGrid;
   const nextStepTone = overdueCount > 0
     ? { bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.22)", value: "rgba(248,113,113,0.96)" }

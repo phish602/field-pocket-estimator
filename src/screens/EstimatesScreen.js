@@ -2024,7 +2024,10 @@ export default function EstimatesScreen({
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+            <div
+              className="pe-estimates-kpi-grid"
+              style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}
+            >
               {[
                 {
                   key: "visible-value",
@@ -2066,14 +2069,24 @@ export default function EstimatesScreen({
                   ? "rgba(59,130,246,0.22)"
                   : "rgba(255,255,255,0.1)";
                 return (
-                  <div key={item.key} style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${toneBorder}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}>
+                  <div
+                    key={item.key}
+                    className="pe-estimates-kpi-card"
+                    style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${toneBorder}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}
+                  >
                     <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
                       {item.label}
                     </div>
-                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                    <div
+                      className="pe-estimates-kpi-value"
+                      style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}
+                    >
                       {item.value}
                     </div>
-                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                    <div
+                      className="pe-estimates-kpi-detail"
+                      style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}
+                    >
                       {item.detail}
                     </div>
                   </div>
@@ -2828,7 +2841,7 @@ export default function EstimatesScreen({
                           ) : null}
                         </div>
                       </div>
-                      <div style={{ display: "grid", gap: 8, justifyItems: "end", minWidth: 0 }}>
+                      <div style={{ display: "grid", gap: 8, justifyItems: "end", alignContent: "start", minWidth: 0 }}>
                         <div
                           className={`pe-estimate-status pe-estimate-card-status ${statusClassName}`}
                           style={{
@@ -2838,14 +2851,14 @@ export default function EstimatesScreen({
                         >
                           {statusLabel}
                         </div>
-                        <div style={{ textAlign: "right", minWidth: 0 }}>
-                          <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
-                            {lang === "es" ? "Pipeline value" : "Pipeline value"}
-                          </div>
-                          <div style={{ marginTop: 4, fontSize: 20, fontWeight: 950, color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
-                            {money(pipelineValue)}
-                          </div>
-                        </div>
+                      </div>
+                    </div>
+                    <div className="pe-estimate-card-pipeline-row">
+                      <div className="pe-estimate-card-pipeline-label">
+                        {lang === "es" ? "Pipeline value" : "Pipeline value"}
+                      </div>
+                      <div className="pe-estimate-card-pipeline-value">
+                        {money(pipelineValue)}
                       </div>
                     </div>
                     <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", width: "100%", minWidth: 0 }}>
