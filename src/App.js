@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef, useId } from "react";
 import EstimateForm from "./EstimateForm";
+import CockpitShell from "./components/cockpit/CockpitShell";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
 import InvoicesScreen from "./screens/InvoicesScreen";
@@ -1326,7 +1327,7 @@ function CreateFlow({
   if (!isSeedReady) return null;
 
   return (
-    <div>
+    <CockpitShell desiredDocType={desiredDocType}>
       <EstimateForm
         key={`estimate:${resetSeq}`}
         embeddedInShell
@@ -1338,7 +1339,7 @@ function CreateFlow({
         homeEstimateLaunch={homeEstimateLaunch}
         onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
       />
-    </div>
+    </CockpitShell>
   );
 }
 
