@@ -359,6 +359,39 @@ export function useEstimatorState(options = {}) {
     });
   };
 
+  // ---- Additional charges helpers ----
+  const addAdditionalChargeItem = () => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      items.push({ id: uid("ac_"), desc: "", qty: "", priceEach: "" });
+      next.additionalCharges = { ...(next.additionalCharges || {}), items };
+      return next;
+    });
+  };
+
+  const removeAdditionalChargeItem = (id) => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      const filtered = items.filter((item) => String(item?.id) !== String(id));
+      next.additionalCharges = { ...(next.additionalCharges || {}), items: filtered };
+      return next;
+    });
+  };
+
+  const updateAdditionalChargeItem = (id, patchObj) => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      const idx = items.findIndex((item) => String(item?.id) === String(id));
+      if (idx < 0) return prev;
+      items[idx] = { ...(items[idx] || {}), ...(patchObj || {}) };
+      next.additionalCharges = { ...(next.additionalCharges || {}), items };
+      return next;
+    });
+  };
+
   const saveNow = (metaPatch = null, saveOptions = null) => {
     try {
       const next = stripInternalNotesForPersistence(state);
@@ -430,6 +463,9 @@ export function useEstimatorState(options = {}) {
     dupMaterialItem,
     removeMaterialItem,
     updateMaterialItem,
+    addAdditionalChargeItem,
+    removeAdditionalChargeItem,
+    updateAdditionalChargeItem,
     saveNow,
     replaceState,
     clearAll,

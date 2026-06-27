@@ -428,9 +428,21 @@ function resolveMaterialsMode(doc) {
   return "itemized";
 }
 
+function hasMeaningfulAdditionalCharges(doc) {
+  const items = Array.isArray(doc?.additionalCharges?.items) ? doc.additionalCharges.items : [];
+  return items.some((item) => {
+    const qty = toNum(item?.qty);
+    const priceEach = toNum(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice);
+    return (qty * priceEach) > 0;
+  });
+}
+
 function toEstimatorState(doc) {
   const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
   const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const additionalChargeItems = Array.isArray(doc?.additionalCharges?.items)
+    ? doc.additionalCharges.items
+    : (Array.isArray(doc?.additionalChargeItems) ? doc.additionalChargeItems : []);
   const multiplierMode = String(doc?.multiplierMode || "").toLowerCase();
   const customMultiplier = toNum(doc?.customMultiplier);
   const presetMultiplier = toNum(doc?.laborMultiplier);
@@ -476,6 +488,14 @@ function toEstimatorState(doc) {
           0,
           toNum(it?.unitCostInternal ?? it?.costInternal ?? it?.internalCost ?? it?.internalEach ?? it?.internalPrice ?? it?.cost)
         ),
+      })),
+    },
+    additionalCharges: {
+      items: additionalChargeItems.map((it, idx) => ({
+        id: String(it?.id ?? `charge_${idx}`),
+        desc: String(it?.desc || it?.description || it?.label || ""),
+        qty: Math.max(0, toNum(it?.qty)),
+        priceEach: Math.max(0, toNum(it?.priceEach ?? it?.charge ?? it?.amount ?? it?.unitPrice)),
       })),
     },
   };
@@ -1372,6 +1392,10 @@ export default function EstimatesScreen({
   const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
     if (!estimate || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
       return false;
+    }
+
+    if (hasMeaningfulAdditionalCharges(estimate)) {
+      return openInvoiceBuilderFromEstimate(estimate);
     }
 
     const currentInvoices = readStoredInvoices();

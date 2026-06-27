@@ -73,6 +73,18 @@ function asText(value) {
   return String(value || "").trim();
 }
 
+function normalizeAdditionalChargeItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter(Boolean)
+    .map((item, index) => ({
+      id: asText(item?.id) || `ac_${index}`,
+      desc: asText(item?.desc || item?.description || item?.label),
+      qty: item?.qty ?? "",
+      priceEach: item?.priceEach ?? item?.charge ?? item?.amount ?? "",
+    }));
+}
+
 export function toCurrencyNumber(value) {
   const next = typeof value === "number"
     ? value
@@ -118,6 +130,9 @@ function toEstimatorState(doc) {
   const materialItems = Array.isArray(doc?.materials?.items)
     ? doc.materials.items
     : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const additionalChargeItems = Array.isArray(doc?.additionalCharges?.items)
+    ? doc.additionalCharges.items
+    : (Array.isArray(doc?.additionalChargeItems) ? doc.additionalChargeItems : []);
   const multiplierMode = asText(doc?.multiplierMode).toLowerCase();
   const customMultiplier = toCurrencyNumber(doc?.customMultiplier);
   const presetMultiplier = toCurrencyNumber(doc?.laborMultiplier);
@@ -177,6 +192,17 @@ function toEstimatorState(doc) {
         ),
       })),
     },
+    additionalCharges: {
+      items: additionalChargeItems.map((item, index) => ({
+        id: asText(item?.id) || `charge_${index}`,
+        desc: asText(item?.desc || item?.description || item?.label),
+        qty: Math.max(0, toCurrencyNumber(item?.qty)),
+        priceEach: Math.max(
+          0,
+          toCurrencyNumber(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice)
+        ),
+      })),
+    },
   };
 }
 
@@ -188,6 +214,7 @@ function buildFinancialSummary({
   laborCost = 0,
   materialsRevenue = 0,
   materialsCost = 0,
+  additionalChargesRevenue = 0,
 }) {
   const revenue = roundCurrency(totalRevenue);
   const cost = roundCurrency(totalCost);
@@ -201,6 +228,7 @@ function buildFinancialSummary({
   const normalizedLaborCost = roundCurrency(laborCost);
   const normalizedMaterialsRevenue = roundCurrency(materialsRevenue);
   const normalizedMaterialsCost = roundCurrency(materialsCost);
+  const normalizedAdditionalChargesRevenue = roundCurrency(additionalChargesRevenue);
 
   return {
     approvedTotal: approved,
@@ -220,6 +248,7 @@ function buildFinancialSummary({
     laborCost: normalizedLaborCost,
     materialsRevenue: normalizedMaterialsRevenue,
     materialsCost: normalizedMaterialsCost,
+    additionalChargesRevenue: normalizedAdditionalChargesRevenue,
     financials: {
       approvedTotal: approved,
       totalRevenue: revenue,
@@ -237,6 +266,7 @@ function buildFinancialSummary({
       laborCost: normalizedLaborCost,
       materialsRevenue: normalizedMaterialsRevenue,
       materialsCost: normalizedMaterialsCost,
+      additionalChargesRevenue: normalizedAdditionalChargesRevenue,
     },
     totals: {
       approvedTotal: approved,
@@ -255,6 +285,7 @@ function buildFinancialSummary({
       laborCost: normalizedLaborCost,
       materialsRevenue: normalizedMaterialsRevenue,
       materialsCost: normalizedMaterialsCost,
+      additionalChargesRevenue: normalizedAdditionalChargesRevenue,
     },
   };
 }
@@ -283,10 +314,15 @@ export function buildFinancialSummaryFromComputed(computed, approvedTotal = null
     ?? computed?.materials?.internalCost
     ?? 0
   );
+  const additionalChargesRevenue = roundCurrency(
+    computed?.additionalCharges?.totalRevenue
+    ?? computed?.additionalCharges?.subtotal
+    ?? 0
+  );
   const totalRevenue = roundCurrency(
     computed?.totalRevenue
     ?? computed?.grandTotal
-    ?? (laborRevenue + materialsRevenue)
+    ?? (laborRevenue + materialsRevenue + additionalChargesRevenue)
   );
   const totalCost = roundCurrency(
     computed?.totalCost
@@ -301,6 +337,7 @@ export function buildFinancialSummaryFromComputed(computed, approvedTotal = null
     laborCost,
     materialsRevenue,
     materialsCost,
+    additionalChargesRevenue,
   });
 }
 
@@ -324,6 +361,7 @@ export function allocateFinancialSummaryFromSource(source, invoiceTotal, approve
     laborCost: roundCurrency((base?.laborCost || 0) * ratio),
     materialsRevenue: roundCurrency((base?.materialsRevenue || 0) * ratio),
     materialsCost: roundCurrency((base?.materialsCost || 0) * ratio),
+    additionalChargesRevenue: roundCurrency((base?.additionalChargesRevenue || 0) * ratio),
   });
 }
 
@@ -375,6 +413,11 @@ export function extractFinancialSummaryFromDoc(doc, options = {}) {
     source?.totals?.materialsCost,
     source?.materialsCost
   );
+  const directAdditionalChargesRevenue = firstFiniteNumber(
+    source?.financials?.additionalChargesRevenue,
+    source?.totals?.additionalChargesRevenue,
+    source?.additionalChargesRevenue
+  );
   const snapshot = source?.sourceEstimateSnapshot && typeof source.sourceEstimateSnapshot === "object"
     ? source.sourceEstimateSnapshot
     : null;
@@ -401,6 +444,7 @@ export function extractFinancialSummaryFromDoc(doc, options = {}) {
       laborCost: directLaborCost ?? 0,
       materialsRevenue: directMaterialsRevenue ?? 0,
       materialsCost: directMaterialsCost ?? 0,
+      additionalChargesRevenue: directAdditionalChargesRevenue ?? 0,
     });
   }
 
@@ -416,6 +460,7 @@ export function extractFinancialSummaryFromDoc(doc, options = {}) {
       laborCost: roundCurrency(directLaborCost ?? 0),
       materialsRevenue: roundCurrency(directMaterialsRevenue ?? 0),
       materialsCost: roundCurrency(directMaterialsCost ?? 0),
+      additionalChargesRevenue: roundCurrency(directAdditionalChargesRevenue ?? 0),
     });
   }
 }
@@ -720,6 +765,7 @@ export function buildEstimateInvoiceSnapshot(estimate) {
     laborCost: financialSummary.laborCost,
     materialsRevenue: financialSummary.materialsRevenue,
     materialsCost: financialSummary.materialsCost,
+    additionalChargesRevenue: financialSummary.additionalChargesRevenue,
     estimateStatus: asText(source?.status || "approved"),
     customerId: asText(source?.customerId || source?.customer?.id),
     customerName: asText(source?.customerName || source?.customer?.name),
@@ -730,6 +776,9 @@ export function buildEstimateInvoiceSnapshot(estimate) {
     dueDate: invoiceDateLabel(source?.dueDate || source?.job?.due),
     customer: deepClone(source?.customer || {}),
     job: deepClone(source?.job || {}),
+    additionalCharges: {
+      items: normalizeAdditionalChargeItems(source?.additionalCharges?.items),
+    },
     financials: {
       ...(source?.financials || {}),
       ...(financialSummary?.financials || {}),
@@ -801,6 +850,7 @@ export function normalizeInvoiceRecord(record) {
         ...buildEstimateInvoiceSnapshot(snapshot || {}),
       }
     : null;
+  const normalizedAdditionalCharges = normalizeAdditionalChargeItems(source?.additionalCharges?.items);
   const financialSummary = extractFinancialSummaryFromDoc(source, {
     approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
   });
@@ -845,6 +895,10 @@ export function normalizeInvoiceRecord(record) {
       name: customerName,
       projectName,
       projectNumber,
+    },
+    additionalCharges: {
+      ...(source?.additionalCharges || {}),
+      items: normalizedAdditionalCharges,
     },
     financials: {
       ...(source?.financials || {}),

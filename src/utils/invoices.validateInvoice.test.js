@@ -3,6 +3,7 @@ import { readStoredAuditEvents } from "./auditStore";
 import {
   appendStripeInvoicePayment,
   addManualInvoicePayment,
+  normalizeInvoiceRecord,
   updateInvoiceLifecycleStatus,
   validateInvoiceAgainstEstimate,
   writeStoredInvoices,
@@ -185,6 +186,49 @@ describe("validateInvoiceAgainstEstimate void invoice exclusion", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/remaining/i);
+  });
+});
+
+describe("normalizeInvoiceRecord additional charges", () => {
+  test("backfills missing additional charges to an empty branch", () => {
+    const normalized = normalizeInvoiceRecord({
+      id: "inv_missing_additional_charges",
+      invoiceNumber: "INV-AC-1",
+      total: 100,
+      invoiceTotal: 100,
+    });
+
+    expect(normalized.additionalCharges).toEqual({ items: [] });
+  });
+
+  test("preserves additional charges when normalizing invoices", () => {
+    const normalized = normalizeInvoiceRecord({
+      id: "inv_with_additional_charges",
+      invoiceNumber: "INV-AC-2",
+      total: 350,
+      invoiceTotal: 350,
+      additionalCharges: {
+        items: [
+          {
+            id: "charge_1",
+            desc: "Emergency Sunday Call",
+            qty: "1",
+            priceEach: "350",
+          },
+        ],
+      },
+    });
+
+    expect(normalized.additionalCharges).toEqual({
+      items: [
+        expect.objectContaining({
+          id: "charge_1",
+          desc: "Emergency Sunday Call",
+          qty: "1",
+          priceEach: "350",
+        }),
+      ],
+    });
   });
 });
 

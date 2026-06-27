@@ -64,6 +64,10 @@ export const DEFAULT_STATE = {
     items: [{ id: "m1", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" }],
   },
 
+  additionalCharges: {
+    items: [],
+  },
+
   additionalNotes: "",
 
   meta: {

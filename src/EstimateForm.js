@@ -134,6 +134,14 @@ const I18N = {
     materialCostInternal: "Cost (internal)",
     materialCharge: "Price (each)",
     materialsItemizedTotal: "Itemized materials total",
+    additionalCharges: "Additional Charges",
+    additionalChargesHelp: "Custom fee or service lines that bill separately from labor and materials.",
+    addChargeItem: "+ Add Charge",
+    chargeDesc: "Description",
+    chargeQty: "Qty",
+    chargeUnitPrice: "Unit price",
+    chargeLineTotal: "Line total",
+    additionalChargesSubtotal: "Additional charges subtotal",
     labor: "Labor",
     hours: "Hours",
     rate: "Rate ($/hr)",
@@ -168,6 +176,14 @@ const I18N = {
     materialCostInternal: "Costo (interno)",
     materialCharge: "Precio (c/u)",
     materialsItemizedTotal: "Total de materiales por partida",
+    additionalCharges: "Cargos adicionales",
+    additionalChargesHelp: "Cargos o servicios personalizados que se facturan aparte de la mano de obra y los materiales.",
+    addChargeItem: "+ Agregar cargo",
+    chargeDesc: "Descripción",
+    chargeQty: "Cant.",
+    chargeUnitPrice: "Precio unitario",
+    chargeLineTotal: "Total de línea",
+    additionalChargesSubtotal: "Subtotal de cargos adicionales",
     labor: "Mano de obra",
     hours: "Horas",
     rate: "Tarifa ($/hr)",
@@ -1332,6 +1348,15 @@ function createBlankMaterialItem(idOverride, markupPct) {
     charge: "",
     priceEach: "",
     markupPct: resolveDefaultMarkupPct(markupPct),
+  };
+}
+
+function createBlankAdditionalChargeItem(idOverride) {
+  return {
+    id: idOverride || `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    desc: "",
+    qty: "",
+    priceEach: "",
   };
 }
 
@@ -4357,6 +4382,35 @@ export default function EstimateForm(props) {
     patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
+  function addAdditionalChargeItem(e) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    items.push(createBlankAdditionalChargeItem());
+    patch("additionalCharges.items", items);
+  }
+
+  function updateAdditionalChargeItem(i, key, value) {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    const current = { ...(items[i] || {}) };
+    if (key === "qty") {
+      current.qty = value;
+    } else if (key === "priceEach") {
+      current.priceEach = value;
+    } else {
+      current[key] = value;
+    }
+    items[i] = current;
+    patch("additionalCharges.items", items);
+  }
+
+  function removeAdditionalChargeItem(i) {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    patch("additionalCharges.items", items.filter((_, idx) => idx !== i));
+  }
+
   function applySuggestedMaterialLines(proposedLines) {
     const existingItems = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     const nextDraft = dedupeProposedMaterialLines(proposedLines, existingItems);
@@ -4408,6 +4462,15 @@ export default function EstimateForm(props) {
     try {
       const arr = computed?.materials?.normalized || [];
       for (const it of arr) map.set(String(it?.id), Number(it?.charge || 0));
+    } catch {}
+    return map;
+  }, [computed]);
+
+  const additionalChargeLineTotalsById = useMemo(() => {
+    const map = new Map();
+    try {
+      const arr = computed?.additionalCharges?.normalized || [];
+      for (const item of arr) map.set(String(item?.id), Number(item?.lineTotal || 0));
     } catch {}
     return map;
   }, [computed]);
@@ -5178,9 +5241,18 @@ export default function EstimateForm(props) {
           money.format(Number(exportComputed?.materials?.totalCharge) || 0),
         ]];
       })();
+      const additionalChargeRows = ((exportComputed?.additionalCharges?.normalized || []))
+        .filter((item) => Number(item?.lineTotal || 0) > 0)
+        .map((item) => ({
+          desc: String(item?.desc || "Additional Charge").trim() || "Additional Charge",
+          qty: String(Number(item?.qty || 0)),
+          each: money.format(Number(item?.priceEach || 0)),
+          total: money.format(Number(item?.lineTotal || 0)),
+        }));
 
       const adjustedLabor = Number(exportComputed?.laborAfterMultiplier) || 0;
       const materialsBilled = Number(exportComputed?.materials?.totalCharge) || 0;
+      const additionalChargesBilled = Number(exportComputed?.additionalCharges?.totalRevenue) || 0;
       const hazardPctNormalized = Number(normalizePercentInput(exportComputed?.hazardPct ?? exportState?.labor?.hazardPct));
       const riskPctNormalized = Number(normalizePercentInput(exportComputed?.riskPct ?? exportState?.labor?.riskPct));
       const hazardFee = Number(exportComputed?.hazardAmount) || 0;
@@ -5188,9 +5260,17 @@ export default function EstimateForm(props) {
       const totalRevenue = Number(exportComputed?.grandTotal) || 0;
       const summarySubtotal = totalRevenue - hazardFee - riskFee;
       const summaryRows = [
-        ["Labor", money.format(adjustedLabor)],
-        ["Materials", money.format(materialsBilled)],
-        ["Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
+        ...(additionalChargesBilled > 0
+          ? [
+            ["Labor", money.format(adjustedLabor)],
+            ["Materials", money.format(materialsBilled)],
+            ["Additional Charges", money.format(additionalChargesBilled)],
+          ]
+          : [
+            ["Labor", money.format(adjustedLabor)],
+            ["Materials", money.format(materialsBilled)],
+          ]),
+        [additionalChargesBilled > 0 ? "Total" : "Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
         [`Hazard (${hazardPctNormalized}%)`, money.format(hazardFee)],
         [`Risk (${riskPctNormalized}%)`, money.format(riskFee)],
         ["Grand Total", money.format(totalRevenue)],
@@ -5237,6 +5317,7 @@ export default function EstimateForm(props) {
         scopeImages: Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
         laborRows,
         materialRows: materialsRows,
+        additionalChargeRows,
         materialsMode: exportMaterialsMode,
         materialsBlanketDescription: exportMaterialsMode === "blanket" ? materialsBlanketDescription : "",
         invoiceStatus: uiDocType === "invoice" ? String(exportState?.status || "").trim() : "",
@@ -5316,6 +5397,15 @@ export default function EstimateForm(props) {
       markupPct: it?.markupPct ?? "",
     }));
   }, [state?.materials?.items]);
+  const additionalChargeItems = useMemo(() => {
+    const arr = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items : [];
+    return arr.map((item) => ({
+      ...item,
+      desc: String(item?.desc || ""),
+      qty: item?.qty ?? "",
+      priceEach: item?.priceEach ?? "",
+    }));
+  }, [state?.additionalCharges?.items]);
   useEffect(() => {
     if (materialsMode !== "itemized") return;
     const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
@@ -5341,6 +5431,12 @@ export default function EstimateForm(props) {
     : 0;
   const itemizedMaterialsTotal = Number(computed?.materials?.totalCharge || 0);
   const itemizedMaterialsCount = useMemo(() => (materialItems || []).length, [materialItems]);
+  const additionalChargesSubtotal = Number(computed?.additionalCharges?.totalRevenue || 0);
+  const additionalChargesCount = useMemo(() => additionalChargeItems.filter((item) => {
+    const qty = Number(item?.qty);
+    const priceEach = Number(item?.priceEach);
+    return (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(priceEach) ? priceEach : 0) > 0;
+  }).length, [additionalChargeItems]);
   const normalizedMarkupPct = Number(normalizePercentInput(materialsMarkupPct));
   const materialsBilled = materialsMode === "itemized"
     ? itemizedMaterialsTotal
@@ -5354,7 +5450,8 @@ export default function EstimateForm(props) {
     : (Number(state?.materials?.blanketInternalCost) || 0);
   const fallbackLaborRevenue = Number(computed?.laborAfterAdjustments ?? computed?.labor?.subtotal ?? 0);
   const fallbackLaborCost = Number(computed?.labor?.internalCost || computed?.labor?.cost || 0);
-  const totalRevenue = Number((computed?.totalRevenue ?? (fallbackLaborRevenue + fallbackMaterialRevenue)) || 0);
+  const fallbackAdditionalChargesRevenue = Number(computed?.additionalCharges?.totalRevenue || 0);
+  const totalRevenue = Number((computed?.totalRevenue ?? (fallbackLaborRevenue + fallbackMaterialRevenue + fallbackAdditionalChargesRevenue)) || 0);
   const totalCost = Number((computed?.totalCost ?? (fallbackLaborCost + fallbackMaterialCost)) || 0);
   const totalGrossProfit = Number(computed?.grossProfit || 0);
   const grossMarginPct = Number(computed?.grossMarginPct || 0);
@@ -5393,7 +5490,10 @@ export default function EstimateForm(props) {
     + (materialsMode === "blanket" && Number.isFinite(normalizedMarkupPct) ? ` • ${normalizedMarkupPct}${t("materialsMeta")}` : "")
     + (materialsMode === "itemized"
       ? ` • ${itemizedMaterialsCount}x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
-      : " • Blanket materials");
+      : " • Blanket materials")
+    + (additionalChargesCount > 0
+      ? ` • ${additionalChargesCount}x ${t("additionalCharges").toLowerCase()} • ${money.format(additionalChargesSubtotal)}`
+      : "");
   const guidedTradeLabel = useMemo(() => {
     const tradeKey = String(state?.tradeInsert?.key || "").trim();
     if (!tradeKey) return "";
@@ -5415,6 +5515,9 @@ export default function EstimateForm(props) {
     const materialsSummary = materialsMode === "itemized"
       ? `${itemizedMaterialsCount} ${itemizedMaterialsCount === 1 ? "item" : "items"} • ${money.format(itemizedMaterialsTotal)}`
       : `Blanket • ${money.format(displayedMaterialsTotal)}`;
+    const additionalChargesSummary = additionalChargesCount > 0
+      ? `${additionalChargesCount} ${additionalChargesCount === 1 ? "item" : "items"} • ${money.format(additionalChargesSubtotal)}`
+      : "None";
 
     return {
       title: totalLabel,
@@ -5429,6 +5532,7 @@ export default function EstimateForm(props) {
         { label: "Trade", value: guidedTradeLabel || "Trade not set" },
         { label: "Labor", value: laborSummary },
         { label: "Materials", value: materialsSummary },
+        { label: "Additional Charges", value: additionalChargesSummary },
       ],
       highlights: [
         scopeNotes
@@ -5441,6 +5545,8 @@ export default function EstimateForm(props) {
     };
   }, [
     additionalNotes,
+    additionalChargesCount,
+    additionalChargesSubtotal,
     displayedMaterialsTotal,
     grossMarginLabel,
     guidedDocType,
@@ -7148,6 +7254,107 @@ export default function EstimateForm(props) {
         trashIcon={<IconTrash />}
         requireExplicitPickerCommit={isMobileActionBarViewport}
       />
+
+      <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <SectionTitleWithIcon
+          icon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M6 6.5h12M6 12h12M6 17.5h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><path d="M16.5 4.8v14.4M12 9.6v7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>}
+          title={t("additionalCharges")}
+          styles={styles}
+        />
+        <div style={styles.scopeSubtitle}>
+          {t("additionalChargesHelp")}
+        </div>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          {additionalChargeItems.length ? additionalChargeItems.map((item, index) => {
+            const lineTotal = Number(additionalChargeLineTotalsById.get(String(item?.id)) || 0);
+            return (
+              <div
+                key={String(item?.id || `charge_${index}`)}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 14,
+                  padding: "12px 12px 10px",
+                  background: "rgba(255,255,255,0.02)",
+                  display: "grid",
+                  gap: 10,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div style={{ flex: "2 1 220px", minWidth: 180 }}>
+                    <div style={styles.label}>{t("chargeDesc")}</div>
+                    <input
+                      className="pe-input"
+                      value={String(item?.desc || "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "desc", e.target.value)}
+                      placeholder="Emergency Sunday Call"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 92px", minWidth: 88 }}>
+                    <div style={styles.label}>{t("chargeQty")}</div>
+                    <input
+                      className="pe-input"
+                      inputMode="decimal"
+                      value={String(item?.qty ?? "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "qty", e.target.value)}
+                      onBlur={(e) => updateAdditionalChargeItem(index, "qty", normalizeHoursInput(e.target.value))}
+                      placeholder="1"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 128px", minWidth: 116 }}>
+                    <div style={styles.label}>{t("chargeUnitPrice")}</div>
+                    <input
+                      className="pe-input"
+                      inputMode="decimal"
+                      value={String(item?.priceEach ?? "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "priceEach", e.target.value)}
+                      onBlur={(e) => updateAdditionalChargeItem(index, "priceEach", normalizeMoneyInput(e.target.value))}
+                      placeholder="350"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 132px", minWidth: 120 }}>
+                    <div style={styles.label}>{t("chargeLineTotal")}</div>
+                    <div className="pe-input" style={{ display: "flex", alignItems: "center", minHeight: 42, fontWeight: 700 }}>
+                      {money.format(lineTotal)}
+                    </div>
+                  </div>
+                  <div style={{ flex: "0 0 auto", paddingTop: 24 }}>
+                    <button
+                      className="pe-btn pe-btn-ghost"
+                      type="button"
+                      style={styles.sectionFooterBtn}
+                      onClick={() => removeAdditionalChargeItem(index)}
+                      aria-label={`Remove ${t("additionalCharges")} line ${index + 1}`}
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="pe-muted" style={{ fontSize: 13 }}>
+              {lang === "es"
+                ? "Todavia no hay cargos adicionales. Agrega una linea para recargos, permisos, renta de equipo o servicio fuera de horario."
+                : "No additional charges yet. Add a line for rush work, permits, rentals, trip fees, or after-hours service."}
+            </div>
+          )}
+        </div>
+        <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
+          <div className="pe-muted">{t("additionalChargesSubtotal")}</div>
+          <div className="pe-value">{money.format(additionalChargesSubtotal)}</div>
+        </div>
+        <div style={styles.sectionFooterActions}>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            style={styles.sectionFooterBtn}
+            onClick={addAdditionalChargeItem}
+          >
+            {t("addChargeItem")}
+          </button>
+        </div>
+      </section>
 
       {/* TOTAL */}
       <section className="pe-section">

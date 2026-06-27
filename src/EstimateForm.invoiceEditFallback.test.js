@@ -759,6 +759,16 @@ describe("EstimateForm invoice edit fallback", () => {
         markupPct: 0,
         materialsBlanketDescription: "",
       },
+      additionalCharges: {
+        items: [
+          {
+            id: "charge_paid_1",
+            desc: "Emergency Sunday Call",
+            qty: "1",
+            priceEach: "350",
+          },
+        ],
+      },
       ui: {
         docType: "invoice",
         materialsMode: "itemized",
@@ -822,7 +832,14 @@ describe("EstimateForm invoice edit fallback", () => {
         total: "$300.00",
       }),
     ]));
-    expect(summaryValues["Grand Total"]).toBe("$1,407.00");
+    expect(payload.additionalChargeRows).toEqual([
+      expect.objectContaining({
+        desc: "Emergency Sunday Call",
+        total: "$350.00",
+      }),
+    ]);
+    expect(summaryValues["Grand Total"]).toBe("$1,757.00");
     expect(summaryValues.Materials).toBe("$300.00");
+    expect(summaryValues["Additional Charges"]).toBe("$350.00");
   }, 15000);
 });

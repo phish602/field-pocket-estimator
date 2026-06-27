@@ -40,6 +40,54 @@ describe("useEstimatorState save/load switching integration", () => {
     expect(parsed.customer.name).toBe("Local Draft");
   });
 
+  test("persists and hydrates additional charges through localStorage defaults", () => {
+    const { result, unmount } = renderHook(() => useEstimatorState());
+
+    act(() => {
+      result.current.patch("additionalCharges.items", [
+        {
+          id: "charge_1",
+          desc: "Emergency Sunday Call",
+          qty: "1",
+          priceEach: "350",
+        },
+      ]);
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    const raw = localStorage.getItem(STORAGE_KEY);
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw)).toEqual(expect.objectContaining({
+      additionalCharges: {
+        items: [
+          expect.objectContaining({
+            id: "charge_1",
+            desc: "Emergency Sunday Call",
+            qty: "1",
+            priceEach: "350",
+          }),
+        ],
+      },
+    }));
+
+    unmount();
+
+    const { result: hydrated } = renderHook(() => useEstimatorState());
+    expect(hydrated.current.state.additionalCharges).toEqual({
+      items: [
+        expect.objectContaining({
+          id: "charge_1",
+          desc: "Emergency Sunday Call",
+          qty: "1",
+          priceEach: "350",
+        }),
+      ],
+    });
+  });
+
   test("uses switching service only when explicitly enabled and preserves local fallback", () => {
     const saveDraft = jest.fn(() => ({
       ok: true,

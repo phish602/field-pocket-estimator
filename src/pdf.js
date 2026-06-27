@@ -797,6 +797,7 @@ function buildPdfDoc(payload) {
   const job = payload?.job || {};
   const laborRows = ensureArray(payload?.laborRows);
   const materialRows = ensureArray(payload?.materialRows);
+  const additionalChargeRows = ensureArray(payload?.additionalChargeRows);
   const isItemizedMaterials = payload?.materialsMode === "itemized";
   const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
   const normalizedLaborRows = laborRows
@@ -818,6 +819,9 @@ function buildPdfDoc(payload) {
   const normalizedMaterialRows = materialRows
     .map(normalizeMaterialRow)
     .filter((row) => !isItemizedMaterials || !!asText(row?.desc));
+  const normalizedAdditionalChargeRows = additionalChargeRows
+    .map(normalizeMaterialRow)
+    .filter((row) => !!asText(row?.desc) || toNumericAmount(row?.total) !== 0);
   const hasMeaningfulItemizedMaterials = normalizedMaterialRows.some((row) => !!asText(row?.desc) && asText(row?.desc) !== "-");
   const hasMeaningfulBlanketMaterials = (
     !!materialsBlanketDescription
@@ -830,6 +834,9 @@ function buildPdfDoc(payload) {
   const hasMeaningfulMaterialsContent = isItemizedMaterials
     ? hasMeaningfulItemizedMaterials
     : hasMeaningfulBlanketMaterials;
+  const hasMeaningfulAdditionalChargesContent = normalizedAdditionalChargeRows.some((row) => {
+    return toNumericAmount(row?.total) !== 0 || toNumericAmount(row?.each) !== 0;
+  });
   const summaryRows = ensureArray(payload?.summaryRows);
   const scopeBlocks = parseScopeBlocks(payload?.scopeNotes);
   const scopeImageLookup = buildScopeImageLookup(payload?.scopeImages);
@@ -843,13 +850,18 @@ function buildPdfDoc(payload) {
   const displayedSummaryRows = (summaryRows.length ? summaryRows : [["Total", "$0.00"]]).filter((row) => {
     const label = asText(row?.[0]).toLowerCase();
     if (label.startsWith("hazard") || label.startsWith("risk")) return false;
-    if (!hasMeaningfulLaborContent && label === "labor") return false;
-    if (!hasMeaningfulMaterialsContent && label === "materials") return false;
+    if (!hasMeaningfulLaborContent && label.startsWith("labor")) return false;
+    if (!hasMeaningfulMaterialsContent && label.startsWith("materials")) return false;
+    if (!hasMeaningfulAdditionalChargesContent && label.startsWith("additional charges")) return false;
     return true;
   });
   const safeSummaryRows = displayedSummaryRows.length ? displayedSummaryRows : [["Total", "$0.00"]];
-  const subtotalRowIndex = safeSummaryRows.findIndex((row) => asText(row?.[0]).toLowerCase() === "subtotal");
   const grandTotalRowIndex = safeSummaryRows.length - 1;
+  const totalsDividerRowIndex = safeSummaryRows.findIndex((row, index) => {
+    if (index === grandTotalRowIndex) return false;
+    const label = asText(row?.[0]).toLowerCase();
+    return label === "subtotal" || label === "total";
+  });
   const estimateLabel = payload?.docType === "invoice" ? "INVOICE #" : "ESTIMATE #";
   const documentTypeLabel = payload?.docType === "invoice" ? "INVOICE" : "ESTIMATE";
   const estimateNumber = asText(payload?.documentNumber, "Draft");
@@ -874,7 +886,7 @@ function buildPdfDoc(payload) {
   const FOOTER_Y = pageHeight - 18.2;
   const RIGHT_GUTTER = Math.max(0, pageWidth - RIGHT);
   const TOTALS_TOP_OFFSET = 6.3;
-  const TOTALS_TABLE_WIDTH = 62;
+  const TOTALS_TABLE_WIDTH = 72;
   const TOTALS_RIGHT_GUTTER = RIGHT_GUTTER + 4.5;
   const TOTALS_X = Math.max(LEFT, pageWidth - TOTALS_RIGHT_GUTTER - TOTALS_TABLE_WIDTH);
   const TOTALS_ROW_HEIGHT = ROW_HEIGHT + 1.35;
@@ -882,6 +894,11 @@ function buildPdfDoc(payload) {
   const PAGE_NUMBER_Y = FOOTER_Y;
   const PAGE_NUMBER_FONT_SIZE = 8.1;
   const PAGE_NUMBER_TEXT_COLOR = 110;
+  const CONTINUATION_TITLE_Y = 11;
+  const CONTINUATION_NUMBER_Y = 17.8;
+  const CONTINUATION_DIVIDER_Y = 21.5;
+  const HEADER_SAFE_BOTTOM_Y = CONTINUATION_DIVIDER_Y + 7;
+  const CONTINUATION_SECTION_TOP_Y = HEADER_SAFE_BOTTOM_Y - 2.8;
   const FOOTER_BLOCK_BOTTOM_Y = pageHeight - 24.2;
   const FOOTER_PRIMARY_FONT_SIZE = 15.4;
   const FOOTER_SECONDARY_FONT_SIZE = 12.4;
@@ -899,7 +916,7 @@ function buildPdfDoc(payload) {
   const MATERIAL_NOTE_LINE_HEIGHT_FACTOR = 1.1;
   const MATERIAL_NOTE_GAP = 1.05;
   const MATERIAL_NOTE_INDENT = 2.8;
-  const SECTION_PAGE_TOP = 25.5;
+  const SECTION_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const CONTENT_BOTTOM_BUFFER = 8.1;
   const TEXT_SECTION_GAP = 5.1;
   const MATERIAL_SECTION_GAP = 5.9;
@@ -930,7 +947,7 @@ function buildPdfDoc(payload) {
   const TERMS_BOX_BOTTOM_PADDING = 2.8;
   const TERMS_BOX_HEADER_BAND_HEIGHT = 5.8;
   const TERMS_BOX_BODY_TOP_GAP = 1.9;
-  const TERMS_BOX_PAGE_TOP = 25.5;
+  const TERMS_BOX_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const TERMS_BOX_FOOTER_GAP = 9;
   const TERMS_HEADER_TEXT = "TERMS & CONDITIONS";
   const TERMS_HEADER_FONT_SIZE = 7.1;
@@ -945,7 +962,7 @@ function buildPdfDoc(payload) {
   const ESTIMATE_NOTES_BOX_BOTTOM_PADDING = 2.8;
   const ESTIMATE_NOTES_HEADER_BAND_HEIGHT = 5.8;
   const ESTIMATE_NOTES_BODY_TOP_GAP = 1.9;
-  const ESTIMATE_NOTES_PAGE_TOP = 25.5;
+  const ESTIMATE_NOTES_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const ESTIMATE_NOTES_FOOTER_GAP = 9;
   const ESTIMATE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
   const ESTIMATE_NOTES_HEADER_FONT_SIZE = 7.1;
@@ -972,14 +989,28 @@ function buildPdfDoc(payload) {
   const footerStartY = footerDetails ? footerPrimaryY : FOOTER_BLOCK_BOTTOM_Y;
   const footerDividerY = footerStartY - FOOTER_DIVIDER_GAP;
   const contentBottomLimit = (footerLine ? footerStartY : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
+  const footerSafeTopY = Math.min(contentBottomLimit, PAGE_NUMBER_Y - 4.8);
+  const pagedTableMargin = {
+    left: LEFT,
+    right: RIGHT_GUTTER,
+    top: SECTION_PAGE_TOP,
+    bottom: Math.max(10, pageHeight - footerSafeTopY),
+  };
 
   function ensureSectionFits(startY, requiredHeight, nextPageTop = SECTION_PAGE_TOP) {
     let nextY = startY;
-    if (nextY + requiredHeight > contentBottomLimit) {
+    if (nextY + requiredHeight > footerSafeTopY) {
       doc.addPage();
       nextY = nextPageTop;
     }
     return nextY;
+  }
+
+  function resetContinuationCursor(hookData) {
+    if (Number(hookData?.pageNumber || 1) <= 1) return;
+    if (!hookData?.cursor) return;
+    hookData.cursor.x = LEFT;
+    hookData.cursor.y = SECTION_PAGE_TOP;
   }
 
   function estimatePreviewTextHeight(text, fontSize, minCellHeight) {
@@ -1036,7 +1067,7 @@ function buildPdfDoc(payload) {
   function estimateTotalsBlockHeight() {
     const rowsHeight = safeSummaryRows.reduce((sum, row, index) => {
       if (index === grandTotalRowIndex) return sum + TOTALS_GRAND_TOTAL_ROW_HEIGHT;
-      if (index === subtotalRowIndex) return sum + Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
+      if (index === totalsDividerRowIndex) return sum + Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
       return sum + TOTALS_ROW_HEIGHT;
     }, 0);
     return TOTALS_TOP_OFFSET + rowsHeight + TOTALS_KEEP_BUFFER + TOTALS_HEIGHT_SAFETY;
@@ -1137,16 +1168,22 @@ function buildPdfDoc(payload) {
       1: { cellWidth: 60 },
       2: { cellWidth: 58 },
     },
-    margin: { left: LEFT, right: RIGHT_GUTTER },
+    margin: pagedTableMargin,
   });
 
   let y = (doc.lastAutoTable?.finalY || CLIENT_Y) + 9.6;
 
   if (shouldRenderScopeNotes) {
-    const SCOPE_MARGIN = { left: LEFT, right: RIGHT_GUTTER };
+    const SCOPE_MARGIN = pagedTableMargin;
     const SCOPE_HEAD = [["SCOPE / NOTES"]];
     const SCOPE_HEAD_STYLES = { fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
-    const SCOPE_COMMON = { theme: "plain", tableLineWidth: 0, showHead: "firstPage", margin: SCOPE_MARGIN };
+    const SCOPE_COMMON = {
+      theme: "plain",
+      tableLineWidth: 0,
+      showHead: "firstPage",
+      margin: SCOPE_MARGIN,
+      willDrawPage: resetContinuationCursor,
+    };
     const SCOPE_BASE = { overflow: "linebreak", lineWidth: 0, fillColor: [255, 255, 255], textColor: [20, 20, 20], valign: "top" };
     let scopeHeaderPending = true;
 
@@ -1354,7 +1391,7 @@ function buildPdfDoc(payload) {
         textColor: [20, 20, 20],
         lineWidth: 0,
       },
-      margin: { left: LEFT, right: RIGHT_GUTTER },
+      margin: pagedTableMargin,
     });
 
     y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
@@ -1393,6 +1430,7 @@ function buildPdfDoc(payload) {
       body: materialTableBody,
       theme: "plain",
       tableLineWidth: 0,
+      rowPageBreak: "avoid",
       styles: {
         fontSize: MATERIAL_DESC_FONT_SIZE,
         cellPadding: 1.45,
@@ -1409,13 +1447,14 @@ function buildPdfDoc(payload) {
         cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
         minCellHeight: 4.3,
       },
+      willDrawPage: resetContinuationCursor,
       columnStyles: {
         0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
         1: { cellWidth: 20, halign: "right" },
         2: { cellWidth: 33, halign: "right" },
         3: { cellWidth: 37, halign: "right" },
       },
-      margin: { left: LEFT, right: RIGHT_GUTTER },
+      margin: pagedTableMargin,
       didParseCell: (hookData) => {
         if (hookData.section === "head") {
           if (hookData.column.index < 1 || hookData.column.index > 3) return;
@@ -1488,13 +1527,15 @@ function buildPdfDoc(payload) {
         materialsSectionLeft,
         materialsSectionTop,
         materialsSectionWidth,
-        materialsSectionBottom - materialsSectionTop
+        Math.max(0, Math.min(materialsSectionBottom, footerSafeTopY) - materialsSectionTop)
       );
     } else {
       for (let page = materialsSectionStartPage; page <= materialsSectionEndPage; page += 1) {
         doc.setPage(page);
-        const top = page === materialsSectionStartPage ? materialsSectionTop : 4.5;
-        const bottom = page === materialsSectionEndPage ? materialsSectionBottom : pageHeight - 19;
+        const top = page === materialsSectionStartPage ? materialsSectionTop : CONTINUATION_SECTION_TOP_Y;
+        const bottom = page === materialsSectionEndPage
+          ? Math.min(materialsSectionBottom, footerSafeTopY)
+          : footerSafeTopY;
         doc.rect(
           materialsSectionLeft,
           top,
@@ -1503,6 +1544,102 @@ function buildPdfDoc(payload) {
         );
       }
       doc.setPage(materialsSectionEndPage);
+    }
+  }
+
+  if (hasMeaningfulAdditionalChargesContent && normalizedAdditionalChargeRows.length) {
+    y += MATERIAL_SECTION_GAP;
+    y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
+    y = ensureSectionFits(
+      y,
+      MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + 5.6 + MATERIAL_KEEP_BUFFER,
+      SECTION_PAGE_TOP
+    );
+    const additionalChargesSectionStartPage = doc.getNumberOfPages();
+    const additionalChargesTitleY = y + 1.2;
+    const additionalChargesSectionTop = additionalChargesTitleY - 3;
+    const additionalChargesSectionLeft = LEFT;
+    const additionalChargesSectionRight = Math.max(contentRightEdge, RIGHT);
+    const additionalChargesSectionWidth = additionalChargesSectionRight - additionalChargesSectionLeft;
+    doc.setFillColor(...HEADER_FILL);
+    doc.rect(additionalChargesSectionLeft, additionalChargesSectionTop, additionalChargesSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.4);
+    doc.text("Additional Charges", LEFT + 3, additionalChargesTitleY);
+    y = additionalChargesSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
+    const additionalChargeTableBody = normalizedAdditionalChargeRows.map((row) => ([
+      row.desc || "Additional Charge",
+      row.qty,
+      row.each,
+      row.total,
+    ]));
+
+    autoTable(doc, {
+      startY: y,
+      head: [["", "QTY", "UNIT PRICE", "TOTAL"]],
+      body: additionalChargeTableBody,
+      theme: "plain",
+      tableLineWidth: 0,
+      styles: {
+        fontSize: MATERIAL_DESC_FONT_SIZE,
+        cellPadding: 1.45,
+        minCellHeight: 4.2,
+        overflow: "linebreak",
+        lineWidth: 0,
+        textColor: [20, 20, 20],
+        valign: "top",
+      },
+      headStyles: {
+        fontStyle: "bold",
+        textColor: [20, 20, 20],
+        lineWidth: 0,
+        cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
+        minCellHeight: 4.3,
+      },
+      willDrawPage: resetContinuationCursor,
+      columnStyles: {
+        0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
+        1: { cellWidth: 20, halign: "right" },
+        2: { cellWidth: 33, halign: "right" },
+        3: { cellWidth: 37, halign: "right" },
+      },
+      margin: pagedTableMargin,
+      didParseCell: (hookData) => {
+        if (hookData.section !== "head") return;
+        if (hookData.column.index < 1 || hookData.column.index > 3) return;
+        hookData.cell.styles.halign = "right";
+      },
+    });
+
+    y = (doc.lastAutoTable?.finalY || y);
+
+    const additionalChargesSectionEndPage = doc.getNumberOfPages();
+    const additionalChargesSectionBottom = y - 0.2;
+    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+    doc.setLineWidth(BORDER_LINE_WIDTH);
+
+    if (additionalChargesSectionStartPage === additionalChargesSectionEndPage) {
+      doc.rect(
+        additionalChargesSectionLeft,
+        additionalChargesSectionTop,
+        additionalChargesSectionWidth,
+        Math.max(0, Math.min(additionalChargesSectionBottom, footerSafeTopY) - additionalChargesSectionTop)
+      );
+    } else {
+      for (let page = additionalChargesSectionStartPage; page <= additionalChargesSectionEndPage; page += 1) {
+        doc.setPage(page);
+        const top = page === additionalChargesSectionStartPage ? additionalChargesSectionTop : CONTINUATION_SECTION_TOP_Y;
+        const bottom = page === additionalChargesSectionEndPage
+          ? Math.min(additionalChargesSectionBottom, footerSafeTopY)
+          : footerSafeTopY;
+        doc.rect(
+          additionalChargesSectionLeft,
+          top,
+          additionalChargesSectionWidth,
+          Math.max(0, bottom - top)
+        );
+      }
+      doc.setPage(additionalChargesSectionEndPage);
     }
   }
 
@@ -1526,13 +1663,13 @@ function buildPdfDoc(payload) {
       valign: "top",
     },
     columnStyles: {
-      0: { cellWidth: 36, fontStyle: "normal" },
+      0: { cellWidth: 46, fontStyle: "normal" },
       1: { cellWidth: 26, halign: "right" },
     },
     margin: { left: TOTALS_X, right: TOTALS_RIGHT_GUTTER },
     didDrawCell: (hookData) => {
       if (hookData.section !== "body") return;
-      if (hookData.row.index !== subtotalRowIndex) return;
+      if (hookData.row.index !== totalsDividerRowIndex) return;
       if (hookData.column.index !== 0) return;
       const rowY = hookData.cell.y;
       const rowHeight = hookData.row.height;
@@ -1543,7 +1680,7 @@ function buildPdfDoc(payload) {
     },
     didParseCell: (hookData) => {
       if (hookData.section !== "body") return;
-      if (hookData.row.index === subtotalRowIndex) {
+      if (hookData.row.index === totalsDividerRowIndex) {
         hookData.cell.styles.cellPadding = { top: 2.35, right: 1.25, bottom: 2.2, left: 1.25 };
         hookData.cell.styles.minCellHeight = Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
       }
@@ -1729,23 +1866,19 @@ function buildPdfDoc(payload) {
     doc.text(`Page ${page} of ${pageCount}`, RIGHT, PAGE_NUMBER_Y, { align: "right" });
 
     if (page > 1) {
-      const CONT_TITLE_Y = 11;
-      const CONT_NUMBER_Y = 17.8;
-      const CONT_DIVIDER_Y = 21.5;
-
       doc.setFont("helvetica", "bold");
       doc.setFontSize(13.2);
       doc.setTextColor(20, 20, 20);
-      doc.text(documentTypeLabel, CENTER, CONT_TITLE_Y, { align: "center", baseline: "middle" });
+      doc.text(documentTypeLabel, CENTER, CONTINUATION_TITLE_Y, { align: "center", baseline: "middle" });
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8.1);
       doc.setTextColor(80, 80, 80);
-      doc.text(estimateNumber, RIGHT, CONT_NUMBER_Y, { align: "right", baseline: "middle" });
+      doc.text(estimateNumber, RIGHT, CONTINUATION_NUMBER_Y, { align: "right", baseline: "middle" });
 
       doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
       doc.setLineWidth(BORDER_LINE_WIDTH);
-      doc.line(LEFT, CONT_DIVIDER_Y, RIGHT, CONT_DIVIDER_Y);
+      doc.line(LEFT, CONTINUATION_DIVIDER_Y, RIGHT, CONTINUATION_DIVIDER_Y);
 
       doc.setTextColor(20, 20, 20);
     }

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef, useId } from "react";
 import EstimateForm from "./EstimateForm";
-import CockpitShell from "./components/cockpit/CockpitShell";
 import CustomersScreen from "./screens/CustomersScreen";
 import EstimatesScreen from "./screens/EstimatesScreen";
 import InvoicesScreen from "./screens/InvoicesScreen";
@@ -1300,7 +1299,6 @@ function CreateFlow({
   onHomeEstimateLaunchConsumed,
 }) {
   const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
-  const [cockpitSnapshot, setCockpitSnapshot] = useState(null);
   const [isSeedReady, setIsSeedReady] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
@@ -1327,32 +1325,20 @@ function CreateFlow({
     setIsSeedReady(true);
   }, [desiredDocType]);
 
-  useEffect(() => {
-    setCockpitSnapshot(null);
-  }, [desiredDocType, resetSeq]);
-
-  const handleCockpitSnapshotChange = useCallback((nextSnapshot) => {
-    setCockpitSnapshot((current) => (current === nextSnapshot ? current : nextSnapshot));
-  }, []);
-
   if (!isSeedReady) return null;
 
   return (
-    <CockpitShell desiredDocType={desiredDocType} snapshot={cockpitSnapshot}>
-      <EstimateForm
-        key={`estimate:${resetSeq}`}
-        embeddedInShell
-        forceProfileOnMount={false}
-        spinTick={spinTick}
-        mobileBottomChromeVisible={mobileBottomChromeVisible}
-        shellBottomChromeVisible={shellBottomChromeVisible}
-        shellOverlayOpen={shellOverlayOpen}
-        onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
-        onCockpitSnapshotChange={handleCockpitSnapshotChange}
-        homeEstimateLaunch={homeEstimateLaunch}
-        onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
-      />
-    </CockpitShell>
+    <EstimateForm
+      key={`estimate:${resetSeq}`}
+      forceProfileOnMount={false}
+      spinTick={spinTick}
+      mobileBottomChromeVisible={mobileBottomChromeVisible}
+      shellBottomChromeVisible={shellBottomChromeVisible}
+      shellOverlayOpen={shellOverlayOpen}
+      onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
+      homeEstimateLaunch={homeEstimateLaunch}
+      onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
+    />
   );
 }
 

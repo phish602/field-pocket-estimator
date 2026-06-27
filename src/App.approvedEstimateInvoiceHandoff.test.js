@@ -251,8 +251,12 @@ function createEstimate({
   laborLine,
   materialItem,
   blanketMaterials,
+  additionalChargeItems = [],
 }) {
   const siteAddress = customer.projectAddress || customer.address || "";
+  const additionalChargesRevenue = additionalChargeItems.reduce((sum, item) => (
+    sum + ((Number(item?.qty) || 0) * (Number(item?.priceEach) || 0))
+  ), 0);
 
   return {
     id,
@@ -267,6 +271,7 @@ function createEstimate({
     total,
     grandTotal: total,
     totalRevenue: total,
+    additionalChargesRevenue,
     customer: {
       ...customer,
       id: customer.id,
@@ -309,6 +314,9 @@ function createEstimate({
         markupPct: blanketMaterials.markupPct,
         items: [clone(blanketMaterials.item)],
       },
+    additionalCharges: {
+      items: additionalChargeItems.map((item) => clone(item)),
+    },
   };
 }
 
@@ -672,6 +680,101 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(String(createdInvoice?.materials?.blanketInternalCost || "")).toBe("210");
     expect(String(createdInvoice?.materials?.materialsBlanketDescription || "")).toBe("Bucket blanket materials");
     expect(String(createdInvoice?.materials?.items?.[0]?.desc || "")).toBe("");
+
+    expectEditInvoiceTargetWasSet(setItemSpy, createdInvoice.id);
+  });
+
+  test("full invoice builder preserves additional charges without collapsing them into materials", async () => {
+    const customer = createCustomer({
+      id: "cust_additional_charge",
+      name: "Additional Charge Customer",
+      projectName: "Emergency Service Project",
+      projectNumber: "P-4302A",
+      address: "456 Service Ave",
+    });
+    const estimate = createEstimate({
+      id: "est_additional_charge",
+      status: "approved",
+      estimateNumber: "EST-4302A",
+      projectId: "proj_additional_charge",
+      customer,
+      scopeNotes: "Emergency Sunday service call with same-day mobilization.",
+      materialsMode: "itemized",
+      total: 1430,
+      laborLine: {
+        id: "labor_additional_charge_1",
+        role: "technician",
+        label: "Technician",
+        qty: "1",
+        hours: "8",
+        rate: "95",
+        trueRateInternal: "60",
+        internalRate: "60",
+        markupPct: "0",
+      },
+      materialItem: {
+        id: "material_additional_charge_1",
+        desc: "Service consumables",
+        qty: "1",
+        unitCostInternal: "95",
+        costInternal: "95",
+        priceEach: "120",
+        markupPct: "0",
+      },
+      blanketMaterials: {
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+        markupPct: 0,
+        item: { id: "blanket_placeholder", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" },
+      },
+      additionalChargeItems: [
+        {
+          id: "charge_emergency_1",
+          desc: "Emergency Sunday Call",
+          qty: "1",
+          priceEach: "350",
+        },
+      ],
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    await screen.findByRole("button", { name: /Create Invoice/i });
+
+    setItemSpy.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
+
+    await screen.findByRole("heading", { name: /EDIT INVOICE/i });
+
+    const invoices = readStoredInvoices();
+    expect(invoices).toHaveLength(1);
+
+    const createdInvoice = invoices[0];
+    expect(createdInvoice.additionalCharges).toEqual({
+      items: [
+        expect.objectContaining({
+          id: "charge_emergency_1",
+          desc: "Emergency Sunday Call",
+          qty: "1",
+          priceEach: "350",
+        }),
+      ],
+    });
+    expect(createdInvoice.materials).toEqual(expect.objectContaining({
+      items: [
+        expect.objectContaining({
+          desc: "Service consumables",
+        }),
+      ],
+    }));
+    expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
+      additionalChargesRevenue: 350,
+    }));
+    expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
 
     expectEditInvoiceTargetWasSet(setItemSpy, createdInvoice.id);
   });
