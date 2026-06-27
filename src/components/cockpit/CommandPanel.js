@@ -40,9 +40,16 @@ function buildSnapshotRows(totals) {
   ];
 }
 
-export default function CommandPanel({ totals, readiness }) {
-  const snapshotRows = buildSnapshotRows(totals);
-  const progressLabel = `${readiness?.completedCount || 0}/${readiness?.totalCount || 0} checks clear`;
+export default function CommandPanel({
+  desiredDocType = "estimate",
+  totals,
+  readiness,
+  isAwaitingLiveSnapshot = false,
+}) {
+  const snapshotRows = totals ? buildSnapshotRows(totals) : [];
+  const progressLabel = readiness
+    ? `${readiness?.completedCount || 0}/${readiness?.totalCount || 0} checks clear`
+    : "Waiting for live estimator";
 
   return (
     <aside className="pe-cockpit-panel" aria-label="Estimate command panel">
@@ -52,26 +59,34 @@ export default function CommandPanel({ totals, readiness }) {
             <div className="pe-cockpit-section__eyebrow">Command center</div>
             <h2 className="pe-cockpit-panel__title">Live estimate readiness</h2>
           </div>
-          <StatusBadge readiness={readiness} />
+          <StatusBadge readiness={readiness} isAwaitingLiveSnapshot={isAwaitingLiveSnapshot} />
         </div>
-        <p className="pe-cockpit-panel__message">{readiness?.message}</p>
+        <p className="pe-cockpit-panel__message">
+          {isAwaitingLiveSnapshot
+            ? `Waiting for the active ${desiredDocType} to publish its live totals.`
+            : readiness?.message}
+        </p>
         <div className="pe-cockpit-chip-row">
           <span className="pe-cockpit-chip">{progressLabel}</span>
-          <span className="pe-cockpit-chip">{totals?.laborLineCount || 0} labor lines</span>
           <span className="pe-cockpit-chip">
-            {totals?.materialsMode === "itemized"
+            {isAwaitingLiveSnapshot ? "Live data pending" : `${totals?.laborLineCount || 0} labor lines`}
+          </span>
+          <span className="pe-cockpit-chip">
+            {isAwaitingLiveSnapshot
+              ? "Command panel syncing"
+              : totals?.materialsMode === "itemized"
               ? `${totals?.materialLineCount || 0} material lines`
               : "Blanket materials"}
           </span>
         </div>
       </section>
 
-      <LiveTotals totals={totals} />
+      <LiveTotals totals={totals} isAwaitingLiveSnapshot={isAwaitingLiveSnapshot} />
 
       <section className="pe-cockpit-section">
         <div className="pe-cockpit-section__eyebrow">Readiness checks</div>
         <div className="pe-cockpit-checklist">
-          {(readiness?.checklist || []).map((item) => (
+          {(isAwaitingLiveSnapshot ? [] : (readiness?.checklist || [])).map((item) => (
             <div
               key={item.key}
               className={`pe-cockpit-checklist__item${item.done ? " is-done" : ""}`}
@@ -80,6 +95,12 @@ export default function CommandPanel({ totals, readiness }) {
               <span>{item.label}</span>
             </div>
           ))}
+          {isAwaitingLiveSnapshot && (
+            <div className="pe-cockpit-checklist__item pe-cockpit-checklist__item--waiting">
+              <span className="pe-cockpit-checklist__dot" aria-hidden="true" />
+              <span>Estimator snapshot will appear here once the active form finishes mounting.</span>
+            </div>
+          )}
         </div>
       </section>
 
@@ -92,9 +113,14 @@ export default function CommandPanel({ totals, readiness }) {
               <div className="pe-cockpit-snapshot-grid__value">{row.value}</div>
             </div>
           ))}
+          {isAwaitingLiveSnapshot && (
+            <div className="pe-cockpit-snapshot-grid__item pe-cockpit-snapshot-grid__item--waiting">
+              <div className="pe-cockpit-snapshot-grid__label">Status</div>
+              <div className="pe-cockpit-snapshot-grid__value">Awaiting live estimator snapshot</div>
+            </div>
+          )}
         </div>
       </section>
     </aside>
   );
 }
-

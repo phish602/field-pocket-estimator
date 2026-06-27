@@ -88,6 +88,7 @@ import useGuidedBuild, {
   hasCoreGuidedDraftState,
   hasGuidedRuntimeResidue,
 } from "./estimator/guided/useGuidedBuild";
+import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockpitTotals";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
@@ -1367,8 +1368,10 @@ export default function EstimateForm(props) {
   const {
     embeddedInShell = false,
     mobileBottomChromeVisible = true,
+    shellBottomChromeVisible,
     shellOverlayOpen = false,
     onGuidedOverlayOpenChange,
+    onCockpitSnapshotChange,
     homeEstimateLaunch = null,
     onHomeEstimateLaunchConsumed,
   } = props || {};
@@ -3082,9 +3085,11 @@ export default function EstimateForm(props) {
     return () => mobileQuery.removeEventListener("change", syncViewportMode);
   }, []);
 
+  const actionBarChromeVisible = typeof shellBottomChromeVisible === "boolean"
+    ? shellBottomChromeVisible
+    : mobileBottomChromeVisible;
   const shouldSyncActionBarWithBottomChrome =
-    embeddedInShell
-    && isMobileActionBarViewport;
+    embeddedInShell;
   const scopeTemplateSourceId = String(state?.meta?.savedDocId || editingRecordId || "").trim();
   const scopeTemplateSourceNumber = String(
     state?.job?.docNumber
@@ -4368,6 +4373,26 @@ export default function EstimateForm(props) {
   }
 
   const computed = useMemo(() => computeTotals(state, { settings: settingsSnapshot }), [settingsSnapshot, state]);
+  const cockpitSnapshot = useMemo(() => buildEstimateCockpitSnapshot({
+    state,
+    computed,
+    source: "live",
+    editTargetId: editingRecordId,
+    isEditMode,
+  }), [computed, editingRecordId, isEditMode, state]);
+
+  useEffect(() => {
+    if (typeof onCockpitSnapshotChange !== "function") return undefined;
+    onCockpitSnapshotChange(cockpitSnapshot);
+    return undefined;
+  }, [cockpitSnapshot, onCockpitSnapshotChange]);
+
+  useEffect(() => {
+    if (typeof onCockpitSnapshotChange !== "function") return undefined;
+    return () => {
+      onCockpitSnapshotChange(null);
+    };
+  }, [onCockpitSnapshotChange]);
 
   const laborTotalsById = useMemo(() => {
     const map = new Map();
@@ -5481,13 +5506,13 @@ export default function EstimateForm(props) {
         bottom: actionBarBottom,
         paddingLeft: "max(10px, env(safe-area-inset-left, 0px))",
         paddingRight: "max(10px, env(safe-area-inset-right, 0px))",
-        transform: mobileBottomChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
-        opacity: mobileBottomChromeVisible ? 1 : 0,
+        transform: actionBarChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
+        opacity: actionBarChromeVisible ? 1 : 0,
         transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
         willChange: "transform, opacity",
       }
     : { ...styles.estimatorActionBar, bottom: actionBarBottom };
-  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !mobileBottomChromeVisible
+  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !actionBarChromeVisible
     ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
     : styles.estimatorActionBarInner;
   const sectionBottomActionsStyle = styles.sectionFooterActions;

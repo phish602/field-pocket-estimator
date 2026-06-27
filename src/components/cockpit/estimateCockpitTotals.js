@@ -66,18 +66,29 @@ export function normalizeEstimateCockpitState(state) {
   return mergeDefaults(DEFAULT_STATE, isObject(state) ? state : {});
 }
 
-export function buildEstimateCockpitTotals(state, settings = DEFAULT_SETTINGS) {
+export function buildEstimateCockpitSnapshot({
+  state,
+  computed,
+  source = "live",
+  editTargetId = "",
+  isEditMode = false,
+} = {}) {
   const normalizedState = normalizeEstimateCockpitState(state);
-  const computed = computeTotals(normalizedState, { settings });
   const materialsMode = normalizedState?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
-  const laborLines = Array.isArray(computed?.labor?.normalized) ? computed.labor.normalized : [];
-  const materialLines = Array.isArray(computed?.materials?.normalized) ? computed.materials.normalized : [];
+  const liveComputed = computed && typeof computed === "object" ? computed : computeTotals(normalizedState, { settings: DEFAULT_SETTINGS });
+  const laborLines = Array.isArray(liveComputed?.labor?.normalized) ? liveComputed.labor.normalized : [];
+  const materialLines = Array.isArray(liveComputed?.materials?.normalized) ? liveComputed.materials.normalized : [];
   const meaningfulLaborLines = laborLines.filter(hasMeaningfulLaborLine);
   const meaningfulMaterialLines = materialLines.filter(hasMeaningfulItemizedMaterial);
   const blanketMaterialsActive = materialsMode === "blanket" && hasMeaningfulBlanketMaterials(normalizedState?.materials);
 
   return {
-    computed,
+    source,
+    isLive: source === "live",
+    editTargetId: toText(editTargetId),
+    isEditMode: Boolean(isEditMode),
+    state: normalizedState,
+    computed: liveComputed,
     docType: normalizedState?.ui?.docType === "invoice" ? "invoice" : "estimate",
     materialsMode,
     customerName: toText(normalizedState?.customer?.name),
@@ -93,10 +104,22 @@ export function buildEstimateCockpitTotals(state, settings = DEFAULT_SETTINGS) {
     materialLineCount: meaningfulMaterialLines.length,
     hasMeaningfulLabor: meaningfulLaborLines.length > 0,
     hasMeaningfulMaterials: blanketMaterialsActive || meaningfulMaterialLines.length > 0,
-    grandTotal: toNumber(computed?.grandTotal),
-    laborTotal: toNumber(computed?.laborAfterAdjustments),
-    materialsTotal: toNumber(computed?.materials?.totalRevenue),
+    grandTotal: toNumber(liveComputed?.grandTotal),
+    laborTotal: toNumber(liveComputed?.laborAfterAdjustments),
+    materialsTotal: toNumber(liveComputed?.materials?.totalRevenue),
+    grossProfit: toNumber(liveComputed?.grossProfit),
+    grossMarginPct: toNumber(liveComputed?.grossMarginPct),
   };
+}
+
+export function buildEstimateCockpitTotals(state, settings = DEFAULT_SETTINGS) {
+  const normalizedState = normalizeEstimateCockpitState(state);
+  const computed = computeTotals(normalizedState, { settings });
+  return buildEstimateCockpitSnapshot({
+    state: normalizedState,
+    computed,
+    source: "derived",
+  });
 }
 
 export function hasMeaningfulEstimateDraft(state, totals = buildEstimateCockpitTotals(state)) {

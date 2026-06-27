@@ -26,6 +26,7 @@ import "./FieldSystem.css";
 import "./AppShell.css";
 import "./App.css";
 const DEFAULT_LOGO = "/logo/estipaid.svg";
+const MOBILE_CHROME_MAX_WIDTH_PX = 640;
 
 
 
@@ -1292,12 +1293,14 @@ function CreateFlow({
   spinTick,
   resetSeq,
   mobileBottomChromeVisible,
+  shellBottomChromeVisible = true,
   shellOverlayOpen = false,
   onGuidedOverlayOpenChange,
   homeEstimateLaunch,
   onHomeEstimateLaunchConsumed,
 }) {
   const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
+  const [cockpitSnapshot, setCockpitSnapshot] = useState(null);
   const [isSeedReady, setIsSeedReady] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
@@ -1324,18 +1327,28 @@ function CreateFlow({
     setIsSeedReady(true);
   }, [desiredDocType]);
 
+  useEffect(() => {
+    setCockpitSnapshot(null);
+  }, [desiredDocType, resetSeq]);
+
+  const handleCockpitSnapshotChange = useCallback((nextSnapshot) => {
+    setCockpitSnapshot((current) => (current === nextSnapshot ? current : nextSnapshot));
+  }, []);
+
   if (!isSeedReady) return null;
 
   return (
-    <CockpitShell desiredDocType={desiredDocType}>
+    <CockpitShell desiredDocType={desiredDocType} snapshot={cockpitSnapshot}>
       <EstimateForm
         key={`estimate:${resetSeq}`}
         embeddedInShell
         forceProfileOnMount={false}
         spinTick={spinTick}
         mobileBottomChromeVisible={mobileBottomChromeVisible}
+        shellBottomChromeVisible={shellBottomChromeVisible}
         shellOverlayOpen={shellOverlayOpen}
         onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
+        onCockpitSnapshotChange={handleCockpitSnapshotChange}
         homeEstimateLaunch={homeEstimateLaunch}
         onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
       />
@@ -1637,7 +1650,7 @@ function HomeScreen({
           >
             See what needs attention, what has been paid, and the safest next move before you open anything else.
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, width: "100%", marginTop: 18 }}>
+          <div className="pe-home-spotlight-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, width: "100%", marginTop: 18 }}>
             {spotlightItems.map((item) => {
               const toneStyles = item.tone === "danger"
                 ? { border: "rgba(239,68,68,0.28)", glow: "rgba(239,68,68,0.12)", value: "rgba(254,202,202,0.98)", tag: "rgba(248,113,113,0.84)" }
@@ -1651,6 +1664,7 @@ function HomeScreen({
               return (
                 <div
                   key={item.key}
+                  className="pe-home-spotlight-card"
                   style={{
                     minWidth: 0,
                     display: "grid",
@@ -1666,7 +1680,7 @@ function HomeScreen({
                   <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: toneStyles.tag }}>
                     {item.label}
                   </div>
-                  <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: "-0.04em", color: toneStyles.value, lineHeight: 1 }}>
+                  <div className="pe-home-money-value" style={{ fontSize: 24, fontWeight: 900, letterSpacing: "-0.04em", color: toneStyles.value, lineHeight: 1 }}>
                     {item.value}
                   </div>
                   <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(220,229,238,0.66)" }}>
@@ -1881,17 +1895,17 @@ function HomeScreen({
                   {hasSignals ? (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                       {overdueCount > 0 ? (
-                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
+                        <span className="pe-home-project-signal" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
                           {overdueCount === 1 ? "1 overdue" : `${overdueCount} overdue`}
                         </span>
                       ) : null}
                       {balDue > 0 ? (
-                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
+                        <span className="pe-home-project-signal pe-home-money-chip" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
                           {homeMoney(balDue)} due
                         </span>
                       ) : null}
                       {approvedEstCount > 0 ? (
-                        <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
+                        <span className="pe-home-project-signal" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
                           {approvedEstCount === 1 ? "1 estimate approved" : `${approvedEstCount} estimates approved`}
                         </span>
                       ) : null}
@@ -3230,7 +3244,7 @@ const [spinTick, setSpinTick] = useState(0);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isMobileChromeViewport, setIsMobileChromeViewport] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-    return window.matchMedia("(max-width: 820px)").matches;
+    return window.matchMedia(`(max-width: ${MOBILE_CHROME_MAX_WIDTH_PX}px)`).matches;
   });
   const chromeVisibleRef = useRef(true);
   const chromeScrollStateRef = useRef({ lastTop: 0, anchorTop: 0, direction: "none" });
@@ -3260,7 +3274,7 @@ const [spinTick, setSpinTick] = useState(0);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-    const mobileQuery = window.matchMedia("(max-width: 820px)");
+    const mobileQuery = window.matchMedia(`(max-width: ${MOBILE_CHROME_MAX_WIDTH_PX}px)`);
     const syncMobileViewport = () => setIsMobileChromeViewport(mobileQuery.matches);
     syncMobileViewport();
     mobileQuery.addEventListener("change", syncMobileViewport);
@@ -3690,6 +3704,7 @@ const gated = false;
           spinTick={spinTick}
           resetSeq={createResetSeq}
           mobileBottomChromeVisible={isMobileChromeViewport ? mobileFooterChromeVisible && !drawerOpen : true}
+          shellBottomChromeVisible={(isMobileChromeViewport ? mobileFooterChromeVisible : chromeVisible) && !drawerOpen}
           shellOverlayOpen={drawerOpen}
           onGuidedOverlayOpenChange={setGuidedOverlayOpen}
           homeEstimateLaunch={homeEstimateLaunch}

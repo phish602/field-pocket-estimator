@@ -7,6 +7,21 @@ const money = new Intl.NumberFormat("en-US", {
 });
 
 export default function MobileSnapshotBar({ totals, readiness }) {
+  if (!totals || !readiness) {
+    return (
+      <div className="pe-cockpit-mobile-bar" aria-label="Estimate snapshot">
+        <div className="pe-cockpit-mobile-bar__status">
+          <StatusBadge readiness={null} isAwaitingLiveSnapshot />
+          <div className="pe-cockpit-mobile-bar__context">
+            <div className="pe-cockpit-mobile-bar__title">Waiting for active estimate</div>
+            <div className="pe-cockpit-mobile-bar__meta">Live totals will appear here</div>
+          </div>
+        </div>
+        <div className="pe-cockpit-mobile-bar__amount">...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="pe-cockpit-mobile-bar" aria-label="Estimate snapshot">
       <div className="pe-cockpit-mobile-bar__status">
@@ -28,4 +43,3 @@ export default function MobileSnapshotBar({ totals, readiness }) {
     </div>
   );
 }
-
