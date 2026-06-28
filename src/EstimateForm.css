@@ -39,21 +39,6 @@
   );
 }
 
-/* Builder action footer containment (Save / Clear / Export PDF):
-   the mobile bottom nav is a separate fixed element of its own, so the
-   action bar must float above its reserved clearance instead of sitting
-   flush at the screen bottom underneath it, and the scroll area needs
-   matching bottom padding so content never hides behind either bar. */
-@media (max-width: 820px) {
-  .pe-estimator-action-bar {
-    bottom: var(--pe-estimator-mobile-dock-clearance) !important;
-  }
-
-  .pe-wrap.ep-estimator {
-    padding-bottom: calc(var(--pe-estimator-mobile-dock-clearance) + 160px) !important;
-  }
-}
-
 /* 2026 Ledger Builder Overrides */
  .pe-wrap.ep-estimator {
    --line: rgba(171, 188, 199, 0.12);

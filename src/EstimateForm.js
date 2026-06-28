@@ -3113,8 +3113,12 @@ export default function EstimateForm(props) {
   const actionBarChromeVisible = typeof shellBottomChromeVisible === "boolean"
     ? shellBottomChromeVisible
     : mobileBottomChromeVisible;
+  // embeddedInShell is never passed true by the real app shell — the actual
+  // signal that we're paired with shell bottom chrome (mobile bottom nav) is
+  // shellBottomChromeVisible being supplied at all. Without this, the action
+  // bar's scroll-reactive hide/reveal transform never applied.
   const shouldSyncActionBarWithBottomChrome =
-    embeddedInShell;
+    embeddedInShell || typeof shellBottomChromeVisible === "boolean";
   const scopeTemplateSourceId = String(state?.meta?.savedDocId || editingRecordId || "").trim();
   const scopeTemplateSourceNumber = String(
     state?.job?.docNumber
@@ -5597,7 +5601,7 @@ export default function EstimateForm(props) {
     setSpecialConditionsOpen(false);
   }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
 
-  const dockHeight = embeddedInShell ? (isMobileActionBarViewport ? SHELL_DOCK_HEIGHT_MOBILE : SHELL_DOCK_HEIGHT) : 0;
+  const dockHeight = shouldSyncActionBarWithBottomChrome ? (isMobileActionBarViewport ? SHELL_DOCK_HEIGHT_MOBILE : SHELL_DOCK_HEIGHT) : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
   const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
@@ -5732,7 +5736,7 @@ export default function EstimateForm(props) {
     };
   }, [guided?.enabled, onGuidedOverlayOpenChange]);
   const actionBarNode = (
-    <div className="pe-estimator-action-bar" style={actionBarStyle}>
+    <div style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
         <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
           <button
