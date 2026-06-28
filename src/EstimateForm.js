@@ -5732,7 +5732,7 @@ export default function EstimateForm(props) {
     };
   }, [guided?.enabled, onGuidedOverlayOpenChange]);
   const actionBarNode = (
-    <div style={actionBarStyle}>
+    <div className="pe-estimator-action-bar" style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
         <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
           <button
