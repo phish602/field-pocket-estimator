@@ -241,13 +241,6 @@
     0 20px 40px rgba(0, 0, 0, 0.2);
 }
 
-.pe-builder-mode {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-}
-
 @keyframes peEstimatorTitleShine {
   0%, 64% {
     opacity: 0;
@@ -889,17 +882,6 @@
     font-size: clamp(20px, 6.2vw, 26px);
   }
 
-  .pe-builder-mode {
-    margin-left: auto;
-  }
-
-  .pe-builder-mode .pe-btn {
-    min-width: 96px !important;
-    min-height: 40px;
-    padding: 8px 10px;
-    font-size: 12px;
-  }
-
   .ep-estimator .estimatorHeaderRow {
     margin-bottom: 10px;
     row-gap: 10px;
@@ -907,15 +889,6 @@
 
   .pe-estimator-shell {
     padding: 14px;
-  }
-}
-
-@media (max-width: 420px) {
-  .pe-builder-mode .pe-btn {
-    min-width: 84px !important;
-    min-height: 38px;
-    padding: 7px 9px;
-    font-size: 11.5px;
   }
 }
 
