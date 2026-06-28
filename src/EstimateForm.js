@@ -2212,10 +2212,6 @@ export default function EstimateForm(props) {
   const editUpdatedTs = getMostRecentSavedTimestamp(state);
   const editUpdatedLabel = editUpdatedTs > 0 ? `Last updated ${formatSavedTimestamp(editUpdatedTs)}` : "";
   const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
-  const setDocType = (nextDocType) => {
-    const next = nextDocType === "invoice" ? "invoice" : "estimate";
-    patch("ui.docType", next);
-  };
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
     const nextMode = mode === "itemized" ? "itemized" : "blanket";
@@ -2435,29 +2431,9 @@ export default function EstimateForm(props) {
                 <div style={styles.editModeBadge}>EDIT MODE</div>
               </>
             ) : (
-              <>
-                <h1 className="pe-title pe-builder-title screenTitle">
-                  <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
-                </h1>
-                <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-                  <button
-                    type="button"
-                    className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("estimate")}
-                    style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Estimate
-                  </button>
-                  <button
-                    type="button"
-                    className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("invoice")}
-                    style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Invoice
-                  </button>
-                </div>
-              </>
+              <h1 className="pe-title pe-builder-title screenTitle">
+                <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+              </h1>
             )}
           </div>
 
@@ -3309,31 +3285,6 @@ export default function EstimateForm(props) {
 }
 
 const styles = {
-  builderModeSegmented: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    padding: 3,
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.04)",
-    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.06)",
-    flexShrink: 0,
-  },
-  builderModeSegment: {
-    minWidth: 118,
-    borderRadius: 999,
-    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
-  },
-  builderModeSegmentActive: {
-    minWidth: 118,
-    borderRadius: 999,
-    background: "linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.05))",
-    borderColor: "rgba(34,197,94,0.34)",
-    boxShadow: "0 0 0 1px rgba(34,197,94,0.16), 0 6px 16px rgba(0,0,0,0.25)",
-    transform: "translateZ(0)",
-    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
-  },
   editHeaderStack: {
     minWidth: 0,
     flex: "1 1 auto",
