@@ -247,6 +247,97 @@ function getSavedLang() {
   return "en";
 }
 
+/* =========================================================
+   Shared live draft overwrite guard
+   - One detector for "does the live estimator draft have any
+     meaningful content worth protecting" and one reusable
+     confirmation modal/handler for any start-new-document flow
+     that would otherwise silently replace it.
+   ========================================================= */
+function isMeaningfulText(v) {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+function isMeaningfulNumberLike(v) {
+  if (typeof v === "number") return Number.isFinite(v) && v !== 0;
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed) return false;
+    const n = Number(trimmed);
+    return !Number.isNaN(n) && n !== 0;
+  }
+  return false;
+}
+
+function hasMeaningfulCustomerInfo(customer) {
+  if (!customer || typeof customer !== "object") return false;
+  const textFields = [
+    "name", "attn", "phone", "email", "address", "billingAddress",
+    "projectName", "projectNumber", "projectAddress", "netTermsType",
+  ];
+  return textFields.some((k) => isMeaningfulText(customer[k]));
+}
+
+function hasMeaningfulJobInfo(job) {
+  if (!job || typeof job !== "object") return false;
+  const textFields = ["location", "poNumber", "due", "docNumber"];
+  return textFields.some((k) => isMeaningfulText(job[k]));
+}
+
+function hasMeaningfulLaborInfo(labor) {
+  const lines = Array.isArray(labor?.lines) ? labor.lines : [];
+  return lines.some(
+    (l) => isMeaningfulText(l?.role) || isMeaningfulNumberLike(l?.hours) || isMeaningfulNumberLike(l?.rate)
+  );
+}
+
+function hasMeaningfulMaterialsInfo(materials) {
+  if (!materials || typeof materials !== "object") return false;
+  if (isMeaningfulNumberLike(materials.blanketCost) || isMeaningfulText(materials.materialsBlanketDescription)) {
+    return true;
+  }
+  const items = Array.isArray(materials.items) ? materials.items : [];
+  return items.some(
+    (m) => isMeaningfulText(m?.desc) || isMeaningfulNumberLike(m?.qty) || isMeaningfulNumberLike(m?.priceEach)
+  );
+}
+
+function hasMeaningfulAdditionalCharges(charges) {
+  const list = Array.isArray(charges) ? charges : (Array.isArray(charges?.items) ? charges.items : []);
+  return list.some(
+    (c) => isMeaningfulText(c?.label || c?.description) || isMeaningfulNumberLike(c?.amount ?? c?.price)
+  );
+}
+
+// Single source of truth for "is there meaningful content in the live
+// estimator draft that a start-new-document flow would otherwise wipe."
+function hasMeaningfulEstimatorDraft(state) {
+  if (!state || typeof state !== "object") return false;
+  if (isMeaningfulText(state.scopeNotes)) return true;
+  if (isMeaningfulText(state.additionalNotes)) return true;
+  if (hasMeaningfulCustomerInfo(state.customer)) return true;
+  if (hasMeaningfulJobInfo(state.job)) return true;
+  if (hasMeaningfulLaborInfo(state.labor)) return true;
+  if (hasMeaningfulMaterialsInfo(state.materials)) return true;
+  if (hasMeaningfulAdditionalCharges(state.additionalCharges)) return true;
+  return false;
+}
+
+function readLiveEstimatorState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasMeaningfulLiveDraft() {
+  return hasMeaningfulEstimatorDraft(readLiveEstimatorState());
+}
+
 /* =========================
    Icons (Motif 1: Blueprint corners)
    ========================= */
@@ -892,14 +983,7 @@ function HomeScreen({ spinTick, onLogoTap, onLogoLongPress }) {
               try {
                 window.dispatchEvent(
                   new CustomEvent("pe-shell-action", {
-                    detail: { action: "newClear" },
-                  })
-                );
-              } catch {}
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("pe-shell-action", {
-                    detail: { action: "openCreate" },
+                    detail: { action: "startNewEstimate" },
                   })
                 );
               } catch {}
@@ -1351,6 +1435,7 @@ export default function App() {
   const [userProfileDirty, setUserProfileDirty] = useState(false);
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
   const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
+  const [draftOverwriteGuard, setDraftOverwriteGuard] = useState(null);
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createResetSeq, setCreateResetSeq] = useState(0);
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
@@ -1402,6 +1487,32 @@ const [spinTick, setSpinTick] = useState(0);
       }
     }
   };
+
+  // Centralized guard: any start-new-document flow (Create's "Start New
+  // Estimate", Customers "Use"/save-and-use) must run its overwrite through
+  // here instead of clearing/replacing the shared live draft directly.
+  const requestStartNewEstimate = useCallback(({ onProceed, copy } = {}) => {
+    const proceed = typeof onProceed === "function" ? onProceed : () => {};
+
+    if (!hasMeaningfulLiveDraft()) {
+      proceed();
+      return;
+    }
+
+    setDraftOverwriteGuard({
+      title: copy?.title || "You have a draft in progress",
+      body: copy?.body || "Starting a new estimate will replace the draft currently in the builder.",
+      continueLabel: copy?.continueLabel || "Continue Current Draft",
+      discardLabel: copy?.discardLabel || "Discard and Start New Estimate",
+      onContinue: () => {
+        setDraftOverwriteGuard(null);
+      },
+      onDiscard: () => {
+        setDraftOverwriteGuard(null);
+        proceed();
+      },
+    });
+  }, []);
 
   useEffect(() => {
     const onUserProfileDirty = (e) => {
@@ -1648,6 +1759,17 @@ const [spinTick, setSpinTick] = useState(0);
         return;
       }
 
+      if (action === "startNewEstimate") {
+        requestStartNewEstimate({
+          onProceed: () => {
+            try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
+            try { localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT); } catch {}
+            navigateTo(ROUTES.ESTIMATE_BUILDER);
+          },
+        });
+        return;
+      }
+
       if (action === "goEstimatesTab") {
         navigateTo(ROUTES.ESTIMATES);
         return;
@@ -1660,7 +1782,7 @@ const [spinTick, setSpinTick] = useState(0);
 
     window.addEventListener("pe-shell-action", onShellAction);
     return () => window.removeEventListener("pe-shell-action", onShellAction);
-  }, [navigateTo, navigateToCompanyProfile]);
+  }, [navigateTo, navigateToCompanyProfile, requestStartNewEstimate]);
 
   // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
   useEffect(() => {
@@ -1774,17 +1896,52 @@ const gated = false;
         <CustomersScreen
           lang={lang}
           onDone={(p) => {
-            try {
-              const id = String(p?.id || "");
-              if (id) {
-                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_ID, id); } catch {}
-                try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_SNAP, JSON.stringify(p?.customer || null)); } catch {}
-                try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer: p?.customer || null } })); } catch {}
-              }
-            } catch {}
-            try {
-              navigateTo(ROUTES.ESTIMATE_BUILDER);
-            } catch {}
+            const id = String(p?.id || "").trim();
+            const customer = p?.customer || null;
+
+            const applyCustomerUseAndNavigate = () => {
+              try {
+                if (id) {
+                  try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_ID, id); } catch {}
+                  try { localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER_SNAP, JSON.stringify(customer)); } catch {}
+                  try { window.dispatchEvent(new CustomEvent("estipaid:customer-use", { detail: { id, customer } })); } catch {}
+                }
+              } catch {}
+              try {
+                navigateTo(ROUTES.ESTIMATE_BUILDER);
+              } catch {}
+            };
+
+            if (!id) {
+              applyCustomerUseAndNavigate();
+              return;
+            }
+
+            if (!hasMeaningfulLiveDraft()) {
+              applyCustomerUseAndNavigate();
+              return;
+            }
+
+            // CustomersScreen already wrote the pending customer-use payload
+            // before calling onDone. If the user chooses to continue their
+            // current draft, that pending payload must be cleared so it
+            // doesn't silently apply the next time the builder mounts.
+            setDraftOverwriteGuard({
+              title: "You have a draft in progress",
+              body: "Starting a new estimate will replace the draft currently in the builder.",
+              continueLabel: "Continue Current Draft",
+              discardLabel: "Discard and Start New Estimate",
+              onContinue: () => {
+                try { localStorage.removeItem(STORAGE_KEYS.PENDING_CUSTOMER_USE); } catch {}
+                setDraftOverwriteGuard(null);
+                try { navigateTo(ROUTES.ESTIMATE_BUILDER); } catch {}
+              },
+              onDiscard: () => {
+                setDraftOverwriteGuard(null);
+                try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
+                applyCustomerUseAndNavigate();
+              },
+            });
           }}
         />
       );
@@ -2075,6 +2232,31 @@ const gated = false;
                 onClick={continueCreateFromEdit}
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {draftOverwriteGuard ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label={draftOverwriteGuard.title}>
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalTitle}>{draftOverwriteGuard.title}</div>
+            <div style={unsavedModalText}>{draftOverwriteGuard.body}</div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={draftOverwriteGuard.onContinue}
+              >
+                {draftOverwriteGuard.continueLabel}
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={draftOverwriteGuard.onDiscard}
+              >
+                {draftOverwriteGuard.discardLabel}
               </button>
             </div>
           </div>
