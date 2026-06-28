@@ -1435,6 +1435,7 @@ export default function CustomersScreen({
                         {/* KPIs (live computed from saved estimates/invoices) */}
                         {customerKpis && id && customerKpis[id] ? (
                           <div
+                            className="pe-customer-kpi-grid"
                             style={{
                               marginTop: 6,
                               paddingTop: 10,
@@ -1448,7 +1449,7 @@ export default function CustomersScreen({
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Revenue", "Ingresos")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.revenue || 0)}
                               </div>
                             </div>
@@ -1456,7 +1457,7 @@ export default function CustomersScreen({
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Balance", "Saldo")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.balanceDue || 0)}
                               </div>
                             </div>
@@ -1464,7 +1465,7 @@ export default function CustomersScreen({
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Margin", "Margen")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
                                 {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
                               </div>
                             </div>
