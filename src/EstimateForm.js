@@ -5083,18 +5083,24 @@ export default function EstimateForm(props) {
         : (projectName || customerName);
       setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
 
-      if (isEditMode) {
-        clearPendingEditTarget(editingTargetType);
-        openedEditIdRef.current = "";
-        openedDocNumberRef.current = "";
-        setEditTarget(null);
-      }
-
+      // Keep the edit-session target (and persistDraft:false) active for the
+      // entire success-toast delay below. Clearing it earlier flips this
+      // component's live-draft autosave back on while it is still mounted and
+      // still holding the just-saved record's data, racing the deferred
+      // navigate-away below and risking clobbering the shared live Create
+      // draft with the saved record. Clearing it in the same tick as the
+      // navigate dispatch (like onCancelEdit does) removes that window.
       setTimeout(() => {
         try {
           const navEvent = isEditMode
             ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
             : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
+          if (isEditMode) {
+            clearPendingEditTarget(editingTargetType);
+            openedEditIdRef.current = "";
+            openedDocNumberRef.current = "";
+            setEditTarget(null);
+          }
           window.dispatchEvent(new Event(navEvent));
         } catch {}
       }, 180);
