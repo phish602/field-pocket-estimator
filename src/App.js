@@ -1406,7 +1406,7 @@ function CreateFlow({
       return desiredDocType === "estimate";
     }
   });
-  const [docTypeGuardPending, setDocTypeGuardPending] = useState(false);
+  const [typeSwitchGuardPending, setTypeSwitchGuardPending] = useState(false);
 
   useLayoutEffect(() => {
     try {
@@ -1418,7 +1418,7 @@ function CreateFlow({
         // relabeled into an invoice draft (scopeNotes would be wiped on the
         // next invoice autosave). Pause and let the user choose explicitly.
         if (currentDocType === "estimate" && desiredDocType === "invoice" && hasMeaningfulEstimateDraftContent(parsed)) {
-          setDocTypeGuardPending(true);
+          setTypeSwitchGuardPending(true);
           setIsSeedReady(true);
           return;
         }
@@ -1440,7 +1440,7 @@ function CreateFlow({
         localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(cleanState));
       } catch {}
     }
-    setDocTypeGuardPending(false);
+    setTypeSwitchGuardPending(false);
     if (typeof onResolveDocTypeGuard === "function") {
       onResolveDocTypeGuard(choice === "invoice" ? "invoice" : "estimate", { forceRemount: choice === "invoice" });
     }
@@ -1459,7 +1459,7 @@ function CreateFlow({
         homeEstimateLaunch={homeEstimateLaunch}
         onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
       />
-      {docTypeGuardPending ? (
+      {typeSwitchGuardPending ? (
         <div style={DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE} role="dialog" aria-modal="true" aria-label="Estimate draft in progress">
           <div style={DOC_TYPE_GUARD_MODAL_CARD_STYLE}>
             <div style={DOC_TYPE_GUARD_MODAL_TEXT_STYLE}>
@@ -3012,6 +3012,40 @@ const [spinTick, setSpinTick] = useState(0);
       return;
     }
 
+    const desiredDocType = nextIntent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
+
+    // Symmetric docType-aware guard: New Estimate and New Invoice both check
+    // the live ESTIMATOR_STATE draft. Only warn when the requested docType
+    // actually differs from the chambered draft's docType — switching to the
+    // same docType the draft already is should never prompt.
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      const parsed = raw ? safeParseJson(raw) : null;
+      const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+      if (currentDocType !== desiredDocType && hasMeaningfulEstimateDraftContent(parsed)) {
+        setDraftOverwriteGuard({
+          proceed: () => {
+            try {
+              localStorage.setItem(
+                STORAGE_KEYS.ESTIMATOR_STATE,
+                JSON.stringify(buildCleanContinueCreateState(desiredDocType))
+              );
+            } catch {}
+            setCreateResetSeq((n) => n + 1);
+            setHomeEstimateLaunch(null);
+            clearProjectDetailReturnTarget();
+            navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+          },
+          title: "You have a draft in progress",
+          body: desiredDocType === "invoice"
+            ? "Starting a new invoice will replace the draft currently in the builder."
+            : "Starting a new estimate will replace the draft currently in the builder.",
+          confirmLabel: desiredDocType === "invoice" ? "Discard and Start New Invoice" : "Discard and Start New Estimate",
+        });
+        return;
+      }
+    } catch {}
+
     setHomeEstimateLaunch(null);
     clearProjectDetailReturnTarget();
     navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
@@ -4185,11 +4219,11 @@ const gated = false;
       />
 
       {showCreateFromEditModal ? (
-        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new estimate">
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new document">
           <div style={unsavedModalCard}>
             <div style={unsavedModalText}>
-              You are currently editing an estimate.
-              Starting a new estimate will discard any unsaved progress.
+              You are currently editing a saved estimate or invoice.
+              Starting a new one will discard any unsaved progress.
               Continue?
             </div>
             <div style={unsavedModalActions}>
