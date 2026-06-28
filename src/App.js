@@ -1354,6 +1354,10 @@ export default function App() {
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createResetSeq, setCreateResetSeq] = useState(0);
   const [createIntent, setCreateIntent] = useState(BUILDER_INTENTS.ESTIMATE);
+  const [showCreateLauncher, setShowCreateLauncher] = useState(false);
+  const [showDraftChoiceModal, setShowDraftChoiceModal] = useState(false);
+  const [pendingCreateDocType, setPendingCreateDocType] = useState(BUILDER_INTENTS.ESTIMATE);
+  const draftChoiceRef = useRef({ requestedDocType: BUILDER_INTENTS.ESTIMATE, existingDocType: BUILDER_INTENTS.ESTIMATE });
   const pendingProfileLeaveTabRef = useRef(null);
 const [spinTick, setSpinTick] = useState(0);
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
@@ -1401,6 +1405,55 @@ const [spinTick, setSpinTick] = useState(0);
         return false;
       }
     }
+  };
+
+  // ===== Live builder draft (estipaid-estimator-v1) docType-aware guard helpers =====
+  const readLiveEstimatorDraft = () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getDraftDocType = (draft) => (draft?.ui?.docType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE);
+
+  const isMeaningfulEstimatorDraft = (draft) => {
+    if (!draft || typeof draft !== "object") return false;
+    const customer = draft.customer || {};
+    const job = draft.job || {};
+    if (String(customer.name || "").trim()) return true;
+    if (String(customer.projectName || "").trim()) return true;
+    if (String(customer.projectNumber || "").trim()) return true;
+    if (String(job.location || "").trim()) return true;
+    if (String(job.poNumber || "").trim()) return true;
+    if (String(job.docNumber || "").trim()) return true;
+    if (String(draft.scopeNotes || "").trim()) return true;
+    if (String(draft.additionalNotes || "").trim()) return true;
+    if (String(draft?.tradeInsert?.text || "").trim()) return true;
+    const laborLines = Array.isArray(draft?.labor?.lines) ? draft.labor.lines : [];
+    if (laborLines.some((l) => String(l?.role || "").trim() || String(l?.hours || "").trim() || String(l?.rate || "").trim())) return true;
+    const materialItems = Array.isArray(draft?.materials?.items) ? draft.materials.items : [];
+    if (materialItems.some((m) => (
+      String(m?.desc || "").trim()
+      || String(m?.qty || "").trim()
+      || String(m?.unitCostInternal || "").trim()
+      || String(m?.costInternal || "").trim()
+      || String(m?.priceEach || "").trim()
+    ))) return true;
+    if (String(draft?.materials?.blanketCost || "").trim()) return true;
+    if (String(draft?.materials?.materialsBlanketDescription || "").trim()) return true;
+    return false;
+  };
+
+  const seedCleanDraft = (docType) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify({ ui: { docType } }));
+    } catch {}
+    setCreateResetSeq((n) => n + 1);
   };
 
   useEffect(() => {
@@ -1485,6 +1538,11 @@ const [spinTick, setSpinTick] = useState(0);
     setShowCreateFromEditModal(false);
     setCreateEditSessionActive(false);
     try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
+    try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
+
+    const targetDocType = pendingCreateDocType === BUILDER_INTENTS.INVOICE
+      ? BUILDER_INTENTS.INVOICE
+      : BUILDER_INTENTS.ESTIMATE;
 
     let draftRaw = "";
     try {
@@ -1493,27 +1551,68 @@ const [spinTick, setSpinTick] = useState(0);
 
     if (draftRaw) {
       try { localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw); } catch {}
+      setCreateResetSeq((n) => n + 1);
     } else {
-      try { localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE); } catch {}
+      seedCleanDraft(targetDocType);
     }
 
-    setCreateResetSeq((n) => n + 1);
-    navigateTo(ROUTES.ESTIMATE_BUILDER);
-  }, [ESTIMATE_DRAFT_KEY, navigateTo]);
+    navigateTo(targetDocType === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+  }, [ESTIMATE_DRAFT_KEY, navigateTo, pendingCreateDocType]);
 
-  const onCreateButtonRoute = useCallback(() => {
+  const startCreateFlow = useCallback((docType) => {
+    const targetDocType = docType === BUILDER_INTENTS.INVOICE ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE;
+
     let editTarget = "";
     try {
-      editTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
+      editTarget = String(
+        localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || ""
+      ).trim();
     } catch {}
 
     if (editTarget || createEditSessionActive) {
+      setPendingCreateDocType(targetDocType);
       setShowCreateFromEditModal(true);
       return;
     }
 
-    navigateTo(ROUTES.ESTIMATE_BUILDER);
+    const liveDraft = readLiveEstimatorDraft();
+    const liveDocType = getDraftDocType(liveDraft);
+    const liveMeaningful = isMeaningfulEstimatorDraft(liveDraft);
+
+    if (liveMeaningful && liveDocType !== targetDocType) {
+      draftChoiceRef.current = { requestedDocType: targetDocType, existingDocType: liveDocType };
+      setPendingCreateDocType(targetDocType);
+      setShowDraftChoiceModal(true);
+      return;
+    }
+
+    if (!liveMeaningful) {
+      seedCleanDraft(targetDocType);
+    }
+
+    navigateTo(targetDocType === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
   }, [createEditSessionActive, navigateTo]);
+
+  const continueCurrentDraft = useCallback(() => {
+    setShowDraftChoiceModal(false);
+    const existingDocType = draftChoiceRef.current.existingDocType === BUILDER_INTENTS.INVOICE
+      ? BUILDER_INTENTS.INVOICE
+      : BUILDER_INTENTS.ESTIMATE;
+    navigateTo(existingDocType === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+  }, [navigateTo]);
+
+  const discardAndStartNewDraft = useCallback(() => {
+    setShowDraftChoiceModal(false);
+    const requestedDocType = draftChoiceRef.current.requestedDocType === BUILDER_INTENTS.INVOICE
+      ? BUILDER_INTENTS.INVOICE
+      : BUILDER_INTENTS.ESTIMATE;
+    seedCleanDraft(requestedDocType);
+    navigateTo(requestedDocType === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+  }, [navigateTo]);
+
+  const onCreateButtonRoute = useCallback(() => {
+    setShowCreateLauncher(true);
+  }, []);
 
   // ✅ Navigate to Customers screen (used by EstimateForm "Create New" shortcut)
   useEffect(() => {
@@ -2053,12 +2152,52 @@ const gated = false;
         }}
       />
 
+      {showCreateLauncher ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Create new document">
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalTitle}>Create</div>
+            <div style={unsavedModalText}>
+              What would you like to create?
+            </div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setShowCreateLauncher(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  setShowCreateLauncher(false);
+                  startCreateFlow(BUILDER_INTENTS.ESTIMATE);
+                }}
+              >
+                New Estimate
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  setShowCreateLauncher(false);
+                  startCreateFlow(BUILDER_INTENTS.INVOICE);
+                }}
+              >
+                New Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showCreateFromEditModal ? (
-        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new estimate">
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new document">
           <div style={unsavedModalCard}>
             <div style={unsavedModalText}>
-              You are currently editing an estimate.
-              Starting a new estimate will discard any unsaved progress.
+              You are currently editing a saved estimate or invoice.
+              Starting a new one will discard any unsaved progress.
               Continue?
             </div>
             <div style={unsavedModalActions}>
@@ -2075,6 +2214,40 @@ const gated = false;
                 onClick={continueCreateFromEdit}
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showDraftChoiceModal ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Draft in progress">
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalText}>
+              You have an unsaved {draftChoiceRef.current.existingDocType === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate"} draft in progress.
+              Starting a new {pendingCreateDocType === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate"} will not affect it unless you choose to discard it.
+            </div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setShowDraftChoiceModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={continueCurrentDraft}
+              >
+                Continue Current Draft
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={discardAndStartNewDraft}
+              >
+                {pendingCreateDocType === BUILDER_INTENTS.INVOICE ? "Discard and Start New Invoice" : "Discard and Start New Estimate"}
               </button>
             </div>
           </div>
