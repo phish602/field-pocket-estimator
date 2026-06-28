@@ -1902,7 +1902,7 @@ export default function EstimatesScreen({
   };
   const invoiceComposerSummaryGridStyle = {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
     gap: 10,
   };
   const invoiceComposerSummaryItemStyle = {
@@ -1924,10 +1924,15 @@ export default function EstimatesScreen({
   };
   const invoiceComposerSummaryValueStyle = {
     fontWeight: 900,
-    fontSize: 16,
+    fontSize: "clamp(13px, 4vw, 16px)",
     lineHeight: 1.15,
     color: "rgba(248,250,252,0.98)",
-    wordBreak: "break-word",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+    overflowWrap: "normal",
+    wordBreak: "normal",
+    minWidth: 0,
+    maxWidth: "100%",
   };
   const invoiceComposerFooterStyle = {
     display: "flex",
