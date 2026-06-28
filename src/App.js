@@ -2579,6 +2579,7 @@ export default function App() {
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
   const [showLeaveEditModal, setShowLeaveEditModal] = useState(false);
   const [showCreateFromEditModal, setShowCreateFromEditModal] = useState(false);
+  const [draftOverwriteGuard, setDraftOverwriteGuard] = useState(null);
   const [createEditSessionActive, setCreateEditSessionActive] = useState(false);
   const [createFromEditIntent, setCreateFromEditIntent] = useState(BUILDER_INTENTS.ESTIMATE);
   const [createResetSeq, setCreateResetSeq] = useState(0);
@@ -2851,6 +2852,27 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(ROUTES.PROJECT_DETAIL);
   }, [activeTab, navigateTo, resolveProjectDetailBackRoute]);
 
+  // Centralized guard for any flow that would replace/prefill the single shared
+  // live estimator draft slot (Project/Customer "Start Estimate", Home AI Assist,
+  // etc.). If the slot currently holds meaningful, unsaved content, defer the
+  // overwrite behind an explicit user choice instead of silently clearing it.
+  const guardSharedDraftOverwrite = useCallback((proceed, copy = {}) => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      const parsed = raw ? safeParseJson(raw) : null;
+      if (hasMeaningfulEstimateDraftContent(parsed)) {
+        setDraftOverwriteGuard({
+          proceed,
+          title: copy.title || "You have a draft in progress",
+          body: copy.body || "Starting a new estimate will replace the draft currently in the builder.",
+          confirmLabel: copy.confirmLabel || "Discard and Start New Estimate",
+        });
+        return;
+      }
+    } catch {}
+    proceed();
+  }, []);
+
   const resetProjectDetailSeededBuilderSession = useCallback(() => {
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
@@ -2872,7 +2894,7 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(ROUTES.NEW_PROJECT);
   }, [activeTab, navigateTo]);
 
-  const launchEstimateFromHome = useCallback((roughPrompt = "", launchOptions = {}) => {
+  const performLaunchEstimateFromHome = useCallback((roughPrompt = "", launchOptions = {}) => {
     const options = launchOptions && typeof launchOptions === "object" ? launchOptions : {};
     const prompt = String(roughPrompt || "").trim();
     const launchMode = String(options?.mode || "").trim() === "open_only" ? "open_only" : "";
@@ -2915,6 +2937,19 @@ const [spinTick, setSpinTick] = useState(0);
     }
     navigateTo(ROUTES.ESTIMATE_BUILDER);
   }, [ensureBuilderAccess, navigateTo]);
+
+  const launchEstimateFromHome = useCallback((roughPrompt = "", launchOptions = {}) => {
+    const options = launchOptions && typeof launchOptions === "object" ? launchOptions : {};
+    const cleanSession = options?.cleanSession !== false;
+    if (!cleanSession) {
+      performLaunchEstimateFromHome(roughPrompt, launchOptions);
+      return;
+    }
+    guardSharedDraftOverwrite(
+      () => performLaunchEstimateFromHome(roughPrompt, launchOptions),
+      { body: "Starting a new estimate will replace the draft currently in the builder." }
+    );
+  }, [performLaunchEstimateFromHome, guardSharedDraftOverwrite]);
 
   const consumeHomeEstimateLaunch = useCallback((launchId = "") => {
     setHomeEstimateLaunch((current) => {
@@ -3769,14 +3804,18 @@ const gated = false;
             navigateTo(ROUTES.INVOICE_BUILDER);
           }}
           onNewEstimate={() => {
-            armProjectDetailReturnTarget();
-            resetProjectDetailSeededBuilderSession();
-            navigateTo(ROUTES.ESTIMATE_BUILDER);
+            guardSharedDraftOverwrite(() => {
+              armProjectDetailReturnTarget();
+              resetProjectDetailSeededBuilderSession();
+              navigateTo(ROUTES.ESTIMATE_BUILDER);
+            }, { body: "Starting a new estimate will replace the draft currently in the builder." });
           }}
           onNewInvoice={() => {
-            armProjectDetailReturnTarget();
-            resetProjectDetailSeededBuilderSession();
-            navigateTo(ROUTES.INVOICE_BUILDER);
+            guardSharedDraftOverwrite(() => {
+              armProjectDetailReturnTarget();
+              resetProjectDetailSeededBuilderSession();
+              navigateTo(ROUTES.INVOICE_BUILDER);
+            }, { body: "Starting a new invoice will replace the draft currently in the builder." });
           }}
         />
       );
@@ -4167,6 +4206,45 @@ const gated = false;
                 onClick={continueCreateFromEdit}
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {draftOverwriteGuard ? (
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label={draftOverwriteGuard.title}>
+          <div style={unsavedModalCard}>
+            <div style={unsavedModalTitle}>{draftOverwriteGuard.title}</div>
+            <div style={unsavedModalText}>{draftOverwriteGuard.body}</div>
+            <div style={unsavedModalActions}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => {
+                  setDraftOverwriteGuard(null);
+                  // Resume the existing live draft in its own docType builder —
+                  // never an edit-session route, no edit-target keys are touched.
+                  try {
+                    const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+                    const parsed = raw ? safeParseJson(raw) : null;
+                    const resumeDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+                    navigateTo(resumeDocType === "invoice" ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
+                  } catch {}
+                }}
+              >
+                Continue Current Draft
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  const proceed = draftOverwriteGuard?.proceed;
+                  setDraftOverwriteGuard(null);
+                  if (typeof proceed === "function") proceed();
+                }}
+              >
+                {draftOverwriteGuard.confirmLabel}
               </button>
             </div>
           </div>

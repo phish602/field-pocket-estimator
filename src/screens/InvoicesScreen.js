@@ -8,7 +8,6 @@ import {
   backfillStripeInvoicePaymentDetails,
   INVOICE_STATUSES,
   PAYMENT_STATUSES,
-  createManualInvoiceDraft,
   deriveInvoiceStatus,
   duplicateInvoiceDraft,
   readStoredInvoices,
@@ -2068,24 +2067,6 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     reconcileStripeCheckoutSessionsWithInvoices(list);
   }, [list, stripeCheckoutSessions, stripeAccountId]);
 
-  const createManualInvoice = () => {
-    const currentInvoices = readStoredInvoices();
-    const draft = createManualInvoiceDraft(currentInvoices);
-    const nextInvoices = persistInvoices(
-      [draft, ...currentInvoices],
-      lang === "es" ? "Borrador de factura creado" : "Invoice draft created"
-    );
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(draft.id || ""));
-    } catch {}
-    setExpanded({});
-    setList(nextInvoices);
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
-  };
-
   const removeInvoice = (invoice) => {
     if (!canHardDeleteInvoice(invoice)) {
       window.alert(
@@ -2656,11 +2637,6 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
               style={{ height: 34, width: "auto", display: "block", objectFit: "contain", filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.35))" }}
               draggable={false}
             />
-          </div>
-          <div className="pe-company-header-controls" style={{ display: "flex", gap: 8 }}>
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={createManualInvoice}>
-              {lang === "es" ? "Nueva factura" : "New Invoice"}
-            </button>
           </div>
         </div>
 

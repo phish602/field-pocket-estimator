@@ -425,6 +425,16 @@ function seedCustomerDirectory() {
   );
 }
 
+async function confirmDraftOverwriteGuard() {
+  const guardDialog = await screen.findByRole("dialog", { name: /you have a draft in progress/i });
+  fireEvent.click(within(guardDialog).getByRole("button", { name: /discard and start new estimate/i }));
+}
+
+async function continueCurrentDraftFromGuard() {
+  const guardDialog = await screen.findByRole("dialog", { name: /you have a draft in progress/i });
+  fireEvent.click(within(guardDialog).getByRole("button", { name: /continue current draft/i }));
+}
+
 async function openProjectDetail() {
   render(<App />);
 
@@ -796,6 +806,10 @@ describe("App Project Detail seeded new-document launches", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /launch seeded invoice/i }));
 
+    // The existing draft is meaningful, so the shared-draft guard must appear
+    // instead of silently clearing it; only proceed after explicit confirmation.
+    await confirmDraftOverwriteGuard();
+
     await expectSeededBuilderUi({
       builderTitle: "Invoice Builder",
       staleMaterialDesc: "Stale estimate material",
@@ -810,6 +824,37 @@ describe("App Project Detail seeded new-document launches", () => {
       staleMaterialDesc: "Stale estimate material",
     });
     expectResetStorage("Stale estimate material");
+  });
+
+  test("keeps the original stale-but-meaningful estimate draft intact when the guard is declined for a new invoice launch", async () => {
+    const staleState = createStaleBuilderState({
+      docType: "estimate",
+      customerName: "Stale Estimate Customer",
+      projectName: "Stale Estimate Project",
+      laborHours: "17",
+      laborRate: "88",
+      materialDesc: "Stale estimate material",
+    });
+
+    seedCustomerDirectory();
+    seedContaminatedBuilderSession(staleState);
+    await openProjectDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: /launch seeded invoice/i }));
+    await continueCurrentDraftFromGuard();
+
+    // Continue Current Draft resumes the normal live-draft builder for the
+    // draft's own docType (estimate), not the invoice route being requested,
+    // and it is not an edit-session route.
+    await screen.findByText("Estimate Builder");
+    expect(screen.queryByText("Invoice Builder")).not.toBeInTheDocument();
+    expect(screen.getByText("Stale estimate material")).toBeInTheDocument();
+
+    const storedState = readStoredEstimatorState();
+    expect(storedState.parsed?.ui?.docType).toBe("estimate");
+    expect(storedState.raw).toContain("Stale estimate material");
+    expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
   });
 
   test("clears stale invoice draft state before a seeded Project Detail new estimate launch hydrates", async () => {
@@ -828,6 +873,10 @@ describe("App Project Detail seeded new-document launches", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /launch seeded estimate/i }));
 
+    // The existing draft is meaningful, so the shared-draft guard must appear
+    // instead of silently clearing it; only proceed after explicit confirmation.
+    await confirmDraftOverwriteGuard();
+
     await expectSeededBuilderUi({
       builderTitle: "Estimate Builder",
       staleMaterialDesc: "Stale invoice material",
@@ -842,6 +891,51 @@ describe("App Project Detail seeded new-document launches", () => {
       staleMaterialDesc: "Stale invoice material",
     });
     expectResetStorage("Stale invoice material");
+  });
+
+  test("keeps the original stale-but-meaningful invoice draft intact when the guard is declined for a new estimate launch", async () => {
+    const staleState = createStaleBuilderState({
+      docType: "invoice",
+      customerName: "Stale Invoice Customer",
+      projectName: "Stale Invoice Project",
+      laborHours: "23",
+      laborRate: "144",
+      materialDesc: "Stale invoice material",
+    });
+
+    seedCustomerDirectory();
+    seedContaminatedBuilderSession(staleState);
+    await openProjectDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: /launch seeded estimate/i }));
+    await continueCurrentDraftFromGuard();
+
+    // Continue Current Draft resumes the normal live-draft builder for the
+    // draft's own docType (invoice), not the estimate route being requested,
+    // and it is not an edit-session route.
+    await screen.findByText("Invoice Builder");
+    expect(screen.queryByText("Estimate Builder")).not.toBeInTheDocument();
+    expect(screen.getByText("Stale invoice material")).toBeInTheDocument();
+
+    const storedState = readStoredEstimatorState();
+    expect(storedState.parsed?.ui?.docType).toBe("invoice");
+    expect(storedState.raw).toContain("Stale invoice material");
+    expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+  });
+
+  test("does not show the draft-overwrite guard when no meaningful draft exists for a new estimate launch", async () => {
+    seedCustomerDirectory();
+    await openProjectDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: /launch seeded estimate/i }));
+
+    await expectSeededBuilderUi({
+      builderTitle: "Estimate Builder",
+      staleMaterialDesc: "__no_stale_material__",
+    });
+
+    expect(screen.queryByRole("dialog", { name: /you have a draft in progress/i })).not.toBeInTheDocument();
   });
 });
 
