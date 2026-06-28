@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -363,5 +363,61 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
       expect(finalDraft.raw).not.toContain("Estimate B cabinet paint");
       expect(finalDraft.raw).not.toContain("Estimate B Customer");
     }
+  });
+});
+
+describe("App Clear Draft cleanup", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.clearAllMocks();
+  });
+
+  test("Clear fully resets customer/project/job identity and the persisted live draft", async () => {
+    const seededDraft = buildLiveDraftA();
+    localStorage.clear();
+    localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(seededDraft));
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
+    localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create$/i }));
+    const launcher = await screen.findByRole("dialog", { name: /Start New/i });
+    fireEvent.click(within(launcher).getByRole("button", { name: /^Estimate$|^Resume Estimate Draft$/i }));
+    await screen.findByText("Estimate Builder");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Draft A Customer");
+    });
+
+    window.confirm = jest.fn(() => true);
+    fireEvent.click(screen.getByRole("button", { name: /^Clear$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
+    });
+    expect(screen.queryByText("Draft A fence hardware")).not.toBeInTheDocument();
+
+    const clearedRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+    if (clearedRaw) {
+      expect(clearedRaw).not.toContain("Draft A Customer");
+      expect(clearedRaw).not.toContain("Draft A Project");
+      expect(clearedRaw).not.toContain("Draft A fence hardware");
+    }
+
+    // Leave Create and come back — the old customer must not resurrect.
+    fireEvent.click(screen.getByRole("button", { name: /^Estimates$/i }));
+    await screen.findByText(/Saved Estimates/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create$/i }));
+    const reopenedLauncher = await screen.findByRole("dialog", { name: /Start New/i });
+    fireEvent.click(within(reopenedLauncher).getByRole("button", { name: /^Estimate$|^Resume Estimate Draft$/i }));
+    await screen.findByText("Estimate Builder");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
+    });
+    expect(screen.queryByText(/Draft A Customer/i)).not.toBeInTheDocument();
   });
 });

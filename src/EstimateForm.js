@@ -801,6 +801,36 @@ function clearPendingEditTarget(type) {
   } catch {}
 }
 
+// Explicit snapshot/restore for the shared live Create draft slot while a
+// saved-record edit session is open. The live slot must never be replaced by
+// the edited saved record, no matter how the edit session ends (save, cancel,
+// or a stale/missing target). Rather than relying solely on persistDraft
+// timing, this stash is the authoritative source of truth restored on exit.
+const LIVE_DRAFT_EDIT_SESSION_STASH_KEY = "estipaid-live-draft-edit-stash-v1";
+
+function stashLiveDraftForEditSession() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      localStorage.setItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY, raw);
+    } else {
+      localStorage.removeItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+    }
+  } catch {}
+}
+
+function restoreLiveDraftFromEditSessionStash() {
+  try {
+    const stashed = localStorage.getItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+    if (stashed) {
+      localStorage.setItem(STORAGE_KEY, stashed);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    localStorage.removeItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+  } catch {}
+}
+
 function buildCleanBuilderState(docType = "estimate") {
   const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
   let next = {};
@@ -1408,6 +1438,7 @@ export default function EstimateForm(props) {
   const isEditModeRef = useRef(isEditMode);
   const openedEditIdRef = useRef(editingRecordId);
   const openedDocNumberRef = useRef("");
+  const stashedLiveDraftForEditIdRef = useRef("");
   const initialDraftDocType = useMemo(() => {
     if (isEditMode) return "estimate";
     try {
@@ -1604,6 +1635,13 @@ export default function EstimateForm(props) {
     return () => {
       if (!isEditModeRef.current) return;
       clearPendingEditTarget();
+      // Only restore here if save/cancel haven't already consumed the stash
+      // for this session — otherwise this redundant call would find nothing
+      // left to restore and incorrectly wipe the just-restored live draft.
+      if (stashedLiveDraftForEditIdRef.current) {
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
+      }
     };
   }, []);
 
@@ -1953,12 +1991,17 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     if (!isEditMode || !editingRecordId) return;
+    if (stashedLiveDraftForEditIdRef.current !== editingRecordId) {
+      stashLiveDraftForEditSession();
+      stashedLiveDraftForEditIdRef.current = editingRecordId;
+    }
     const list = isInvoiceEditMode ? readStoredInvoices() : readSavedDocList(ESTIMATES_KEY);
     const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
     const applyHydratedState = replaceStateRef.current;
     if (!match || typeof applyHydratedState !== "function") {
       if (isInvoiceEditMode && typeof applyHydratedState === "function") {
-        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
         clearPendingEditTarget("invoice");
         editProjectContextRef.current = null;
         selectedLinkedProjectContextRef.current = null;
@@ -1973,6 +2016,9 @@ export default function EstimateForm(props) {
         setActiveSpecialConditionsCustomField("");
         setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
         pendingSpecialConditionsAutoCollapseRef.current = false;
+      } else {
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
       }
       setSavePrompt({
         tone: "error",
@@ -4497,6 +4543,24 @@ export default function EstimateForm(props) {
   const onClearAll = () => {
     if (!window.confirm("Clear everything and start fresh?")) return;
     clearAll();
+    // clearAll() resets the underlying draft state, but the customer/project
+    // picker keeps its own local selection state (search text, selected id,
+    // selected profile, seeded project context) independent of state.customer.
+    // Without resetting these too, the customer visually stays "selected" in
+    // the builder even though the draft itself was cleared.
+    setSearchCustomerText("");
+    setCustomerSearchQuery("");
+    setSelectedCustomerId("");
+    setSelectedCustomerProfile(null);
+    setProjectSeedSummary(null);
+    editProjectContextRef.current = null;
+    selectedLinkedProjectContextRef.current = null;
+    projectNameAutoStateRef.current = { manual: false, auto: "" };
+    try {
+      localStorage.removeItem(PENDING_CUSTOMER_USE_KEY);
+      localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
+      localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+    } catch {}
     setSpecialConditionsOpen(false);
     setActiveSpecialConditionsCustomField("");
     setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
@@ -4527,6 +4591,8 @@ export default function EstimateForm(props) {
       } catch {}
     }
     clearPendingEditTarget(editingTargetType);
+    restoreLiveDraftFromEditSessionStash();
+    stashedLiveDraftForEditIdRef.current = "";
     openedEditIdRef.current = "";
     openedDocNumberRef.current = "";
     setEditTarget(null);
@@ -5097,6 +5163,11 @@ export default function EstimateForm(props) {
             : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
           if (isEditMode) {
             clearPendingEditTarget(editingTargetType);
+            // Authoritative restore: force the live Create draft slot back to
+            // whatever it held before this edit session opened, regardless of
+            // any autosave/timing path that may have touched it in between.
+            restoreLiveDraftFromEditSessionStash();
+            stashedLiveDraftForEditIdRef.current = "";
             openedEditIdRef.current = "";
             openedDocNumberRef.current = "";
             setEditTarget(null);
