@@ -192,6 +192,102 @@ function buildCleanContinueCreateState(docType = "estimate") {
   return nextState;
 }
 
+function hasMeaningfulEstimateDraftContent(state) {
+  if (!state || typeof state !== "object") return false;
+  if (String(state?.scopeNotes || "").trim()) return true;
+
+  const customer = state?.customer || {};
+  if (
+    String(customer?.name || "").trim()
+    || String(customer?.projectName || "").trim()
+    || String(customer?.address || "").trim()
+    || String(customer?.email || "").trim()
+    || String(customer?.phone || "").trim()
+  ) {
+    return true;
+  }
+
+  const job = state?.job || {};
+  if (
+    String(job?.location || "").trim()
+    || String(job?.poNumber || "").trim()
+    || String(job?.docNumber || "").trim()
+  ) {
+    return true;
+  }
+
+  const laborLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+  if (laborLines.some((line) => (
+    String(line?.role || "").trim()
+    || String(line?.hours || "").trim()
+    || String(line?.rate || "").trim()
+  ))) {
+    return true;
+  }
+
+  const materials = state?.materials || {};
+  if (
+    String(materials?.blanketCost || "").trim()
+    || String(materials?.materialsBlanketDescription || "").trim()
+  ) {
+    return true;
+  }
+  const materialItems = Array.isArray(materials?.items) ? materials.items : [];
+  if (materialItems.some((item) => (
+    String(item?.desc || "").trim()
+    || String(item?.qty || "").trim()
+    || String(item?.priceEach || "").trim()
+  ))) {
+    return true;
+  }
+
+  const additionalChargeItems = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items : [];
+  if (additionalChargeItems.some((item) => (
+    String(item?.desc || "").trim()
+    || String(item?.qty || "").trim()
+    || String(item?.priceEach || "").trim()
+  ))) {
+    return true;
+  }
+
+  return false;
+}
+
+const DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.55)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  zIndex: 9999,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+};
+const DOC_TYPE_GUARD_MODAL_CARD_STYLE = {
+  width: "min(520px, 100%)",
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "rgba(10,10,10,0.85)",
+  boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
+  padding: 16,
+  display: "grid",
+  gap: 12,
+};
+const DOC_TYPE_GUARD_MODAL_TEXT_STYLE = {
+  fontSize: 13,
+  opacity: 0.85,
+  lineHeight: 1.35,
+};
+const DOC_TYPE_GUARD_MODAL_ACTIONS_STYLE = {
+  display: "flex",
+  gap: 10,
+  justifyContent: "flex-end",
+  flexWrap: "wrap",
+  marginTop: 6,
+};
+
 function normalizeEditContext(value) {
   if (!value || typeof value !== "object") return null;
   const type = value?.type === "invoice" ? "invoice" : (value?.type === "estimate" ? "estimate" : "");
@@ -1148,7 +1244,7 @@ function QuickMenu({ open, onClose, onSelect }) {
 }
 
 
-function CreateLauncher({ open, onClose, onAction }) {
+function CreateLauncher({ open, onClose, onAction, estimateActionLabel }) {
   if (!open) return null;
   return (
     <>
@@ -1191,7 +1287,7 @@ function CreateLauncher({ open, onClose, onAction }) {
               style={styles.createLauncherAction}
               onClick={() => onAction("estimate")}
             >
-              Estimate
+              {estimateActionLabel || "Estimate"}
             </button>
             <button
               className="pe-btn"
@@ -1297,6 +1393,7 @@ function CreateFlow({
   onGuidedOverlayOpenChange,
   homeEstimateLaunch,
   onHomeEstimateLaunchConsumed,
+  onResolveDocTypeGuard,
 }) {
   const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
   const [isSeedReady, setIsSeedReady] = useState(() => {
@@ -1309,6 +1406,7 @@ function CreateFlow({
       return desiredDocType === "estimate";
     }
   });
+  const [docTypeGuardPending, setDocTypeGuardPending] = useState(false);
 
   useLayoutEffect(() => {
     try {
@@ -1316,6 +1414,14 @@ function CreateFlow({
       const parsed = raw ? safeParseJson(raw) : null;
       const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
       if (currentDocType !== desiredDocType) {
+        // An estimate draft with meaningful content must not be silently
+        // relabeled into an invoice draft (scopeNotes would be wiped on the
+        // next invoice autosave). Pause and let the user choose explicitly.
+        if (currentDocType === "estimate" && desiredDocType === "invoice" && hasMeaningfulEstimateDraftContent(parsed)) {
+          setDocTypeGuardPending(true);
+          setIsSeedReady(true);
+          return;
+        }
         const nextState = parsed && typeof parsed === "object"
           ? { ...parsed, ui: { ...(parsed.ui || {}), docType: desiredDocType } }
           : { ui: { docType: desiredDocType } };
@@ -1327,18 +1433,58 @@ function CreateFlow({
 
   if (!isSeedReady) return null;
 
+  const resolveDocTypeGuard = (choice) => {
+    if (choice === "invoice") {
+      try {
+        const cleanState = buildCleanContinueCreateState("invoice");
+        localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(cleanState));
+      } catch {}
+    }
+    setDocTypeGuardPending(false);
+    if (typeof onResolveDocTypeGuard === "function") {
+      onResolveDocTypeGuard(choice === "invoice" ? "invoice" : "estimate", { forceRemount: choice === "invoice" });
+    }
+  };
+
   return (
-    <EstimateForm
-      key={`estimate:${resetSeq}`}
-      forceProfileOnMount={false}
-      spinTick={spinTick}
-      mobileBottomChromeVisible={mobileBottomChromeVisible}
-      shellBottomChromeVisible={shellBottomChromeVisible}
-      shellOverlayOpen={shellOverlayOpen}
-      onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
-      homeEstimateLaunch={homeEstimateLaunch}
-      onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
-    />
+    <>
+      <EstimateForm
+        key={`estimate:${resetSeq}`}
+        forceProfileOnMount={false}
+        spinTick={spinTick}
+        mobileBottomChromeVisible={mobileBottomChromeVisible}
+        shellBottomChromeVisible={shellBottomChromeVisible}
+        shellOverlayOpen={shellOverlayOpen}
+        onGuidedOverlayOpenChange={onGuidedOverlayOpenChange}
+        homeEstimateLaunch={homeEstimateLaunch}
+        onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
+      />
+      {docTypeGuardPending ? (
+        <div style={DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE} role="dialog" aria-modal="true" aria-label="Estimate draft in progress">
+          <div style={DOC_TYPE_GUARD_MODAL_CARD_STYLE}>
+            <div style={DOC_TYPE_GUARD_MODAL_TEXT_STYLE}>
+              You have an estimate draft in progress. Continue editing the estimate or start a blank invoice?
+            </div>
+            <div style={DOC_TYPE_GUARD_MODAL_ACTIONS_STYLE}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => resolveDocTypeGuard("estimate")}
+              >
+                Continue Estimate
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => resolveDocTypeGuard("invoice")}
+              >
+                Start Blank Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -2814,6 +2960,13 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(createFromEditIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
   }, [ESTIMATE_DRAFT_KEY, createFromEditIntent, navigateTo]);
 
+  const onResolveDocTypeGuard = useCallback((resolvedDocType, opts) => {
+    setCreateIntent(resolvedDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE);
+    if (opts && opts.forceRemount) {
+      setCreateResetSeq((n) => n + 1);
+    }
+  }, []);
+
   const onCreateButtonRoute = useCallback((intent = BUILDER_INTENTS.ESTIMATE) => {
     const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
 
@@ -3695,6 +3848,7 @@ const gated = false;
           onGuidedOverlayOpenChange={setGuidedOverlayOpen}
           homeEstimateLaunch={homeEstimateLaunch}
           onHomeEstimateLaunchConsumed={consumeHomeEstimateLaunch}
+          onResolveDocTypeGuard={onResolveDocTypeGuard}
         />
       );
     }
@@ -3957,6 +4111,18 @@ const gated = false;
 
       <CreateLauncher
         open={createLauncherOpen}
+        estimateActionLabel={(() => {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+            const parsed = raw ? safeParseJson(raw) : null;
+            const docType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+            return docType === "estimate" && hasMeaningfulEstimateDraftContent(parsed)
+              ? "Resume Estimate Draft"
+              : "Estimate";
+          } catch {
+            return "Estimate";
+          }
+        })()}
         onClose={() => setCreateLauncherOpen(false)}
         onAction={(action) => {
           setCreateLauncherOpen(false);

@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -774,6 +774,9 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       additionalChargesRevenue: 350,
     }));
+    expect(createdInvoice.additionalNotes).toBe(
+      "Scope from estimate: Emergency Sunday service call with same-day mobilization."
+    );
     expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
 
     expectEditInvoiceTargetWasSet(setItemSpy, createdInvoice.id);
@@ -1010,5 +1013,81 @@ describe("App approved estimate invoice builder handoff", () => {
 
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
     expectEditInvoiceTargetWasNotSet(setItemSpy);
+  });
+
+  test("fresh estimate draft with meaningful content blocks an accidental flip to invoice", async () => {
+    localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify({
+      ui: { docType: "estimate", materialsMode: "itemized" },
+      scopeNotes: "Repair drywall and repaint two rooms.",
+      labor: {
+        hazardPct: 0,
+        riskPct: 0,
+        multiplier: 1,
+        lines: [{ id: "l1", role: "painter", hours: "4", rate: "60", trueRateInternal: "" }],
+      },
+    }));
+
+    render(<App />);
+
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:hero-logo-longpress"));
+    });
+    const quickMenu = await screen.findByRole("dialog", { name: /Shortcuts/i });
+    fireEvent.click(within(quickMenu).getByRole("button", { name: /^Create$/i }));
+
+    const launcher = await screen.findByRole("dialog", { name: /Start New/i });
+    fireEvent.click(within(launcher).getByRole("button", { name: /^Invoice$/i }));
+
+    await screen.findByText(/You have an estimate draft in progress/i);
+
+    // The draft must not be silently flipped to invoice or have scopeNotes wiped
+    // while the guard is awaiting a choice.
+    const guardedDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE));
+    expect(guardedDraft.ui.docType).toBe("estimate");
+    expect(guardedDraft.scopeNotes).toBe("Repair drywall and repaint two rooms.");
+
+    fireEvent.click(screen.getByRole("button", { name: /Continue Estimate/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/You have an estimate draft in progress/i)).not.toBeInTheDocument();
+    });
+
+    const draftAfterContinue = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE));
+    expect(draftAfterContinue.ui.docType).toBe("estimate");
+    expect(draftAfterContinue.scopeNotes).toBe("Repair drywall and repaint two rooms.");
+  });
+
+  test("explicit Start Blank Invoice choice replaces the draft only after user confirmation", async () => {
+    localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify({
+      ui: { docType: "estimate", materialsMode: "itemized" },
+      scopeNotes: "Repair drywall and repaint two rooms.",
+      labor: {
+        hazardPct: 0,
+        riskPct: 0,
+        multiplier: 1,
+        lines: [{ id: "l1", role: "painter", hours: "4", rate: "60", trueRateInternal: "" }],
+      },
+    }));
+
+    render(<App />);
+
+    act(() => {
+      window.dispatchEvent(new Event("estipaid:hero-logo-longpress"));
+    });
+    const quickMenu = await screen.findByRole("dialog", { name: /Shortcuts/i });
+    fireEvent.click(within(quickMenu).getByRole("button", { name: /^Create$/i }));
+
+    const launcher = await screen.findByRole("dialog", { name: /Start New/i });
+    fireEvent.click(within(launcher).getByRole("button", { name: /^Invoice$/i }));
+
+    await screen.findByText(/You have an estimate draft in progress/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /Start Blank Invoice/i }));
+
+    await waitFor(() => {
+      const resolvedDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE));
+      expect(resolvedDraft.ui.docType).toBe("invoice");
+      expect(resolvedDraft.scopeNotes).toBe("");
+    });
   });
 });

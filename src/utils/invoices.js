@@ -1114,7 +1114,10 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = generateNextInvoiceNumber(invoices);
   const snapshot = buildEstimateInvoiceSnapshot(estimate);
-  const note = asText(options?.note);
+  const note = asText(options?.note).trim();
+  const sourceScopeNotes = asText(estimate?.scopeNotes).trim();
+  const scopeCarryoverNote = sourceScopeNotes ? `Scope from estimate: ${sourceScopeNotes}` : "";
+  const combinedAdditionalNotes = [note, scopeCarryoverNote].filter(Boolean).join("\n\n");
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
   const dueDate = normalizeIsoDate(options?.dueDate || estimate?.job?.due);
   const draft = baseInvoiceDraft(now);
@@ -1141,7 +1144,7 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   draft.balanceRemaining = amountResolution.amount;
   draft.paymentStatus = PAYMENT_STATUSES.UNPAID;
   draft.payments = [];
-  draft.additionalNotes = note;
+  draft.additionalNotes = combinedAdditionalNotes;
   draft.customer = {
     ...(draft.customer || {}),
     ...(snapshot.customer || {}),
@@ -1270,6 +1273,14 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     ?? 0
   );
 
+  // Explicitly carry the estimate's scope notes into a durable invoice field
+  // rather than relying on the object spread below (scopeNotes itself is
+  // cleared on invoice autosave, so it must not be the durable home for this text).
+  const sourceScopeNotes = asText(source?.scopeNotes).trim();
+  const existingAdditionalNotes = asText(source?.additionalNotes).trim();
+  const scopeCarryoverNote = sourceScopeNotes ? `Scope from estimate: ${sourceScopeNotes}` : "";
+  const combinedAdditionalNotes = [existingAdditionalNotes, scopeCarryoverNote].filter(Boolean).join("\n\n");
+
   const draft = normalizeInvoiceRecord({
     ...source,
     id: "",
@@ -1297,6 +1308,7 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     payments: [],
     date: invoiceDate,
     dueDate,
+    additionalNotes: combinedAdditionalNotes,
     ui: {
       ...(source?.ui || {}),
       docType: "invoice",
