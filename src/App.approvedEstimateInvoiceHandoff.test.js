@@ -1038,7 +1038,7 @@ describe("App approved estimate invoice builder handoff", () => {
     const launcher = await screen.findByRole("dialog", { name: /Start New/i });
     fireEvent.click(within(launcher).getByRole("button", { name: /^Invoice$/i }));
 
-    await screen.findByText(/You have an estimate draft in progress/i);
+    const guard = await screen.findByRole("dialog", { name: /You have a draft in progress/i });
 
     // The draft must not be silently flipped to invoice or have scopeNotes wiped
     // while the guard is awaiting a choice.
@@ -1046,10 +1046,10 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(guardedDraft.ui.docType).toBe("estimate");
     expect(guardedDraft.scopeNotes).toBe("Repair drywall and repaint two rooms.");
 
-    fireEvent.click(screen.getByRole("button", { name: /Continue Estimate/i }));
+    fireEvent.click(within(guard).getByRole("button", { name: /Continue Current Draft/i }));
 
     await waitFor(() => {
-      expect(screen.queryByText(/You have an estimate draft in progress/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /You have a draft in progress/i })).not.toBeInTheDocument();
     });
 
     const draftAfterContinue = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE));
@@ -1080,9 +1080,9 @@ describe("App approved estimate invoice builder handoff", () => {
     const launcher = await screen.findByRole("dialog", { name: /Start New/i });
     fireEvent.click(within(launcher).getByRole("button", { name: /^Invoice$/i }));
 
-    await screen.findByText(/You have an estimate draft in progress/i);
+    const guard = await screen.findByRole("dialog", { name: /You have a draft in progress/i });
 
-    fireEvent.click(screen.getByRole("button", { name: /Start Blank Invoice/i }));
+    fireEvent.click(within(guard).getByRole("button", { name: /Discard and Start New Invoice/i }));
 
     await waitFor(() => {
       const resolvedDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE));

@@ -845,7 +845,6 @@ function buildPdfDoc(payload) {
       payload?.docType === "estimate"
       || (payload?.docType === "invoice" && payload?.includeInvoiceScopeNotes === true)
     );
-  const tradeInsertText = formatLongFormPdfText(payload?.tradeInsertText);
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
   const displayedSummaryRows = (summaryRows.length ? summaryRows : [["Total", "$0.00"]]).filter((row) => {
     const label = asText(row?.[0]).toLowerCase();
@@ -1363,38 +1362,6 @@ function buildPdfDoc(payload) {
     }
 
     y += TEXT_SECTION_GAP;
-  }
-
-  if (tradeInsertText) {
-    const tradeSectionMinHeight = SECTION_HEADER_MIN_HEIGHT + estimatePreviewTextHeight(tradeInsertText, 8.9, 3.45) + 1.8;
-    y = ensureSectionFits(y, tradeSectionMinHeight);
-
-    autoTable(doc, {
-      startY: y,
-      head: [["TRADE INSERTS"]],
-      body: [[tradeInsertText]],
-      theme: "plain",
-      tableLineWidth: 0,
-      styles: {
-        fontSize: 8.9,
-        cellPadding: 0.78,
-        minCellHeight: 3.45,
-        overflow: "linebreak",
-        lineWidth: 0,
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-        valign: "top",
-      },
-      headStyles: {
-        fontStyle: "bold",
-        fillColor: HEADER_FILL,
-        textColor: [20, 20, 20],
-        lineWidth: 0,
-      },
-      margin: pagedTableMargin,
-    });
-
-    y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
   }
 
   if (hasMeaningfulMaterialsContent && normalizedMaterialRows.length) {

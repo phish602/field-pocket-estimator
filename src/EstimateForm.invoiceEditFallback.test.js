@@ -258,6 +258,13 @@ function renderEstimateFormInStrictMode() {
   );
 }
 
+function expectTradeScopeStarterUiAbsent() {
+  expect(screen.queryByText(/Trade scope starters/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Punto de partida por oficio/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /Add a trade starting point/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /Create custom trade starter/i })).not.toBeInTheDocument();
+}
+
 function createCustomer() {
   return {
     id: "cust_invoice_verify",
@@ -577,8 +584,8 @@ describe("EstimateForm invoice edit fallback", () => {
     await screen.findByText("Estimate Builder");
 
     expect(screen.getByText("Start here")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Estimate$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Invoice$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Estimate$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Invoice$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
     expect(screen.getByText("Scope of Work")).toBeInTheDocument();
   });
@@ -602,6 +609,7 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
     expect(screen.getByText(/Linked customer:/i)).toBeInTheDocument();
     expect(screen.getByDisplayValue(project.projectName)).toBeInTheDocument();
+    expectTradeScopeStarterUiAbsent();
   });
 
   test("shows Start Here in estimate edit mode while invoice edit mode stays unchanged", async () => {
@@ -621,6 +629,36 @@ describe("EstimateForm invoice edit fallback", () => {
 
     expect(screen.getByText("Start here")).toBeInTheDocument();
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
+    expectTradeScopeStarterUiAbsent();
+  });
+
+  test("does not show Trade Scope Starter in new estimate or new invoice builder modes", async () => {
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    mockInitialState = estimateState;
+
+    const { unmount } = render(<EstimateForm />);
+
+    await screen.findByText("Estimate Builder");
+    expectTradeScopeStarterUiAbsent();
+
+    const invoiceState = clone(DEFAULT_STATE);
+    invoiceState.ui = {
+      ...(invoiceState.ui || {}),
+      docType: "invoice",
+      materialsMode: "blanket",
+    };
+    mockInitialState = invoiceState;
+
+    unmount();
+    render(<EstimateForm />);
+
+    await screen.findByText("Invoice Builder");
+    expectTradeScopeStarterUiAbsent();
   });
 
   test("clears retained invoice-shaped draft state when invoice builder opens without a valid edit target", async () => {
@@ -683,6 +721,7 @@ describe("EstimateForm invoice edit fallback", () => {
     });
 
     expect(screen.queryByText("Start here")).not.toBeInTheDocument();
+    expectTradeScopeStarterUiAbsent();
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
@@ -690,6 +729,46 @@ describe("EstimateForm invoice edit fallback", () => {
 
     expect(hydratedState.meta).toEqual(expect.objectContaining({ savedDocId: savedInvoice.id }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
+  });
+
+  test("old saved estimate and invoice records with trade starter data still load safely without showing the starter UI", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate({
+      tradeInsert: { key: "painting", text: "Trade Insert: Painting\n- Mask surfaces\n- Apply finish coats" },
+      scopeNotes: "Repair wall damage in lobby.\n\nTrade Insert: Painting\n- Mask surfaces\n- Apply finish coats",
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    const { unmount } = renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT ESTIMATE");
+    expect(screen.getAllByText(/Repair wall damage in lobby/i).length).toBeGreaterThan(0);
+    expectTradeScopeStarterUiAbsent();
+
+    const savedInvoice = createSavedInvoice({
+      tradeInsert: { key: "painting", text: "Trade Insert: Painting\n- Mask surfaces\n- Apply finish coats" },
+      scopeNotes: "Invoice scope text retained for reference.",
+    });
+    mockInitialState = clone(savedInvoice);
+    localStorage.clear();
+
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    unmount();
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText(/Invoice Builder|EDIT INVOICE/);
+    expectTradeScopeStarterUiAbsent();
   });
 
   test("hydrates saved invoice labor into invoice edit mode", async () => {
@@ -842,4 +921,47 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(summaryValues.Materials).toBe("$300.00");
     expect(summaryValues["Additional Charges"]).toBe("$350.00");
   }, 15000);
+
+  test("estimate PDF export removes the dedicated trade starter payload while preserving actual scope text", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate({
+      scopeNotes: [
+        "Repair wall damage in the lobby and repaint affected areas.",
+        "",
+        "Trade Insert: Painting",
+        "- Mask surfaces",
+        "- Apply finish coats",
+      ].join("\n"),
+      tradeInsert: {
+        key: "painting",
+        text: "Trade Insert: Painting\n- Mask surfaces\n- Apply finish coats",
+      },
+      additionalNotes: "Night work by request.",
+    });
+    mockInitialState = clone(savedEstimate);
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT ESTIMATE");
+
+    fireEvent.click(screen.getByRole("button", { name: /export pdf/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /download pdf/i }));
+
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+
+    const [payload, mode] = mockExportPdf.mock.calls[0];
+
+    expect(mode).toBe("download");
+    expect(payload.docType).toBe("estimate");
+    expect(payload.tradeInsertText).toBeUndefined();
+    expect(payload.scopeNotes).toContain("Repair wall damage in the lobby and repaint affected areas.");
+    expect(payload.scopeNotes).not.toMatch(/Trade Insert:/i);
+    expect(payload.additionalNotes).toBe("Night work by request.");
+  });
 });

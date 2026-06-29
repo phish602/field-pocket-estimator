@@ -53,10 +53,7 @@ import {
 } from "./utils/scopeTemplates";
 import {
   extractTradeInsertBlocksForPdf,
-  normalizeCustomTradeStarterRecord,
-  readStoredCustomTradeStarters,
   stripTradeInsertBlocksFromScope,
-  writeStoredCustomTradeStarters,
 } from "./utils/scopeTradeStarters";
 import {
   addToCustomerRecents,
@@ -92,8 +89,6 @@ import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockp
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
-const CUSTOM_TRADE_STARTERS_KEY = STORAGE_KEYS.SCOPE_TRADE_STARTERS || "estipaid-scope-trade-starters-v1";
-const CREATE_CUSTOM_TRADE_STARTER_VALUE = "__create_custom_trade_starter__";
 const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
 const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
 const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
@@ -1684,24 +1679,6 @@ export default function EstimateForm(props) {
   }, []);
 
   useEffect(() => {
-    const refreshCustomTradeStarters = (e) => {
-      if (e?.key && e.key !== CUSTOM_TRADE_STARTERS_KEY) return;
-      setCustomTradeStarters(readStoredCustomTradeStarters());
-    };
-    const onLocalStorage = (event) => {
-      if (event?.detail?.key === CUSTOM_TRADE_STARTERS_KEY) {
-        setCustomTradeStarters(readStoredCustomTradeStarters());
-      }
-    };
-    window.addEventListener("storage", refreshCustomTradeStarters);
-    window.addEventListener("pe-localstorage", onLocalStorage);
-    return () => {
-      window.removeEventListener("storage", refreshCustomTradeStarters);
-      window.removeEventListener("pe-localstorage", onLocalStorage);
-    };
-  }, []);
-
-  useEffect(() => {
     const refreshCustomLaborRoles = (e) => {
       if (e?.key && e.key !== CUSTOM_LABOR_ROLES_KEY) return;
       setCustomLaborRoles(readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
@@ -1761,12 +1738,7 @@ export default function EstimateForm(props) {
   const [savePulse, setSavePulse] = useState(false);
   const [projectSeedSummary, setProjectSeedSummary] = useState(null);
   const [scopeTemplates, setScopeTemplates] = useState(() => readStoredScopeTemplates());
-  const [customTradeStarters, setCustomTradeStarters] = useState(() => readStoredCustomTradeStarters());
   const [customLaborRoles, setCustomLaborRoles] = useState(() => readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
-  const [customTradeStarterEditorOpen, setCustomTradeStarterEditorOpen] = useState(false);
-  const [customTradeStarterName, setCustomTradeStarterName] = useState("");
-  const [customTradeStarterText, setCustomTradeStarterText] = useState("");
-  const [customTradeStarterError, setCustomTradeStarterError] = useState("");
   const saveBaselineRef = useRef("");
   const hasSaveBaselineRef = useRef(false);
   const lastSavedAtSeenRef = useRef(0);
@@ -3575,16 +3547,6 @@ export default function EstimateForm(props) {
     laborAssist.close();
   }
 
-  function appendTradeStarterToScope(insertKey = "", insertText = "") {
-    const text = String(insertText || "").trim();
-    if (!text) return;
-    const existing = scopeNotes;
-    const sep = existing.trim().length > 0 ? "\n\n" : "";
-    patch("scopeNotes", existing + sep + text);
-    patch("tradeInsert.key", String(insertKey || "").trim());
-    patch("tradeInsert.text", text);
-  }
-
   function handleScopeFormat(command) {
     const el = scopeNotesRef.current;
     if (!el) return;
@@ -3690,27 +3652,6 @@ export default function EstimateForm(props) {
     }
     for (const child of el.childNodes) walk(child);
     return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
-  }
-
-  function handleSaveCustomTradeStarter() {
-    const starter = normalizeCustomTradeStarterRecord({
-      label: customTradeStarterName,
-      text: customTradeStarterText,
-    });
-    if (!starter) {
-      setCustomTradeStarterError(
-        lang === "es"
-          ? "Agrega nombre y descripción antes de guardar."
-          : "Enter both a starter name and description before saving."
-      );
-      return;
-    }
-    const nextStarters = writeStoredCustomTradeStarters([starter, ...customTradeStarters]);
-    setCustomTradeStarters(nextStarters);
-    setCustomTradeStarterEditorOpen(false);
-    setCustomTradeStarterName("");
-    setCustomTradeStarterText("");
-    setCustomTradeStarterError("");
   }
 
   const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
@@ -5258,7 +5199,6 @@ export default function EstimateForm(props) {
       const tradeBlocks = uiDocType === "estimate"
         ? extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text, SCOPE_TRADE_INSERTS)
         : [];
-      const tradeRawForPdf = uiDocType === "estimate" ? tradeBlocks.join("\n\n") : "";
       const scopeWithoutTrade = includeNotes
         ? (
             uiDocType === "estimate"
@@ -5394,7 +5334,6 @@ export default function EstimateForm(props) {
           ["Project Address", resolvedProject || customerAddress || "-"],
           ["PO #", poNumber || "-"],
         ],
-        tradeInsertText: tradeRawForPdf,
         scopeImages: Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
         laborRows,
         materialRows: materialsRows,
@@ -5571,12 +5510,6 @@ export default function EstimateForm(props) {
     + (additionalChargesCount > 0
       ? ` • ${additionalChargesCount}x ${t("additionalCharges").toLowerCase()} • ${money.format(additionalChargesSubtotal)}`
       : "");
-  const guidedTradeLabel = useMemo(() => {
-    const tradeKey = String(state?.tradeInsert?.key || "").trim();
-    if (!tradeKey) return "";
-    const match = SCOPE_TRADE_INSERTS.find((item) => item.key === tradeKey);
-    return String(match?.label || tradeKey).replace(/\s+\(Insert\)\s*$/, "").trim();
-  }, [state?.tradeInsert?.key]);
   const guidedSummary = useMemo(() => {
     const documentNumber = String(
       state?.job?.docNumber
@@ -5606,7 +5539,6 @@ export default function EstimateForm(props) {
         { label: guidedDocType === "invoice" ? "Invoice" : "Estimate", value: documentNumber ? `#${documentNumber}` : "Draft" },
         { label: "Customer", value: customerName || "Customer not selected" },
         { label: "Project", value: projectAddress || "Project location not set" },
-        { label: "Trade", value: guidedTradeLabel || "Trade not set" },
         { label: "Labor", value: laborSummary },
         { label: "Materials", value: materialsSummary },
         { label: "Additional Charges", value: additionalChargesSummary },
@@ -5627,7 +5559,6 @@ export default function EstimateForm(props) {
     displayedMaterialsTotal,
     grossMarginLabel,
     guidedDocType,
-    guidedTradeLabel,
     itemizedMaterialsCount,
     itemizedMaterialsTotal,
     laborBase,
@@ -6474,110 +6405,6 @@ export default function EstimateForm(props) {
                   <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
                 ))}
               </select>
-            </div>
-            <div style={{ display: "grid", gap: 4 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
-                {lang === "es" ? "Punto de partida por oficio" : "Trade scope starters"}
-              </div>
-              <select
-                className="pe-input"
-                defaultValue=""
-                style={{ width: "100%" }}
-                onChange={(e) => {
-                  const key = e.target.value;
-                  if (!key) return;
-                  if (key === CREATE_CUSTOM_TRADE_STARTER_VALUE) {
-                    setCustomTradeStarterEditorOpen(true);
-                    setCustomTradeStarterError("");
-                    e.target.value = "";
-                    return;
-                  }
-                  if (key.startsWith("custom:")) {
-                    const customId = key.slice("custom:".length);
-                    const customStarter = customTradeStarters.find((tmpl) => String(tmpl?.id || "").trim() === customId);
-                    if (!customStarter) return;
-                    appendTradeStarterToScope(`custom:${customStarter.id}`, customStarter.text);
-                    e.target.value = "";
-                    return;
-                  }
-                  const insert = SCOPE_TRADE_INSERTS.find((tmpl) => tmpl.key === key);
-                  if (!insert) return;
-                  appendTradeStarterToScope(insert.key, insert.text);
-                  e.target.value = "";
-                }}
-              >
-                <option value="">{lang === "es" ? "Agregar punto de partida por oficio…" : "Add a trade starting point…"}</option>
-                {SCOPE_TRADE_INSERTS.map((tmpl) => (
-                  <option key={tmpl.key} value={tmpl.key}>{tmpl.label}</option>
-                ))}
-                {customTradeStarters.length > 0 ? (
-                  <optgroup label={lang === "es" ? "Iniciales personalizadas" : "Custom starters"}>
-                    {customTradeStarters.map((tmpl) => (
-                      <option key={tmpl.id} value={`custom:${tmpl.id}`}>{tmpl.label}</option>
-                    ))}
-                  </optgroup>
-                ) : null}
-                <option value={CREATE_CUSTOM_TRADE_STARTER_VALUE}>
-                  {lang === "es" ? "Crear punto de partida personalizado…" : "Create custom trade starter…"}
-                </option>
-              </select>
-              <div style={{ fontSize: 11, color: "rgba(230,241,248,0.32)", lineHeight: 1.35 }}>
-                {lang === "es"
-                  ? "Se agrega al alcance existente — edítalo para ajustarlo al trabajo."
-                  : "Appends to your scope — edit to fit the job."}
-              </div>
-              {customTradeStarterEditorOpen ? (
-                <div style={{ display: "grid", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 10, background: "rgba(15,23,42,0.28)", border: "1px solid rgba(148,163,184,0.18)" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.42)" }}>
-                    {lang === "es" ? "Nuevo punto de partida personalizado" : "New custom trade starter"}
-                  </div>
-                  <input
-                    className="pe-input"
-                    value={customTradeStarterName}
-                    onChange={(e) => {
-                      setCustomTradeStarterName(e.target.value);
-                      if (customTradeStarterError) setCustomTradeStarterError("");
-                    }}
-                    placeholder={lang === "es" ? "Nombre del punto de partida" : "Starter name"}
-                  />
-                  <textarea
-                    className="pe-input pe-textarea"
-                    value={customTradeStarterText}
-                    onChange={(e) => {
-                      setCustomTradeStarterText(e.target.value);
-                      if (customTradeStarterError) setCustomTradeStarterError("");
-                    }}
-                    placeholder={lang === "es" ? "Descripción o cuerpo del punto de partida" : "Starter description or body"}
-                    style={{ minHeight: 110, resize: "vertical" }}
-                  />
-                  {customTradeStarterError ? (
-                    <div style={{ fontSize: 12, color: "rgba(248,113,113,0.92)", lineHeight: 1.4 }}>
-                      {customTradeStarterError}
-                    </div>
-                  ) : null}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      className="pe-btn pe-btn-primary"
-                      type="button"
-                      onClick={handleSaveCustomTradeStarter}
-                    >
-                      {lang === "es" ? "Guardar punto de partida" : "Save starter"}
-                    </button>
-                    <button
-                      className="pe-btn pe-btn-ghost"
-                      type="button"
-                      onClick={() => {
-                        setCustomTradeStarterEditorOpen(false);
-                        setCustomTradeStarterName("");
-                        setCustomTradeStarterText("");
-                        setCustomTradeStarterError("");
-                      }}
-                    >
-                      {lang === "es" ? "Cancelar" : "Cancel"}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
             </div>
           </div>
           <div className="pe-scope-editor">

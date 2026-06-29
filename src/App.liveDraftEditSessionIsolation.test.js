@@ -294,7 +294,9 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Update Estimate$/i }));
 
-    await screen.findByText(/Updated/i);
+    await waitFor(() => {
+      expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
+    });
 
     // Give the deferred navigate-away (180ms) and any stray autosave window
     // (350ms debounce) time to play out before asserting final state.
@@ -352,7 +354,9 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
     await openEstimateBForEdit(customerB);
 
     fireEvent.click(screen.getByRole("button", { name: /^Update Estimate$/i }));
-    await screen.findByText(/Updated/i);
+    await waitFor(() => {
+      expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
+    });
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 700));
