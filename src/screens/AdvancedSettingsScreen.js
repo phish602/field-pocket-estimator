@@ -164,7 +164,13 @@ function ToggleButton({ value, onClick, disabled = false }) {
   );
 }
 
-export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
+export default function AdvancedSettingsScreen({
+  spinTick = 0,
+  onOpenCompanyProfile = null,
+  onOpenTemplates = null,
+  onOpenSnapshot = null,
+  snapshotAvailable = false,
+} = {}) {
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
@@ -228,32 +234,6 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
     []
   );
 
-  const controlCenterSummary = useMemo(() => {
-    const pricing = settings?.pricing || {};
-    const internal = settings?.internal || {};
-    const customer = settings?.customer || {};
-    const businessRuleFlags = [
-      !!pricing.lockMarkupToGlobal,
-      !!pricing.roundTotals,
-      Number(pricing.precision) === 0,
-    ].filter(Boolean).length;
-    const customerRequirements = [
-      !!customer.requirePhone ? "Phone" : null,
-      !!customer.requireEmail ? "Email" : null,
-    ].filter(Boolean);
-    const internalState = internal.lockInternalCostFields
-      ? "Locked"
-      : (internal.showInternalCostFields ? "Visible" : "Hidden");
-    return {
-      businessRuleFlags,
-      internalState,
-      customerRequirements,
-      defaultMarkupPct: String(pricing.defaultMarkupPct ?? 0),
-      defaultTaxPct: String(pricing.defaultTaxPct ?? 0),
-      defaultCustomerType: customer.defaultCustomerType === "commercial" ? "Commercial" : "Residential",
-    };
-  }, [settings]);
-
   const panelStyle = useMemo(
     () => ({
       ...sectionStyle,
@@ -263,6 +243,15 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
       boxShadow: "0 12px 28px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.02)",
     }),
     [sectionStyle]
+  );
+
+  const shortcutGridStyle = useMemo(
+    () => ({
+      display: "grid",
+      gap: 12,
+      gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    }),
+    []
   );
 
   const writeSettings = (updater) => {
@@ -471,7 +460,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
               className="pe-company-header-logo esti-spin"
               draggable={false}
             />
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="Advanced">Advanced</h1>
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="Settings">Settings</h1>
           </div>
           <div className="pe-company-header-controls">
             {busyLabel ? (
@@ -483,62 +472,35 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
         </div>
 
         <div className="pe-company-form-inner ep-section-gap-sm" style={{ gap: 12, paddingBottom: 8 }}>
-          <div
-            className="pe-card pe-card-content"
-            style={{
-              ...sectionStyle,
-              borderRadius: 18,
-              border: "1px solid rgba(168,184,195,0.14)",
-              background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
-              boxShadow: "0 22px 48px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)",
-              gap: 14,
-            }}
-          >
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.58)" }}>
-                App control center
-              </div>
-              <div style={{ fontSize: 23, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.06 }}>
-                Advanced settings and business rules
-              </div>
-              <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(215,225,233,0.76)", maxWidth: 760 }}>
-                Manage pricing defaults, internal visibility, PDF output, customer requirements, and local system data tools in one place.
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(59,130,246,0.2)", background: "rgba(7,11,16,0.22)" }}>
-                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(96,165,250,0.86)" }}>Business rules</div>
-                <div style={{ fontSize: 22, fontWeight: 950, lineHeight: 1, color: "rgba(239,245,249,0.98)" }}>{controlCenterSummary.businessRuleFlags}</div>
-                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>high-impact toggles enabled</div>
-              </div>
-              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(34,197,94,0.2)", background: "rgba(7,11,16,0.22)" }}>
-                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(74,222,128,0.86)" }}>Internal controls</div>
-                <div style={{ fontSize: 22, fontWeight: 950, lineHeight: 1, color: "rgba(239,245,249,0.98)" }}>{controlCenterSummary.internalState}</div>
-                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>cost fields default state</div>
-              </div>
-              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(245,158,11,0.2)", background: "rgba(7,11,16,0.22)" }}>
-                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(251,191,36,0.88)" }}>Pricing defaults</div>
-                <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.1, color: "rgba(239,245,249,0.98)" }}>
-                  {controlCenterSummary.defaultMarkupPct}% / {controlCenterSummary.defaultTaxPct}%
-                </div>
-                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>markup and tax baselines</div>
-              </div>
-              <div style={{ minWidth: 0, display: "grid", gap: 5, padding: "11px 12px", borderRadius: 14, border: "1px solid rgba(148,163,184,0.2)", background: "rgba(7,11,16,0.22)" }}>
-                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(191,219,254,0.86)" }}>Customer policy</div>
-                <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.1, color: "rgba(239,245,249,0.98)" }}>
-                  {controlCenterSummary.customerRequirements.length > 0 ? controlCenterSummary.customerRequirements.join(" + ") : "Optional"}
-                </div>
-                <div style={{ fontSize: 11.5, color: "rgba(208,219,228,0.66)" }}>
-                  default type: {controlCenterSummary.defaultCustomerType}
-                </div>
-              </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div className="pe-title screenTitle" style={{ margin: 0 }}>Settings</div>
+            <div className="pe-muted" style={{ maxWidth: 760 }}>
+              Configure business defaults, document behavior, internal visibility, and local tools.
             </div>
           </div>
 
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
-            <div className="pe-field-label" style={{ marginBottom: 2 }}>Business Rules</div>
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>Business Profile</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Controls that influence estimate and invoice defaults. Safe to adjust as your pricing policy evolves.
+              Company identity used on estimates, invoices, and PDFs.
+            </div>
+            <div>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={() => {
+                  if (typeof onOpenCompanyProfile === "function") onOpenCompanyProfile();
+                }}
+              >
+                Open Business Profile
+              </button>
+            </div>
+          </div>
+
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>Pricing Defaults</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Controls that influence estimate and invoice pricing defaults.
             </div>
             <SettingRow
               title="Default Markup %"
@@ -621,7 +583,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Document Defaults</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Reusable internal writing defaults for faster estimate preparation.
+              Reusable document defaults for faster estimate preparation.
             </div>
             <SettingRow
               title="Default Internal Notes (Estimate only)"
@@ -646,7 +608,7 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
           </div>
 
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
-            <div className="pe-field-label" style={{ marginBottom: 2 }}>Internal Controls</div>
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>Internal Cost Visibility</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
               Set visibility and protection for internal cost details used by your team.
             </div>
@@ -683,9 +645,9 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
           </div>
 
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
-            <div className="pe-field-label" style={{ marginBottom: 2 }}>PDF / Export</div>
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>PDF Preferences</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Output layout preferences for generated documents and customer-facing exports.
+              Output layout preferences for generated customer-facing documents.
             </div>
             <SettingRow
               title="Include Logo"
@@ -772,50 +734,116 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
             />
           </div>
 
+          <div style={shortcutGridStyle}>
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+              <div className="pe-field-label" style={{ marginBottom: 2 }}>Templates</div>
+              <div className="pe-field-helper" style={{ marginTop: -4 }}>
+                Manage reusable work-package templates.
+              </div>
+              <div>
+                <button
+                  type="button"
+                  className="pe-btn"
+                  onClick={() => {
+                    if (typeof onOpenTemplates === "function") onOpenTemplates();
+                  }}
+                >
+                  Open Templates
+                </button>
+              </div>
+            </div>
+
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+              <div className="pe-field-label" style={{ marginBottom: 2 }}>Reports &amp; Bookkeeping</div>
+              <div className="pe-field-helper" style={{ marginTop: -4 }}>
+                View business snapshot and future bookkeeping exports.
+              </div>
+              <div>
+                <button
+                  type="button"
+                  className={snapshotAvailable ? "pe-btn" : "pe-btn pe-btn-ghost"}
+                  disabled={!snapshotAvailable}
+                  onClick={() => {
+                    if (snapshotAvailable && typeof onOpenSnapshot === "function") onOpenSnapshot();
+                  }}
+                >
+                  {snapshotAvailable ? "Open Snapshot" : "Snapshot Unavailable"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="pe-card pe-card-content ep-glass-tile"
+            style={{
+              ...panelStyle,
+              border: "1px solid rgba(96,165,250,0.2)",
+              background: "linear-gradient(180deg, rgba(30,41,59,0.48), rgba(15,23,42,0.62))",
+            }}
+          >
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>Developer Tools</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              Internal and support tools for raw app data, diagnostics, and local sample-data workflows.
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="pe-btn"
+                  onClick={exportDiagnosticsJson}
+                  disabled={diagnosticsBusy}
+                >
+                  {diagnosticsBusy ? "Exporting..." : "Export Diagnostics"}
+                </button>
+                <button type="button" className="pe-btn pe-btn-ghost" onClick={exportData}>
+                  Export Raw App Data
+                </button>
+                <button
+                  type="button"
+                  className="pe-btn pe-btn-ghost"
+                  onClick={() => importInputRef.current?.click?.()}
+                >
+                  Import Raw App Data
+                </button>
+              </div>
+
+              {isDevBuild ? (
+                <div style={{ display: "grid", gap: 8, paddingTop: 8, borderTop: "1px solid rgba(148,163,184,0.18)" }}>
+                  <div className="pe-field-label" style={{ marginBottom: 0 }}>Development Sample Data</div>
+                  <div className="pe-field-helper">
+                    Loads deterministic customers, estimates, and invoice records into normal EstiPaid storage for local testing only.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" className="pe-btn pe-btn-ghost" onClick={loadDevSampleData}>
+                      Load Sample Data
+                    </button>
+                    <button type="button" className="pe-btn pe-btn-ghost" onClick={clearOnlyDevSampleData}>
+                      Clear Sample Data
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="pe-field-helper" style={{ marginTop: 2 }}>
+                Diagnostics exports create a redacted support bundle. Raw app data import/export is for local support workflows.
+              </div>
+              {diagnosticsMessage ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: diagnosticsMessage.includes("Unable") ? "rgba(248,113,113,0.95)" : "rgba(187,247,208,0.95)" }}>
+                  {diagnosticsMessage}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
           <div className="ep-glass-tile ep-tile-hover" style={{ ...panelStyle, border: "1px solid rgba(239,68,68,0.38)", background: "linear-gradient(180deg, rgba(127,29,29,0.22), rgba(15,23,42,0.52))" }}>
             <div className="pe-field-label" style={{ marginBottom: 2, color: "rgba(254,202,202,0.95)" }}>
-              System &amp; Data (Danger Zone)
+              Danger Zone
             </div>
             <div className="pe-field-helper">
-              Advanced maintenance actions for local device data. Review before applying.
+              Destructive maintenance actions for local device data. Review before applying.
             </div>
-
-            {isDevBuild ? (
-              <div style={{ display: "grid", gap: 8 }}>
-                <div className="pe-field-label" style={{ marginBottom: 0 }}>Development Sample Data</div>
-                <div className="pe-field-helper">
-                  Loads deterministic customers, estimates, and invoice records into the normal EstiPaid storage keys for local testing only.
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" className="pe-btn" onClick={loadDevSampleData}>
-                    Load Sample Data
-                  </button>
-                  <button type="button" className="pe-btn pe-btn-ghost" onClick={clearOnlyDevSampleData}>
-                    Clear Sample Data
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 4, borderTop: "1px solid rgba(248,113,113,0.24)" }}>
-              <button
-                type="button"
-                className="pe-btn"
-                onClick={exportDiagnosticsJson}
-                disabled={diagnosticsBusy}
-              >
-                {diagnosticsBusy ? "Exporting..." : "Export Diagnostics JSON"}
-              </button>
-              <button type="button" className="pe-btn" onClick={exportData}>
-                Export JSON
-              </button>
-              <button
-                type="button"
-                className="pe-btn pe-btn-ghost"
-                onClick={() => importInputRef.current?.click?.()}
-              >
-                Import JSON
-              </button>
               <button type="button" className="pe-btn pe-btn-ghost" onClick={resetSettings}>
                 Reset Settings
               </button>
@@ -828,14 +856,6 @@ export default function AdvancedSettingsScreen({ spinTick = 0 } = {}) {
                 Clear EstiPaid local data
               </button>
             </div>
-            <div className="pe-field-helper" style={{ marginTop: 2 }}>
-              Exports a redacted support bundle for troubleshooting. Sensitive fields are redacted by default.
-            </div>
-            {diagnosticsMessage ? (
-              <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: diagnosticsMessage.includes("Unable") ? "rgba(248,113,113,0.95)" : "rgba(187,247,208,0.95)" }}>
-                {diagnosticsMessage}
-              </div>
-            ) : null}
             <input
               ref={importInputRef}
               type="file"

@@ -120,7 +120,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
   test("exports a redacted support bundle with read-only data", async () => {
     render(<AdvancedSettingsScreen />);
 
-    fireEvent.click(screen.getByRole("button", { name: /export diagnostics json/i }));
+    fireEvent.click(screen.getByRole("button", { name: /export diagnostics/i }));
 
     expect(screen.getByRole("status")).toHaveTextContent("Diagnostics JSON exported.");
     expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
@@ -180,5 +180,37 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     expect(revokeObjectURLSpy).toHaveBeenCalledWith("blob:diagnostics");
+  });
+
+  test("renders settings ownership shortcuts and developer tool labels", () => {
+    const onOpenCompanyProfile = jest.fn();
+    const onOpenTemplates = jest.fn();
+    const onOpenSnapshot = jest.fn();
+
+    render(
+      <AdvancedSettingsScreen
+        onOpenCompanyProfile={onOpenCompanyProfile}
+        onOpenTemplates={onOpenTemplates}
+        onOpenSnapshot={onOpenSnapshot}
+        snapshotAvailable
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByText(/Configure business defaults, document behavior, internal visibility, and local tools/i)).toBeInTheDocument();
+    expect(screen.getByText("Business Profile")).toBeInTheDocument();
+    expect(screen.getByText("Templates")).toBeInTheDocument();
+    expect(screen.getByText("Reports & Bookkeeping")).toBeInTheDocument();
+    expect(screen.getByText("Developer Tools")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export Raw App Data" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Raw App Data" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Business Profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Templates" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Snapshot" }));
+
+    expect(onOpenCompanyProfile).toHaveBeenCalledTimes(1);
+    expect(onOpenTemplates).toHaveBeenCalledTimes(1);
+    expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
   });
 });

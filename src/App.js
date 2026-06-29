@@ -3897,7 +3897,14 @@ const gated = false;
       );
     }
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
-    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? (
+      <AdvancedSettingsScreen
+        onOpenCompanyProfile={() => navigateToCompanyProfile()}
+        onOpenTemplates={() => navigateTo(ROUTES.TEMPLATES)}
+        onOpenSnapshot={() => navigateTo(ROUTES.SNAPSHOT)}
+        snapshotAvailable={Boolean(FinancialSnapshotScreen)}
+      />
+    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
       <FinancialSnapshotScreen
         onCreateInvoiceFromEstimate={(estimate) => {
