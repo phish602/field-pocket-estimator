@@ -9,6 +9,7 @@ export const ROUTES = {
   INVOICE_BUILDER: "invoiceBuilder",
   ESTIMATES: "estimates",
   INVOICES: "invoices",
+  TEMPLATES: "templates",
   SNAPSHOT: "snapshot",
   COMPANY_PROFILE: "companyProfile",
   ADVANCED: "advanced",

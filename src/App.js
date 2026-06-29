@@ -7,6 +7,7 @@ import ProjectsScreen from "./screens/ProjectsScreen";
 import NewProjectScreen from "./screens/NewProjectScreen";
 import EditProjectScreen from "./screens/EditProjectScreen";
 import ProjectDetailScreen from "./screens/ProjectDetailScreen";
+import TemplatesScreen from "./screens/TemplatesScreen";
 import { readProjectDetailTarget, writeProjectDetailTarget } from "./screens/ProjectDetailScreen";
 import * as CompanyProfileScreenMod from "./screens/CompanyProfileScreen";
 import * as AdvancedSettingsScreenMod from "./screens/AdvancedSettingsScreen";
@@ -3886,6 +3887,15 @@ const gated = false;
         />
       );
     }
+    if (activeTab === ROUTES.TEMPLATES) {
+      return (
+        <TemplatesScreen
+          onOpenBuilder={() => {
+            onCreateButtonRoute(BUILDER_INTENTS.ESTIMATE);
+          }}
+        />
+      );
+    }
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? <AdvancedSettingsScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
@@ -3977,7 +3987,7 @@ const gated = false;
     }
     if (key === "templates") {
       clearProjectDetailReturnTarget();
-      navigateTo(ROUTES.ESTIMATE_BUILDER);
+      navigateTo(ROUTES.TEMPLATES);
       return;
     }
 

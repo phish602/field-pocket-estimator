@@ -48,6 +48,7 @@ import {
 } from "./utils/customLaborRoles";
 import {
   createScopeTemplate,
+  isLegacyScopeTemplateRecord,
   readStoredScopeTemplates,
   writeStoredScopeTemplates,
 } from "./utils/scopeTemplates";
@@ -1382,6 +1383,19 @@ function createBlankAdditionalChargeItem(idOverride) {
     desc: "",
     qty: "",
     priceEach: "",
+  };
+}
+
+function createBlankTemplateLaborLine(idOverride) {
+  return {
+    id: idOverride || `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    role: "",
+    label: "",
+    hours: "",
+    rate: "",
+    trueRateInternal: "",
+    internalRate: "",
+    qty: 1,
   };
 }
 
@@ -3203,20 +3217,210 @@ export default function EstimateForm(props) {
     patch("scopeImages", []);
   }
 
+  function hasMeaningfulTemplateLaborContent(lines) {
+    return Array.isArray(lines) && lines.some((line) => Boolean(
+      String(line?.role || line?.label || "").trim()
+      || String(line?.hours ?? "").trim()
+      || String(line?.rate ?? "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+    ));
+  }
+
+  function hasMeaningfulTemplateMaterialContent(items, blanketFields = {}) {
+    const hasItemizedContent = Array.isArray(items) && items.some((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.note || "").trim()
+      || String(item?.cost ?? "").trim()
+      || String(item?.unitCostInternal ?? item?.costInternal ?? "").trim()
+      || String(item?.charge ?? item?.priceEach ?? "").trim()
+    ));
+    if (hasItemizedContent) return true;
+    return Boolean(
+      String(blanketFields?.materialsBlanketDescription || "").trim()
+      || String(blanketFields?.materialsBlanketCost ?? "").trim()
+      || String(blanketFields?.materialsBlanketInternalCost ?? "").trim()
+    );
+  }
+
+  function hasMeaningfulTemplateAdditionalChargeContent(items) {
+    return Array.isArray(items) && items.some((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.qty ?? "").trim()
+      || String(item?.priceEach ?? "").trim()
+    ));
+  }
+
+  function hasMeaningfulTemplateWorkPackageContent(candidate = {}) {
+    return Boolean(
+      String(candidate?.scopeText ?? candidate?.scopeNotes ?? "").trim()
+      || String(candidate?.additionalNotes || "").trim()
+      || hasMeaningfulTemplateLaborContent(candidate?.laborItems ?? candidate?.labor?.lines)
+      || hasMeaningfulTemplateMaterialContent(
+        candidate?.materialItems ?? candidate?.materials?.items,
+        {
+          materialsBlanketDescription: candidate?.materialsBlanketDescription ?? candidate?.materials?.materialsBlanketDescription,
+          materialsBlanketCost: candidate?.materialsBlanketCost ?? candidate?.materials?.blanketCost,
+          materialsBlanketInternalCost: candidate?.materialsBlanketInternalCost ?? candidate?.materials?.blanketInternalCost,
+          materialsMarkupPct: candidate?.materialsMarkupPct ?? candidate?.materials?.markupPct,
+        }
+      )
+      || hasMeaningfulTemplateAdditionalChargeContent(candidate?.additionalChargeItems ?? candidate?.additionalCharges?.items)
+    );
+  }
+
+  function buildTemplateLaborItemsForSave() {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    return lines.filter((line) => Boolean(
+      String(line?.role || line?.label || "").trim()
+      || String(line?.hours ?? "").trim()
+      || String(line?.rate ?? "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+    )).map((line) => ({
+      id: String(line?.id || "").trim() || `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      role: String(line?.role || "").trim(),
+      label: String(line?.label || "").trim(),
+      hours: line?.hours ?? "",
+      rate: line?.rate ?? "",
+      trueRateInternal: line?.trueRateInternal ?? line?.internalRate ?? "",
+      internalRate: line?.internalRate ?? line?.trueRateInternal ?? "",
+      qty: line?.qty ?? 1,
+      ...(String(line?.markupPct ?? "").trim() !== "" ? { markupPct: line.markupPct } : {}),
+    }));
+  }
+
+  function buildTemplateMaterialItemsForSave() {
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    return items.filter((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.note || "").trim()
+      || String(item?.cost ?? "").trim()
+      || String(item?.unitCostInternal ?? item?.costInternal ?? "").trim()
+      || String(item?.charge ?? item?.priceEach ?? "").trim()
+    )).map((item) => ({
+      id: String(item?.id || "").trim() || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      desc: String(item?.desc || "").trim(),
+      note: String(item?.note || "").trim(),
+      qty: item?.qty ?? 1,
+      cost: item?.cost ?? "",
+      unitCostInternal: item?.unitCostInternal ?? "",
+      costInternal: item?.costInternal ?? "",
+      charge: item?.charge ?? "",
+      priceEach: item?.priceEach ?? "",
+      ...(String(item?.markupPct ?? "").trim() !== "" ? { markupPct: item.markupPct } : {}),
+    }));
+  }
+
+  function buildTemplateAdditionalChargeItemsForSave() {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items : [];
+    return items.filter((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.qty ?? "").trim()
+      || String(item?.priceEach ?? "").trim()
+    )).map((item) => ({
+      id: String(item?.id || "").trim() || `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      desc: String(item?.desc || "").trim(),
+      qty: item?.qty ?? "",
+      priceEach: item?.priceEach ?? "",
+    }));
+  }
+
+  function cloneTemplateLaborItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [createBlankTemplateLaborLine()];
+    }
+    return items.map((line) => ({
+      ...createBlankTemplateLaborLine(),
+      ...line,
+      id: `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
+  function cloneTemplateMaterialItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [createBlankMaterialItem(undefined, globalDefaultMarkupPct)];
+    }
+    return items.map((item) => ({
+      ...createBlankMaterialItem(undefined, globalDefaultMarkupPct),
+      ...item,
+      id: `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
+  function cloneTemplateAdditionalChargeItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) return [];
+    return items.map((item) => ({
+      ...createBlankAdditionalChargeItem(),
+      ...item,
+      id: `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
   function handleSaveScopeTemplate() {
     const currentScopeText = String(scopeNotes || "").trim();
-    if (!currentScopeText) {
-      window.alert("Enter scope text before saving a template.");
+    const currentAdditionalNotes = String(additionalNotes || "").trim();
+    const currentMaterialsMode = state?.ui?.materialsMode === "blanket" ? "blanket" : "itemized";
+    const laborItems = buildTemplateLaborItemsForSave();
+    const materialItems = buildTemplateMaterialItemsForSave();
+    const additionalChargeItems = buildTemplateAdditionalChargeItemsForSave();
+    const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
+    const materialsBlanketCost = state?.materials?.blanketCost ?? "";
+    const materialsBlanketInternalCost = state?.materials?.blanketInternalCost ?? "";
+    const materialsMarkupPct = state?.materials?.markupPct ?? "";
+    const hasTemplateContent = hasMeaningfulTemplateWorkPackageContent({
+      scopeText: currentScopeText,
+      laborItems,
+      materialItems,
+      additionalChargeItems,
+      additionalNotes: currentAdditionalNotes,
+      materialsBlanketDescription,
+      materialsBlanketCost,
+      materialsBlanketInternalCost,
+      materialsMarkupPct,
+    });
+    if (!hasTemplateContent) {
+      window.alert("Add scope, labor, materials, additional charges, or notes before saving a template.");
       return;
     }
 
-    const defaultName = createScopeTemplate({ scopeText: currentScopeText })?.name || "Untitled scope template";
-    const enteredName = window.prompt("Name this scope template:", defaultName);
+    const defaultName = createScopeTemplate({
+      scopeText: currentScopeText,
+      laborItems,
+      materialItems,
+      additionalChargeItems,
+      additionalNotes: currentAdditionalNotes,
+      ...(currentMaterialsMode === "blanket"
+        ? {
+          materialsMode: "blanket",
+          materialsBlanketDescription,
+          materialsBlanketCost,
+          materialsBlanketInternalCost,
+          materialsMarkupPct,
+        }
+        : {
+          materialsMode: "itemized",
+        }),
+    })?.name || "Untitled work template";
+    const enteredName = window.prompt("Name this work template:", defaultName);
     if (enteredName === null) return;
 
     const template = createScopeTemplate({
       name: String(enteredName || "").trim() || defaultName,
       scopeText: currentScopeText,
+      laborItems,
+      materialItems,
+      additionalChargeItems,
+      additionalNotes: currentAdditionalNotes,
+      ...(currentMaterialsMode === "blanket"
+        ? {
+          materialsMode: "blanket",
+          materialsBlanketDescription,
+          materialsBlanketCost,
+          materialsBlanketInternalCost,
+          materialsMarkupPct,
+        }
+        : {
+          materialsMode: "itemized",
+        }),
       ...(scopeTemplateSourceId ? { sourceEstimateId: scopeTemplateSourceId } : {}),
       ...(scopeTemplateSourceNumber ? { sourceEstimateNumber: scopeTemplateSourceNumber } : {}),
     });
@@ -3224,6 +3428,14 @@ export default function EstimateForm(props) {
 
     const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates]);
     setScopeTemplates(nextTemplates);
+    try {
+      window.dispatchEvent(new CustomEvent("pe-localstorage", {
+        detail: {
+          key: STORAGE_KEYS.SCOPE_TEMPLATES,
+          value: JSON.stringify(nextTemplates),
+        },
+      }));
+    } catch {}
   }
 
   function handleApplyScopeTemplate(templateId) {
@@ -3231,7 +3443,42 @@ export default function EstimateForm(props) {
     if (!nextId) return;
     const template = scopeTemplates.find((entry) => String(entry?.id || "").trim() === nextId);
     if (!template) return;
-    patch("scopeNotes", String(template.scopeText || ""));
+    const isLegacyScopeTemplate = isLegacyScopeTemplateRecord(template);
+    const nextScopeText = String(template.scopeText || "");
+    if (isLegacyScopeTemplate) {
+      const currentScopeText = String(scopeNotes || "");
+      if (currentScopeText.trim() && currentScopeText.trim() !== nextScopeText.trim()) {
+        const ok = window.confirm("Replace current scope text with this template? Customer, project, line items, and totals will stay as-is.");
+        if (!ok) return;
+      }
+      patch("scopeNotes", nextScopeText);
+      return;
+    }
+
+    if (hasMeaningfulTemplateWorkPackageContent({
+      scopeNotes,
+      labor: state?.labor,
+      materials: state?.materials,
+      additionalCharges: state?.additionalCharges,
+      additionalNotes,
+    })) {
+      const ok = window.confirm("Apply this template and replace the current scope, labor, materials, additional charges, and notes? Customer, project, and job details will stay as-is.");
+      if (!ok) return;
+    }
+
+    const templateMaterialsMode = template?.materialsMode === "blanket" ? "blanket" : "itemized";
+    patch("scopeNotes", nextScopeText);
+    patch("labor.lines", cloneTemplateLaborItemsForApply(template?.laborItems));
+    patch("ui.materialsMode", templateMaterialsMode);
+    patch("materials.items", cloneTemplateMaterialItemsForApply(template?.materialItems));
+    patch("materials.materialsBlanketDescription", templateMaterialsMode === "blanket" ? String(template?.materialsBlanketDescription || "") : "");
+    patch("materials.blanketCost", templateMaterialsMode === "blanket" ? (template?.materialsBlanketCost ?? "") : "");
+    patch("materials.blanketInternalCost", templateMaterialsMode === "blanket" ? (template?.materialsBlanketInternalCost ?? "") : "");
+    if (templateMaterialsMode === "blanket" && String(template?.materialsMarkupPct ?? "").trim() !== "") {
+      patch("materials.markupPct", template.materialsMarkupPct);
+    }
+    patch("additionalCharges.items", cloneTemplateAdditionalChargeItemsForApply(template?.additionalChargeItems));
+    patch("additionalNotes", String(template?.additionalNotes || ""));
   }
 
   function getNextScopeImageId(existingImages = scopeImages) {
@@ -6689,7 +6936,7 @@ export default function EstimateForm(props) {
                 type="button"
                 style={styles.sectionFooterBtn}
                 onClick={handleSaveScopeTemplate}
-                title="Save current scope text as a reusable personal template"
+                title="Save the current work package as a reusable template"
               >
                 {lang === "es" ? "Guardar plantilla" : "Save as Template"}
               </button>
