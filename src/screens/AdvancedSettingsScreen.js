@@ -9,6 +9,7 @@ import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
+import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -188,6 +189,9 @@ export default function AdvancedSettingsScreen({
   const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
   const [migrationPreviewBusy, setMigrationPreviewBusy] = useState(false);
   const [migrationPreview, setMigrationPreview] = useState(null);
+  const [migrationConfirmText, setMigrationConfirmText] = useState("");
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationResult, setMigrationResult] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -346,6 +350,7 @@ export default function AdvancedSettingsScreen({
   const runMigrationPreview = async () => {
     try {
       setMigrationPreviewBusy(true);
+      setMigrationResult(null);
       const preview = await createSupabaseMigrationPreview({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
@@ -379,6 +384,36 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setMigrationPreviewBusy(false);
+    }
+  };
+
+  const executeMigrationWrite = async () => {
+    try {
+      setMigrationBusy(true);
+      const result = await runSupabaseMigrationWrite({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+        backupDownloadAvailable: true,
+        preview: migrationPreview,
+      });
+      setMigrationResult(result);
+      if (result?.ok) {
+        setMigrationConfirmText("");
+      }
+    } catch {
+      setMigrationResult({
+        ok: false,
+        blocked: false,
+        reason: "Unable to run cloud migration.",
+        notices: [{ level: "error", code: "migration_failed", message: "Unable to run cloud migration." }],
+        tableResults: [],
+        noLocalDeletes: true,
+      });
+    } finally {
+      setMigrationBusy(false);
     }
   };
 
@@ -961,6 +996,107 @@ export default function AdvancedSettingsScreen({
                     </div>
                   </div>
                 ) : null}
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid rgba(148,163,184,0.18)",
+                  }}
+                >
+                  <div className="pe-field-label" style={{ marginBottom: 0 }}>Migration Write</div>
+                  <div className="pe-field-helper">
+                    This copies local customers, projects, estimates, invoices, and payments into Supabase for this workspace. It does not delete local data.
+                  </div>
+                  <label className="pe-field-helper" htmlFor="migration-confirm-input" style={{ marginTop: 2 }}>
+                    Type MIGRATE to confirm
+                  </label>
+                  <input
+                    id="migration-confirm-input"
+                    type="text"
+                    className="pe-input"
+                    value={migrationConfirmText}
+                    onChange={(e) => setMigrationConfirmText(e.target.value)}
+                    placeholder="MIGRATE"
+                    disabled={migrationBusy}
+                    style={{ maxWidth: 220 }}
+                  />
+                  <div>
+                    <button
+                      type="button"
+                      className="pe-btn"
+                      onClick={executeMigrationWrite}
+                      disabled={
+                        migrationBusy ||
+                        migrationConfirmText !== "MIGRATE" ||
+                        !isSupabaseMigrationPreviewReady(migrationPreview)
+                      }
+                    >
+                      {migrationBusy ? "Migrating..." : "Migrate Local Data to Cloud"}
+                    </button>
+                  </div>
+                  {migrationResult ? (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 6,
+                        padding: 10,
+                        borderRadius: 12,
+                        border: "1px solid rgba(148,163,184,0.18)",
+                        background: "rgba(15,23,42,0.34)",
+                      }}
+                    >
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        className="pe-field-helper"
+                        style={{
+                          color: migrationResult?.ok
+                            ? "rgba(187,247,208,0.95)"
+                            : "rgba(248,113,113,0.95)",
+                        }}
+                      >
+                        {migrationResult?.ok
+                          ? "Cloud migration completed."
+                          : String(migrationResult?.reason || "Cloud migration did not complete.")}
+                      </div>
+                      {Array.isArray(migrationResult?.tableResults) && migrationResult.tableResults.length > 0 ? (
+                        <div style={{ display: "grid", gap: 4 }}>
+                          {migrationResult.tableResults.map((tableResult) => (
+                            <div key={String(tableResult?.table || tableResult?.label)} className="pe-field-helper">
+                              {String(tableResult?.label || tableResult?.table)}: {String(tableResult?.status || "unknown")}
+                              {typeof tableResult?.written === "number" ? `, written ${tableResult.written}` : ""}
+                              {typeof tableResult?.skipped === "number" && tableResult.skipped > 0 ? `, skipped ${tableResult.skipped}` : ""}
+                              {typeof tableResult?.failed === "number" && tableResult.failed > 0 ? `, failed ${tableResult.failed}` : ""}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {Array.isArray(migrationResult?.notices) && migrationResult.notices.length > 0 ? (
+                        <div style={{ display: "grid", gap: 4 }}>
+                          {migrationResult.notices.map((notice) => (
+                            <div
+                              key={String(notice?.code || notice?.message)}
+                              className="pe-field-helper"
+                              style={{
+                                color: notice?.level === "error"
+                                  ? "rgba(248,113,113,0.95)"
+                                  : notice?.level === "warning"
+                                    ? "rgba(253,224,71,0.95)"
+                                    : "rgba(191,219,254,0.95)",
+                              }}
+                            >
+                              {String(notice?.message || "")}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="pe-field-helper">
+                        Local data remains in localStorage after this migration step.
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 

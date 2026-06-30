@@ -6,6 +6,7 @@ import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
+import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -25,6 +26,12 @@ jest.mock("../lib/useSupabaseWorkspaceBootstrap", () => ({
 jest.mock("../lib/supabaseMigrationPreview", () => ({
   __esModule: true,
   createSupabaseMigrationPreview: jest.fn(),
+}));
+
+jest.mock("../lib/supabaseMigrationWriter", () => ({
+  __esModule: true,
+  isSupabaseMigrationPreviewReady: jest.fn(),
+  runSupabaseMigrationWrite: jest.fn(),
 }));
 
 function buildAuthState(overrides = {}) {
@@ -93,7 +100,18 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     useSupabaseAccount.mockReturnValue(buildAccountState());
     useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
     createSupabaseMigrationPreview.mockReset();
+    runSupabaseMigrationWrite.mockReset();
+    isSupabaseMigrationPreviewReady.mockReset();
     createSupabaseMigrationPreview.mockResolvedValue({
+      validations: {
+        supabaseConfigured: true,
+        signedIn: true,
+        hasCompany: true,
+        roleAllowedForMigration: true,
+        backupDownloadAvailable: true,
+        exportArtifactBuilt: true,
+        localDataReadable: true,
+      },
       company: { id: "company_1", name: "Field Pocket LLC", role: "owner" },
       localCounts: {
         customers: 1,
@@ -115,6 +133,22 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       cloudCountStatusMessage: "Cloud count check completed.",
       notices: [],
       noWritesPerformed: true,
+    });
+    isSupabaseMigrationPreviewReady.mockImplementation((preview) => Boolean(preview));
+    runSupabaseMigrationWrite.mockResolvedValue({
+      ok: true,
+      reason: "",
+      notices: [],
+      tableResults: [
+        { table: "customers", label: "Customers", status: "success", written: 1, skipped: 0, failed: 0 },
+        { table: "projects", label: "Projects", status: "success", written: 1, skipped: 0, failed: 0 },
+        { table: "estimates", label: "Estimates", status: "success", written: 1, skipped: 0, failed: 0 },
+        { table: "estimate_line_items", label: "Estimate line items", status: "skipped", written: 0, skipped: 0, failed: 0 },
+        { table: "invoices", label: "Invoices", status: "success", written: 1, skipped: 0, failed: 0 },
+        { table: "invoice_line_items", label: "Invoice line items", status: "skipped", written: 0, skipped: 0, failed: 0 },
+        { table: "invoice_payments", label: "Invoice payments", status: "success", written: 1, skipped: 0, failed: 0 },
+      ],
+      noLocalDeletes: true,
     });
     localStorage.clear();
     localStorage.setItem(
@@ -411,6 +445,61 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Local counts: customers/i)).toBeInTheDocument();
     expect(screen.getByText(/Cloud counts: customers 0, projects 0, estimates 0, invoices 0, invoice payments 0\./i)).toBeInTheDocument();
     expect(screen.getByText(/No Supabase writes were performed\./i)).toBeInTheDocument();
+  });
+
+  test("requires preview plus typed MIGRATE before running the cloud migration write", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    isSupabaseMigrationPreviewReady.mockImplementation((preview) => Boolean(preview?.company?.id));
+
+    render(<AdvancedSettingsScreen />);
+
+    const migrateButton = screen.getByRole("button", { name: "Migrate Local Data to Cloud" });
+    expect(migrateButton).toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Preview Local Data Migration" }));
+    });
+
+    expect(migrateButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type MIGRATE to confirm"), {
+      target: { value: "MIGRATE" },
+    });
+
+    expect(migrateButton).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(migrateButton);
+    });
+
+    expect(runSupabaseMigrationWrite).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1", name: "Field Pocket LLC" }),
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: expect.objectContaining({
+        company: expect.objectContaining({ id: "company_1", name: "Field Pocket LLC" }),
+      }),
+    }));
+    expect(screen.getByText(/Cloud migration completed\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Customers: success, written 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Invoice payments: success, written 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Local data remains in localStorage after this migration step\./i)).toBeInTheDocument();
   });
 
   test("shows no-membership state without crashing", () => {
