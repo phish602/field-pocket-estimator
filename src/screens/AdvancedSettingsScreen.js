@@ -5,6 +5,7 @@ import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
 import { appendAuditEvent, createStoredAuditEvent, readStoredAuditEvents } from "../utils/auditStore";
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
+import useSupabaseAuth from "../lib/useSupabaseAuth";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -175,9 +176,21 @@ export default function AdvancedSettingsScreen({
   const [busyLabel, setBusyLabel] = useState("");
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
+  const [cloudEmail, setCloudEmail] = useState("");
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
+  const {
+    configured: isSupabaseReady,
+    missingEnvKeys,
+    loading: authLoading,
+    authBusy,
+    userEmail,
+    errorMessage: authErrorMessage,
+    infoMessage: authInfoMessage,
+    signInWithEmailOtp,
+    signOut,
+  } = useSupabaseAuth();
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -282,6 +295,10 @@ export default function AdvancedSettingsScreen({
     } finally {
       setBusyLabel("");
     }
+  };
+
+  const requestCloudSignIn = async () => {
+    await signInWithEmailOtp(cloudEmail);
   };
 
   const clearDiagnosticsMessage = () => {
@@ -656,6 +673,81 @@ export default function AdvancedSettingsScreen({
           </div>
 
           <div style={shortcutGridStyle}>
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+              <div className="pe-field-label" style={{ marginBottom: 2 }}>Account &amp; Cloud Sync</div>
+              <div className="pe-field-helper" style={{ marginTop: -4 }}>
+                Connect your cloud account first. Customer, project, estimate, and invoice storage still remains local in this lane.
+              </div>
+              {!isSupabaseReady ? (
+                <>
+                  <div className="pe-field-helper">
+                    Supabase not configured. Set {missingEnvKeys.join(" and ")} to enable account sign-in.
+                  </div>
+                  <div className="pe-field-helper">
+                    Download Backup JSON in Developer Tools before any future migration or cloud-write step.
+                  </div>
+                </>
+              ) : authLoading ? (
+                <div className="pe-field-helper">Checking cloud account session...</div>
+              ) : userEmail ? (
+                <>
+                  <div className="pe-field-helper">
+                    Signed in as <strong>{userEmail}</strong>.
+                  </div>
+                  <div className="pe-field-helper">
+                    Cloud account connected. Data migration/sync not enabled yet.
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={signOut}
+                      disabled={authBusy}
+                    >
+                      {authBusy ? "Signing Out..." : "Sign Out"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="pe-field-helper">
+                    Sign in with a magic link. Cloud data sync is not active yet.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input
+                      type="email"
+                      className="pe-input"
+                      style={{ minWidth: 220, flex: "1 1 220px" }}
+                      value={cloudEmail}
+                      onChange={(e) => setCloudEmail(e.target.value)}
+                      placeholder="name@company.com"
+                      autoComplete="email"
+                      aria-label="Account email"
+                      disabled={authBusy}
+                    />
+                    <button
+                      type="button"
+                      className="pe-btn"
+                      onClick={requestCloudSignIn}
+                      disabled={authBusy}
+                    >
+                      {authBusy ? "Sending Link..." : "Email Sign-In Link"}
+                    </button>
+                  </div>
+                </>
+              )}
+              {authErrorMessage ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                  {authErrorMessage}
+                </div>
+              ) : null}
+              {!authErrorMessage && authInfoMessage ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                  {authInfoMessage}
+                </div>
+              ) : null}
+            </div>
+
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
               <div className="pe-field-label" style={{ marginBottom: 2 }}>Templates</div>
               <div className="pe-field-helper" style={{ marginTop: -4 }}>

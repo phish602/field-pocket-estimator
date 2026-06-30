@@ -2,6 +2,29 @@ import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import AdvancedSettingsScreen from "./AdvancedSettingsScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import useSupabaseAuth from "../lib/useSupabaseAuth";
+
+jest.mock("../lib/useSupabaseAuth", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+function buildAuthState(overrides = {}) {
+  return {
+    configured: false,
+    missingEnvKeys: ["REACT_APP_SUPABASE_URL", "REACT_APP_SUPABASE_ANON_KEY"],
+    loading: false,
+    authBusy: false,
+    session: null,
+    user: null,
+    userEmail: "",
+    errorMessage: "",
+    infoMessage: "",
+    signInWithEmailOtp: jest.fn(),
+    signOut: jest.fn(),
+    ...overrides,
+  };
+}
 
 describe("AdvancedSettingsScreen diagnostics export", () => {
   let createObjectURLSpy;
@@ -21,6 +44,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
   }
 
   beforeEach(() => {
+    useSupabaseAuth.mockReturnValue(buildAuthState());
     localStorage.clear();
     localStorage.setItem(
       STORAGE_KEYS.COMPANY_PROFILE,
@@ -199,9 +223,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByText(/Configure business defaults, document behavior, internal visibility, and local tools/i)).toBeInTheDocument();
     expect(screen.getByText("Business Profile")).toBeInTheDocument();
+    expect(screen.getByText("Account & Cloud Sync")).toBeInTheDocument();
     expect(screen.getByText("Templates")).toBeInTheDocument();
     expect(screen.getByText("Reports & Bookkeeping")).toBeInTheDocument();
     expect(screen.getByText("Developer Tools")).toBeInTheDocument();
+    expect(screen.getByText(/Supabase not configured/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download Backup JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export Raw App Data" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import Raw App Data" })).toBeInTheDocument();
@@ -213,6 +239,44 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(onOpenCompanyProfile).toHaveBeenCalledTimes(1);
     expect(onOpenTemplates).toHaveBeenCalledTimes(1);
     expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows signed-out cloud auth controls and sends an OTP sign-in request", () => {
+    const signInWithEmailOtp = jest.fn();
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      signInWithEmailOtp,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    fireEvent.change(screen.getByLabelText("Account email"), {
+      target: { value: "owner@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Email Sign-In Link" }));
+
+    expect(signInWithEmailOtp).toHaveBeenCalledWith("owner@example.com");
+    expect(screen.getByText(/Cloud data sync is not active yet/i)).toBeInTheDocument();
+  });
+
+  test("shows signed-in cloud account state and allows sign out", () => {
+    const signOut = jest.fn();
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      userEmail: "owner@example.com",
+      user: { email: "owner@example.com" },
+      session: { user: { email: "owner@example.com" } },
+      signOut,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText(/Signed in as/i)).toBeInTheDocument();
+    expect(screen.getByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign Out" }));
+    expect(signOut).toHaveBeenCalledTimes(1);
   });
 
   test("downloads the local backup artifact without mutating stored app data", async () => {

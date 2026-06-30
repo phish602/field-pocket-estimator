@@ -46,16 +46,16 @@ describe("supabaseClient", () => {
       missingKeys: [],
     });
     expect(createClient).toHaveBeenCalledWith(
-      "https://example.supabase.co",
-      "sb_publishable_fake_test_key",
-      {
-        auth: {
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-          persistSession: false,
+        "https://example.supabase.co",
+        "sb_publishable_fake_test_key",
+        {
+          auth: {
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+            persistSession: true,
+          },
         },
-      },
-    );
+      );
     expect(module.supabase).toEqual({ __mockSupabaseClient: true });
   });
 });

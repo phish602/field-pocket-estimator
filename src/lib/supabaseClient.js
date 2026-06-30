@@ -7,9 +7,9 @@ export const isSupabaseConfigured = supabaseEnv.isConfigured;
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseEnv.url, supabaseEnv.anonKey, {
       auth: {
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-        persistSession: false,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        persistSession: true,
       },
     })
   : null;
