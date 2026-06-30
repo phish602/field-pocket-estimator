@@ -1190,6 +1190,7 @@ function QuickMenu({ open, onClose, onSelect }) {
   const items = [
     { key: ROUTES.HOME, label: "Home" },
     { key: ROUTES.CREATE, label: "Create" },
+    { key: ROUTES.PROJECTS, label: "Projects" },
     { key: ROUTES.ESTIMATES, label: "Estimates" },
     { key: ROUTES.INVOICES, label: "Invoices" },
     { key: ROUTES.COMPANY_PROFILE, label: "Company Profile" },
@@ -4116,6 +4117,10 @@ const gated = false;
           }
           if (key === ROUTES.CREATE) {
             setCreateLauncherOpen(true);
+            return;
+          }
+          if (key === ROUTES.PROJECTS) {
+            navigateTo(ROUTES.PROJECTS);
             return;
           }
           if (key === ROUTES.ESTIMATES) {
