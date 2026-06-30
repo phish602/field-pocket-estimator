@@ -7,6 +7,7 @@ import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
+import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -101,6 +102,11 @@ function mergeSettingsSafe(base, incoming) {
   });
 }
 
+function inferWorkspaceName() {
+  const profile = readStoredJson(STORAGE_KEYS.COMPANY_PROFILE, {});
+  return String(profile?.companyName || profile?.name || "").trim();
+}
+
 function SettingRow({ title, hint, control }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -178,6 +184,7 @@ export default function AdvancedSettingsScreen({
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
+  const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -200,9 +207,21 @@ export default function AdvancedSettingsScreen({
     loading: accountLoading,
     error: accountError,
     hasCompany,
+    refresh: refreshAccountStatus,
   } = useSupabaseAccount({
     configured: isSupabaseReady,
     user,
+  });
+  const {
+    createWorkspace,
+    creating: creatingWorkspace,
+    error: workspaceError,
+    success: workspaceSuccess,
+  } = useSupabaseWorkspaceBootstrap({
+    configured: isSupabaseReady,
+    user,
+    hasMembership: Boolean(companyUser),
+    onCreated: refreshAccountStatus,
   });
 
   useEffect(() => {
@@ -312,6 +331,13 @@ export default function AdvancedSettingsScreen({
 
   const requestCloudSignIn = async () => {
     await signInWithEmailOtp(cloudEmail);
+  };
+
+  const submitWorkspaceCreate = async () => {
+    const response = await createWorkspace(workspaceName);
+    if (response?.ok) {
+      setWorkspaceName(String(response?.result?.company?.company_name || response?.result?.company?.name || workspaceName).trim());
+    }
   };
 
   const clearDiagnosticsMessage = () => {
@@ -721,7 +747,36 @@ export default function AdvancedSettingsScreen({
                     </div>
                   ) : null}
                   {!accountLoading && !accountError && !companyUser ? (
-                    <div className="pe-field-helper">No company membership found yet.</div>
+                    <>
+                      <div className="pe-field-helper">No company membership found yet.</div>
+                      <div className="pe-field-helper">
+                        This creates your cloud workspace only. Data migration/sync is not enabled yet.
+                      </div>
+                      <div style={{ display: "grid", gap: 8, maxWidth: 440 }}>
+                        <label className="pe-field-helper" htmlFor="cloud-workspace-name" style={{ marginTop: 2 }}>
+                          Company / Workspace Name
+                        </label>
+                        <input
+                          id="cloud-workspace-name"
+                          type="text"
+                          className="pe-input"
+                          value={workspaceName}
+                          onChange={(e) => setWorkspaceName(e.target.value)}
+                          placeholder="Field Pocket LLC"
+                          disabled={creatingWorkspace}
+                        />
+                        <div>
+                          <button
+                            type="button"
+                            className="pe-btn"
+                            onClick={submitWorkspaceCreate}
+                            disabled={creatingWorkspace}
+                          >
+                            {creatingWorkspace ? "Creating..." : "Create Cloud Workspace"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
                   ) : null}
                   {!accountLoading && !accountError && companyUser && !hasCompany ? (
                     <div className="pe-field-helper">Company record not found for this membership yet.</div>
@@ -778,9 +833,19 @@ export default function AdvancedSettingsScreen({
                   {accountError}
                 </div>
               ) : null}
+              {!authErrorMessage && !accountError && workspaceError ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                  {workspaceError}
+                </div>
+              ) : null}
               {!authErrorMessage && authInfoMessage ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
                   {authInfoMessage}
+                </div>
+              ) : null}
+              {!authErrorMessage && !accountError && workspaceSuccess ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                  {workspaceSuccess}
                 </div>
               ) : null}
             </div>

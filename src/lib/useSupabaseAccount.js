@@ -18,6 +18,7 @@ export default function useSupabaseAccount({ configured = false, user = null } =
   const [role, setRole] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     const client = getSupabaseClient();
@@ -94,7 +95,7 @@ export default function useSupabaseAccount({ configured = false, user = null } =
     return () => {
       active = false;
     };
-  }, [configured, user]);
+  }, [configured, user, refreshTick]);
 
   return {
     configured: Boolean(configured),
@@ -106,5 +107,6 @@ export default function useSupabaseAccount({ configured = false, user = null } =
     loading,
     error,
     hasCompany: Boolean(company),
+    refresh: () => setRefreshTick((value) => value + 1),
   };
 }

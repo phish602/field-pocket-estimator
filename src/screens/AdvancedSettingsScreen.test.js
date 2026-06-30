@@ -4,6 +4,7 @@ import AdvancedSettingsScreen from "./AdvancedSettingsScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
+import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -11,6 +12,11 @@ jest.mock("../lib/useSupabaseAuth", () => ({
 }));
 
 jest.mock("../lib/useSupabaseAccount", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock("../lib/useSupabaseWorkspaceBootstrap", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
@@ -43,6 +49,18 @@ function buildAccountState(overrides = {}) {
     loading: false,
     error: "",
     hasCompany: false,
+    refresh: jest.fn(),
+    ...overrides,
+  };
+}
+
+function buildWorkspaceBootstrapState(overrides = {}) {
+  return {
+    createWorkspace: jest.fn(() => ({ ok: true })),
+    creating: false,
+    error: "",
+    success: "",
+    result: null,
     ...overrides,
   };
 }
@@ -67,6 +85,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
   beforeEach(() => {
     useSupabaseAuth.mockReturnValue(buildAuthState());
     useSupabaseAccount.mockReturnValue(buildAccountState());
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
     localStorage.clear();
     localStorage.setItem(
       STORAGE_KEYS.COMPANY_PROFILE,
@@ -342,6 +361,59 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     render(<AdvancedSettingsScreen />);
 
     expect(screen.getByText("No company membership found yet.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Company / Workspace Name")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Cloud Workspace" })).toBeInTheDocument();
+    expect(screen.getByText(/This creates your cloud workspace only/i)).toBeInTheDocument();
+  });
+
+  test("creates a cloud workspace only from the explicit no-membership form", async () => {
+    const createWorkspace = jest.fn(() => ({ ok: true }));
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_4", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_4", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_4", email: "owner@example.com" },
+    }));
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState({
+      createWorkspace,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    fireEvent.change(screen.getByLabelText("Company / Workspace Name"), {
+      target: { value: "Field Pocket LLC" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Create Cloud Workspace" }));
+    });
+
+    expect(createWorkspace).toHaveBeenCalledWith("Field Pocket LLC");
+  });
+
+  test("hides the workspace-create form once membership exists", () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_5", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_5", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_5", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.queryByLabelText("Company / Workspace Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create Cloud Workspace" })).not.toBeInTheDocument();
   });
 
   test("downloads the local backup artifact without mutating stored app data", async () => {
