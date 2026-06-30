@@ -54,6 +54,15 @@ function createMockClient({ rowsByTable = {}, countErrorsByTable = {}, rowErrors
           }),
         };
       }
+      if (table === "app_settings") {
+        const eq3 = jest.fn(async () => {
+          if (rowErrorsByTable[table]) return { data: null, error: rowErrorsByTable[table] };
+          return { data: rowsByTable[table] || [], error: null };
+        });
+        const eq2 = jest.fn(() => ({ eq: eq3 }));
+        const eq1 = jest.fn(() => ({ eq: eq2 }));
+        return { eq: eq1 };
+      }
       return {
         eq: jest.fn(async () => {
           if (rowErrorsByTable[table]) return { data: null, error: rowErrorsByTable[table] };
@@ -200,6 +209,33 @@ function cloudEstimateRow(overrides = {}) {
   };
 }
 
+function appRestoreBundleRow(overrides = {}) {
+  return {
+    id: "bundle_row_1",
+    company_id: "company_1",
+    setting_scope: "company",
+    setting_key: "app_restore_bundle",
+    setting_value: {
+      schema: "estipaid.app.restore_bundle",
+      version: 1,
+      capturedFrom: "localStorage",
+      companyProfile: {
+        companyName: "AAS Property Care",
+        phone: "5551234567",
+        logoDataUrl: "data:image/png;base64,abc123",
+      },
+      settings: {
+        pdf: { includeLogo: true },
+        pricing: { defaultMarkupPct: 12 },
+      },
+      scopeTemplates: [
+        { id: "tmpl_1", name: "Roof Repair", scopeText: "Repair roof leak" },
+      ],
+    },
+    ...overrides,
+  };
+}
+
 function fullCloudRows(overrides = {}) {
   return {
     customers: [cloudCustomerRow()],
@@ -294,6 +330,31 @@ describe("supabaseCloudRestore", () => {
           }),
         }),
       ]));
+    });
+
+    test("preview stops warning about missing app restore coverage when a valid bundle exists", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: {
+          ...fullCloudRows(),
+          app_settings: [appRestoreBundleRow()],
+        },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.appBundleAvailable).toBe(true);
+      expect(result.appBundleSummary).toEqual(expect.objectContaining({
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      }));
+      expect(result.notices.some((notice) => notice.code === "supplemental_restore_not_available")).toBe(false);
     });
 
     test("reports a partial-eligible result with an estimate blocker when the cloud also has estimates", async () => {
@@ -518,6 +579,43 @@ describe("supabaseCloudRestore", () => {
           lineItems: [expect.objectContaining({ id: "invoice:inv_1:line:0", description: "Material", price: 1000 })],
           payments: [expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" })],
         }),
+      ]);
+    });
+
+    test("empty-device restore writes company profile, settings, and scope templates when a valid bundle exists", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: {
+          ...fullCloudRows(),
+          app_settings: [appRestoreBundleRow()],
+        },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.appBundleRestored).toBe(true);
+      expect(result.appBundleSummary).toEqual(expect.objectContaining({
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      }));
+      expect(result.notices.some((notice) => notice.code === "supplemental_restore_not_available")).toBe(false);
+      expect(storage.setItem).toHaveBeenCalledWith(STORAGE_KEYS.COMPANY_PROFILE, expect.any(String));
+      expect(storage.setItem).toHaveBeenCalledWith(STORAGE_KEYS.SETTINGS, expect.any(String));
+      expect(storage.setItem).toHaveBeenCalledWith(STORAGE_KEYS.SCOPE_TEMPLATES, expect.any(String));
+
+      expect(JSON.parse(storage.__store[STORAGE_KEYS.COMPANY_PROFILE])).toEqual(expect.objectContaining({
+        companyName: "AAS Property Care",
+        logoDataUrl: "data:image/png;base64,abc123",
+      }));
+      expect(JSON.parse(storage.__store[STORAGE_KEYS.SETTINGS])).toEqual(expect.objectContaining({
+        pdf: expect.objectContaining({ includeLogo: true }),
+      }));
+      expect(JSON.parse(storage.__store[STORAGE_KEYS.SCOPE_TEMPLATES])).toEqual([
+        expect.objectContaining({ id: "tmpl_1", name: "Roof Repair" }),
       ]);
     });
 

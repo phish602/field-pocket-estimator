@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
+import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
@@ -137,6 +138,24 @@ async function readCloudRows(client, table, companyId) {
   }
 }
 
+async function readAppRestoreBundleResult(client, companyId) {
+  try {
+    return await readSupabaseAppRestoreBundle({ client, companyId });
+  } catch {
+    return {
+      status: "error",
+      bundle: null,
+      notices: [buildNotice("warning", "app_restore_bundle_read_failed", "Unable to read the app restore bundle from Supabase.")],
+      captureSummary: {
+        companyProfileCaptured: false,
+        logoDataUrlCaptured: false,
+        settingsCaptured: false,
+        scopeTemplatesCaptured: false,
+      },
+    };
+  }
+}
+
 function buildPreviewResult(status, extra = {}) {
   return {
     restoreVersion: SUPABASE_CLOUD_RESTORE_VERSION,
@@ -146,6 +165,13 @@ function buildPreviewResult(status, extra = {}) {
     localCounts: null,
     blockers: [],
     notices: [],
+    appBundleAvailable: false,
+    appBundleSummary: {
+      companyProfileCaptured: false,
+      logoDataUrlCaptured: false,
+      settingsCaptured: false,
+      scopeTemplatesCaptured: false,
+    },
     noWritesPerformed: true,
     ...extra,
   };
@@ -192,6 +218,7 @@ export async function previewSupabaseCloudRestore({
   const estimateCount = Number(cloudCounts.estimates || 0);
   const estimateLineItemCount = Number(cloudCounts.estimate_line_items || 0);
   const coreCloudTotal = Number(cloudCounts.customers || 0) + Number(cloudCounts.projects || 0) + Number(cloudCounts.invoices || 0) + estimateCount;
+  const appBundle = await readAppRestoreBundleResult(client, companyId);
 
   const blockers = [];
   if (estimateCount > 0) {
@@ -205,7 +232,14 @@ export async function previewSupabaseCloudRestore({
   }
 
   if (coreCloudTotal === 0) {
-    return buildPreviewResult(CLOUD_RESTORE_STATUS.NO_CLOUD_DATA, { localCounts, cloudCounts, blockers, notices });
+    return buildPreviewResult(CLOUD_RESTORE_STATUS.NO_CLOUD_DATA, {
+      localCounts,
+      cloudCounts,
+      blockers,
+      notices: [...notices, ...appBundle.notices],
+      appBundleAvailable: appBundle.status === "available",
+      appBundleSummary: appBundle.captureSummary,
+    });
   }
 
   return buildPreviewResult(CLOUD_RESTORE_STATUS.ELIGIBLE, {
@@ -214,7 +248,11 @@ export async function previewSupabaseCloudRestore({
     localCounts,
     cloudCounts,
     blockers,
-    notices: [...notices, buildSupplementalRestoreCoverageNotice()],
+    notices: appBundle.status === "available"
+      ? [...notices, ...appBundle.notices]
+      : [...notices, ...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+    appBundleAvailable: appBundle.status === "available",
+    appBundleSummary: appBundle.captureSummary,
   });
 }
 
@@ -336,7 +374,7 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
 // rows. Pure -- never touches localStorage. Throws if any row is missing the
 // identity (legacy_local_id) needed to restore it, so the caller can abort
 // before writing anything.
-function buildLocalRestorePayload({ customers, projects, invoices, invoicePayments, invoiceLineItems, estimates }) {
+function buildLocalRestorePayload({ customers, projects, invoices, invoicePayments, invoiceLineItems, estimates, appRestoreBundle = null }) {
   const customerIdByCloudId = buildLegacyIdMap(customers);
   const projectIdByCloudId = buildLegacyIdMap(projects);
   const invoiceLegacyIdByCloudId = buildLegacyIdMap(invoices);
@@ -374,17 +412,38 @@ function buildLocalRestorePayload({ customers, projects, invoices, invoicePaymen
     row, customerIdByCloudId, projectIdByCloudId, lineItemsByInvoiceCloudId, paymentsByInvoiceCloudId
   ));
   const localEstimates = (Array.isArray(estimates) ? estimates : []).map(mapCloudEstimateToLocal);
+  const companyProfile = appRestoreBundle?.companyProfile ?? null;
+  const settings = appRestoreBundle?.settings ?? null;
+  const scopeTemplates = appRestoreBundle?.scopeTemplates ?? null;
 
-  return { customers: localCustomers, projects: localProjects, invoices: localInvoices, estimates: localEstimates };
+  return {
+    customers: localCustomers,
+    projects: localProjects,
+    invoices: localInvoices,
+    estimates: localEstimates,
+    companyProfile,
+    settings,
+    scopeTemplates,
+  };
 }
 
-function dispatchChangeEvents(includeEstimates) {
+function dispatchLocalStorageEvent(key, value) {
+  try {
+    if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+    window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key, value } }));
+  } catch {}
+}
+
+function dispatchChangeEvents({ includeEstimates, includeCompanyProfile, includeSettings, includeScopeTemplates, values }) {
   try {
     if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
     window.dispatchEvent(new Event("estipaid:customers-changed"));
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     window.dispatchEvent(new Event("estipaid:invoices-changed"));
     if (includeEstimates) window.dispatchEvent(new Event("estipaid:estimates-changed"));
+    if (includeSettings) window.dispatchEvent(new Event("estipaid:settings-changed"));
+    if (includeCompanyProfile) dispatchLocalStorageEvent(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(values?.companyProfile ?? null));
+    if (includeScopeTemplates) dispatchLocalStorageEvent(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify(values?.scopeTemplates ?? []));
   } catch {
     // Best-effort same-tab refresh signal only; restore itself already succeeded.
   }
@@ -399,6 +458,13 @@ function buildExecuteResult(status, extra = {}) {
     restoredCounts: null,
     blockers: [],
     notices: [],
+    appBundleRestored: false,
+    appBundleSummary: {
+      companyProfileCaptured: false,
+      logoDataUrlCaptured: false,
+      settingsCaptured: false,
+      scopeTemplatesCaptured: false,
+    },
     noWritesPerformed: true,
     noCloudDataDeleted: true,
     noExistingLocalDataOverwritten: true,
@@ -455,6 +521,7 @@ export async function executeSupabaseCloudRestore({
   const estimateCount = fetched.estimates.length;
   const estimateLineItemCount = fetched.estimate_line_items.length;
   const estimatesFullyRestorable = estimateCount > 0 && fetched.estimates.every(hasValidRestorePayload);
+  const appBundle = await readAppRestoreBundleResult(client, companyId);
   const blockers = (estimateCount > 0 && !estimatesFullyRestorable)
     ? [buildEstimateBlockerNotice(estimateCount, estimateLineItemCount)]
     : [];
@@ -481,10 +548,15 @@ export async function executeSupabaseCloudRestore({
       // the original labor/materials line structure faithfully, so the
       // flattened estimate_line_items rows are redundant for restore.
       estimates: estimatesFullyRestorable ? fetched.estimates : [],
+      appRestoreBundle: appBundle.status === "available" ? appBundle.bundle : null,
     });
   } catch (error) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
       error: asText(error?.message) || "Unable to map cloud data to local records.",
+      notices: appBundle.status === "available"
+        ? [...appBundle.notices]
+        : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+      appBundleSummary: appBundle.captureSummary,
     });
   }
 
@@ -502,20 +574,43 @@ export async function executeSupabaseCloudRestore({
     if (payload.estimates.length > 0) {
       storage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify(payload.estimates));
     }
+    if (payload.companyProfile) {
+      storage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(payload.companyProfile));
+    }
+    if (payload.settings) {
+      storage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(payload.settings));
+    }
+    if (Array.isArray(payload.scopeTemplates)) {
+      storage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify(payload.scopeTemplates));
+    }
   } catch (error) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
       error: asText(error?.message) || "Restore failed while writing local data.",
+      notices: appBundle.status === "available"
+        ? [...appBundle.notices]
+        : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+      appBundleSummary: appBundle.captureSummary,
       noWritesPerformed: false,
     });
   }
 
-  dispatchChangeEvents(payload.estimates.length > 0);
+  dispatchChangeEvents({
+    includeEstimates: payload.estimates.length > 0,
+    includeCompanyProfile: Boolean(payload.companyProfile),
+    includeSettings: Boolean(payload.settings),
+    includeScopeTemplates: Array.isArray(payload.scopeTemplates),
+    values: payload,
+  });
 
   return buildExecuteResult(CLOUD_RESTORE_STATUS.RESTORED, {
     restored: true,
     partial: blockers.length > 0,
     blockers,
-    notices: [buildSupplementalRestoreCoverageNotice()],
+    notices: appBundle.status === "available"
+      ? [...appBundle.notices]
+      : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+    appBundleRestored: appBundle.status === "available",
+    appBundleSummary: appBundle.captureSummary,
     noWritesPerformed: false,
     restoredCounts: {
       customers: payload.customers.length,

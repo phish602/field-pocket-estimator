@@ -25,6 +25,10 @@ import {
   updateEstimateRestorePayloads,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
 } from "../lib/supabaseEstimateRestorePayload";
+import {
+  updateSupabaseAppRestoreBundle,
+  APP_RESTORE_BUNDLE_STATUS,
+} from "../lib/supabaseAppRestoreBundle";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -224,6 +228,9 @@ export default function AdvancedSettingsScreen({
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState(null);
+  const [appBundleConfirmText, setAppBundleConfirmText] = useState("");
+  const [appBundleBusy, setAppBundleBusy] = useState(false);
+  const [appBundleResult, setAppBundleResult] = useState(null);
   const [estimatePayloadConfirmText, setEstimatePayloadConfirmText] = useState("");
   const [estimatePayloadBusy, setEstimatePayloadBusy] = useState(false);
   const [estimatePayloadResult, setEstimatePayloadResult] = useState(null);
@@ -619,6 +626,39 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setRestoreBusy(false);
+    }
+  };
+
+  const runUpdateAppRestoreBundle = async () => {
+    try {
+      setAppBundleBusy(true);
+      const result = await updateSupabaseAppRestoreBundle({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+      });
+      setAppBundleResult(result);
+      if (result?.status === APP_RESTORE_BUNDLE_STATUS.COMPLETED) {
+        setAppBundleConfirmText("");
+      }
+    } catch {
+      setAppBundleResult({
+        status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+        bundleUpdated: false,
+        noLocalDataChanged: true,
+        captureSummary: {
+          companyProfileCaptured: false,
+          logoDataUrlCaptured: false,
+          settingsCaptured: false,
+          scopeTemplatesCaptured: false,
+        },
+        notices: [],
+        error: "Unable to update the app restore bundle.",
+      });
+    } finally {
+      setAppBundleBusy(false);
     }
   };
 
@@ -1196,7 +1236,11 @@ export default function AdvancedSettingsScreen({
                         {restoreResult?.partial ? (
                           <div className="pe-field-helper">Estimates were not restored yet — only customers, projects, and invoices.</div>
                         ) : null}
-                        {getRestoreCoverageNoticeMessages(restoreResult).length > 0 ? (
+                        {restoreResult?.appBundleRestored ? (
+                          <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                            Company profile, logo, settings, and scope templates restored.
+                          </div>
+                        ) : getRestoreCoverageNoticeMessages(restoreResult).length > 0 ? (
                           <div className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
                             Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.
                           </div>
@@ -1601,6 +1645,104 @@ export default function AdvancedSettingsScreen({
                     </div>
                   </div>
                 ) : null}
+
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid rgba(148,163,184,0.18)",
+                  }}
+                >
+                  <div className="pe-field-label" style={{ marginBottom: 0 }}>Update App Restore Bundle</div>
+                  <div className="pe-field-helper">
+                    Stores this device&apos;s company profile, logo, settings, and scope templates in Supabase for restore on another device.
+                  </div>
+                  <label className="pe-field-helper" htmlFor="app-bundle-confirm-input" style={{ marginTop: 2 }}>
+                    Type BUNDLE to confirm
+                  </label>
+                  <input
+                    id="app-bundle-confirm-input"
+                    type="text"
+                    className="pe-input"
+                    value={appBundleConfirmText}
+                    onChange={(e) => setAppBundleConfirmText(e.target.value)}
+                    placeholder="BUNDLE"
+                    disabled={appBundleBusy}
+                    style={{ maxWidth: 220 }}
+                  />
+                  <div>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={runUpdateAppRestoreBundle}
+                      disabled={appBundleBusy || appBundleConfirmText !== "BUNDLE"}
+                    >
+                      {appBundleBusy ? "Updating..." : "Update App Restore Bundle"}
+                    </button>
+                  </div>
+                  {appBundleResult ? (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 6,
+                        padding: 10,
+                        borderRadius: 12,
+                        border: "1px solid rgba(148,163,184,0.18)",
+                        background: "rgba(15,23,42,0.34)",
+                      }}
+                    >
+                      {appBundleResult.status === APP_RESTORE_BUNDLE_STATUS.ERROR
+                        || appBundleResult.status === APP_RESTORE_BUNDLE_STATUS.SIGNED_OUT
+                        || appBundleResult.status === APP_RESTORE_BUNDLE_STATUS.NO_WORKSPACE
+                        || appBundleResult.status === APP_RESTORE_BUNDLE_STATUS.ROLE_NOT_ALLOWED ? (
+                          <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                            {String(appBundleResult.error || "Unable to update the app restore bundle.")}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="pe-field-helper">
+                              Company profile captured: <strong>{appBundleResult?.captureSummary?.companyProfileCaptured ? "Yes" : "No"}</strong>
+                            </div>
+                            <div className="pe-field-helper">
+                              logoDataUrl captured: <strong>{appBundleResult?.captureSummary?.logoDataUrlCaptured ? "Yes" : "No"}</strong>
+                            </div>
+                            <div className="pe-field-helper">
+                              Settings captured: <strong>{appBundleResult?.captureSummary?.settingsCaptured ? "Yes" : "No"}</strong>
+                            </div>
+                            <div className="pe-field-helper">
+                              Scope templates captured: <strong>{appBundleResult?.captureSummary?.scopeTemplatesCaptured ? "Yes" : "No"}</strong>
+                            </div>
+                            <div className="pe-field-helper">
+                              Bundle updated: <strong>{appBundleResult?.bundleUpdated ? "Yes" : "No"}</strong>
+                            </div>
+                            <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                              No local data changed.
+                            </div>
+                          </>
+                        )}
+                      {Array.isArray(appBundleResult?.notices) && appBundleResult.notices.length > 0 ? (
+                        <div style={{ display: "grid", gap: 4 }}>
+                          {appBundleResult.notices.map((notice) => (
+                            <div
+                              key={String(notice?.code || notice?.message)}
+                              className="pe-field-helper"
+                              style={{
+                                color: notice?.level === "warning"
+                                  ? "rgba(253,224,71,0.95)"
+                                  : notice?.level === "error"
+                                    ? "rgba(248,113,113,0.95)"
+                                    : "rgba(191,219,254,0.95)",
+                              }}
+                            >
+                              {String(notice?.message || "")}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
 
                 <div
                   style={{

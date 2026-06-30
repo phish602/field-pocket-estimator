@@ -22,6 +22,10 @@ import {
   updateEstimateRestorePayloads,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
 } from "../lib/supabaseEstimateRestorePayload";
+import {
+  updateSupabaseAppRestoreBundle,
+  APP_RESTORE_BUNDLE_STATUS,
+} from "../lib/supabaseAppRestoreBundle";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -95,6 +99,18 @@ jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
     NO_LOCAL_ESTIMATES: "no_local_estimates",
+    COMPLETED: "completed",
+    ERROR: "error",
+  },
+}));
+
+jest.mock("../lib/supabaseAppRestoreBundle", () => ({
+  __esModule: true,
+  updateSupabaseAppRestoreBundle: jest.fn(),
+  APP_RESTORE_BUNDLE_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    ROLE_NOT_ALLOWED: "role_not_allowed",
     COMPLETED: "completed",
     ERROR: "error",
   },
@@ -174,6 +190,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     previewSupabaseCloudRestore.mockReset();
     executeSupabaseCloudRestore.mockReset();
     updateEstimateRestorePayloads.mockReset();
+    updateSupabaseAppRestoreBundle.mockReset();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
@@ -192,6 +209,18 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       blockers: [],
       notices: [],
       noWritesPerformed: true,
+    });
+    updateSupabaseAppRestoreBundle.mockResolvedValue({
+      status: APP_RESTORE_BUNDLE_STATUS.COMPLETED,
+      bundleUpdated: true,
+      noLocalDataChanged: true,
+      captureSummary: {
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      },
+      notices: [],
     });
     createSupabaseMigrationPreview.mockResolvedValue({
       validations: {
@@ -877,6 +906,82 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).toBeInTheDocument();
   });
 
+  test("restore success reports company profile, logo, settings, and scope templates restored when the app bundle is present", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      cloudCounts: { customers: 7, projects: 9, estimates: 0, invoices: 10, invoice_payments: 3, estimate_line_items: 0, invoice_line_items: 21 },
+      localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 },
+      blockers: [],
+      notices: [],
+      appBundleAvailable: true,
+      appBundleSummary: {
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      },
+      noWritesPerformed: true,
+    });
+    executeSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.RESTORED,
+      restored: true,
+      partial: false,
+      restoredCounts: { customers: 7, projects: 9, invoices: 10 },
+      blockers: [],
+      notices: [],
+      appBundleRestored: true,
+      appBundleSummary: {
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      },
+      noWritesPerformed: false,
+      noCloudDataDeleted: true,
+      noExistingLocalDataOverwritten: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud Data to This Device" }));
+    });
+
+    expect(screen.getByText("Company profile, logo, settings, and scope templates restored.")).toBeInTheDocument();
+    expect(screen.queryByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).not.toBeInTheDocument();
+  });
+
   test("restore preview blocking with local_not_empty shows the overwrite-prevention message instead of a restore button", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
@@ -1084,11 +1189,102 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Migration Preview")).toBeInTheDocument();
     expect(screen.getByText("Migration Write")).toBeInTheDocument();
     expect(screen.getByText("Cloud Verification")).toBeInTheDocument();
+    expect(screen.getAllByText("Update App Restore Bundle").length).toBeGreaterThan(0);
     expect(screen.getByText("Stores the editable estimate state in Supabase so estimates can be restored on another device.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview Local Data Migration" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Migrate Local Data to Cloud" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Verify Cloud Data" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update App Restore Bundle" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update Estimate Restore Payloads" })).toBeInTheDocument();
+  });
+
+  test("requires typed BUNDLE before the Update App Restore Bundle button enables", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    const button = screen.getByRole("button", { name: "Update App Restore Bundle" });
+    expect(button).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type BUNDLE to confirm"), { target: { value: "nope" } });
+    expect(button).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type BUNDLE to confirm"), { target: { value: "BUNDLE" } });
+    expect(button).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(updateSupabaseAppRestoreBundle).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+      role: "owner",
+    }));
+  });
+
+  test("reports company profile, logoDataUrl, settings, and scope templates capture after app restore bundle update", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    updateSupabaseAppRestoreBundle.mockResolvedValue({
+      status: APP_RESTORE_BUNDLE_STATUS.COMPLETED,
+      bundleUpdated: true,
+      noLocalDataChanged: true,
+      captureSummary: {
+        companyProfileCaptured: true,
+        logoDataUrlCaptured: true,
+        settingsCaptured: true,
+        scopeTemplatesCaptured: true,
+      },
+      notices: [],
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    fireEvent.change(screen.getByLabelText("Type BUNDLE to confirm"), { target: { value: "BUNDLE" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update App Restore Bundle" }));
+    });
+
+    expect(screen.getByText("Company profile captured:")).toBeInTheDocument();
+    expect(screen.getByText("logoDataUrl captured:")).toBeInTheDocument();
+    expect(screen.getByText("Settings captured:")).toBeInTheDocument();
+    expect(screen.getByText("Scope templates captured:")).toBeInTheDocument();
+    expect(screen.getByText("Bundle updated:")).toBeInTheDocument();
+    expect(screen.getByText("No local data changed.")).toBeInTheDocument();
   });
 
   test("requires typed PAYLOAD before the Update Estimate Restore Payloads button enables", async () => {
