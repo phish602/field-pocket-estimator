@@ -11,6 +11,28 @@ function getRedirectUrl() {
   return window.location.origin || undefined;
 }
 
+function getAuthCallbackCode() {
+  if (typeof window === "undefined" || !window.location) return "";
+  const params = new URLSearchParams(window.location.search || "");
+  return String(params.get("code") || "").trim();
+}
+
+function clearAuthCallbackUrl() {
+  if (typeof window === "undefined" || !window.location || !window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  url.searchParams.delete("type");
+  url.searchParams.delete("state");
+  url.searchParams.delete("access_token");
+  url.searchParams.delete("refresh_token");
+  url.searchParams.delete("expires_at");
+  url.searchParams.delete("expires_in");
+  url.searchParams.delete("provider_token");
+  url.searchParams.delete("provider_refresh_token");
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, document.title, next || "/");
+}
+
 export default function useSupabaseAuth() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(isSupabaseConfigured);
@@ -29,6 +51,18 @@ export default function useSupabaseAuth() {
 
     const loadSession = async () => {
       try {
+        const authCode = getAuthCallbackCode();
+        if (authCode && typeof client.auth.exchangeCodeForSession === "function") {
+          const { data, error } = await client.auth.exchangeCodeForSession(authCode);
+          if (!active) return;
+          if (error) {
+            setErrorMessage(asMessage(error, "Unable to complete Supabase sign-in."));
+          } else {
+            setSession(data?.session || null);
+            clearAuthCallbackUrl();
+          }
+        }
+
         const { data, error } = await client.auth.getSession();
         if (!active) return;
         if (error) {
@@ -50,7 +84,7 @@ export default function useSupabaseAuth() {
       if (!active) return;
       setSession(nextSession || null);
       setLoading(false);
-      setErrorMessage("");
+      if (nextSession) setErrorMessage("");
     });
 
     const subscription = authListener?.data?.subscription || authListener?.subscription || null;

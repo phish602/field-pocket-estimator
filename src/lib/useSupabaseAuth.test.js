@@ -26,6 +26,8 @@ function createMockClient({
   signInError = null,
   signOutError = null,
   getSessionError = null,
+  exchangeSession = null,
+  exchangeError = null,
 } = {}) {
   let authListener = null;
   const subscription = { unsubscribe: jest.fn() };
@@ -43,6 +45,10 @@ function createMockClient({
       signInWithOtp: jest.fn(async () => ({
         data: {},
         error: signInError,
+      })),
+      exchangeCodeForSession: jest.fn(async () => ({
+        data: { session: exchangeSession },
+        error: exchangeError,
       })),
       signOut: jest.fn(async () => ({
         error: signOutError,
@@ -70,6 +76,12 @@ describe("useSupabaseAuth", () => {
     };
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
+    window.history.replaceState({}, "", "/");
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
   });
 
   test("fails safely when the Supabase client is unavailable", async () => {
@@ -113,6 +125,49 @@ describe("useSupabaseAuth", () => {
 
     unmount();
     expect(mock.subscription.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test("exchanges callback code for session and clears the callback URL", async () => {
+    const exchangedSession = { user: { id: "user_1", email: "owner@example.com" } };
+    const mock = createMockClient({
+      session: exchangedSession,
+      exchangeSession: exchangedSession,
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?code=callback-code&type=magiclink");
+    const replaceStateSpy = jest.spyOn(window.history, "replaceState");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.userEmail).toBe("owner@example.com");
+    });
+
+    expect(mock.client.auth.exchangeCodeForSession).toHaveBeenCalledWith("callback-code");
+    expect(mock.client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(replaceStateSpy).toHaveBeenCalled();
+    expect(window.location.search).toBe("");
+  });
+
+  test("reports callback exchange failure safely and keeps sign-in available", async () => {
+    const mock = createMockClient({
+      session: null,
+      exchangeError: { message: "invalid or expired code" },
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?code=bad-code&type=magiclink");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.errorMessage).toBe("invalid or expired code");
+    });
+
+    expect(mock.client.auth.exchangeCodeForSession).toHaveBeenCalledWith("bad-code");
+    expect(result.current.session).toBeNull();
+    expect(window.location.search).toContain("code=bad-code");
   });
 
   test("sends magic-link sign-in requests and signs out through Supabase auth only", async () => {
