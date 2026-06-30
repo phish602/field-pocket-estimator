@@ -11,6 +11,11 @@ import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap"
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
+import {
+  checkSupabaseCloudOnboardingStatus,
+  runSupabaseCloudOnboardingBackup,
+  CLOUD_ONBOARDING_STATUS,
+} from "../lib/supabaseCloudOnboarding";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -195,6 +200,9 @@ export default function AdvancedSettingsScreen({
   const [migrationResult, setMigrationResult] = useState(null);
   const [cloudVerifyBusy, setCloudVerifyBusy] = useState(false);
   const [cloudVerification, setCloudVerification] = useState(null);
+  const [onboardingStatusBusy, setOnboardingStatusBusy] = useState(false);
+  const [onboardingStatus, setOnboardingStatus] = useState(null);
+  const [onboardingBackupBusy, setOnboardingBackupBusy] = useState(false);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -450,6 +458,76 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setCloudVerifyBusy(false);
+    }
+  };
+
+  // Read-only: checks whether the cloud already matches local data so the
+  // contractor-facing Cloud Backup section can show a simple state without
+  // requiring any click. This never writes.
+  useEffect(() => {
+    let active = true;
+    const userId = String(user?.id || "").trim();
+    const companyId = String(company?.id || "").trim();
+
+    if (!isSupabaseReady || !userId || !companyId) {
+      setOnboardingStatus(null);
+      return undefined;
+    }
+
+    setOnboardingStatusBusy(true);
+    checkSupabaseCloudOnboardingStatus({
+      storageSnapshot: localStorage,
+      configured: isSupabaseReady,
+      user,
+      company,
+      role: accountRole,
+    })
+      .then((result) => {
+        if (active) setOnboardingStatus(result);
+      })
+      .catch(() => {
+        if (active) {
+          setOnboardingStatus({
+            status: CLOUD_ONBOARDING_STATUS.ERROR,
+            preview: null,
+            verification: null,
+            writeResult: null,
+            error: "Unable to check cloud backup status.",
+            noWritesPerformed: true,
+          });
+        }
+      })
+      .finally(() => {
+        if (active) setOnboardingStatusBusy(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isSupabaseReady, user, company, accountRole]);
+
+  const runCloudBackup = async () => {
+    try {
+      setOnboardingBackupBusy(true);
+      const result = await runSupabaseCloudOnboardingBackup({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+      });
+      setOnboardingStatus(result);
+    } catch {
+      setOnboardingStatus({
+        status: CLOUD_ONBOARDING_STATUS.ERROR,
+        preview: null,
+        verification: null,
+        writeResult: null,
+        error: "Unable to complete cloud backup.",
+        noLocalDeletes: true,
+      });
+    } finally {
+      setOnboardingBackupBusy(false);
     }
   };
 
@@ -961,6 +1039,7 @@ export default function AdvancedSettingsScreen({
                   {workspaceSuccess}
                 </div>
               ) : null}
+
               <div
                 style={{
                   display: "grid",
@@ -969,6 +1048,75 @@ export default function AdvancedSettingsScreen({
                   borderTop: "1px solid rgba(148,163,184,0.18)",
                 }}
               >
+                <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Backup</div>
+                {!isSupabaseReady || !userEmail ? (
+                  <div className="pe-field-helper">Sign in to back up your data to the cloud.</div>
+                ) : !hasCompany ? (
+                  <div className="pe-field-helper">Create a cloud workspace before backing up your data.</div>
+                ) : onboardingBackupBusy ? (
+                  <div className="pe-field-helper">Backing up your data...</div>
+                ) : onboardingStatusBusy && !onboardingStatus ? (
+                  <div className="pe-field-helper">Checking cloud backup status...</div>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA ? (
+                  <div className="pe-field-helper">No saved estimates, invoices, customers, or projects were found on this device yet.</div>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                      Your data is backed up to the cloud.
+                    </div>
+                    <div className="pe-field-helper">Cloud data matches this device.</div>
+                    <div className="pe-field-helper">No local data was deleted.</div>
+                  </>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                      Your data is backed up to the cloud.
+                    </div>
+                    <div className="pe-field-helper">Cloud data matches this device.</div>
+                  </>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
+                  || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ERROR ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                      We couldn&apos;t finish cloud backup automatically.
+                    </div>
+                    <div className="pe-field-helper">Open developer migration tools for details.</div>
+                  </>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP ? (
+                  <>
+                    <div className="pe-field-helper">
+                      We found saved estimates, invoices, customers, and projects on this device.
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        className="pe-btn"
+                        onClick={runCloudBackup}
+                        disabled={onboardingBackupBusy}
+                      >
+                        Back Up My Data to Cloud
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="pe-field-helper">
+                    Your estimates, invoices, customers, and projects can be backed up to your cloud account.
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid rgba(148,163,184,0.18)",
+                }}
+              >
+                <div className="pe-field-label" style={{ marginBottom: 0 }}>Developer Migration Tools</div>
+                <div className="pe-field-helper">
+                  Advanced tools for diagnosing cloud migration issues. Normal backups use the Cloud Backup section above.
+                </div>
                 <div className="pe-field-label" style={{ marginBottom: 0 }}>Migration Preview</div>
                 <div className="pe-field-helper">
                   Dry run the localStorage to Supabase migration plan. This checks local counts, workspace context, and optional cloud counts only.
@@ -1209,23 +1357,27 @@ export default function AdvancedSettingsScreen({
                         ))}
                       </div>
                     ) : null}
-                    {Array.isArray(cloudVerification?.notices) && cloudVerification.notices.length > 0 ? (
+                    {Array.isArray(cloudVerification?.notices) && cloudVerification.notices.some((notice) => (
+                      notice?.code !== "cloud_verification_passed" && notice?.code !== "cloud_verification_mismatch"
+                    )) ? (
                       <div style={{ display: "grid", gap: 4 }}>
-                        {cloudVerification.notices.map((notice) => (
-                          <div
-                            key={String(notice?.code || notice?.message)}
-                            className="pe-field-helper"
-                            style={{
-                              color: notice?.level === "error"
-                                ? "rgba(248,113,113,0.95)"
-                                : notice?.level === "warning"
-                                  ? "rgba(253,224,71,0.95)"
-                                  : "rgba(191,219,254,0.95)",
-                            }}
-                          >
-                            {String(notice?.message || "")}
-                          </div>
-                        ))}
+                        {cloudVerification.notices
+                          .filter((notice) => notice?.code !== "cloud_verification_passed" && notice?.code !== "cloud_verification_mismatch")
+                          .map((notice) => (
+                            <div
+                              key={String(notice?.code || notice?.message)}
+                              className="pe-field-helper"
+                              style={{
+                                color: notice?.level === "error"
+                                  ? "rgba(248,113,113,0.95)"
+                                  : notice?.level === "warning"
+                                    ? "rgba(253,224,71,0.95)"
+                                    : "rgba(191,219,254,0.95)",
+                              }}
+                            >
+                              {String(notice?.message || "")}
+                            </div>
+                          ))}
                       </div>
                     ) : null}
                     <div
