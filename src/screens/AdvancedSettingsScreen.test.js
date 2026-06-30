@@ -117,7 +117,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
         customers: 1,
         projects: 1,
         estimates: 1,
+        estimateLineItems: 1,
         invoices: 1,
+        invoiceLineItems: 1,
         invoicePayments: 1,
         scopeTemplates: 1,
         settings: 1,
@@ -126,12 +128,17 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
         customers: 0,
         projects: 0,
         estimates: 0,
+        estimateLineItems: 0,
         invoices: 0,
+        invoiceLineItems: 0,
         invoicePayments: 0,
       },
       cloudCountCheckAvailable: true,
       cloudCountStatusMessage: "Cloud count check completed.",
-      notices: [],
+      notices: [
+        { level: "warning", code: "estimate_line_items_schema_blocked", message: "Estimate line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or estimate_id + legacy_local_id." },
+        { level: "warning", code: "invoice_line_items_schema_blocked", message: "Invoice line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or invoice_id + legacy_local_id." },
+      ],
       noWritesPerformed: true,
     });
     isSupabaseMigrationPreviewReady.mockImplementation((preview) => Boolean(preview));
@@ -443,7 +450,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Current workspace:/i)).toBeInTheDocument();
     expect(screen.getByText(/Current role:/i)).toBeInTheDocument();
     expect(screen.getByText(/Local counts: customers/i)).toBeInTheDocument();
+    expect(screen.getByText(/Local line items: estimate/i)).toBeInTheDocument();
     expect(screen.getByText(/Cloud counts: customers 0, projects 0, estimates 0, invoices 0, invoice payments 0\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Cloud line items: estimate 0, invoice 0\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Estimate line items are still blocked because the documented schema has no unique idempotent upsert path/i)).toBeInTheDocument();
     expect(screen.getByText(/No Supabase writes were performed\./i)).toBeInTheDocument();
   });
 

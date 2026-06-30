@@ -968,10 +968,18 @@ export default function AdvancedSettingsScreen({
                       Local counts: customers <strong>{Number(migrationPreview?.localCounts?.customers || 0)}</strong>, projects <strong>{Number(migrationPreview?.localCounts?.projects || 0)}</strong>, estimates <strong>{Number(migrationPreview?.localCounts?.estimates || 0)}</strong>, invoices <strong>{Number(migrationPreview?.localCounts?.invoices || 0)}</strong>, invoice payments <strong>{Number(migrationPreview?.localCounts?.invoicePayments || 0)}</strong>.
                     </div>
                     <div className="pe-field-helper">
+                      Local line items: estimate <strong>{Number(migrationPreview?.localCounts?.estimateLineItems || 0)}</strong>, invoice <strong>{Number(migrationPreview?.localCounts?.invoiceLineItems || 0)}</strong>.
+                    </div>
+                    <div className="pe-field-helper">
                       {migrationPreview?.cloudCountCheckAvailable && migrationPreview?.cloudCounts
                         ? `Cloud counts: customers ${Number(migrationPreview.cloudCounts.customers || 0)}, projects ${Number(migrationPreview.cloudCounts.projects || 0)}, estimates ${Number(migrationPreview.cloudCounts.estimates || 0)}, invoices ${Number(migrationPreview.cloudCounts.invoices || 0)}, invoice payments ${Number(migrationPreview.cloudCounts.invoicePayments || 0)}.`
                         : String(migrationPreview?.cloudCountStatusMessage || "Cloud count check unavailable.")}
                     </div>
+                    {migrationPreview?.cloudCountCheckAvailable && migrationPreview?.cloudCounts ? (
+                      <div className="pe-field-helper">
+                        {`Cloud line items: estimate ${Number(migrationPreview.cloudCounts.estimateLineItems || 0)}, invoice ${Number(migrationPreview.cloudCounts.invoiceLineItems || 0)}.`}
+                      </div>
+                    ) : null}
                     {Array.isArray(migrationPreview?.notices) && migrationPreview.notices.length > 0 ? (
                       <div style={{ display: "grid", gap: 4 }}>
                         {migrationPreview.notices.map((notice) => (

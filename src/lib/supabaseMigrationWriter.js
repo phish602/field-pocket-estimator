@@ -9,7 +9,9 @@ const COUNTED_TABLES = [
   ["customers", "customers"],
   ["projects", "projects"],
   ["estimates", "estimates"],
+  ["estimate_line_items", "estimateLineItems"],
   ["invoices", "invoices"],
+  ["invoice_line_items", "invoiceLineItems"],
   ["invoice_payments", "invoicePayments"],
 ];
 const PROJECT_STATUS_MAP = new Map([
@@ -29,6 +31,10 @@ const PROJECT_STATUS_MAP = new Map([
   ["cancelled", "archived"],
   ["canceled", "archived"],
 ]);
+const ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER =
+  "Estimate line items remain blocked because the documented schema has no unique idempotent upsert path on company_id + legacy_local_id or estimate_id + legacy_local_id.";
+const INVOICE_LINE_ITEM_SCHEMA_BLOCKER =
+  "Invoice line items remain blocked because the documented schema has no unique idempotent upsert path on company_id + legacy_local_id or invoice_id + legacy_local_id.";
 
 function asText(value) {
   return String(value || "").trim();
@@ -182,6 +188,20 @@ function collectDocumentIdentifierIssues(draft) {
   });
 
   return notices;
+}
+
+function countDraftLineItems(draft) {
+  const estimateLineItems = (Array.isArray(draft?.estimates) ? draft.estimates : []).reduce((sum, estimate) => {
+    return sum + (Array.isArray(estimate?.line_items) ? estimate.line_items.length : 0);
+  }, 0);
+  const invoiceLineItems = (Array.isArray(draft?.invoices) ? draft.invoices : []).reduce((sum, invoice) => {
+    return sum + (Array.isArray(invoice?.line_items) ? invoice.line_items.length : 0);
+  }, 0);
+
+  return {
+    estimateLineItems,
+    invoiceLineItems,
+  };
 }
 
 function projectHasRealActivity(project, localSnapshot) {
@@ -396,6 +416,26 @@ function isCustomersOnlyPartialState(localCounts, cloudCounts) {
   );
 }
 
+function collectLineItemSchemaBlockers(localLineItemCounts) {
+  const notices = [];
+
+  if (Number(localLineItemCounts?.estimateLineItems || 0) > 0) {
+    notices.push(buildNotice("warning", "estimate_line_items_schema_blocked", ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER));
+  }
+  if (Number(localLineItemCounts?.invoiceLineItems || 0) > 0) {
+    notices.push(buildNotice("warning", "invoice_line_items_schema_blocked", INVOICE_LINE_ITEM_SCHEMA_BLOCKER));
+  }
+
+  return notices;
+}
+
+function hasPendingLineItemCoverage(localLineItemCounts) {
+  return (
+    Number(localLineItemCounts?.estimateLineItems || 0) > 0 ||
+    Number(localLineItemCounts?.invoiceLineItems || 0) > 0
+  );
+}
+
 async function upsertTableRows(client, table, rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { data: [], error: null };
@@ -482,11 +522,32 @@ export async function runSupabaseMigrationWrite({
     userId,
   });
   const normalizedProjectStatuses = collectProjectStatusNormalization(localSnapshot);
+  const localLineItemCounts = countDraftLineItems(draft);
+
+  tableResults[3] = buildTableResult("estimate_line_items", "Estimate line items", localLineItemCounts.estimateLineItems, "skipped", {
+    skipped: localLineItemCounts.estimateLineItems,
+    reason: localLineItemCounts.estimateLineItems > 0
+      ? ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER
+      : "No local estimate line items were found for migration.",
+  });
+  tableResults[5] = buildTableResult("invoice_line_items", "Invoice line items", localLineItemCounts.invoiceLineItems, "skipped", {
+    skipped: localLineItemCounts.invoiceLineItems,
+    reason: localLineItemCounts.invoiceLineItems > 0
+      ? INVOICE_LINE_ITEM_SCHEMA_BLOCKER
+      : "No local invoice line items were found for migration.",
+  });
+  if (localLineItemCounts.estimateLineItems > 0) {
+    tableResults[3] = { ...tableResults[3], status: "blocked" };
+  }
+  if (localLineItemCounts.invoiceLineItems > 0) {
+    tableResults[5] = { ...tableResults[5], status: "blocked" };
+  }
 
   notices.push(...classifyMappingWarnings(collectBackendMappingWarnings(localSnapshot, { companyId, userId })));
   notices.push(...collectDocumentIdentifierIssues(draft));
   notices.push(...collectInvoicePaymentValidationIssues(draft));
   notices.push(...normalizedProjectStatuses.issues);
+  notices.push(...collectLineItemSchemaBlockers(localLineItemCounts));
   const normalizationSummary = summarizeNormalizedProjectStatuses(normalizedProjectStatuses.normalized);
   if (normalizationSummary) notices.push(normalizationSummary);
 
@@ -509,6 +570,25 @@ export async function runSupabaseMigrationWrite({
   const localCounts = preview?.localCounts || {};
 
   if (isFullMigrationAlreadyPresent(localCounts, cloudCounts)) {
+    if (hasPendingLineItemCoverage(localLineItemCounts)) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: "Top-level migration is complete, but line item migration remains blocked by missing schema idempotency constraints.",
+        notices: [
+          buildNotice(
+            "warning",
+            "core_tables_already_migrated",
+            "Top-level business tables already match the local migration counts.",
+            { cloudCounts }
+          ),
+          ...collectLineItemSchemaBlockers(localLineItemCounts),
+        ],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
     return {
       ok: false,
       blocked: true,
@@ -690,8 +770,6 @@ export async function runSupabaseMigrationWrite({
     notices: [
       buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
       ...notices,
-      buildNotice("info", "estimate_line_items_skipped", "Estimate line items were skipped in this guarded lane."),
-      buildNotice("info", "invoice_line_items_skipped", "Invoice line items were skipped in this guarded lane."),
     ],
     tableResults,
   };

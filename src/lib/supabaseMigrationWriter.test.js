@@ -24,7 +24,9 @@ function buildPreview(overrides = {}) {
       customers: 1,
       projects: 1,
       estimates: 1,
+      estimateLineItems: 0,
       invoices: 1,
+      invoiceLineItems: 0,
       invoicePayments: 1,
     },
     cloudCountCheckAvailable: true,
@@ -32,7 +34,9 @@ function buildPreview(overrides = {}) {
       customers: 0,
       projects: 0,
       estimates: 0,
+      estimateLineItems: 0,
       invoices: 0,
+      invoiceLineItems: 0,
       invoicePayments: 0,
     },
     notices: [],
@@ -57,7 +61,14 @@ function buildStorageSnapshot({
         "estipaid-company-profile-v1": JSON.stringify(companyProfile || { id: "local_company", companyName: "AAS Property Care" }),
         "estipaid-customers-v1": JSON.stringify(customers || [{ id: "cust_1", name: "Acme Co" }]),
         "estipaid-projects-v1": JSON.stringify(projects || [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
-        "estipaid-estimates-v1": JSON.stringify(estimates || [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }]),
+        "estipaid-estimates-v1": JSON.stringify(estimates || [{
+          id: "est_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          estimateNumber: "EST-1",
+          total: 100,
+          labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
+        }]),
         "estipaid-invoices-v1": JSON.stringify(invoices || [{
           id: "inv_1",
           projectId: "proj_1",
@@ -67,6 +78,7 @@ function buildStorageSnapshot({
           invoiceTotal: 100,
           amountPaid: 25,
           balanceRemaining: 75,
+          lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
           payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
         }]),
         "estipaid-settings-v1": JSON.stringify(settings || {}),
@@ -108,14 +120,18 @@ function createMockClient({
     customers: createCountChain({ count: counts.customers ?? 0, error: null }),
     projects: createCountChain({ count: counts.projects ?? 0, error: null }),
     estimates: createCountChain({ count: counts.estimates ?? 0, error: null }),
+    estimate_line_items: createCountChain({ count: counts.estimateLineItems ?? 0, error: null }),
     invoices: createCountChain({ count: counts.invoices ?? 0, error: null }),
+    invoice_line_items: createCountChain({ count: counts.invoiceLineItems ?? 0, error: null }),
     invoice_payments: createCountChain({ count: counts.invoicePayments ?? 0, error: null }),
   };
   const writeChains = {
     customers: createUpsertChain({ data: customerRows, error: customerError }),
     projects: createUpsertChain({ data: projectRows, error: projectError }),
     estimates: createUpsertChain({ data: estimateRows, error: estimateError }),
+    estimate_line_items: createUpsertChain({ data: [], error: null }),
     invoices: createUpsertChain({ data: invoiceRows, error: invoiceError }),
+    invoice_line_items: createUpsertChain({ data: [], error: null }),
     invoice_payments: createUpsertChain({ data: paymentRows, error: paymentError }),
   };
   const readRowsByTable = {
@@ -205,7 +221,9 @@ describe("supabaseMigrationWriter", () => {
       customers: 0,
       projects: 1,
       estimates: 0,
+      estimateLineItems: 0,
       invoices: 0,
+      invoiceLineItems: 0,
       invoicePayments: 0,
     });
   });
@@ -261,17 +279,23 @@ describe("supabaseMigrationWriter", () => {
       customers: 0,
       projects: 0,
       estimates: 0,
+      estimateLineItems: 0,
       invoices: 0,
+      invoiceLineItems: 0,
       invoicePayments: 0,
     });
     expect(result.tableResults).toEqual(expect.arrayContaining([
       expect.objectContaining({ table: "customers", status: "success", written: 1 }),
       expect.objectContaining({ table: "projects", status: "success", written: 1 }),
       expect.objectContaining({ table: "estimates", status: "success", written: 1 }),
-      expect.objectContaining({ table: "estimate_line_items", status: "skipped" }),
+      expect.objectContaining({ table: "estimate_line_items", status: "blocked", skipped: 1 }),
       expect.objectContaining({ table: "invoices", status: "success", written: 1 }),
-      expect.objectContaining({ table: "invoice_line_items", status: "skipped" }),
+      expect.objectContaining({ table: "invoice_line_items", status: "blocked", skipped: 1 }),
       expect.objectContaining({ table: "invoice_payments", status: "success", written: 1 }),
+    ]));
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
+      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
     ]));
     expect(mockClient.writeChains.customers.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.projects.upsert).toHaveBeenCalled();
@@ -345,7 +369,20 @@ describe("supabaseMigrationWriter", () => {
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
     const result = await runSupabaseMigrationWrite({
-      storageSnapshot: buildStorageSnapshot(),
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
+        invoices: [{
+          id: "inv_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          sourceEstimateId: "est_1",
+          invoiceNumber: "INV-1",
+          invoiceTotal: 100,
+          amountPaid: 25,
+          balanceRemaining: 75,
+          payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
+        }],
+      }),
       configured: true,
       user: { id: "user_1" },
       company: { id: "company_1", name: "AAS Property Care" },
@@ -357,6 +394,45 @@ describe("supabaseMigrationWriter", () => {
     expect(result.ok).toBe(false);
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/already match the local migration counts/i);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+  });
+
+  test("blocks reruns with an exact line-item schema message when core tables are already migrated", async () => {
+    const mockClient = createMockClient({
+      counts: {
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        estimateLineItems: 0,
+        invoices: 1,
+        invoiceLineItems: 0,
+        invoicePayments: 1,
+      },
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/line item migration remains blocked/i);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "core_tables_already_migrated" }),
+      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
+      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
+    ]));
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "estimate_line_items", status: "blocked", skipped: 1 }),
+      expect.objectContaining({ table: "invoice_line_items", status: "blocked", skipped: 1 }),
+    ]));
     expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
   });
 

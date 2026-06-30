@@ -1,5 +1,6 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
+import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 
 export const SUPABASE_MIGRATION_PREVIEW_VERSION = "supabase-migration-preview-v1";
 
@@ -8,9 +9,16 @@ const CLOUD_COUNT_TABLES = [
   ["customers", "customers"],
   ["projects", "projects"],
   ["estimates", "estimates"],
+  ["estimate_line_items", "estimateLineItems"],
   ["invoices", "invoices"],
+  ["invoice_line_items", "invoiceLineItems"],
   ["invoice_payments", "invoicePayments"],
 ];
+
+const ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER =
+  "Estimate line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or estimate_id + legacy_local_id.";
+const INVOICE_LINE_ITEM_SCHEMA_BLOCKER =
+  "Invoice line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or invoice_id + legacy_local_id.";
 
 function countInvoicePayments(invoices) {
   if (!Array.isArray(invoices)) return 0;
@@ -26,6 +34,34 @@ function buildNotice(level, code, message) {
 
 function normalizeRole(role) {
   return String(role || "").trim().toLowerCase();
+}
+
+function buildLocalSnapshotFromArtifact(artifact) {
+  const migration = artifact?.parsedData?.migration || {};
+  return {
+    companyProfile: migration?.companyProfile?.parsed || null,
+    customers: Array.isArray(migration?.customers?.parsed) ? migration.customers.parsed : [],
+    projects: Array.isArray(migration?.projects?.parsed) ? migration.projects.parsed : [],
+    estimates: Array.isArray(migration?.estimates?.parsed) ? migration.estimates.parsed : [],
+    invoices: Array.isArray(migration?.invoices?.parsed) ? migration.invoices.parsed : [],
+    settings: migration?.settings?.parsed || null,
+    scopeTemplates: Array.isArray(migration?.scopeTemplates?.parsed) ? migration.scopeTemplates.parsed : [],
+    auditEvents: Array.isArray(migration?.auditEvents?.parsed) ? migration.auditEvents.parsed : [],
+  };
+}
+
+function countDraftLineItems(draft) {
+  const estimateLineItems = (Array.isArray(draft?.estimates) ? draft.estimates : []).reduce((sum, estimate) => {
+    return sum + (Array.isArray(estimate?.line_items) ? estimate.line_items.length : 0);
+  }, 0);
+  const invoiceLineItems = (Array.isArray(draft?.invoices) ? draft.invoices : []).reduce((sum, invoice) => {
+    return sum + (Array.isArray(invoice?.line_items) ? invoice.line_items.length : 0);
+  }, 0);
+
+  return {
+    estimateLineItems,
+    invoiceLineItems,
+  };
 }
 
 async function readCloudCounts(companyId) {
@@ -78,16 +114,21 @@ export async function createSupabaseMigrationPreview({
   const artifact = buildLocalStorageExportArtifact(storageSnapshot);
   const migration = artifact?.parsedData?.migration || {};
   const invoices = migration?.invoices?.parsed;
+  const localSnapshot = buildLocalSnapshotFromArtifact(artifact);
   const normalizedRole = normalizeRole(role);
   const companyId = String(company?.id || "").trim();
   const companyName = String(company?.name || "").trim();
   const userId = String(user?.id || "").trim();
+  const draft = mapLocalSnapshotToBackendDraft(localSnapshot, { companyId, userId });
+  const lineItemCounts = countDraftLineItems(draft);
 
   const localCounts = {
     customers: Number(migration?.customers?.count || 0),
     projects: Number(migration?.projects?.count || 0),
     estimates: Number(migration?.estimates?.count || 0),
+    estimateLineItems: Number(lineItemCounts.estimateLineItems || 0),
     invoices: Number(migration?.invoices?.count || 0),
+    invoiceLineItems: Number(lineItemCounts.invoiceLineItems || 0),
     invoicePayments: countInvoicePayments(invoices),
     scopeTemplates: Number(migration?.scopeTemplates?.count || 0),
     settings: migration?.settings?.present ? 1 : 0,
@@ -117,6 +158,12 @@ export async function createSupabaseMigrationPreview({
   }
   if (Array.isArray(artifact?.storageKeysMissing) && artifact.storageKeysMissing.length > 0) {
     notices.push(buildNotice("warning", "local_keys_missing", "Some migration keys are missing from localStorage."));
+  }
+  if (localCounts.estimateLineItems > 0) {
+    notices.push(buildNotice("warning", "estimate_line_items_schema_blocked", ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER));
+  }
+  if (localCounts.invoiceLineItems > 0) {
+    notices.push(buildNotice("warning", "invoice_line_items_schema_blocked", INVOICE_LINE_ITEM_SCHEMA_BLOCKER));
   }
 
   const cloudCounts = await readCloudCounts(companyId);

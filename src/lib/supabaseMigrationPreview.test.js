@@ -16,9 +16,13 @@ function buildSnapshot(overrides = {}) {
     "estipaid-company-profile-v1": JSON.stringify({ name: "Field Pocket LLC" }),
     "estipaid-customers-v1": JSON.stringify([{ id: "cust_1" }, { id: "cust_2" }]),
     "estipaid-projects-v1": JSON.stringify([{ id: "proj_1" }]),
-    "estipaid-estimates-v1": JSON.stringify([{ id: "est_1" }]),
+    "estipaid-estimates-v1": JSON.stringify([{ id: "est_1", labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 25 }] } }]),
     "estipaid-invoices-v1": JSON.stringify([
-      { id: "inv_1", payments: [{ id: "pay_1", amount: 25 }, { id: "pay_2", amount: 10 }] },
+      {
+        id: "inv_1",
+        lineItems: [{ id: "inv_line_1", description: "Material", quantity: 2, price: 10, total: 20 }],
+        payments: [{ id: "pay_1", amount: 25 }, { id: "pay_2", amount: 10 }],
+      },
       { id: "inv_2", payments: [] },
     ]),
     "estipaid-settings-v1": JSON.stringify({ pdf: { includeLogo: true } }),
@@ -39,7 +43,9 @@ function createMockClient(counts = {}) {
     customers: createCountChain({ count: counts.customers ?? 3, error: null }),
     projects: createCountChain({ count: counts.projects ?? 1, error: null }),
     estimates: createCountChain({ count: counts.estimates ?? 4, error: null }),
+    estimate_line_items: createCountChain({ count: counts.estimateLineItems ?? 6, error: null }),
     invoices: createCountChain({ count: counts.invoices ?? 2, error: null }),
+    invoice_line_items: createCountChain({ count: counts.invoiceLineItems ?? 7, error: null }),
     invoice_payments: createCountChain({ count: counts.invoicePayments ?? 5, error: null }),
   };
   const from = jest.fn((table) => {
@@ -74,7 +80,9 @@ describe("createSupabaseMigrationPreview", () => {
       customers: 2,
       projects: 1,
       estimates: 1,
+      estimateLineItems: 1,
       invoices: 2,
+      invoiceLineItems: 1,
       invoicePayments: 2,
       scopeTemplates: 1,
       settings: 1,
@@ -84,7 +92,9 @@ describe("createSupabaseMigrationPreview", () => {
       customers: 3,
       projects: 1,
       estimates: 4,
+      estimateLineItems: 6,
       invoices: 2,
+      invoiceLineItems: 7,
       invoicePayments: 5,
     });
     expect(preview.noWritesPerformed).toBe(true);
@@ -92,10 +102,16 @@ describe("createSupabaseMigrationPreview", () => {
     expect(mockClient.from).toHaveBeenCalledWith("customers");
     expect(mockClient.from).toHaveBeenCalledWith("projects");
     expect(mockClient.from).toHaveBeenCalledWith("estimates");
+    expect(mockClient.from).toHaveBeenCalledWith("estimate_line_items");
     expect(mockClient.from).toHaveBeenCalledWith("invoices");
+    expect(mockClient.from).toHaveBeenCalledWith("invoice_line_items");
     expect(mockClient.from).toHaveBeenCalledWith("invoice_payments");
     expect(mockClient.chains.customers.select).toHaveBeenCalledWith("id", { count: "exact", head: true });
     expect(mockClient.chains.customers.eq).toHaveBeenCalledWith("company_id", "company_1");
+    expect(preview.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
+      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
+    ]));
   });
 
   test("reports validation issues and unavailable cloud counts without performing writes", async () => {
