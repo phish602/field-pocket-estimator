@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { STORAGE_KEY } from "./defaultState";
 import { useEstimatorState } from "./useEstimatorState";
 import { createSaveLoadSwitchingService } from "../lib/saveLoadSwitchingService";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("../lib/saveLoadSwitchingService", () => ({
   createSaveLoadSwitchingService: jest.fn(),
@@ -86,6 +87,22 @@ describe("useEstimatorState save/load switching integration", () => {
         }),
       ],
     });
+  });
+
+  test("does not seed hidden internal estimate notes into scope notes for new drafts", () => {
+    localStorage.setItem(
+      STORAGE_KEYS.SETTINGS,
+      JSON.stringify({
+        docDefaults: {
+          defaultInternalNotesEstimate: "Private team-only note that should stay hidden.",
+        },
+      })
+    );
+
+    const { result } = renderHook(() => useEstimatorState());
+
+    expect(result.current.state.ui.docType).toBe("estimate");
+    expect(result.current.state.scopeNotes).toBe("");
   });
 
   test("uses switching service only when explicitly enabled and preserves local fallback", () => {

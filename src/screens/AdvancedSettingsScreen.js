@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
@@ -6,7 +6,6 @@ import { appendAuditEvent, createStoredAuditEvent, readStoredAuditEvents } from 
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 
 const ESTIPAID_PREFIX = "estipaid-";
-const NOTES_TEXTAREA_MIN_HEIGHT = 170;
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -176,21 +175,8 @@ export default function AdvancedSettingsScreen({
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const importInputRef = useRef(null);
-  const defaultInternalNotesRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
-  const defaultInternalNotes = String(settings?.docDefaults?.defaultInternalNotesEstimate || "");
   const isDevBuild = process.env.NODE_ENV !== "production";
-
-  const autoResizeNotesField = (el) => {
-    if (!el) return;
-    el.style.boxSizing = "border-box";
-    el.style.resize = "none";
-    el.style.height = "0px";
-    const raw = Number(el.scrollHeight) || NOTES_TEXTAREA_MIN_HEIGHT;
-    const next = Math.max(NOTES_TEXTAREA_MIN_HEIGHT, raw);
-    el.style.height = `${next}px`;
-    el.style.overflowY = "hidden";
-  };
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -204,18 +190,6 @@ export default function AdvancedSettingsScreen({
       window.removeEventListener("estipaid:settings-changed", onStorage);
     };
   }, []);
-
-  useLayoutEffect(() => {
-    const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
-      ? window.requestAnimationFrame(() => autoResizeNotesField(defaultInternalNotesRef.current))
-      : null;
-    if (raf === null) autoResizeNotesField(defaultInternalNotesRef.current);
-    return () => {
-      if (raf !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
-        window.cancelAnimationFrame(raf);
-      }
-    };
-  }, [defaultInternalNotes]);
 
   useEffect(() => () => {
     if (diagnosticsMessageTimerRef.current) {
@@ -500,10 +474,11 @@ export default function AdvancedSettingsScreen({
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Pricing Defaults</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Controls that influence estimate and invoice pricing defaults.
+              Controls that influence the starting markup behavior for new estimates and invoices.
             </div>
             <SettingRow
               title="Default Markup %"
+              hint="Starting markup used for new labor and material line items."
               control={(
                 <input
                   className="pe-input"
@@ -518,7 +493,8 @@ export default function AdvancedSettingsScreen({
               )}
             />
             <SettingRow
-              title="Lock Markup to Global"
+              title="Use Default Markup on Line Items"
+              hint="When on, labor and itemized material line items use your default markup and their line-item markup fields stay read-only in the builder. Blanket material markup still stays editable per document."
               control={(
                 <ToggleButton
                   value={!!settings?.pricing?.lockMarkupToGlobal}
@@ -532,79 +508,6 @@ export default function AdvancedSettingsScreen({
                 />
               )}
             />
-            <SettingRow
-              title="Default Tax %"
-              control={(
-                <input
-                  className="pe-input"
-                  inputMode="decimal"
-                  style={{ width: 140 }}
-                  value={String(settings?.pricing?.defaultTaxPct ?? 0)}
-                  onChange={(e) => writeSettings((prev) => ({
-                    ...prev,
-                    pricing: { ...(prev.pricing || {}), defaultTaxPct: e.target.value },
-                  }))}
-                />
-              )}
-            />
-            <SettingRow
-              title="Round Totals"
-              control={(
-                <ToggleButton
-                  value={!!settings?.pricing?.roundTotals}
-                  onClick={() => writeSettings((prev) => ({
-                    ...prev,
-                    pricing: {
-                      ...(prev.pricing || {}),
-                      roundTotals: !prev?.pricing?.roundTotals,
-                    },
-                  }))}
-                />
-              )}
-            />
-            <SettingRow
-              title="Precision"
-              control={(
-                <SegmentedButtons
-                  value={Number(settings?.pricing?.precision) === 0 ? 0 : 2}
-                  options={[
-                    { label: "0", value: 0 },
-                    { label: "2", value: 2 },
-                  ]}
-                  onChange={(value) => writeSettings((prev) => ({
-                    ...prev,
-                    pricing: { ...(prev.pricing || {}), precision: value },
-                  }))}
-                />
-              )}
-            />
-          </div>
-
-          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
-            <div className="pe-field-label" style={{ marginBottom: 2 }}>Document Defaults</div>
-            <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Reusable document defaults for faster estimate preparation.
-            </div>
-            <SettingRow
-              title="Default Internal Notes (Estimate only)"
-              hint="Pre-filled internal notes template for new estimate docs."
-              control={(
-                <textarea
-                  ref={defaultInternalNotesRef}
-                  className="pe-input pe-textarea"
-                  value={defaultInternalNotes}
-                  onChange={(e) => writeSettings((prev) => ({
-                    ...prev,
-                    docDefaults: { ...(prev.docDefaults || {}), defaultInternalNotesEstimate: e.target.value },
-                  }))}
-                  onInput={(e) => autoResizeNotesField(e.currentTarget)}
-                  style={{ minHeight: NOTES_TEXTAREA_MIN_HEIGHT, resize: "none", width: "min(520px, 100%)" }}
-                />
-              )}
-            />
-            <div className="pe-field-helper">
-              Internal Notes are estimate-only and never appear on invoices.
-            </div>
           </div>
 
           <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>

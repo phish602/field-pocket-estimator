@@ -3,7 +3,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_STATE, STORAGE_KEY } from "./defaultState";
-import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { createSaveLoadSwitchingService } from "../lib/saveLoadSwitchingService";
 
 function deepClone(obj) {
@@ -62,27 +61,6 @@ function stripInternalNotesForPersistence(state) {
     next.scopeNotes = "";
     next.tradeInsert = { key: "", text: "" };
   }
-  return next;
-}
-
-function applyDefaultInternalNotesForNewEstimate(state) {
-  const next = deepClone(state || DEFAULT_STATE);
-  const uiDocType = next?.ui?.docType === "invoice" ? "invoice" : "estimate";
-  if (uiDocType !== "estimate") return next;
-  if (String(next?.scopeNotes || "").trim()) return next;
-  let defaultNote = "";
-  try {
-    const settings = loadSettings();
-    defaultNote = String(
-      settings?.docDefaults?.defaultInternalNotesEstimate
-      ?? DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate
-      ?? ""
-    ).trim();
-  } catch {
-    defaultNote = String(DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate || "").trim();
-  }
-  if (!defaultNote) return next;
-  next.scopeNotes = defaultNote;
   return next;
 }
 
@@ -217,7 +195,7 @@ export function useEstimatorState(options = {}) {
         return mergeDefaults(base, loaded);
       }
     } catch {}
-    return applyDefaultInternalNotesForNewEstimate(base);
+    return base;
   });
 
   // Debounced autosave to STORAGE_KEY
@@ -421,7 +399,7 @@ export function useEstimatorState(options = {}) {
     if (persistDraft) {
       removeLocalStorageDraft();
     }
-    setState(applyDefaultInternalNotesForNewEstimate(DEFAULT_STATE));
+    setState(DEFAULT_STATE);
   };
 
   const replaceState = (nextState, replaceOptions = null) => {

@@ -213,4 +213,23 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(onOpenTemplates).toHaveBeenCalledTimes(1);
     expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
   });
+
+  test("shows clarified real settings and hides misleading pricing controls", () => {
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText("Pricing Defaults")).toBeInTheDocument();
+    expect(screen.getByText("Default Markup %")).toBeInTheDocument();
+    expect(screen.getByText("Use Default Markup on Line Items")).toBeInTheDocument();
+    expect(
+      screen.getByText(/labor and itemized material line items use your default markup/i),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByText("Lock Markup to Global")).not.toBeInTheDocument();
+    expect(screen.queryByText("Default Tax %")).not.toBeInTheDocument();
+    expect(screen.queryByText("Round Totals")).not.toBeInTheDocument();
+    expect(screen.queryByText("Precision")).not.toBeInTheDocument();
+    expect(screen.queryByText("Document Defaults")).not.toBeInTheDocument();
+    expect(screen.queryByText("Default Internal Estimate Notes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Default Internal Notes (Estimate only)")).not.toBeInTheDocument();
+  });
 });
