@@ -18,15 +18,17 @@ function createInsertChain(response) {
 function createMockClient({ companyResponse, membershipResponse }) {
   const companiesChain = createInsertChain(companyResponse);
   const membershipChain = createInsertChain(membershipResponse);
+  const rpc = jest.fn();
   const from = jest.fn((table) => {
     if (table === "companies") return companiesChain;
     if (table === "company_users") return membershipChain;
     throw new Error(`Unexpected table: ${table}`);
   });
   return {
-    client: { from },
+    client: { from, rpc },
     companiesChain,
     membershipChain,
+    rpc,
   };
 }
 
@@ -117,6 +119,7 @@ describe("useSupabaseWorkspaceBootstrap", () => {
       created_by: "user_1",
       updated_by: "user_1",
     });
+    expect(mock.rpc).not.toHaveBeenCalled();
     expect(result.current.success).toBe("Cloud workspace created: Field Pocket LLC");
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({
       company: expect.objectContaining({ id: "company_1" }),
