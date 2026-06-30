@@ -15,10 +15,10 @@ const CLOUD_COUNT_TABLES = [
   ["invoice_payments", "invoicePayments"],
 ];
 
-const ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER =
-  "Estimate line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or estimate_id + legacy_local_id.";
-const INVOICE_LINE_ITEM_SCHEMA_BLOCKER =
-  "Invoice line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or invoice_id + legacy_local_id.";
+const ESTIMATE_LINE_ITEM_READY_MESSAGE =
+  "Estimate line items are ready for guarded migration using company_id + legacy_local_id idempotency.";
+const INVOICE_LINE_ITEM_READY_MESSAGE =
+  "Invoice line items are ready for guarded migration using company_id + legacy_local_id idempotency.";
 
 function countInvoicePayments(invoices) {
   if (!Array.isArray(invoices)) return 0;
@@ -62,6 +62,23 @@ function countDraftLineItems(draft) {
     estimateLineItems,
     invoiceLineItems,
   };
+}
+
+function isCoreMigrationAlreadyPresent(localCounts, cloudCounts) {
+  return (
+    Number(cloudCounts?.customers || 0) === Number(localCounts?.customers || 0) &&
+    Number(cloudCounts?.projects || 0) === Number(localCounts?.projects || 0) &&
+    Number(cloudCounts?.estimates || 0) === Number(localCounts?.estimates || 0) &&
+    Number(cloudCounts?.invoices || 0) === Number(localCounts?.invoices || 0) &&
+    Number(cloudCounts?.invoicePayments || 0) === Number(localCounts?.invoicePayments || 0)
+  );
+}
+
+function isLineItemMigrationAlreadyPresent(localCounts, cloudCounts) {
+  return (
+    Number(cloudCounts?.estimateLineItems || 0) === Number(localCounts?.estimateLineItems || 0) &&
+    Number(cloudCounts?.invoiceLineItems || 0) === Number(localCounts?.invoiceLineItems || 0)
+  );
 }
 
 async function readCloudCounts(companyId) {
@@ -159,16 +176,25 @@ export async function createSupabaseMigrationPreview({
   if (Array.isArray(artifact?.storageKeysMissing) && artifact.storageKeysMissing.length > 0) {
     notices.push(buildNotice("warning", "local_keys_missing", "Some migration keys are missing from localStorage."));
   }
-  if (localCounts.estimateLineItems > 0) {
-    notices.push(buildNotice("warning", "estimate_line_items_schema_blocked", ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER));
-  }
-  if (localCounts.invoiceLineItems > 0) {
-    notices.push(buildNotice("warning", "invoice_line_items_schema_blocked", INVOICE_LINE_ITEM_SCHEMA_BLOCKER));
-  }
-
   const cloudCounts = await readCloudCounts(companyId);
   if (!cloudCounts.available) {
     notices.push(buildNotice("info", "cloud_counts_unavailable", cloudCounts.statusMessage));
+  } else if (localCounts.estimateLineItems > 0 || localCounts.invoiceLineItems > 0) {
+    const coreReady = isCoreMigrationAlreadyPresent(localCounts, cloudCounts.counts);
+    const lineItemsReady = isLineItemMigrationAlreadyPresent(localCounts, cloudCounts.counts);
+
+    if (lineItemsReady) {
+      notices.push(buildNotice("info", "line_items_already_migrated", "Line items already match local data. No duplicate write should be needed."));
+    } else if (coreReady) {
+      if (localCounts.estimateLineItems > 0) {
+        notices.push(buildNotice("info", "estimate_line_items_ready", ESTIMATE_LINE_ITEM_READY_MESSAGE));
+      }
+      if (localCounts.invoiceLineItems > 0) {
+        notices.push(buildNotice("info", "invoice_line_items_ready", INVOICE_LINE_ITEM_READY_MESSAGE));
+      }
+    } else {
+      notices.push(buildNotice("info", "line_items_waiting_for_core", "Line items will migrate after core customer/project/document rows are present in cloud for this workspace."));
+    }
   }
 
   return {

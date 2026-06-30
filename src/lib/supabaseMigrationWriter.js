@@ -31,10 +31,10 @@ const PROJECT_STATUS_MAP = new Map([
   ["cancelled", "archived"],
   ["canceled", "archived"],
 ]);
-const ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER =
-  "Estimate line items remain blocked because the documented schema has no unique idempotent upsert path on company_id + legacy_local_id or estimate_id + legacy_local_id.";
-const INVOICE_LINE_ITEM_SCHEMA_BLOCKER =
-  "Invoice line items remain blocked because the documented schema has no unique idempotent upsert path on company_id + legacy_local_id or invoice_id + legacy_local_id.";
+const ESTIMATE_LINE_ITEM_READY_MESSAGE =
+  "Estimate line items are ready for guarded migration using company_id + legacy_local_id idempotency.";
+const INVOICE_LINE_ITEM_READY_MESSAGE =
+  "Invoice line items are ready for guarded migration using company_id + legacy_local_id idempotency.";
 
 function asText(value) {
   return String(value || "").trim();
@@ -124,8 +124,12 @@ async function readCloudCounts(client, companyId) {
 }
 
 async function readExistingCustomers(client, companyId) {
+  return readExistingRows(client, "customers", companyId);
+}
+
+async function readExistingRows(client, table, companyId) {
   const response = await client
-    .from("customers")
+    .from(table)
     .select("id, legacy_local_id")
     .eq("company_id", companyId);
 
@@ -202,6 +206,33 @@ function countDraftLineItems(draft) {
     estimateLineItems,
     invoiceLineItems,
   };
+}
+
+function sanitizeLegacyIdSegment(value, fallback = "line_item") {
+  const normalized = asText(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || fallback;
+}
+
+function buildStableLineItemLegacyId(parentLegacyId, item, index, entityType) {
+  const existing = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
+  if (existing) return existing;
+  const safeParent = sanitizeLegacyIdSegment(parentLegacyId, "parent");
+  const safeKind = sanitizeLegacyIdSegment(item?.kind, "line_item");
+  return `${entityType}:${safeParent}:${safeKind}:${index}`;
+}
+
+function buildLineItemMetadata(item, { includeKind = false } = {}) {
+  const metadata = {};
+  const unitCost = item?.unit_cost;
+  if (unitCost !== null && unitCost !== undefined && unitCost !== "") {
+    const nextCost = Number(unitCost);
+    if (Number.isFinite(nextCost)) metadata.unit_cost = nextCost;
+  }
+  if (includeKind) {
+    const kind = asText(item?.kind);
+    if (kind) metadata.kind = kind;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 function projectHasRealActivity(project, localSnapshot) {
@@ -376,8 +407,107 @@ function mapInvoicePaymentPayloads(draft, invoiceIdByLegacyId, userId) {
   }));
 }
 
+function mapEstimateLineItemPayloads(draft, estimateIdByLegacyId) {
+  const payloads = [];
+  const issues = [];
+  const seenLegacyIds = new Set();
+
+  (Array.isArray(draft?.estimates) ? draft.estimates : []).forEach((estimate) => {
+    const parentLegacyId = asText(estimate?.legacy_local_id);
+    const estimateId = estimateIdByLegacyId.get(parentLegacyId) || "";
+    const companyId = asText(estimate?.company_id);
+
+    (Array.isArray(estimate?.line_items) ? estimate.line_items : []).forEach((item, index) => {
+      const legacyLocalId = buildStableLineItemLegacyId(parentLegacyId, item, index, "estimate");
+      if (!parentLegacyId) {
+        issues.push(buildNotice("error", `estimate_line_item_parent_missing:${index}`, "Estimate line item is missing its parent estimate local id."));
+        return;
+      }
+      if (!estimateId) {
+        issues.push(buildNotice("error", `estimate_line_item_parent_lookup_missing:${legacyLocalId}`, "Estimate line item could not resolve a cloud estimate parent id."));
+        return;
+      }
+      if (seenLegacyIds.has(legacyLocalId)) {
+        issues.push(buildNotice("error", `duplicate_estimate_line_item_local_id:${legacyLocalId}`, "Duplicate estimate line-item local id detected."));
+        return;
+      }
+      seenLegacyIds.add(legacyLocalId);
+
+      const metadata = buildLineItemMetadata(item);
+      payloads.push({
+        company_id: companyId,
+        estimate_id: estimateId,
+        legacy_local_id: legacyLocalId,
+        sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
+        description: item?.description || null,
+        quantity: item?.quantity ?? null,
+        unit: item?.unit || null,
+        unit_price: item?.unit_price ?? null,
+        total_price: item?.total ?? null,
+        line_role: item?.kind || null,
+        ...(metadata ? { metadata } : {}),
+      });
+    });
+  });
+
+  return { payloads, issues };
+}
+
+function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
+  const payloads = [];
+  const issues = [];
+  const seenLegacyIds = new Set();
+
+  (Array.isArray(draft?.invoices) ? draft.invoices : []).forEach((invoice) => {
+    const parentLegacyId = asText(invoice?.legacy_local_id);
+    const invoiceId = invoiceIdByLegacyId.get(parentLegacyId) || "";
+    const companyId = asText(invoice?.company_id);
+
+    (Array.isArray(invoice?.line_items) ? invoice.line_items : []).forEach((item, index) => {
+      const legacyLocalId = buildStableLineItemLegacyId(parentLegacyId, item, index, "invoice");
+      if (!parentLegacyId) {
+        issues.push(buildNotice("error", `invoice_line_item_parent_missing:${index}`, "Invoice line item is missing its parent invoice local id."));
+        return;
+      }
+      if (!invoiceId) {
+        issues.push(buildNotice("error", `invoice_line_item_parent_lookup_missing:${legacyLocalId}`, "Invoice line item could not resolve a cloud invoice parent id."));
+        return;
+      }
+      if (seenLegacyIds.has(legacyLocalId)) {
+        issues.push(buildNotice("error", `duplicate_invoice_line_item_local_id:${legacyLocalId}`, "Duplicate invoice line-item local id detected."));
+        return;
+      }
+      seenLegacyIds.add(legacyLocalId);
+
+      const metadata = buildLineItemMetadata(item, { includeKind: true });
+      payloads.push({
+        company_id: companyId,
+        invoice_id: invoiceId,
+        legacy_local_id: legacyLocalId,
+        sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
+        description: item?.description || null,
+        quantity: item?.quantity ?? null,
+        unit: item?.unit || null,
+        unit_price: item?.unit_price ?? null,
+        total_price: item?.total ?? null,
+        ...(metadata ? { metadata } : {}),
+      });
+    });
+  });
+
+  return { payloads, issues };
+}
+
 function buildLegacyIdMap(rows) {
   return new Map((Array.isArray(rows) ? rows : []).map((row) => [asText(row?.legacy_local_id), asText(row?.id)]));
+}
+
+function buildLegacyIdSet(rows) {
+  return new Set((Array.isArray(rows) ? rows : []).map((row) => asText(row?.legacy_local_id)).filter(Boolean));
+}
+
+function buildPayloadLegacyIdSet(rows) {
+  return new Set((Array.isArray(rows) ? rows : []).map((row) => asText(row?.legacy_local_id)).filter(Boolean));
 }
 
 function setsEqual(left, right) {
@@ -416,24 +546,96 @@ function isCustomersOnlyPartialState(localCounts, cloudCounts) {
   );
 }
 
-function collectLineItemSchemaBlockers(localLineItemCounts) {
-  const notices = [];
+function markCoreTablesReused(tableResults, localCounts) {
+  const mappings = [
+    [0, Number(localCounts?.customers || 0)],
+    [1, Number(localCounts?.projects || 0)],
+    [2, Number(localCounts?.estimates || 0)],
+    [4, Number(localCounts?.invoices || 0)],
+    [6, Number(localCounts?.invoicePayments || 0)],
+  ];
 
-  if (Number(localLineItemCounts?.estimateLineItems || 0) > 0) {
-    notices.push(buildNotice("warning", "estimate_line_items_schema_blocked", ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER));
-  }
-  if (Number(localLineItemCounts?.invoiceLineItems || 0) > 0) {
-    notices.push(buildNotice("warning", "invoice_line_items_schema_blocked", INVOICE_LINE_ITEM_SCHEMA_BLOCKER));
-  }
-
-  return notices;
+  mappings.forEach(([index, count]) => {
+    tableResults[index] = {
+      ...tableResults[index],
+      status: "reused",
+      written: 0,
+      reused: count,
+      skipped: count,
+    };
+  });
 }
 
-function hasPendingLineItemCoverage(localLineItemCounts) {
-  return (
-    Number(localLineItemCounts?.estimateLineItems || 0) > 0 ||
-    Number(localLineItemCounts?.invoiceLineItems || 0) > 0
-  );
+function summarizeLineItemSync(payloads, existingRows) {
+  const existingIds = buildLegacyIdSet(existingRows);
+  const reused = (Array.isArray(payloads) ? payloads : []).reduce((sum, row) => {
+    return sum + (existingIds.has(asText(row?.legacy_local_id)) ? 1 : 0);
+  }, 0);
+  const written = Math.max((Array.isArray(payloads) ? payloads.length : 0) - reused, 0);
+  return { reused, written };
+}
+
+async function migrateLineItemTable({
+  client,
+  table,
+  baseResult,
+  payloads,
+  existingRows,
+}) {
+  if (!Array.isArray(payloads) || payloads.length === 0) {
+    return {
+      result: {
+        ...baseResult,
+        status: "skipped",
+        written: 0,
+        reused: 0,
+        skipped: 0,
+      },
+      response: null,
+    };
+  }
+
+  const { written, reused } = summarizeLineItemSync(payloads, existingRows);
+  const existingSet = buildLegacyIdSet(existingRows);
+  const payloadSet = buildPayloadLegacyIdSet(payloads);
+  const alreadyMatched = written === 0 && setsEqual(existingSet, payloadSet);
+
+  if (alreadyMatched) {
+    return {
+      result: {
+        ...baseResult,
+        status: "reused",
+        written: 0,
+        reused,
+        skipped: reused,
+      },
+      response: null,
+    };
+  }
+
+  const response = await upsertTableRows(client, table, payloads);
+  if (response?.error) {
+    return {
+      result: {
+        ...baseResult,
+        status: "failed",
+        failed: payloads.length,
+        error: asText(response.error?.message),
+      },
+      response,
+    };
+  }
+
+  return {
+    result: {
+      ...baseResult,
+      status: written > 0 ? "success" : "reused",
+      written,
+      reused,
+      skipped: reused,
+    },
+    response,
+  };
 }
 
 async function upsertTableRows(client, table, rows) {
@@ -527,27 +729,20 @@ export async function runSupabaseMigrationWrite({
   tableResults[3] = buildTableResult("estimate_line_items", "Estimate line items", localLineItemCounts.estimateLineItems, "skipped", {
     skipped: localLineItemCounts.estimateLineItems,
     reason: localLineItemCounts.estimateLineItems > 0
-      ? ESTIMATE_LINE_ITEM_SCHEMA_BLOCKER
+      ? ESTIMATE_LINE_ITEM_READY_MESSAGE
       : "No local estimate line items were found for migration.",
   });
   tableResults[5] = buildTableResult("invoice_line_items", "Invoice line items", localLineItemCounts.invoiceLineItems, "skipped", {
     skipped: localLineItemCounts.invoiceLineItems,
     reason: localLineItemCounts.invoiceLineItems > 0
-      ? INVOICE_LINE_ITEM_SCHEMA_BLOCKER
+      ? INVOICE_LINE_ITEM_READY_MESSAGE
       : "No local invoice line items were found for migration.",
   });
-  if (localLineItemCounts.estimateLineItems > 0) {
-    tableResults[3] = { ...tableResults[3], status: "blocked" };
-  }
-  if (localLineItemCounts.invoiceLineItems > 0) {
-    tableResults[5] = { ...tableResults[5], status: "blocked" };
-  }
 
   notices.push(...classifyMappingWarnings(collectBackendMappingWarnings(localSnapshot, { companyId, userId })));
   notices.push(...collectDocumentIdentifierIssues(draft));
   notices.push(...collectInvoicePaymentValidationIssues(draft));
   notices.push(...normalizedProjectStatuses.issues);
-  notices.push(...collectLineItemSchemaBlockers(localLineItemCounts));
   const normalizationSummary = summarizeNormalizedProjectStatuses(normalizedProjectStatuses.normalized);
   if (normalizationSummary) notices.push(normalizationSummary);
 
@@ -570,40 +765,96 @@ export async function runSupabaseMigrationWrite({
   const localCounts = preview?.localCounts || {};
 
   if (isFullMigrationAlreadyPresent(localCounts, cloudCounts)) {
-    if (hasPendingLineItemCoverage(localLineItemCounts)) {
+    markCoreTablesReused(tableResults, localCounts);
+
+    const estimateRows = await readExistingRows(client, "estimates", companyId);
+    const invoiceRows = await readExistingRows(client, "invoices", companyId);
+    const estimateIdByLegacyId = buildLegacyIdMap(estimateRows);
+    const invoiceIdByLegacyId = buildLegacyIdMap(invoiceRows);
+
+    const estimateLineItemPayloads = mapEstimateLineItemPayloads(draft, estimateIdByLegacyId);
+    const invoiceLineItemPayloads = mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId);
+    notices.push(...estimateLineItemPayloads.issues, ...invoiceLineItemPayloads.issues);
+
+    if (notices.some((notice) => notice.level === "error")) {
       return {
         ok: false,
         blocked: true,
-        reason: "Top-level migration is complete, but line item migration remains blocked by missing schema idempotency constraints.",
-        notices: [
-          buildNotice(
-            "warning",
-            "core_tables_already_migrated",
-            "Top-level business tables already match the local migration counts.",
-            { cloudCounts }
-          ),
-          ...collectLineItemSchemaBlockers(localLineItemCounts),
-        ],
+        reason: "Line-item migration write blocked by local validation issues.",
+        notices,
         cloudCountsBefore: cloudCounts,
         tableResults,
         noLocalDeletes: true,
       };
     }
+
+    const existingEstimateLineItems = await readExistingRows(client, "estimate_line_items", companyId);
+    const existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId);
+
+    const estimateLineItemSync = await migrateLineItemTable({
+      client,
+      table: "estimate_line_items",
+      baseResult: tableResults[3],
+      payloads: estimateLineItemPayloads.payloads,
+      existingRows: existingEstimateLineItems,
+    });
+    tableResults[3] = estimateLineItemSync.result;
+    if (estimateLineItemSync.response?.error) {
+      return {
+        ok: false,
+        blocked: false,
+        reason: asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.",
+        notices: [buildNotice("error", "estimate_line_items_write_failed", asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.")],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+
+    const invoiceLineItemSync = await migrateLineItemTable({
+      client,
+      table: "invoice_line_items",
+      baseResult: tableResults[5],
+      payloads: invoiceLineItemPayloads.payloads,
+      existingRows: existingInvoiceLineItems,
+    });
+    tableResults[5] = invoiceLineItemSync.result;
+    if (invoiceLineItemSync.response?.error) {
+      return {
+        ok: false,
+        blocked: false,
+        reason: asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.",
+        notices: [buildNotice("error", "invoice_line_items_write_failed", asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.")],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+
+    const noDuplicateWriteNeeded =
+      tableResults[3].status === "reused" &&
+      tableResults[5].status === "reused";
+
     return {
-      ok: false,
-      blocked: true,
-      reason: "Cloud business tables already match the local migration counts.",
+      ok: true,
+      blocked: false,
+      writerVersion: SUPABASE_MIGRATION_WRITER_VERSION,
+      companyId,
+      noLocalDeletes: true,
+      cloudCountsBefore: cloudCounts,
       notices: [
+        buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
         buildNotice(
-          "warning",
-          "already_migrated",
-          "Cloud business tables already match the local migration counts.",
+          "info",
+          noDuplicateWriteNeeded ? "line_items_already_migrated" : "core_tables_already_migrated",
+          noDuplicateWriteNeeded
+            ? "Line items already match local data. No duplicate write was needed."
+            : "Core business tables were already migrated and were reused for line-item writes only.",
           { cloudCounts }
         ),
+        ...notices,
       ],
-      cloudCountsBefore: cloudCounts,
       tableResults,
-      noLocalDeletes: true,
     };
   }
 
@@ -743,6 +994,63 @@ export async function runSupabaseMigrationWrite({
   }
   tableResults[4] = { ...tableResults[4], status: "success", written: invoicePayloads.length };
   const invoiceIdByLegacyId = buildLegacyIdMap(invoiceResponse?.data);
+
+  const estimateLineItemPayloads = mapEstimateLineItemPayloads(draft, estimateIdByLegacyId);
+  const invoiceLineItemPayloads = mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId);
+  const lineItemIssues = [...estimateLineItemPayloads.issues, ...invoiceLineItemPayloads.issues];
+  if (lineItemIssues.length > 0) {
+    return {
+      ok: false,
+      blocked: true,
+      reason: "Line-item migration write blocked by local validation issues.",
+      notices: lineItemIssues,
+      cloudCountsBefore: cloudCounts,
+      tableResults,
+      noLocalDeletes: true,
+    };
+  }
+
+  const existingEstimateLineItems = await readExistingRows(client, "estimate_line_items", companyId);
+  const estimateLineItemSync = await migrateLineItemTable({
+    client,
+    table: "estimate_line_items",
+    baseResult: tableResults[3],
+    payloads: estimateLineItemPayloads.payloads,
+    existingRows: existingEstimateLineItems,
+  });
+  tableResults[3] = estimateLineItemSync.result;
+  if (estimateLineItemSync.response?.error) {
+    return {
+      ok: false,
+      blocked: false,
+      reason: asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.",
+      notices: [buildNotice("error", "estimate_line_items_write_failed", asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.")],
+      cloudCountsBefore: cloudCounts,
+      tableResults,
+      noLocalDeletes: true,
+    };
+  }
+
+  const existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId);
+  const invoiceLineItemSync = await migrateLineItemTable({
+    client,
+    table: "invoice_line_items",
+    baseResult: tableResults[5],
+    payloads: invoiceLineItemPayloads.payloads,
+    existingRows: existingInvoiceLineItems,
+  });
+  tableResults[5] = invoiceLineItemSync.result;
+  if (invoiceLineItemSync.response?.error) {
+    return {
+      ok: false,
+      blocked: false,
+      reason: asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.",
+      notices: [buildNotice("error", "invoice_line_items_write_failed", asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.")],
+      cloudCountsBefore: cloudCounts,
+      tableResults,
+      noLocalDeletes: true,
+    };
+  }
 
   const paymentPayloads = mapInvoicePaymentPayloads(draft, invoiceIdByLegacyId, userId);
   const paymentResponse = await upsertTableRows(client, "invoice_payments", paymentPayloads);

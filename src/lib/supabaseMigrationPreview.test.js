@@ -109,8 +109,7 @@ describe("createSupabaseMigrationPreview", () => {
     expect(mockClient.chains.customers.select).toHaveBeenCalledWith("id", { count: "exact", head: true });
     expect(mockClient.chains.customers.eq).toHaveBeenCalledWith("company_id", "company_1");
     expect(preview.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
-      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
+      expect.objectContaining({ code: "line_items_waiting_for_core" }),
     ]));
   });
 
@@ -189,6 +188,59 @@ describe("createSupabaseMigrationPreview", () => {
     expect(preview.cloudCounts).toBeNull();
     expect(preview.notices).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "cloud_counts_unavailable" }),
+    ]));
+  });
+
+  test("reports line-item migration ready when core tables are already migrated", async () => {
+    const mockClient = createMockClient({
+      customers: 2,
+      projects: 1,
+      estimates: 1,
+      estimateLineItems: 0,
+      invoices: 2,
+      invoiceLineItems: 0,
+      invoicePayments: 2,
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const preview = await createSupabaseMigrationPreview({
+      storageSnapshot: buildSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      backupDownloadAvailable: true,
+    });
+
+    expect(preview.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_line_items_ready" }),
+      expect.objectContaining({ code: "invoice_line_items_ready" }),
+    ]));
+  });
+
+  test("reports line items already migrated when counts already match", async () => {
+    const mockClient = createMockClient({
+      customers: 2,
+      projects: 1,
+      estimates: 1,
+      estimateLineItems: 1,
+      invoices: 2,
+      invoiceLineItems: 1,
+      invoicePayments: 2,
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const preview = await createSupabaseMigrationPreview({
+      storageSnapshot: buildSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      backupDownloadAvailable: true,
+    });
+
+    expect(preview.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "line_items_already_migrated" }),
     ]));
   });
 });

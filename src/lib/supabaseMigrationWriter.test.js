@@ -24,9 +24,9 @@ function buildPreview(overrides = {}) {
       customers: 1,
       projects: 1,
       estimates: 1,
-      estimateLineItems: 0,
+      estimateLineItems: 1,
       invoices: 1,
-      invoiceLineItems: 0,
+      invoiceLineItems: 1,
       invoicePayments: 1,
     },
     cloudCountCheckAvailable: true,
@@ -105,15 +105,23 @@ function createUpsertChain(response) {
 function createMockClient({
   counts = {},
   existingCustomerRows,
+  existingEstimateRows,
+  existingInvoiceRows,
+  existingEstimateLineItemRows,
+  existingInvoiceLineItemRows,
   customerRows = [{ id: "db_cust_1", legacy_local_id: "cust_1" }],
   projectRows = [{ id: "db_proj_1", legacy_local_id: "proj_1" }],
   estimateRows = [{ id: "db_est_1", legacy_local_id: "est_1" }],
+  estimateLineItemRows = [{ id: "db_est_line_1", legacy_local_id: "est_line_1" }],
   invoiceRows = [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
+  invoiceLineItemRows = [{ id: "db_inv_line_1", legacy_local_id: "inv_line_1" }],
   paymentRows = [{ id: "db_pay_1", legacy_local_id: "pay_1" }],
   customerError = null,
   projectError = null,
   estimateError = null,
+  estimateLineItemError = null,
   invoiceError = null,
+  invoiceLineItemError = null,
   paymentError = null,
 } = {}) {
   const countChains = {
@@ -129,16 +137,18 @@ function createMockClient({
     customers: createUpsertChain({ data: customerRows, error: customerError }),
     projects: createUpsertChain({ data: projectRows, error: projectError }),
     estimates: createUpsertChain({ data: estimateRows, error: estimateError }),
-    estimate_line_items: createUpsertChain({ data: [], error: null }),
+    estimate_line_items: createUpsertChain({ data: estimateLineItemRows, error: estimateLineItemError }),
     invoices: createUpsertChain({ data: invoiceRows, error: invoiceError }),
-    invoice_line_items: createUpsertChain({ data: [], error: null }),
+    invoice_line_items: createUpsertChain({ data: invoiceLineItemRows, error: invoiceLineItemError }),
     invoice_payments: createUpsertChain({ data: paymentRows, error: paymentError }),
   };
   const readRowsByTable = {
     customers: existingCustomerRows || customerRows,
     projects: projectRows,
-    estimates: estimateRows,
-    invoices: invoiceRows,
+    estimates: existingEstimateRows || estimateRows,
+    estimate_line_items: existingEstimateLineItemRows || [],
+    invoices: existingInvoiceRows || invoiceRows,
+    invoice_line_items: existingInvoiceLineItemRows || [],
     invoice_payments: paymentRows,
   };
 
@@ -288,19 +298,17 @@ describe("supabaseMigrationWriter", () => {
       expect.objectContaining({ table: "customers", status: "success", written: 1 }),
       expect.objectContaining({ table: "projects", status: "success", written: 1 }),
       expect.objectContaining({ table: "estimates", status: "success", written: 1 }),
-      expect.objectContaining({ table: "estimate_line_items", status: "blocked", skipped: 1 }),
+      expect.objectContaining({ table: "estimate_line_items", status: "success", written: 1 }),
       expect.objectContaining({ table: "invoices", status: "success", written: 1 }),
-      expect.objectContaining({ table: "invoice_line_items", status: "blocked", skipped: 1 }),
+      expect.objectContaining({ table: "invoice_line_items", status: "success", written: 1 }),
       expect.objectContaining({ table: "invoice_payments", status: "success", written: 1 }),
-    ]));
-    expect(result.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
-      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
     ]));
     expect(mockClient.writeChains.customers.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.projects.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalled();
+    expect(mockClient.writeChains.estimate_line_items.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalled();
+    expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.invoice_payments.upsert).toHaveBeenCalled();
   });
 
@@ -362,52 +370,21 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
   });
 
-  test("blocks reruns after the full migration already exists in cloud", async () => {
-    const mockClient = createMockClient({
-      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 1 },
-    });
-    mockGetSupabaseClient.mockReturnValue(mockClient);
-
-    const result = await runSupabaseMigrationWrite({
-      storageSnapshot: buildStorageSnapshot({
-        estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
-        invoices: [{
-          id: "inv_1",
-          projectId: "proj_1",
-          customerId: "cust_1",
-          sourceEstimateId: "est_1",
-          invoiceNumber: "INV-1",
-          invoiceTotal: 100,
-          amountPaid: 25,
-          balanceRemaining: 75,
-          payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
-        }],
-      }),
-      configured: true,
-      user: { id: "user_1" },
-      company: { id: "company_1", name: "AAS Property Care" },
-      role: "owner",
-      backupDownloadAvailable: true,
-      preview: buildPreview(),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.blocked).toBe(true);
-    expect(result.reason).toMatch(/already match the local migration counts/i);
-    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
-  });
-
-  test("blocks reruns with an exact line-item schema message when core tables are already migrated", async () => {
+  test("reports no duplicate write needed when line items already match cloud data", async () => {
     const mockClient = createMockClient({
       counts: {
         customers: 1,
         projects: 1,
         estimates: 1,
-        estimateLineItems: 0,
+        estimateLineItems: 1,
         invoices: 1,
-        invoiceLineItems: 0,
+        invoiceLineItems: 1,
         invoicePayments: 1,
       },
+      existingEstimateRows: [{ id: "db_est_1", legacy_local_id: "est_1" }],
+      existingInvoiceRows: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
+      existingEstimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "est_line_1" }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "inv_line_1" }],
     });
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
@@ -421,19 +398,115 @@ describe("supabaseMigrationWriter", () => {
       preview: buildPreview(),
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.blocked).toBe(true);
-    expect(result.reason).toMatch(/line item migration remains blocked/i);
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBe(false);
     expect(result.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "core_tables_already_migrated" }),
-      expect.objectContaining({ code: "estimate_line_items_schema_blocked" }),
-      expect.objectContaining({ code: "invoice_line_items_schema_blocked" }),
+      expect.objectContaining({ code: "line_items_already_migrated" }),
     ]));
     expect(result.tableResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ table: "estimate_line_items", status: "blocked", skipped: 1 }),
-      expect.objectContaining({ table: "invoice_line_items", status: "blocked", skipped: 1 }),
+      expect.objectContaining({ table: "customers", status: "reused", reused: 1, skipped: 1 }),
+      expect.objectContaining({ table: "estimate_line_items", status: "reused", reused: 1, skipped: 1 }),
+      expect.objectContaining({ table: "invoice_line_items", status: "reused", reused: 1, skipped: 1 }),
     ]));
     expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.estimate_line_items.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.invoice_line_items.upsert).not.toHaveBeenCalled();
+  });
+
+  test("migrates line items only when core tables are already migrated", async () => {
+    const mockClient = createMockClient({
+      counts: {
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        estimateLineItems: 0,
+        invoices: 1,
+        invoiceLineItems: 0,
+        invoicePayments: 1,
+      },
+      existingEstimateRows: [{ id: "db_est_1", legacy_local_id: "est_1" }],
+      existingInvoiceRows: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
+      existingEstimateLineItemRows: [],
+      existingInvoiceLineItemRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "customers", status: "reused", reused: 1 }),
+      expect.objectContaining({ table: "estimate_line_items", status: "success", written: 1 }),
+      expect.objectContaining({ table: "invoice_line_items", status: "success", written: 1 }),
+    ]));
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.estimates.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.invoices.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.invoice_payments.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.estimate_line_items.upsert).toHaveBeenCalled();
+    expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalled();
+  });
+
+  test("creates deterministic line-item legacy ids when local items do not have ids", async () => {
+    const mockClient = createMockClient({
+      estimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:labor:0" }],
+      invoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:invoice:0" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [{
+          id: "est_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          estimateNumber: "EST-1",
+          total: 100,
+          labor: { lines: [{ description: "Labor", quantity: 1, rate: 100 }] },
+        }],
+        invoices: [{
+          id: "inv_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          sourceEstimateId: "est_1",
+          invoiceNumber: "INV-1",
+          invoiceTotal: 100,
+          amountPaid: 25,
+          balanceRemaining: 75,
+          lineItems: [{ description: "Material", quantity: 1, price: 100, total: 100 }],
+          payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
+        }],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.estimate_line_items.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ legacy_local_id: "estimate:est_1:labor:0" }),
+      ]),
+      expect.any(Object),
+    );
+    expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ legacy_local_id: "invoice:inv_1:invoice:0" }),
+      ]),
+      expect.any(Object),
+    );
   });
 
   test("completes validation before writes and blocks early on local document issues", async () => {

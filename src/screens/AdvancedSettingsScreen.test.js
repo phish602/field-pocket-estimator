@@ -136,8 +136,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       cloudCountCheckAvailable: true,
       cloudCountStatusMessage: "Cloud count check completed.",
       notices: [
-        { level: "warning", code: "estimate_line_items_schema_blocked", message: "Estimate line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or estimate_id + legacy_local_id." },
-        { level: "warning", code: "invoice_line_items_schema_blocked", message: "Invoice line items are still blocked because the documented schema has no unique idempotent upsert path for company_id + legacy_local_id or invoice_id + legacy_local_id." },
+        { level: "info", code: "line_items_waiting_for_core", message: "Line items will migrate after core customer/project/document rows are present in cloud for this workspace." },
       ],
       noWritesPerformed: true,
     });
@@ -150,9 +149,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
         { table: "customers", label: "Customers", status: "success", written: 1, skipped: 0, failed: 0 },
         { table: "projects", label: "Projects", status: "success", written: 1, skipped: 0, failed: 0 },
         { table: "estimates", label: "Estimates", status: "success", written: 1, skipped: 0, failed: 0 },
-        { table: "estimate_line_items", label: "Estimate line items", status: "skipped", written: 0, skipped: 0, failed: 0 },
+        { table: "estimate_line_items", label: "Estimate line items", status: "success", written: 1, skipped: 0, failed: 0 },
         { table: "invoices", label: "Invoices", status: "success", written: 1, skipped: 0, failed: 0 },
-        { table: "invoice_line_items", label: "Invoice line items", status: "skipped", written: 0, skipped: 0, failed: 0 },
+        { table: "invoice_line_items", label: "Invoice line items", status: "success", written: 1, skipped: 0, failed: 0 },
         { table: "invoice_payments", label: "Invoice payments", status: "success", written: 1, skipped: 0, failed: 0 },
       ],
       noLocalDeletes: true,
@@ -453,7 +452,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Local line items: estimate/i)).toBeInTheDocument();
     expect(screen.getByText(/Cloud counts: customers 0, projects 0, estimates 0, invoices 0, invoice payments 0\./i)).toBeInTheDocument();
     expect(screen.getByText(/Cloud line items: estimate 0, invoice 0\./i)).toBeInTheDocument();
-    expect(screen.getByText(/Estimate line items are still blocked because the documented schema has no unique idempotent upsert path/i)).toBeInTheDocument();
+    expect(screen.getByText(/Line items will migrate after core customer\/project\/document rows are present in cloud/i)).toBeInTheDocument();
     expect(screen.getByText(/No Supabase writes were performed\./i)).toBeInTheDocument();
   });
 
@@ -508,6 +507,8 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
     expect(screen.getByText(/Cloud migration completed\./i)).toBeInTheDocument();
     expect(screen.getByText(/Customers: success, written 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Estimate line items: success, written 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Invoice line items: success, written 1/i)).toBeInTheDocument();
     expect(screen.getByText(/Invoice payments: success, written 1/i)).toBeInTheDocument();
     expect(screen.getByText(/Local data remains in localStorage after this migration step\./i)).toBeInTheDocument();
   });
