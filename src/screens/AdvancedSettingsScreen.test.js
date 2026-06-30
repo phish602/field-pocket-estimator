@@ -3,8 +3,14 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import AdvancedSettingsScreen from "./AdvancedSettingsScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
+import useSupabaseAccount from "../lib/useSupabaseAccount";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock("../lib/useSupabaseAccount", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
@@ -22,6 +28,21 @@ function buildAuthState(overrides = {}) {
     infoMessage: "",
     signInWithEmailOtp: jest.fn(),
     signOut: jest.fn(),
+    ...overrides,
+  };
+}
+
+function buildAccountState(overrides = {}) {
+  return {
+    configured: false,
+    user: null,
+    companyUser: null,
+    membership: null,
+    company: null,
+    role: "",
+    loading: false,
+    error: "",
+    hasCompany: false,
     ...overrides,
   };
 }
@@ -45,6 +66,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
   beforeEach(() => {
     useSupabaseAuth.mockReturnValue(buildAuthState());
+    useSupabaseAccount.mockReturnValue(buildAccountState());
     localStorage.clear();
     localStorage.setItem(
       STORAGE_KEYS.COMPANY_PROFILE,
@@ -263,9 +285,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     const signOut = jest.fn();
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
       userEmail: "owner@example.com",
-      user: { email: "owner@example.com" },
-      session: { user: { email: "owner@example.com" } },
+      session: { user: { id: "user_1", email: "owner@example.com" } },
       signOut,
     }));
 
@@ -277,6 +299,49 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Sign Out" }));
     expect(signOut).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows company name and role when a read-only membership exists", () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText(/Company:/i)).toBeInTheDocument();
+    expect(screen.getByText("Field Pocket LLC")).toBeInTheDocument();
+    expect(screen.getByText(/Role:/i)).toBeInTheDocument();
+    expect(screen.getByText("owner")).toBeInTheDocument();
+    expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
+  });
+
+  test("shows no-membership state without crashing", () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_3", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_3", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_3", email: "owner@example.com" },
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText("No company membership found yet.")).toBeInTheDocument();
   });
 
   test("downloads the local backup artifact without mutating stored app data", async () => {

@@ -6,6 +6,7 @@ import { appendAuditEvent, createStoredAuditEvent, readStoredAuditEvents } from 
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
+import useSupabaseAccount from "../lib/useSupabaseAccount";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -185,12 +186,24 @@ export default function AdvancedSettingsScreen({
     missingEnvKeys,
     loading: authLoading,
     authBusy,
+    user,
     userEmail,
     errorMessage: authErrorMessage,
     infoMessage: authInfoMessage,
     signInWithEmailOtp,
     signOut,
   } = useSupabaseAuth();
+  const {
+    companyUser,
+    company,
+    role: accountRole,
+    loading: accountLoading,
+    error: accountError,
+    hasCompany,
+  } = useSupabaseAccount({
+    configured: isSupabaseReady,
+    user,
+  });
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -694,6 +707,25 @@ export default function AdvancedSettingsScreen({
                   <div className="pe-field-helper">
                     Signed in as <strong>{userEmail}</strong>.
                   </div>
+                  {accountLoading ? (
+                    <div className="pe-field-helper">Checking company membership...</div>
+                  ) : null}
+                  {!accountLoading && hasCompany ? (
+                    <div className="pe-field-helper">
+                      Company: <strong>{String(company?.name || company?.company_name || "Unnamed company")}</strong>
+                    </div>
+                  ) : null}
+                  {!accountLoading && accountRole ? (
+                    <div className="pe-field-helper">
+                      Role: <strong>{accountRole}</strong>
+                    </div>
+                  ) : null}
+                  {!accountLoading && !accountError && !companyUser ? (
+                    <div className="pe-field-helper">No company membership found yet.</div>
+                  ) : null}
+                  {!accountLoading && !accountError && companyUser && !hasCompany ? (
+                    <div className="pe-field-helper">Company record not found for this membership yet.</div>
+                  ) : null}
                   <div className="pe-field-helper">
                     Cloud account connected. Data migration/sync not enabled yet.
                   </div>
@@ -739,6 +771,11 @@ export default function AdvancedSettingsScreen({
               {authErrorMessage ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
                   {authErrorMessage}
+                </div>
+              ) : null}
+              {!authErrorMessage && accountError ? (
+                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                  {accountError}
                 </div>
               ) : null}
               {!authErrorMessage && authInfoMessage ? (
