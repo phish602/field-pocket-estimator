@@ -8,6 +8,7 @@ import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDown
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
+import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -185,6 +186,8 @@ export default function AdvancedSettingsScreen({
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
   const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
+  const [migrationPreviewBusy, setMigrationPreviewBusy] = useState(false);
+  const [migrationPreview, setMigrationPreview] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -337,6 +340,45 @@ export default function AdvancedSettingsScreen({
     const response = await createWorkspace(workspaceName);
     if (response?.ok) {
       setWorkspaceName(String(response?.result?.company?.name || workspaceName).trim());
+    }
+  };
+
+  const runMigrationPreview = async () => {
+    try {
+      setMigrationPreviewBusy(true);
+      const preview = await createSupabaseMigrationPreview({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+        backupDownloadAvailable: true,
+      });
+      setMigrationPreview(preview);
+    } catch {
+      setMigrationPreview({
+        company: {
+          id: String(company?.id || "").trim(),
+          name: String(company?.name || "").trim(),
+          role: String(accountRole || "").trim().toLowerCase(),
+        },
+        localCounts: {
+          customers: 0,
+          projects: 0,
+          estimates: 0,
+          invoices: 0,
+          invoicePayments: 0,
+          scopeTemplates: 0,
+          settings: 0,
+        },
+        cloudCounts: null,
+        cloudCountCheckAvailable: false,
+        cloudCountStatusMessage: "Cloud count check unavailable.",
+        notices: [{ level: "error", code: "preview_failed", message: "Unable to build migration preview." }],
+        noWritesPerformed: true,
+      });
+    } finally {
+      setMigrationPreviewBusy(false);
     }
   };
 
@@ -848,6 +890,78 @@ export default function AdvancedSettingsScreen({
                   {workspaceSuccess}
                 </div>
               ) : null}
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid rgba(148,163,184,0.18)",
+                }}
+              >
+                <div className="pe-field-label" style={{ marginBottom: 0 }}>Migration Preview</div>
+                <div className="pe-field-helper">
+                  Dry run the localStorage to Supabase migration plan. This checks local counts, workspace context, and optional cloud counts only.
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={runMigrationPreview}
+                    disabled={migrationPreviewBusy}
+                  >
+                    {migrationPreviewBusy ? "Previewing..." : "Preview Local Data Migration"}
+                  </button>
+                </div>
+                {migrationPreview ? (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 6,
+                      padding: 10,
+                      borderRadius: 12,
+                      border: "1px solid rgba(148,163,184,0.18)",
+                      background: "rgba(15,23,42,0.34)",
+                    }}
+                  >
+                    <div className="pe-field-helper">
+                      Current workspace: <strong>{String(migrationPreview?.company?.name || "Unavailable")}</strong>
+                    </div>
+                    <div className="pe-field-helper">
+                      Current role: <strong>{String(migrationPreview?.company?.role || "unavailable")}</strong>
+                    </div>
+                    <div className="pe-field-helper">
+                      Local counts: customers <strong>{Number(migrationPreview?.localCounts?.customers || 0)}</strong>, projects <strong>{Number(migrationPreview?.localCounts?.projects || 0)}</strong>, estimates <strong>{Number(migrationPreview?.localCounts?.estimates || 0)}</strong>, invoices <strong>{Number(migrationPreview?.localCounts?.invoices || 0)}</strong>, invoice payments <strong>{Number(migrationPreview?.localCounts?.invoicePayments || 0)}</strong>.
+                    </div>
+                    <div className="pe-field-helper">
+                      {migrationPreview?.cloudCountCheckAvailable && migrationPreview?.cloudCounts
+                        ? `Cloud counts: customers ${Number(migrationPreview.cloudCounts.customers || 0)}, projects ${Number(migrationPreview.cloudCounts.projects || 0)}, estimates ${Number(migrationPreview.cloudCounts.estimates || 0)}, invoices ${Number(migrationPreview.cloudCounts.invoices || 0)}, invoice payments ${Number(migrationPreview.cloudCounts.invoicePayments || 0)}.`
+                        : String(migrationPreview?.cloudCountStatusMessage || "Cloud count check unavailable.")}
+                    </div>
+                    {Array.isArray(migrationPreview?.notices) && migrationPreview.notices.length > 0 ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {migrationPreview.notices.map((notice) => (
+                          <div
+                            key={String(notice?.code || notice?.message)}
+                            className="pe-field-helper"
+                            style={{
+                              color: notice?.level === "error"
+                                ? "rgba(248,113,113,0.95)"
+                                : notice?.level === "warning"
+                                  ? "rgba(253,224,71,0.95)"
+                                  : "rgba(191,219,254,0.95)",
+                            }}
+                          >
+                            {String(notice?.message || "")}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                      No Supabase writes were performed.
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>

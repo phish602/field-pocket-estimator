@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
+import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -19,6 +20,11 @@ jest.mock("../lib/useSupabaseAccount", () => ({
 jest.mock("../lib/useSupabaseWorkspaceBootstrap", () => ({
   __esModule: true,
   default: jest.fn(),
+}));
+
+jest.mock("../lib/supabaseMigrationPreview", () => ({
+  __esModule: true,
+  createSupabaseMigrationPreview: jest.fn(),
 }));
 
 function buildAuthState(overrides = {}) {
@@ -86,6 +92,30 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     useSupabaseAuth.mockReturnValue(buildAuthState());
     useSupabaseAccount.mockReturnValue(buildAccountState());
     useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
+    createSupabaseMigrationPreview.mockReset();
+    createSupabaseMigrationPreview.mockResolvedValue({
+      company: { id: "company_1", name: "Field Pocket LLC", role: "owner" },
+      localCounts: {
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        invoices: 1,
+        invoicePayments: 1,
+        scopeTemplates: 1,
+        settings: 1,
+      },
+      cloudCounts: {
+        customers: 0,
+        projects: 0,
+        estimates: 0,
+        invoices: 0,
+        invoicePayments: 0,
+      },
+      cloudCountCheckAvailable: true,
+      cloudCountStatusMessage: "Cloud count check completed.",
+      notices: [],
+      noWritesPerformed: true,
+    });
     localStorage.clear();
     localStorage.setItem(
       STORAGE_KEYS.COMPANY_PROFILE,
@@ -344,6 +374,43 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Role:/i)).toBeInTheDocument();
     expect(screen.getByText("owner")).toBeInTheDocument();
     expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
+  });
+
+  test("shows migration preview results without performing writes", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Preview Local Data Migration" }));
+    });
+
+    expect(createSupabaseMigrationPreview).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1", name: "Field Pocket LLC" }),
+      role: "owner",
+      backupDownloadAvailable: true,
+    }));
+    expect(screen.getByText(/Current workspace:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Current role:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Local counts: customers/i)).toBeInTheDocument();
+    expect(screen.getByText(/Cloud counts: customers 0, projects 0, estimates 0, invoices 0, invoice payments 0\./i)).toBeInTheDocument();
+    expect(screen.getByText(/No Supabase writes were performed\./i)).toBeInTheDocument();
   });
 
   test("shows no-membership state without crashing", () => {
