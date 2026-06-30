@@ -764,7 +764,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       cloudCounts: { customers: 7, projects: 9, estimates: 0, invoices: 10, invoice_payments: 3, estimate_line_items: 0, invoice_line_items: 21 },
       localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 },
       blockers: [],
-      notices: [],
+      notices: [{
+        level: "warning",
+        code: "supplemental_restore_not_available",
+        message: "Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.",
+      }],
       noWritesPerformed: true,
     });
 
@@ -776,6 +780,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     expect(screen.getByText("Cloud data is available for this workspace.")).toBeInTheDocument();
     expect(screen.getByText("This device does not have local estimates or invoices yet.")).toBeInTheDocument();
+    expect(screen.getByText("Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
     expect(previewSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
       storageSnapshot: localStorage,
@@ -827,7 +832,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       cloudCounts: { customers: 7, projects: 9, estimates: 0, invoices: 10, invoice_payments: 3, estimate_line_items: 0, invoice_line_items: 21 },
       localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 },
       blockers: [],
-      notices: [],
+      notices: [{
+        level: "warning",
+        code: "supplemental_restore_not_available",
+        message: "Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.",
+      }],
       noWritesPerformed: true,
     });
     executeSupabaseCloudRestore.mockResolvedValue({
@@ -837,6 +846,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       partial: false,
       restoredCounts: { customers: 7, projects: 9, invoices: 10 },
       blockers: [],
+      notices: [{
+        level: "warning",
+        code: "supplemental_restore_not_available",
+        message: "Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.",
+      }],
       noWritesPerformed: false,
       noCloudDataDeleted: true,
       noExistingLocalDataOverwritten: true,
@@ -860,6 +874,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud data restored to this device.")).toBeInTheDocument();
     expect(screen.getByText("No cloud data was deleted.")).toBeInTheDocument();
     expect(screen.getByText("No existing local data was overwritten.")).toBeInTheDocument();
+    expect(screen.getByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).toBeInTheDocument();
   });
 
   test("restore preview blocking with local_not_empty shows the overwrite-prevention message instead of a restore button", async () => {

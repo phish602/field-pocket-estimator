@@ -9,6 +9,7 @@ const {
   executeSupabaseCloudRestore,
   CLOUD_RESTORE_STATUS,
 } = require("./supabaseCloudRestore");
+const { STORAGE_KEYS } = require("../constants/storageKeys");
 
 function buildEmptyStorageSnapshot(overrides = {}) {
   const values = {
@@ -280,6 +281,19 @@ describe("supabaseCloudRestore", () => {
         customers: 1, projects: 1, invoices: 1, invoice_payments: 1, invoice_line_items: 1, estimates: 0, estimate_line_items: 0,
       }));
       expect(result.blockers).toEqual([]);
+      expect(result.notices).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "supplemental_restore_not_available",
+          details: expect.objectContaining({
+            localStorageKeys: expect.objectContaining({
+              companyProfile: STORAGE_KEYS.COMPANY_PROFILE,
+              logoField: "logoDataUrl",
+              settings: STORAGE_KEYS.SETTINGS,
+              scopeTemplates: STORAGE_KEYS.SCOPE_TEMPLATES,
+            }),
+          }),
+        }),
+      ]));
     });
 
     test("reports a partial-eligible result with an estimate blocker when the cloud also has estimates", async () => {
@@ -461,10 +475,26 @@ describe("supabaseCloudRestore", () => {
       expect(result.noWritesPerformed).toBe(false);
       expect(result.noCloudDataDeleted).toBe(true);
       expect(result.noExistingLocalDataOverwritten).toBe(true);
+      expect(result.notices).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "supplemental_restore_not_available",
+          details: expect.objectContaining({
+            localStorageKeys: expect.objectContaining({
+              companyProfile: STORAGE_KEYS.COMPANY_PROFILE,
+              logoField: "logoDataUrl",
+              settings: STORAGE_KEYS.SETTINGS,
+              scopeTemplates: STORAGE_KEYS.SCOPE_TEMPLATES,
+            }),
+          }),
+        }),
+      ]));
       expect(storage.setItem).toHaveBeenCalledTimes(3);
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-customers-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-projects-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-invoices-v1", expect.any(String));
+      expect(storage.setItem).not.toHaveBeenCalledWith(STORAGE_KEYS.COMPANY_PROFILE, expect.anything());
+      expect(storage.setItem).not.toHaveBeenCalledWith(STORAGE_KEYS.SETTINGS, expect.anything());
+      expect(storage.setItem).not.toHaveBeenCalledWith(STORAGE_KEYS.SCOPE_TEMPLATES, expect.anything());
 
       const restoredCustomers = JSON.parse(storage.__store["estipaid-customers-v1"]);
       expect(restoredCustomers).toEqual([

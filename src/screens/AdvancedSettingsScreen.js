@@ -124,6 +124,13 @@ function inferWorkspaceName() {
   return String(profile?.companyName || profile?.name || "").trim();
 }
 
+function getRestoreCoverageNoticeMessages(result) {
+  return (Array.isArray(result?.notices) ? result.notices : [])
+    .filter((notice) => String(notice?.code || "").trim() === "supplemental_restore_not_available")
+    .map((notice) => String(notice?.message || "").trim())
+    .filter(Boolean);
+}
+
 function SettingRow({ title, hint, control }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1189,6 +1196,11 @@ export default function AdvancedSettingsScreen({
                         {restoreResult?.partial ? (
                           <div className="pe-field-helper">Estimates were not restored yet — only customers, projects, and invoices.</div>
                         ) : null}
+                        {getRestoreCoverageNoticeMessages(restoreResult).length > 0 ? (
+                          <div className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                            Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.
+                          </div>
+                        ) : null}
                       </>
                     ) : restoreBusy ? (
                       <div className="pe-field-helper">Restoring cloud data to this device...</div>
@@ -1209,6 +1221,11 @@ export default function AdvancedSettingsScreen({
                         {restorePreview?.partial ? (
                           <div className="pe-field-helper">Estimates can&apos;t be restored yet; customers, projects, and invoices will be.</div>
                         ) : null}
+                        {getRestoreCoverageNoticeMessages(restorePreview).map((message) => (
+                          <div key={`restore-preview-${message}`} className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                            {message}
+                          </div>
+                        ))}
                         <label className="pe-field-helper" htmlFor="restore-confirm-input" style={{ marginTop: 2 }}>
                           Type RESTORE to confirm
                         </label>

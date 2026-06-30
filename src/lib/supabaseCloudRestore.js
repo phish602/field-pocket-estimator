@@ -19,6 +19,9 @@ export const CLOUD_RESTORE_STATUS = {
 // columns to faithfully rebuild the local record shape; estimates do not
 // (see buildEstimateBlockerNotice below for why they're excluded).
 const ALL_CLOUD_TABLES = ["customers", "projects", "estimates", "invoices", "invoice_payments", "estimate_line_items", "invoice_line_items"];
+const COMPANY_PROFILE_RESTORE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
+const SETTINGS_RESTORE_KEY = STORAGE_KEYS.SETTINGS;
+const SCOPE_TEMPLATES_RESTORE_KEY = STORAGE_KEYS.SCOPE_TEMPLATES;
 
 function asText(value) {
   return String(value || "").trim();
@@ -48,6 +51,27 @@ function buildEstimateBlockerNotice(estimateCount, lineItemCount) {
       cloudEstimateCount: estimateCount,
       cloudEstimateLineItemCount: lineItemCount,
       missingFields: ["labor.lines[].hours", "labor.hazardPct", "labor.riskPct", "labor.multiplier", "materials.markupPct", "materialsMode"],
+    }
+  );
+}
+
+function buildSupplementalRestoreCoverageNotice() {
+  return buildNotice(
+    "warning",
+    "supplemental_restore_not_available",
+    "Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.",
+    {
+      localStorageKeys: {
+        companyProfile: COMPANY_PROFILE_RESTORE_KEY,
+        logoField: "logoDataUrl",
+        settings: SETTINGS_RESTORE_KEY,
+        scopeTemplates: SCOPE_TEMPLATES_RESTORE_KEY,
+      },
+      cloudCoverage: {
+        companies: "workspace identity only; no full company-profile/logo payload is restored here",
+        app_settings: "not read by the current restore path",
+        scope_templates: "not read by the current restore path",
+      },
     }
   );
 }
@@ -190,7 +214,7 @@ export async function previewSupabaseCloudRestore({
     localCounts,
     cloudCounts,
     blockers,
-    notices,
+    notices: [...notices, buildSupplementalRestoreCoverageNotice()],
   });
 }
 
@@ -374,6 +398,7 @@ function buildExecuteResult(status, extra = {}) {
     partial: false,
     restoredCounts: null,
     blockers: [],
+    notices: [],
     noWritesPerformed: true,
     noCloudDataDeleted: true,
     noExistingLocalDataOverwritten: true,
@@ -490,6 +515,7 @@ export async function executeSupabaseCloudRestore({
     restored: true,
     partial: blockers.length > 0,
     blockers,
+    notices: [buildSupplementalRestoreCoverageNotice()],
     noWritesPerformed: false,
     restoredCounts: {
       customers: payload.customers.length,
