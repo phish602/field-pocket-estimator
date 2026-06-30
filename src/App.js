@@ -2536,6 +2536,46 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const historyObj = window.history;
+    let hasScrollRestoration = false;
+    let previousScrollRestoration;
+    try {
+      hasScrollRestoration = !!historyObj && "scrollRestoration" in historyObj;
+      if (hasScrollRestoration) {
+        previousScrollRestoration = historyObj.scrollRestoration;
+      }
+    } catch {
+      hasScrollRestoration = false;
+      previousScrollRestoration = undefined;
+    }
+
+    if (hasScrollRestoration) {
+      try {
+        historyObj.scrollRestoration = "manual";
+      } catch {}
+    }
+
+    const onPageShow = (event) => {
+      if (event?.persisted) {
+        resetAppScrollPosition();
+      }
+    };
+
+    window.addEventListener("pageshow", onPageShow);
+
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      if (hasScrollRestoration && previousScrollRestoration !== undefined) {
+        try {
+          historyObj.scrollRestoration = previousScrollRestoration;
+        } catch {}
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!shouldOpenDevJobLearningDiagnostics()) return undefined;
 
     const syncDevDiagnosticsRoute = () => {
