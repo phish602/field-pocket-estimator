@@ -12,6 +12,11 @@ import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview"
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
 import {
+  previewSupabaseCloudRestore,
+  executeSupabaseCloudRestore,
+  CLOUD_RESTORE_STATUS,
+} from "../lib/supabaseCloudRestore";
+import {
   checkSupabaseCloudOnboardingStatus,
   runSupabaseCloudOnboardingBackup,
   CLOUD_ONBOARDING_STATUS,
@@ -203,6 +208,11 @@ export default function AdvancedSettingsScreen({
   const [onboardingStatusBusy, setOnboardingStatusBusy] = useState(false);
   const [onboardingStatus, setOnboardingStatus] = useState(null);
   const [onboardingBackupBusy, setOnboardingBackupBusy] = useState(false);
+  const [restorePreviewBusy, setRestorePreviewBusy] = useState(false);
+  const [restorePreview, setRestorePreview] = useState(null);
+  const [restoreConfirmText, setRestoreConfirmText] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreResult, setRestoreResult] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -528,6 +538,73 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setOnboardingBackupBusy(false);
+    }
+  };
+
+  // Read-only: once onboarding detects a fresh device with cloud data
+  // available, check exactly what (if anything) is safely restorable. Never
+  // writes. Only runs when this device is confirmed empty.
+  useEffect(() => {
+    let active = true;
+
+    if (onboardingStatus?.status !== CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE) {
+      setRestorePreview(null);
+      return undefined;
+    }
+
+    setRestorePreviewBusy(true);
+    previewSupabaseCloudRestore({
+      storageSnapshot: localStorage,
+      configured: isSupabaseReady,
+      user,
+      company,
+    })
+      .then((result) => {
+        if (active) setRestorePreview(result);
+      })
+      .catch(() => {
+        if (active) {
+          setRestorePreview({
+            status: CLOUD_RESTORE_STATUS.ERROR,
+            eligible: false,
+            error: "Unable to check restore eligibility.",
+            noWritesPerformed: true,
+          });
+        }
+      })
+      .finally(() => {
+        if (active) setRestorePreviewBusy(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [onboardingStatus?.status, isSupabaseReady, user, company]);
+
+  const runCloudRestore = async () => {
+    try {
+      setRestoreBusy(true);
+      const result = await executeSupabaseCloudRestore({
+        storage: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+      });
+      setRestoreResult(result);
+      if (result?.restored) {
+        setRestoreConfirmText("");
+      }
+    } catch {
+      setRestoreResult({
+        status: CLOUD_RESTORE_STATUS.ERROR,
+        restored: false,
+        error: "Unable to complete cloud restore.",
+        noWritesPerformed: true,
+        noCloudDataDeleted: true,
+        noExistingLocalDataOverwritten: true,
+      });
+    } finally {
+      setRestoreBusy(false);
     }
   };
 
@@ -1066,17 +1143,63 @@ export default function AdvancedSettingsScreen({
                   <>
                     <div className="pe-field-helper">Cloud data is available for this workspace.</div>
                     <div className="pe-field-helper">This device does not have local estimates or invoices yet.</div>
-                    <div className="pe-field-helper">Restore to this device is coming next.</div>
-                    <div>
-                      <button
-                        type="button"
-                        className="pe-btn pe-btn-ghost"
-                        disabled
-                        title="Restoring cloud data to a device is not implemented yet."
-                      >
-                        Restore Cloud Data to This Device (Coming next)
-                      </button>
-                    </div>
+                    {restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED ? (
+                      <>
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                          Cloud data restored to this device.
+                        </div>
+                        <div className="pe-field-helper">No cloud data was deleted.</div>
+                        <div className="pe-field-helper">No existing local data was overwritten.</div>
+                        {restoreResult?.partial ? (
+                          <div className="pe-field-helper">Estimates were not restored yet — only customers, projects, and invoices.</div>
+                        ) : null}
+                      </>
+                    ) : restoreBusy ? (
+                      <div className="pe-field-helper">Restoring cloud data to this device...</div>
+                    ) : restoreResult && restoreResult.status !== CLOUD_RESTORE_STATUS.RESTORED ? (
+                      <>
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                          {restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
+                            ? "This device already has local data. Restore is blocked to prevent overwriting."
+                            : "Restore could not be completed. Open developer migration tools for details."}
+                        </div>
+                      </>
+                    ) : restorePreviewBusy && !restorePreview ? (
+                      <div className="pe-field-helper">Checking restore eligibility...</div>
+                    ) : restorePreview?.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY ? (
+                      <div className="pe-field-helper">This device already has local data. Restore is blocked to prevent overwriting.</div>
+                    ) : restorePreview?.eligible ? (
+                      <>
+                        {restorePreview?.partial ? (
+                          <div className="pe-field-helper">Estimates can&apos;t be restored yet; customers, projects, and invoices will be.</div>
+                        ) : null}
+                        <label className="pe-field-helper" htmlFor="restore-confirm-input" style={{ marginTop: 2 }}>
+                          Type RESTORE to confirm
+                        </label>
+                        <input
+                          id="restore-confirm-input"
+                          type="text"
+                          className="pe-input"
+                          value={restoreConfirmText}
+                          onChange={(e) => setRestoreConfirmText(e.target.value)}
+                          placeholder="RESTORE"
+                          disabled={restoreBusy}
+                          style={{ maxWidth: 220 }}
+                        />
+                        <div>
+                          <button
+                            type="button"
+                            className="pe-btn"
+                            onClick={runCloudRestore}
+                            disabled={restoreBusy || restoreConfirmText !== "RESTORE"}
+                          >
+                            Restore Cloud Data to This Device
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="pe-field-helper">Restore to this device is coming next.</div>
+                    )}
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
                   <>

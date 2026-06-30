@@ -13,6 +13,11 @@ import {
   runSupabaseCloudOnboardingBackup,
   CLOUD_ONBOARDING_STATUS,
 } from "../lib/supabaseCloudOnboarding";
+import {
+  previewSupabaseCloudRestore,
+  executeSupabaseCloudRestore,
+  CLOUD_RESTORE_STATUS,
+} from "../lib/supabaseCloudRestore";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -59,6 +64,22 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
     LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
     BACKUP_COMPLETED: "backup_completed",
     NEEDS_ATTENTION: "needs_attention",
+    ERROR: "error",
+  },
+}));
+
+jest.mock("../lib/supabaseCloudRestore", () => ({
+  __esModule: true,
+  previewSupabaseCloudRestore: jest.fn(),
+  executeSupabaseCloudRestore: jest.fn(),
+  CLOUD_RESTORE_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    LOCAL_NOT_EMPTY: "local_not_empty",
+    NO_CLOUD_DATA: "no_cloud_data",
+    ELIGIBLE: "eligible",
+    RESTORED: "restored",
+    BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
     ERROR: "error",
   },
 }));
@@ -134,12 +155,25 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     runSupabaseCloudVerification.mockReset();
     checkSupabaseCloudOnboardingStatus.mockReset();
     runSupabaseCloudOnboardingBackup.mockReset();
+    previewSupabaseCloudRestore.mockReset();
+    executeSupabaseCloudRestore.mockReset();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
       preview: null,
       verification: null,
       writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.NO_CLOUD_DATA,
+      eligible: false,
+      partial: false,
+      cloudCounts: null,
+      localCounts: null,
+      blockers: [],
+      notices: [],
       noWritesPerformed: true,
     });
     createSupabaseMigrationPreview.mockResolvedValue({
@@ -641,8 +675,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Your data is backed up to the cloud.")).toBeInTheDocument();
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(previewSupabaseCloudRestore).not.toHaveBeenCalled();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
   test("ready local data state offers Back Up My Data to Cloud", async () => {
@@ -678,7 +715,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("button", { name: "Back Up My Data to Cloud" })).toBeInTheDocument();
   });
 
-  test("cloud_available_empty_device state explains a fresh device and never calls migration write", async () => {
+  test("cloud_available_empty_device state explains a fresh device, offers restore only after eligibility check, and never calls migration write", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -702,6 +739,17 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       writeResult: null,
       noWritesPerformed: true,
     });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      cloudCounts: { customers: 7, projects: 9, estimates: 0, invoices: 10, invoice_payments: 3, estimate_line_items: 0, invoice_line_items: 21 },
+      localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 },
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
 
     const setItemSpy = jest.spyOn(window.localStorage.__proto__, "setItem");
 
@@ -712,12 +760,134 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud data is available for this workspace.")).toBeInTheDocument();
     expect(screen.getByText("This device does not have local estimates or invoices yet.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
-    const restoreButton = screen.getByRole("button", { name: /Restore Cloud Data to This Device/i });
+    expect(previewSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+    }));
+    const restoreButton = screen.getByRole("button", { name: "Restore Cloud Data to This Device" });
     expect(restoreButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "nope" } });
+    expect(restoreButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
+    expect(restoreButton).not.toBeDisabled();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
     expect(setItemSpy).not.toHaveBeenCalled();
     setItemSpy.mockRestore();
+  });
+
+  test("clicking Restore Cloud Data to This Device runs the explicit restore and shows success with no overwrite/delete messages", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      cloudCounts: { customers: 7, projects: 9, estimates: 0, invoices: 10, invoice_payments: 3, estimate_line_items: 0, invoice_line_items: 21 },
+      localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 },
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+    executeSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.RESTORED,
+      restored: true,
+      partial: false,
+      restoredCounts: { customers: 7, projects: 9, invoices: 10 },
+      blockers: [],
+      noWritesPerformed: false,
+      noCloudDataDeleted: true,
+      noExistingLocalDataOverwritten: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud Data to This Device" }));
+    });
+
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
+      storage: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+    }));
+    expect(screen.getByText("Cloud data restored to this device.")).toBeInTheDocument();
+    expect(screen.getByText("No cloud data was deleted.")).toBeInTheDocument();
+    expect(screen.getByText("No existing local data was overwritten.")).toBeInTheDocument();
+  });
+
+  test("restore preview blocking with local_not_empty shows the overwrite-prevention message instead of a restore button", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY,
+      eligible: false,
+      partial: false,
+      cloudCounts: null,
+      localCounts: { customers: 1, projects: 0, estimates: 0, invoices: 0 },
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("This device already has local data. Restore is blocked to prevent overwriting.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
   test("local_cloud_mismatch state asks for review and does not auto-offer one-click backup", async () => {
@@ -752,8 +922,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("This device has local data that does not fully match the cloud.")).toBeInTheDocument();
     expect(screen.getByText("Review before syncing or restoring.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(previewSupabaseCloudRestore).not.toHaveBeenCalled();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
   test("clicking Back Up My Data to Cloud runs the onboarding backup and shows success with no local deletion message", async () => {

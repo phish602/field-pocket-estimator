@@ -1,0 +1,442 @@
+const mockGetSupabaseClient = jest.fn();
+
+jest.mock("./supabaseClient", () => ({
+  getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+const {
+  previewSupabaseCloudRestore,
+  executeSupabaseCloudRestore,
+  CLOUD_RESTORE_STATUS,
+} = require("./supabaseCloudRestore");
+
+function buildEmptyStorageSnapshot(overrides = {}) {
+  const values = {
+    "estipaid-customers-v1": JSON.stringify([]),
+    "estipaid-projects-v1": JSON.stringify([]),
+    "estipaid-estimates-v1": JSON.stringify([]),
+    "estipaid-invoices-v1": JSON.stringify([]),
+    "estipaid-company-profile-v1": JSON.stringify({ id: "local_company", companyName: "AAS Property Care" }),
+    "estipaid-settings-v1": JSON.stringify({}),
+    "estipaid-scope-templates-v1": JSON.stringify([]),
+    "estipaid-audit-events-v1": JSON.stringify([]),
+    ...overrides,
+  };
+  return { getItem: (key) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null) };
+}
+
+function buildNonEmptyStorageSnapshot() {
+  return buildEmptyStorageSnapshot({
+    "estipaid-customers-v1": JSON.stringify([{ id: "cust_local_1", type: "residential", fullName: "Existing Customer" }]),
+  });
+}
+
+function buildWritableStorage(initial = {}) {
+  const store = { ...initial };
+  return {
+    getItem: (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null),
+    setItem: jest.fn((key, value) => {
+      store[key] = value;
+    }),
+    __store: store,
+  };
+}
+
+function createMockClient({ rowsByTable = {}, countErrorsByTable = {}, rowErrorsByTable = {} } = {}) {
+  const from = jest.fn((table) => ({
+    select: jest.fn((columns, options) => {
+      if (options && options.head === true) {
+        return {
+          eq: jest.fn(async () => {
+            if (countErrorsByTable[table]) return { count: null, error: countErrorsByTable[table] };
+            return { count: (rowsByTable[table] || []).length, error: null };
+          }),
+        };
+      }
+      return {
+        eq: jest.fn(async () => {
+          if (rowErrorsByTable[table]) return { data: null, error: rowErrorsByTable[table] };
+          return { data: rowsByTable[table] || [], error: null };
+        }),
+      };
+    }),
+  }));
+  return { from };
+}
+
+function cloudCustomerRow(overrides = {}) {
+  return {
+    id: "db_cust_1",
+    company_id: "company_1",
+    legacy_local_id: "cust_1",
+    display_name: "Acme Co",
+    company_name: "Acme Co",
+    contact_name: "Jane Doe",
+    phone: "555-1234",
+    email: "jane@acme.com",
+    billing_address: "123 Main St",
+    customer_type: "commercial",
+    customer_status: "active",
+    ...overrides,
+  };
+}
+
+function cloudProjectRow(overrides = {}) {
+  return {
+    id: "db_proj_1",
+    company_id: "company_1",
+    legacy_local_id: "proj_1",
+    customer_id: "db_cust_1",
+    project_number: "P-1",
+    project_name: "Roof Repair",
+    site_address: "456 Oak Ave",
+    status: "active",
+    notes: "",
+    scope_summary: "",
+    ...overrides,
+  };
+}
+
+function cloudInvoiceRow(overrides = {}) {
+  return {
+    id: "db_inv_1",
+    company_id: "company_1",
+    legacy_local_id: "inv_1",
+    customer_id: "db_cust_1",
+    project_id: "db_proj_1",
+    estimate_id: null,
+    source_estimate_legacy_id: "est_1",
+    invoice_number: "INV-1",
+    status: "sent",
+    payment_status: "partial",
+    invoice_date: "2026-01-01",
+    due_date: "2026-02-01",
+    total_amount: 1000,
+    amount_paid: 250,
+    balance_remaining: 750,
+    notes: "",
+    ...overrides,
+  };
+}
+
+function cloudPaymentRow(overrides = {}) {
+  return {
+    id: "db_pay_1",
+    company_id: "company_1",
+    invoice_id: "db_inv_1",
+    legacy_local_id: "pay_1",
+    amount: 250,
+    method: "cash",
+    status: "paid",
+    paid_at: "2026-01-15",
+    ...overrides,
+  };
+}
+
+function cloudInvoiceLineItemRow(overrides = {}) {
+  return {
+    id: "db_inv_line_1",
+    company_id: "company_1",
+    invoice_id: "db_inv_1",
+    legacy_local_id: "invoice:inv_1:line:0",
+    sort_order: 0,
+    description: "Material",
+    quantity: 1,
+    unit: null,
+    unit_price: 1000,
+    total_price: 1000,
+    metadata: { kind: "invoice" },
+    ...overrides,
+  };
+}
+
+function fullCloudRows(overrides = {}) {
+  return {
+    customers: [cloudCustomerRow()],
+    projects: [cloudProjectRow()],
+    estimates: [],
+    invoices: [cloudInvoiceRow()],
+    invoice_payments: [cloudPaymentRow()],
+    estimate_line_items: [],
+    invoice_line_items: [cloudInvoiceLineItemRow()],
+    ...overrides,
+  };
+}
+
+const baseContext = {
+  configured: true,
+  user: { id: "user_1" },
+  company: { id: "company_1", name: "AAS Property Care" },
+};
+
+describe("supabaseCloudRestore", () => {
+  beforeEach(() => {
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(null);
+  });
+
+  describe("previewSupabaseCloudRestore", () => {
+    test("blocks at signed_out when not configured or no user, with no Supabase calls", async () => {
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        configured: false,
+        user: null,
+        company: null,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.SIGNED_OUT);
+      expect(result.eligible).toBe(false);
+      expect(result.noWritesPerformed).toBe(true);
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
+    });
+
+    test("blocks at no_workspace when there is no company", async () => {
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+        company: null,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.NO_WORKSPACE);
+      expect(result.eligible).toBe(false);
+    });
+
+    test("blocks when local core data is not empty, without reading the cloud", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildNonEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY);
+      expect(result.eligible).toBe(false);
+      expect(mockClient.from).not.toHaveBeenCalled();
+    });
+
+    test("reports eligible and cloud counts when local is empty and cloud has restorable data", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.eligible).toBe(true);
+      expect(result.partial).toBe(false);
+      expect(result.cloudCounts).toEqual(expect.objectContaining({
+        customers: 1, projects: 1, invoices: 1, invoice_payments: 1, invoice_line_items: 1, estimates: 0, estimate_line_items: 0,
+      }));
+      expect(result.blockers).toEqual([]);
+    });
+
+    test("reports a partial-eligible result with an estimate blocker when the cloud also has estimates", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [{ id: "db_est_1" }],
+          estimate_line_items: [{ id: "db_est_line_1" }],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.eligible).toBe(true);
+      expect(result.partial).toBe(true);
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "estimates_not_reconstructable" }),
+      ]));
+    });
+
+    test("reports no_cloud_data when local is empty and the cloud workspace has no core data", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows({ customers: [], projects: [], invoices: [] }) });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.NO_CLOUD_DATA);
+      expect(result.eligible).toBe(false);
+    });
+  });
+
+  describe("executeSupabaseCloudRestore", () => {
+    test("blocks at signed_out without any Supabase calls or localStorage writes", async () => {
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({
+        storage,
+        configured: false,
+        user: null,
+        company: null,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.SIGNED_OUT);
+      expect(result.restored).toBe(false);
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("rechecks local emptiness immediately before writing and blocks if data appeared in between", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      let callCount = 0;
+      const originalGetItem = storage.getItem;
+      storage.getItem = (key) => {
+        if (key === "estipaid-customers-v1") {
+          callCount += 1;
+          // First call (initial check) sees empty; second call (final
+          // recheck right before writing) sees a customer that appeared
+          // from another tab/process in between.
+          if (callCount > 1) return JSON.stringify([{ id: "late_arrival", type: "residential", fullName: "Late" }]);
+        }
+        return originalGetItem(key);
+      };
+
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY);
+      expect(result.restored).toBe(false);
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("performs only SELECT reads against Supabase, never any write call", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockClient.insert = jest.fn();
+      mockClient.update = jest.fn();
+      mockClient.upsert = jest.fn();
+      mockClient.delete = jest.fn();
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(mockClient.insert).not.toHaveBeenCalled();
+      expect(mockClient.update).not.toHaveBeenCalled();
+      expect(mockClient.upsert).not.toHaveBeenCalled();
+      expect(mockClient.delete).not.toHaveBeenCalled();
+    });
+
+    test("does not write localStorage when a cloud row cannot be mapped (missing legacy_local_id)", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          customers: [cloudCustomerRow({ legacy_local_id: "" })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ERROR);
+      expect(result.restored).toBe(false);
+      expect(result.noWritesPerformed).toBe(true);
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("does not write localStorage when an invoice line item references an invoice that was not fetched", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          invoice_line_items: [cloudInvoiceLineItemRow({ invoice_id: "db_inv_missing" })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ERROR);
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("writes localStorage only after the full payload is built, in one pass, when eligible", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.restored).toBe(true);
+      expect(result.noWritesPerformed).toBe(false);
+      expect(result.noCloudDataDeleted).toBe(true);
+      expect(result.noExistingLocalDataOverwritten).toBe(true);
+      expect(storage.setItem).toHaveBeenCalledTimes(3);
+      expect(storage.setItem).toHaveBeenCalledWith("estipaid-customers-v1", expect.any(String));
+      expect(storage.setItem).toHaveBeenCalledWith("estipaid-projects-v1", expect.any(String));
+      expect(storage.setItem).toHaveBeenCalledWith("estipaid-invoices-v1", expect.any(String));
+
+      const restoredCustomers = JSON.parse(storage.__store["estipaid-customers-v1"]);
+      expect(restoredCustomers).toEqual([
+        expect.objectContaining({ id: "cust_1", type: "commercial", companyName: "Acme Co" }),
+      ]);
+
+      const restoredProjects = JSON.parse(storage.__store["estipaid-projects-v1"]);
+      expect(restoredProjects).toEqual([
+        expect.objectContaining({ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }),
+      ]);
+
+      const restoredInvoices = JSON.parse(storage.__store["estipaid-invoices-v1"]);
+      expect(restoredInvoices).toEqual([
+        expect.objectContaining({
+          id: "inv_1",
+          customerId: "cust_1",
+          projectId: "proj_1",
+          invoiceTotal: 1000,
+          amountPaid: 250,
+          balanceRemaining: 750,
+          lineItems: [expect.objectContaining({ id: "invoice:inv_1:line:0", description: "Material", price: 1000 })],
+          payments: [expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" })],
+        }),
+      ]);
+    });
+
+    test("reports a partial restore with an estimate blocker but still restores customers/projects/invoices", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [{ id: "db_est_1" }],
+          estimate_line_items: [{ id: "db_est_line_1" }],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.partial).toBe(true);
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "estimates_not_reconstructable" }),
+      ]));
+      expect(storage.setItem).toHaveBeenCalledTimes(3);
+    });
+
+    test("reports blocked_unsupported_shape and writes nothing when the cloud only has estimates", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          customers: [], projects: [], invoices: [], invoice_payments: [], invoice_line_items: [],
+          estimates: [{ id: "db_est_1" }],
+          estimate_line_items: [{ id: "db_est_line_1" }],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE);
+      expect(result.restored).toBe(false);
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+  });
+});
