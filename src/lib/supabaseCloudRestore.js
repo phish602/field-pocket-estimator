@@ -28,29 +28,39 @@ function buildNotice(level, code, message, details = {}) {
   return { level, code, message, details };
 }
 
-// Estimates are intentionally not restorable yet: the cloud `estimates`
-// table only stores company_id/customer_id/project_id/legacy_local_id/
-// estimate_number/status/document_type/total_amount/notes/terms (see
-// mapEstimatePayloads in supabaseMigrationWriter.js). It does not carry the
-// local estimate's computational inputs -- labor.lines[].hours, labor
-// hazardPct/riskPct/multiplier, materials.markupPct, or materialsMode (see
-// src/estimator/defaultState.js). Reconstructing those by guessing defaults
-// would let the estimator engine silently recompute wrong totals the next
-// time the estimate is edited, which is exactly the "guessed restore" this
-// lane must not do. Estimate line items have the same gap: the cloud row
-// only has description/quantity/unit_price/unit_cost/total_price/kind, not
-// the original labor-line `rate` vs material-item `price` field shape.
+// Estimates are restorable only once every cloud estimate row carries a
+// valid restore_payload (Gate 10C-A/B): a JSONB capture of the exact local
+// estimate-builder object, including the computational inputs the display
+// columns alone can't carry -- labor.lines[].hours, labor hazardPct/
+// riskPct/multiplier, materials.markupPct, materialsMode (see
+// src/estimator/defaultState.js). Until every cloud estimate has been
+// captured via updateEstimateRestorePayloads, reconstructing from the
+// display-only columns would force the estimator engine to recompute from
+// guessed defaults the next time the estimate is edited -- exactly the
+// "guessed restore" this lane must not do.
 function buildEstimateBlockerNotice(estimateCount, lineItemCount) {
   return buildNotice(
     "warning",
     "estimates_not_reconstructable",
-    "Estimates cannot be safely restored yet. The cloud copy only stores a financial summary (estimate number, status, total amount, notes) and flattened line items, not the original labor hours, hazard %, risk %, multiplier, or materials markup % needed to recompute the estimate correctly. Restoring a guessed version risks silently wrong totals if the estimate is edited again.",
+    "Estimates cannot be safely restored yet. Some or all cloud estimates do not have a restore payload captured (Settings → Update Estimate Restore Payloads), so the original labor hours, hazard %, risk %, multiplier, and materials markup % needed to recompute the estimate correctly are not available. Restoring a guessed version risks silently wrong totals if the estimate is edited again.",
     {
       table: "estimates",
       cloudEstimateCount: estimateCount,
       cloudEstimateLineItemCount: lineItemCount,
       missingFields: ["labor.lines[].hours", "labor.hazardPct", "labor.riskPct", "labor.multiplier", "materials.markupPct", "materialsMode"],
     }
+  );
+}
+
+// A cloud estimate row is restorable only if it carries a fully-formed
+// restore payload: a JSON object (not null/array/scalar) plus a version
+// marker. Mirrors the estimates_restore_payload_object_check DB constraint.
+function hasValidRestorePayload(row) {
+  return Boolean(
+    row?.restore_payload &&
+    typeof row.restore_payload === "object" &&
+    !Array.isArray(row.restore_payload) &&
+    asText(row?.restore_payload_version)
   );
 }
 
@@ -155,13 +165,19 @@ export async function previewSupabaseCloudRestore({
     }
   }
 
-  const coreCloudTotal = Number(cloudCounts.customers || 0) + Number(cloudCounts.projects || 0) + Number(cloudCounts.invoices || 0);
   const estimateCount = Number(cloudCounts.estimates || 0);
   const estimateLineItemCount = Number(cloudCounts.estimate_line_items || 0);
+  const coreCloudTotal = Number(cloudCounts.customers || 0) + Number(cloudCounts.projects || 0) + Number(cloudCounts.invoices || 0) + estimateCount;
 
   const blockers = [];
-  if (estimateCount > 0 || estimateLineItemCount > 0) {
-    blockers.push(buildEstimateBlockerNotice(estimateCount, estimateLineItemCount));
+  if (estimateCount > 0) {
+    const { rows: estimateRows, error: estimateRowsError } = await readCloudRows(client, "estimates", companyId);
+    if (estimateRowsError) {
+      notices.push(buildNotice("error", "estimates_read_failed", "Unable to read estimates from Supabase."));
+      blockers.push(buildEstimateBlockerNotice(estimateCount, estimateLineItemCount));
+    } else if (!estimateRows.every(hasValidRestorePayload)) {
+      blockers.push(buildEstimateBlockerNotice(estimateCount, estimateLineItemCount));
+    }
   }
 
   if (coreCloudTotal === 0) {
@@ -250,6 +266,26 @@ function mapCloudPayment(row) {
   };
 }
 
+// Restores the estimate from its restore_payload verbatim -- the payload
+// already carries the exact local estimate-builder object (labor lines,
+// hazard/risk/multiplier, materials markup, etc.), so estimate_line_items
+// rows are not needed and are not consulted here: using them would mean
+// reconstructing an incompatible flattened shape instead of preferring the
+// faithful one already captured in the payload.
+function mapCloudEstimateToLocal(row) {
+  const legacyLocalId = requireLegacyId(row, "estimates");
+  if (!hasValidRestorePayload(row)) {
+    throw new Error(`Estimate ${legacyLocalId} is missing a valid restore_payload and cannot be restored.`);
+  }
+  const estimate = row.restore_payload?.estimate;
+  if (!estimate || typeof estimate !== "object" || Array.isArray(estimate)) {
+    throw new Error(`Estimate ${legacyLocalId} restore_payload does not contain a usable estimate object.`);
+  }
+  // Never trust only the payload's own copy of the id -- always pin it to
+  // the legacy_local_id this cloud row was actually matched on.
+  return { ...estimate, id: legacyLocalId };
+}
+
 function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, lineItemsByInvoiceCloudId, paymentsByInvoiceCloudId) {
   const id = requireLegacyId(row, "invoices");
   const cloudId = asText(row?.id);
@@ -276,7 +312,7 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
 // rows. Pure -- never touches localStorage. Throws if any row is missing the
 // identity (legacy_local_id) needed to restore it, so the caller can abort
 // before writing anything.
-function buildLocalRestorePayload({ customers, projects, invoices, invoicePayments, invoiceLineItems }) {
+function buildLocalRestorePayload({ customers, projects, invoices, invoicePayments, invoiceLineItems, estimates }) {
   const customerIdByCloudId = buildLegacyIdMap(customers);
   const projectIdByCloudId = buildLegacyIdMap(projects);
   const invoiceLegacyIdByCloudId = buildLegacyIdMap(invoices);
@@ -313,16 +349,18 @@ function buildLocalRestorePayload({ customers, projects, invoices, invoicePaymen
   const localInvoices = (Array.isArray(invoices) ? invoices : []).map((row) => mapCloudInvoiceToLocal(
     row, customerIdByCloudId, projectIdByCloudId, lineItemsByInvoiceCloudId, paymentsByInvoiceCloudId
   ));
+  const localEstimates = (Array.isArray(estimates) ? estimates : []).map(mapCloudEstimateToLocal);
 
-  return { customers: localCustomers, projects: localProjects, invoices: localInvoices };
+  return { customers: localCustomers, projects: localProjects, invoices: localInvoices, estimates: localEstimates };
 }
 
-function dispatchChangeEvents() {
+function dispatchChangeEvents(includeEstimates) {
   try {
     if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
     window.dispatchEvent(new Event("estipaid:customers-changed"));
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    if (includeEstimates) window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {
     // Best-effort same-tab refresh signal only; restore itself already succeeded.
   }
@@ -347,12 +385,15 @@ function buildExecuteResult(status, extra = {}) {
 // the user has typed the confirmation phrase. Rechecks local emptiness both
 // before fetching cloud data and again immediately before writing, builds
 // the complete local payload in memory first, and only then writes
-// localStorage in one guarded pass. Never writes to Supabase. Estimates are
-// reported as a blocker (see buildEstimateBlockerNotice) rather than
-// restored, but customers/projects/invoices/payments/invoice line items are
-// still restored when present -- this is a transparent partial restore, not
-// a guessed one: every field that is written comes directly from a cloud
-// column with a known, faithful local equivalent.
+// localStorage in one guarded pass. Never writes to Supabase.
+// Customers/projects/invoices/payments/invoice line items always restore
+// from their cloud display columns. Estimates restore only when every cloud
+// estimate carries a valid restore_payload (see hasValidRestorePayload) --
+// otherwise they're reported as a blocker (see buildEstimateBlockerNotice)
+// instead of being restored from guessed defaults. This is a transparent
+// partial restore, not a guessed one: every field that is written comes
+// directly from a cloud column (or, for estimates, the exact captured local
+// object) with a known, faithful local equivalent.
 export async function executeSupabaseCloudRestore({
   storage,
   configured = false,
@@ -388,11 +429,13 @@ export async function executeSupabaseCloudRestore({
 
   const estimateCount = fetched.estimates.length;
   const estimateLineItemCount = fetched.estimate_line_items.length;
-  const blockers = (estimateCount > 0 || estimateLineItemCount > 0)
+  const estimatesFullyRestorable = estimateCount > 0 && fetched.estimates.every(hasValidRestorePayload);
+  const blockers = (estimateCount > 0 && !estimatesFullyRestorable)
     ? [buildEstimateBlockerNotice(estimateCount, estimateLineItemCount)]
     : [];
 
-  const coreRestorableTotal = fetched.customers.length + fetched.projects.length + fetched.invoices.length;
+  const coreRestorableTotal = fetched.customers.length + fetched.projects.length + fetched.invoices.length
+    + (estimatesFullyRestorable ? estimateCount : 0);
   if (coreRestorableTotal === 0) {
     return buildExecuteResult(
       blockers.length > 0 ? CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE : CLOUD_RESTORE_STATUS.NO_CLOUD_DATA,
@@ -408,6 +451,11 @@ export async function executeSupabaseCloudRestore({
       invoices: fetched.invoices,
       invoicePayments: fetched.invoice_payments,
       invoiceLineItems: fetched.invoice_line_items,
+      // estimate_line_items are intentionally not passed here -- when
+      // estimates are restorable, restore_payload.estimate already carries
+      // the original labor/materials line structure faithfully, so the
+      // flattened estimate_line_items rows are redundant for restore.
+      estimates: estimatesFullyRestorable ? fetched.estimates : [],
     });
   } catch (error) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
@@ -426,6 +474,9 @@ export async function executeSupabaseCloudRestore({
     storage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(payload.customers));
     storage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(payload.projects));
     storage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(payload.invoices));
+    if (payload.estimates.length > 0) {
+      storage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify(payload.estimates));
+    }
   } catch (error) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
       error: asText(error?.message) || "Restore failed while writing local data.",
@@ -433,7 +484,7 @@ export async function executeSupabaseCloudRestore({
     });
   }
 
-  dispatchChangeEvents();
+  dispatchChangeEvents(payload.estimates.length > 0);
 
   return buildExecuteResult(CLOUD_RESTORE_STATUS.RESTORED, {
     restored: true,
@@ -444,6 +495,7 @@ export async function executeSupabaseCloudRestore({
       customers: payload.customers.length,
       projects: payload.projects.length,
       invoices: payload.invoices.length,
+      estimates: payload.estimates.length,
     },
   });
 }

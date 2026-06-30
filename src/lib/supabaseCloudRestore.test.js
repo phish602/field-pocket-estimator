@@ -150,6 +150,55 @@ function cloudInvoiceLineItemRow(overrides = {}) {
   };
 }
 
+function localEstimateFixture(overrides = {}) {
+  return {
+    id: "est_1",
+    projectId: "proj_1",
+    customerId: "cust_1",
+    estimateNumber: "EST-1",
+    status: "approved",
+    total: 7083000,
+    labor: {
+      hazardPct: 5,
+      riskPct: 2,
+      multiplier: 1.25,
+      lines: [{ id: "l1", role: "Electrician", hours: 40, rate: 145.75, trueRateInternal: 60 }],
+    },
+    materials: {
+      markupPct: 18,
+      items: [{ id: "m1", desc: "Panel", qty: 1, unitCostInternal: 400000, costInternal: 400000, priceEach: 1200000 }],
+    },
+    ui: { materialsMode: "itemized" },
+    ...overrides,
+  };
+}
+
+function cloudEstimateRow(overrides = {}) {
+  return {
+    id: "db_est_1",
+    company_id: "company_1",
+    legacy_local_id: "est_1",
+    customer_id: "db_cust_1",
+    project_id: "db_proj_1",
+    estimate_number: "EST-1",
+    status: "approved",
+    document_type: "estimate",
+    total_amount: 7083000,
+    notes: "",
+    terms: "",
+    restore_payload: {
+      schema: "estipaid.estimate.restore_payload",
+      version: 1,
+      capturedFrom: "localStorage",
+      legacyLocalId: "est_1",
+      estimate: localEstimateFixture(),
+    },
+    restore_payload_version: "1",
+    restore_payload_captured_at: "2026-06-29T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function fullCloudRows(overrides = {}) {
   return {
     customers: [cloudCustomerRow()],
@@ -238,6 +287,47 @@ describe("supabaseCloudRestore", () => {
         rowsByTable: fullCloudRows({
           estimates: [{ id: "db_est_1" }],
           estimate_line_items: [{ id: "db_est_line_1" }],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.eligible).toBe(true);
+      expect(result.partial).toBe(true);
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "estimates_not_reconstructable" }),
+      ]));
+    });
+
+    test("reports full estimate restore eligible (no blocker) when every cloud estimate has a valid restore_payload", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow()],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildEmptyStorageSnapshot(),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.eligible).toBe(true);
+      expect(result.partial).toBe(false);
+      expect(result.blockers).toEqual([]);
+      expect(result.cloudCounts).toEqual(expect.objectContaining({ estimates: 1 }));
+    });
+
+    test("keeps the partial blocker when at least one cloud estimate is missing its restore_payload", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow(), cloudEstimateRow({ id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null })],
         }),
       });
       mockGetSupabaseClient.mockReturnValue(mockClient);
@@ -419,6 +509,57 @@ describe("supabaseCloudRestore", () => {
         expect.objectContaining({ code: "estimates_not_reconstructable" }),
       ]));
       expect(storage.setItem).toHaveBeenCalledTimes(3);
+      expect(storage.setItem).not.toHaveBeenCalledWith("estipaid-estimates-v1", expect.anything());
+    });
+
+    test("restores estimates from restore_payload (not display fields) when every cloud estimate has a valid payload", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow()],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.partial).toBe(false);
+      expect(result.blockers).toEqual([]);
+      expect(result.restoredCounts).toEqual(expect.objectContaining({ estimates: 1 }));
+      expect(storage.setItem).toHaveBeenCalledTimes(4);
+      expect(storage.setItem).toHaveBeenCalledWith("estipaid-estimates-v1", expect.any(String));
+
+      const restoredEstimates = JSON.parse(storage.__store["estipaid-estimates-v1"]);
+      expect(restoredEstimates).toEqual([
+        expect.objectContaining({
+          id: "est_1",
+          labor: expect.objectContaining({ hazardPct: 5, riskPct: 2, multiplier: 1.25 }),
+          materials: expect.objectContaining({ markupPct: 18 }),
+          ui: expect.objectContaining({ materialsMode: "itemized" }),
+        }),
+      ]);
+      // The display-only field total_amount must not have been used to
+      // synthesize labor/materials state -- it should only ever come from
+      // the captured restore_payload.estimate object.
+      expect(restoredEstimates[0].labor.lines[0].hours).toBe(40);
+    });
+
+    test("does not restore estimates from display fields alone when restore_payload is missing", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow({ restore_payload: null, restore_payload_version: null })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.partial).toBe(true);
+      expect(result.restoredCounts).toEqual(expect.objectContaining({ estimates: 0 }));
+      expect(storage.setItem).not.toHaveBeenCalledWith("estipaid-estimates-v1", expect.anything());
     });
 
     test("reports blocked_unsupported_shape and writes nothing when the cloud only has estimates", async () => {

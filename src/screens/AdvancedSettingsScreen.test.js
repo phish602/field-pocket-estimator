@@ -18,6 +18,10 @@ import {
   executeSupabaseCloudRestore,
   CLOUD_RESTORE_STATUS,
 } from "../lib/supabaseCloudRestore";
+import {
+  updateEstimateRestorePayloads,
+  ESTIMATE_PAYLOAD_UPDATE_STATUS,
+} from "../lib/supabaseEstimateRestorePayload";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -80,6 +84,18 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     ELIGIBLE: "eligible",
     RESTORED: "restored",
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
+    ERROR: "error",
+  },
+}));
+
+jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
+  __esModule: true,
+  updateEstimateRestorePayloads: jest.fn(),
+  ESTIMATE_PAYLOAD_UPDATE_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NO_LOCAL_ESTIMATES: "no_local_estimates",
+    COMPLETED: "completed",
     ERROR: "error",
   },
 }));
@@ -157,6 +173,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     runSupabaseCloudOnboardingBackup.mockReset();
     previewSupabaseCloudRestore.mockReset();
     executeSupabaseCloudRestore.mockReset();
+    updateEstimateRestorePayloads.mockReset();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
@@ -1052,9 +1069,94 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Migration Preview")).toBeInTheDocument();
     expect(screen.getByText("Migration Write")).toBeInTheDocument();
     expect(screen.getByText("Cloud Verification")).toBeInTheDocument();
+    expect(screen.getByText("Stores the editable estimate state in Supabase so estimates can be restored on another device.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview Local Data Migration" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Migrate Local Data to Cloud" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Verify Cloud Data" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update Estimate Restore Payloads" })).toBeInTheDocument();
+  });
+
+  test("requires typed PAYLOAD before the Update Estimate Restore Payloads button enables", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    const updateButton = screen.getByRole("button", { name: "Update Estimate Restore Payloads" });
+    expect(updateButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type PAYLOAD to confirm"), { target: { value: "nope" } });
+    expect(updateButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type PAYLOAD to confirm"), { target: { value: "PAYLOAD" } });
+    expect(updateButton).not.toBeDisabled();
+    expect(updateEstimateRestorePayloads).not.toHaveBeenCalled();
+  });
+
+  test("clicking Update Estimate Restore Payloads reports checked/updated counts and no local data changed", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    updateEstimateRestorePayloads.mockResolvedValue({
+      payloadUpdateVersion: "supabase-estimate-restore-payload-v1",
+      status: ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED,
+      estimatesChecked: 8,
+      estimatesUpdated: 8,
+      missingCloudRows: [],
+      skipped: [],
+      failed: [],
+      noLocalDataChanged: true,
+    });
+
+    const setItemSpy = jest.spyOn(window.localStorage.__proto__, "setItem");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    fireEvent.change(screen.getByLabelText("Type PAYLOAD to confirm"), { target: { value: "PAYLOAD" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update Estimate Restore Payloads" }));
+    });
+
+    expect(updateEstimateRestorePayloads).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+    }));
+    expect(screen.getByText(/Estimates checked:/i)).toBeInTheDocument();
+    expect(screen.getAllByText("8")).toHaveLength(2);
+    expect(screen.getByText("No local data changed.")).toBeInTheDocument();
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   test("requires preview plus typed MIGRATE before running the cloud migration write", async () => {

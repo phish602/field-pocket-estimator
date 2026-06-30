@@ -21,6 +21,10 @@ import {
   runSupabaseCloudOnboardingBackup,
   CLOUD_ONBOARDING_STATUS,
 } from "../lib/supabaseCloudOnboarding";
+import {
+  updateEstimateRestorePayloads,
+  ESTIMATE_PAYLOAD_UPDATE_STATUS,
+} from "../lib/supabaseEstimateRestorePayload";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -213,6 +217,9 @@ export default function AdvancedSettingsScreen({
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState(null);
+  const [estimatePayloadConfirmText, setEstimatePayloadConfirmText] = useState("");
+  const [estimatePayloadBusy, setEstimatePayloadBusy] = useState(false);
+  const [estimatePayloadResult, setEstimatePayloadResult] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -605,6 +612,35 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setRestoreBusy(false);
+    }
+  };
+
+  const runUpdateEstimateRestorePayloads = async () => {
+    try {
+      setEstimatePayloadBusy(true);
+      const result = await updateEstimateRestorePayloads({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+      });
+      setEstimatePayloadResult(result);
+      if (result?.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED) {
+        setEstimatePayloadConfirmText("");
+      }
+    } catch {
+      setEstimatePayloadResult({
+        status: ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR,
+        estimatesChecked: 0,
+        estimatesUpdated: 0,
+        missingCloudRows: [],
+        skipped: [],
+        failed: [],
+        noLocalDataChanged: true,
+        error: "Unable to update estimate restore payloads.",
+      });
+    } finally {
+      setEstimatePayloadBusy(false);
     }
   };
 
@@ -1548,6 +1584,86 @@ export default function AdvancedSettingsScreen({
                     </div>
                   </div>
                 ) : null}
+
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid rgba(148,163,184,0.18)",
+                  }}
+                >
+                  <div className="pe-field-label" style={{ marginBottom: 0 }}>Update Estimate Restore Payloads</div>
+                  <div className="pe-field-helper">
+                    Stores the editable estimate state in Supabase so estimates can be restored on another device.
+                  </div>
+                  <label className="pe-field-helper" htmlFor="estimate-payload-confirm-input" style={{ marginTop: 2 }}>
+                    Type PAYLOAD to confirm
+                  </label>
+                  <input
+                    id="estimate-payload-confirm-input"
+                    type="text"
+                    className="pe-input"
+                    value={estimatePayloadConfirmText}
+                    onChange={(e) => setEstimatePayloadConfirmText(e.target.value)}
+                    placeholder="PAYLOAD"
+                    disabled={estimatePayloadBusy}
+                    style={{ maxWidth: 220 }}
+                  />
+                  <div>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={runUpdateEstimateRestorePayloads}
+                      disabled={estimatePayloadBusy || estimatePayloadConfirmText !== "PAYLOAD"}
+                    >
+                      {estimatePayloadBusy ? "Updating..." : "Update Estimate Restore Payloads"}
+                    </button>
+                  </div>
+                  {estimatePayloadResult ? (
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: 6,
+                        padding: 10,
+                        borderRadius: 12,
+                        border: "1px solid rgba(148,163,184,0.18)",
+                        background: "rgba(15,23,42,0.34)",
+                      }}
+                    >
+                      {estimatePayloadResult.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR ? (
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                          {String(estimatePayloadResult.error || "Unable to update estimate restore payloads.")}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="pe-field-helper">
+                            Estimates checked: <strong>{Number(estimatePayloadResult.estimatesChecked || 0)}</strong>, payloads updated:{" "}
+                            <strong>{Number(estimatePayloadResult.estimatesUpdated || 0)}</strong>
+                          </div>
+                          {Array.isArray(estimatePayloadResult.missingCloudRows) && estimatePayloadResult.missingCloudRows.length > 0 ? (
+                            <div className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                              Missing cloud rows: {estimatePayloadResult.missingCloudRows.map((row) => row.legacyLocalId).join(", ")}
+                            </div>
+                          ) : null}
+                          {Array.isArray(estimatePayloadResult.failed) && estimatePayloadResult.failed.length > 0 ? (
+                            <div className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
+                              Failed: {estimatePayloadResult.failed.map((row) => row.legacyLocalId).join(", ")}
+                            </div>
+                          ) : null}
+                          {Array.isArray(estimatePayloadResult.skipped) && estimatePayloadResult.skipped.length > 0 ? (
+                            <div className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                              Skipped: {estimatePayloadResult.skipped.length}
+                            </div>
+                          ) : null}
+                          <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                            No local data changed.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
