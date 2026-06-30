@@ -254,6 +254,49 @@ function hasMeaningfulEstimateDraftContent(state) {
   return false;
 }
 
+function readLiveDraftResumeMeta(versionToken = 0) {
+  void versionToken;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
+    if (!raw) return null;
+
+    const parsed = safeParseJson(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (!hasMeaningfulEstimateDraftContent(parsed)) return null;
+
+    const docType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+    const docTypeLabel = docType === "invoice" ? "Invoice Draft" : "Estimate Draft";
+
+    const projectName = String(
+      parsed?.customer?.projectName
+      || parsed?.customer?.name
+      || parsed?.customer?.fullName
+      || ""
+    ).trim();
+    const customerName = String(parsed?.customer?.name || "").trim();
+    const docNumber = String(
+      parsed?.job?.docNumber
+      || parsed?.customer?.projectNumber
+      || ""
+    ).trim();
+
+    const headline = projectName || customerName || docNumber || docTypeLabel;
+    const resumeMetaItems = [
+      { key: "draft-type", label: docTypeLabel, tone: "status" },
+      customerName && projectName && customerName !== projectName
+        ? { key: "customer", label: customerName, tone: "customer" }
+        : null,
+      docNumber
+        ? { key: "number", label: `${docType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`, tone: "number" }
+        : null,
+    ].filter(Boolean);
+
+    return { docType, headline, resumeMetaItems };
+  } catch {
+    return null;
+  }
+}
+
 const DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE = {
   position: "fixed",
   inset: 0,
@@ -510,68 +553,11 @@ function loadSavedCustomers() {
   }
 }
 
-function toSavedEstimateTimestamp(record) {
-  const candidates = [
-    record?.savedAt,
-    record?.meta?.savedAt,
-    record?.meta?.lastSavedAt,
-    record?.updatedAt,
-    record?.createdAt,
-    record?.ts,
-    record?.date,
-  ];
-  for (const candidate of candidates) {
-    if (candidate === null || candidate === undefined || candidate === "") continue;
-    const numeric = typeof candidate === "number" ? candidate : Number(candidate);
-    if (Number.isFinite(numeric) && numeric > 0) return numeric;
-    const parsed = Date.parse(String(candidate));
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
-}
-
-function normalizeSavedEstimateStatus(status) {
-  const raw = String(status || "").trim().toLowerCase();
-  if (!raw) return "";
-  if (raw === "approved") return "approved";
-  if (raw === "lost") return "lost";
-  if (raw === "pending") return "pending";
-  return raw;
-}
-
 function normalizePulseEstimateStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
   if (raw === "approved") return "approved";
   if (raw === "lost") return "lost";
   return "pending";
-}
-
-function formatSavedEstimateTimestamp(ts) {
-  const value = Number(ts) || 0;
-  if (!value) return "";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(new Date(value));
-  } catch {
-    return new Date(value).toLocaleString();
-  }
-}
-
-function selectLatestSavedEstimate(records) {
-  const candidates = Array.isArray(records) ? records.filter(Boolean) : [];
-  const estimatesOnly = candidates.filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice");
-  return estimatesOnly
-    .slice()
-    .sort((a, b) => {
-      const diff = toSavedEstimateTimestamp(b) - toSavedEstimateTimestamp(a);
-      if (diff !== 0) return diff;
-      return String(b?.id || "").localeCompare(String(a?.id || ""));
-    })[0] || null;
 }
 
 function deriveBusinessPulseCounts(estimates, invoices) {
@@ -1522,59 +1508,19 @@ function HomeScreen({
   spinTick,
   onLogoTap,
   onLogoLongPress,
-  latestSavedEstimate,
+  liveDraftResume,
   businessPulseCounts,
   dashboardSummary,
   onResumeLastEstimate,
-  onLaunchEstimate,
   recentProjects,
   onOpenProjectDetail,
 }) {
-  const [launchPrompt, setLaunchPrompt] = useState("");
   const pressTimerRef = useRef(null);
   const didLongPressRef = useRef(false);
   const LONG_PRESS_MS = 650;
-  const hasLatestEstimate = Boolean(latestSavedEstimate);
-  const trimmedLaunchPrompt = String(launchPrompt || "").trim();
-
-  const resumeProjectName = String(
-    latestSavedEstimate?.projectName
-    || latestSavedEstimate?.estimateName
-    || latestSavedEstimate?.name
-    || latestSavedEstimate?.title
-    || ""
-  ).trim();
-  const resumeCustomerName = String(latestSavedEstimate?.customerName || "").trim();
-  const resumeEstimateNumber = String(
-    latestSavedEstimate?.estimateNumber
-    || latestSavedEstimate?.docNumber
-    || latestSavedEstimate?.documentNumber
-    || latestSavedEstimate?.documentNo
-    || latestSavedEstimate?.number
-    || latestSavedEstimate?.job?.docNumber
-    || ""
-  ).trim();
-  const resumeStatus = String(latestSavedEstimate?.statusLabel || "").trim();
-  const resumeTimestampLabel = String(latestSavedEstimate?.timestampLabel || "").trim();
-  const resumeTimestampPrefix = String(latestSavedEstimate?.timestampPrefix || "").trim();
-  const resumeHeadline = resumeProjectName || resumeCustomerName || resumeEstimateNumber || "";
-  const resumeSecondaryLabel = resumeCustomerName && resumeProjectName && resumeCustomerName !== resumeProjectName
-    ? resumeCustomerName
-    : "";
-  const resumeMetaItems = [
-    resumeSecondaryLabel
-      ? { key: "customer", label: resumeSecondaryLabel, tone: "customer" }
-      : null,
-    resumeEstimateNumber
-      ? { key: "estimate-number", label: `Estimate #${resumeEstimateNumber}`, tone: "number" }
-      : null,
-    resumeTimestampLabel
-      ? { key: "timestamp", label: `${resumeTimestampPrefix || "Saved"} ${resumeTimestampLabel}`, tone: "timestamp" }
-      : null,
-    resumeStatus
-      ? { key: "status", label: resumeStatus, tone: "status" }
-      : null,
-  ].filter(Boolean);
+  const hasLiveDraft = Boolean(liveDraftResume);
+  const resumeHeadline = String(liveDraftResume?.headline || "").trim();
+  const resumeMetaItems = Array.isArray(liveDraftResume?.resumeMetaItems) ? liveDraftResume.resumeMetaItems : [];
   const pulseItems = [
     {
       key: "pending-estimates",
@@ -1665,12 +1611,6 @@ function HomeScreen({
   const onTap = () => {
     if (didLongPressRef.current) return;
     try { onLogoTap && onLogoTap(); } catch {}
-  };
-
-  const submitLaunchPrompt = (event) => {
-    if (event?.preventDefault) event.preventDefault();
-    if (event?.stopPropagation) event.stopPropagation();
-    try { onLaunchEstimate && onLaunchEstimate(trimmedLaunchPrompt); } catch {}
   };
 
   return (
@@ -1826,11 +1766,11 @@ function HomeScreen({
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
-        <div className="pe-card pe-home-momentum-panel" style={{ padding: 0, overflow: "hidden" }}>
-          <div className="pe-home-momentum-primary">
-            <div className="pe-home-momentum-label">Resume</div>
-            {hasLatestEstimate ? (
+      {hasLiveDraft ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
+          <div className="pe-card pe-home-momentum-panel" style={{ padding: 0, overflow: "hidden" }}>
+            <div className="pe-home-momentum-primary">
+              <div className="pe-home-momentum-label">Resume</div>
               <div className="pe-home-resume-card">
                 {resumeHeadline ? <div className="pe-home-resume-title">{resumeHeadline}</div> : null}
                 {resumeMetaItems.length > 0 ? (
@@ -1843,41 +1783,21 @@ function HomeScreen({
                   </div>
                 ) : null}
               </div>
-            ) : (
-              <div className="pe-home-resume-empty">
-                No saved estimates yet. Save one to resume it here.
-              </div>
-            )}
-            <button
-              className="pe-btn pe-home-resume-btn"
-              type="button"
-              disabled={!hasLatestEstimate}
-              onClick={() => {
-                if (!hasLatestEstimate) return;
-                try {
-                  onResumeLastEstimate && onResumeLastEstimate();
-                } catch {}
-              }}
-            >
-              Continue Last Estimate
-            </button>
+              <button
+                className="pe-btn pe-home-resume-btn"
+                type="button"
+                onClick={() => {
+                  try {
+                    onResumeLastEstimate && onResumeLastEstimate();
+                  } catch {}
+                }}
+              >
+                Resume Draft
+              </button>
+            </div>
           </div>
         </div>
-
-        <form className="pe-card pe-home-launcher" onSubmit={submitLaunchPrompt} style={{ minWidth: 0 }}>
-          <div className="pe-home-launcher-eyebrow">Describe the job</div>
-          <textarea
-            className="pe-input pe-textarea pe-home-launcher-input"
-            value={launchPrompt}
-            onChange={(e) => setLaunchPrompt(e.target.value)}
-            placeholder="Replace the roof, tile the bathroom, repaint exterior... rough scope is enough to start."
-            rows={3}
-          />
-          <button className="pe-btn pe-home-launcher-btn" type="submit">
-            {trimmedLaunchPrompt ? "Start with AI" : "Open Estimate Builder"}
-          </button>
-        </form>
-      </div>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
         <div className="pe-card pe-home-pulse-panel" style={{ minWidth: 0 }}>
@@ -2637,48 +2557,8 @@ const [spinTick, setSpinTick] = useState(0);
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
   const [requestedInvoiceComposerEstimateId, setRequestedInvoiceComposerEstimateId] = useState("");
   const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
-  const latestSavedEstimate = useMemo(() => selectLatestSavedEstimate(estimateHistory), [estimateHistory]);
-  const latestSavedEstimateMeta = useMemo(() => {
-    if (!latestSavedEstimate) return null;
-
-    const projectName = String(
-      latestSavedEstimate?.projectName
-      || latestSavedEstimate?.estimateName
-      || latestSavedEstimate?.name
-      || latestSavedEstimate?.title
-      || ""
-    ).trim();
-    const customerName = String(latestSavedEstimate?.customerName || "").trim();
-    const estimateNumber = String(
-      latestSavedEstimate?.estimateNumber
-      || latestSavedEstimate?.docNumber
-      || latestSavedEstimate?.documentNumber
-      || latestSavedEstimate?.documentNo
-      || latestSavedEstimate?.number
-      || latestSavedEstimate?.job?.docNumber
-      || ""
-    ).trim();
-    const savedTimestamp = Number(
-      latestSavedEstimate?.savedAt
-      || latestSavedEstimate?.meta?.savedAt
-      || latestSavedEstimate?.meta?.lastSavedAt
-      || 0
-    ) || 0;
-    const updatedTimestamp = Number(latestSavedEstimate?.updatedAt || 0) || 0;
-    const timestamp = toSavedEstimateTimestamp(latestSavedEstimate);
-    const status = normalizeSavedEstimateStatus(latestSavedEstimate?.status);
-
-    return {
-      id: String(latestSavedEstimate?.id || "").trim(),
-      projectName,
-      customerName,
-      estimateNumber,
-      status,
-      statusLabel: status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : "",
-      timestampLabel: formatSavedEstimateTimestamp(timestamp),
-      timestampPrefix: updatedTimestamp > 0 && updatedTimestamp !== savedTimestamp ? "Updated" : "Saved",
-    };
-  }, [latestSavedEstimate]);
+  const [draftStorageVersion, setDraftStorageVersion] = useState(0);
+  const liveDraftResumeMeta = useMemo(() => readLiveDraftResumeMeta(draftStorageVersion), [draftStorageVersion]);
   const businessPulseCounts = useMemo(() => {
     const estimateRecords = Array.isArray(estimateHistory)
       ? estimateHistory.filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
@@ -3396,6 +3276,24 @@ const [spinTick, setSpinTick] = useState(0);
   }, [activeTab]);
 
   useEffect(() => {
+    const refresh = (event) => {
+      if (event?.key && event.key !== STORAGE_KEYS.ESTIMATOR_STATE) return;
+      setDraftStorageVersion((version) => version + 1);
+    };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === STORAGE_KEYS.ESTIMATOR_STATE) {
+        refresh(event);
+      }
+    };
+    window.addEventListener("storage", refresh);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
+  }, []);
+
+  useEffect(() => {
     const refresh = () => setCustomerHistory(loadSavedCustomers());
     const onStorage = (event) => {
       if (!event?.key || event.key === CUSTOMERS_KEY) refresh();
@@ -3432,18 +3330,16 @@ const [spinTick, setSpinTick] = useState(0);
       if (!action) return;
 
       if (action === "continueLast") {
+        const draftResume = readLiveDraftResumeMeta();
+        if (!draftResume) return;
         clearProjectDetailReturnTarget();
         try {
           localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
-          const latestId = String(latestSavedEstimateMeta?.id || "").trim();
-          if (latestId) {
-            localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, latestId);
-            window.dispatchEvent(new Event("estipaid:estimate-open"));
-          } else {
-            localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-          }
+          localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+          localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
         } catch {}
-        navigateTo(ROUTES.ESTIMATE_BUILDER);
+        setHomeEstimateLaunch(null);
+        navigateTo(draftResume.docType === "invoice" ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
         return;
       }
 
@@ -3472,7 +3368,7 @@ const [spinTick, setSpinTick] = useState(0);
 
     window.addEventListener("pe-shell-action", onShellAction);
     return () => window.removeEventListener("pe-shell-action", onShellAction);
-  }, [latestSavedEstimateMeta, navigateTo, navigateToCompanyProfile]);
+  }, [navigateTo, navigateToCompanyProfile]);
 
   // Warn on refresh/close if a draft exists (draft is still saved, but prevents surprise)
   useEffect(() => {
@@ -3773,7 +3669,7 @@ const gated = false;
         spinTick={spinTick}
         onLogoTap={handleHomeLogoTap}
         onLogoLongPress={handleHomeLogoLongPress}
-        latestSavedEstimate={latestSavedEstimateMeta}
+        liveDraftResume={liveDraftResumeMeta}
         businessPulseCounts={businessPulseCounts}
         dashboardSummary={homeDashboardSummary}
         onResumeLastEstimate={() => {
@@ -3785,7 +3681,6 @@ const gated = false;
             );
           } catch {}
         }}
-        onLaunchEstimate={launchEstimateFromHome}
         recentProjects={recentProjects}
         onOpenProjectDetail={(projectId) => {
           openProjectDetail(projectId, ROUTES.HOME);
@@ -3936,7 +3831,7 @@ const gated = false;
         />
       );
     }
-    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? (
       <AdvancedSettingsScreen
         onOpenCompanyProfile={() => navigateToCompanyProfile()}
@@ -3944,7 +3839,7 @@ const gated = false;
         onOpenSnapshot={() => navigateTo(ROUTES.SNAPSHOT)}
         snapshotAvailable={Boolean(FinancialSnapshotScreen)}
       />
-    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
       <FinancialSnapshotScreen
         onCreateInvoiceFromEstimate={(estimate) => {
@@ -3959,7 +3854,7 @@ const gated = false;
           return true;
         }}
       />
-    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} onLaunchEstimate={launchEstimateFromHome} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.JOB_LEARNING_DIAGNOSTICS) {
       if (process.env.NODE_ENV === "production") return null;
       return JobLearningDiagnosticsScreen ? <JobLearningDiagnosticsScreen /> : null;
@@ -3987,7 +3882,7 @@ const gated = false;
         spinTick={spinTick}
         onLogoTap={handleHomeLogoTap}
         onLogoLongPress={handleHomeLogoLongPress}
-        latestSavedEstimate={latestSavedEstimateMeta}
+        liveDraftResume={liveDraftResumeMeta}
         businessPulseCounts={businessPulseCounts}
         dashboardSummary={homeDashboardSummary}
         onResumeLastEstimate={() => {
@@ -3999,7 +3894,6 @@ const gated = false;
             );
           } catch {}
         }}
-        onLaunchEstimate={launchEstimateFromHome}
         recentProjects={recentProjects}
         onOpenProjectDetail={(projectId) => {
           openProjectDetail(projectId, ROUTES.HOME);
