@@ -10,6 +10,7 @@ import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
+import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -192,6 +193,8 @@ export default function AdvancedSettingsScreen({
   const [migrationConfirmText, setMigrationConfirmText] = useState("");
   const [migrationBusy, setMigrationBusy] = useState(false);
   const [migrationResult, setMigrationResult] = useState(null);
+  const [cloudVerifyBusy, setCloudVerifyBusy] = useState(false);
+  const [cloudVerification, setCloudVerification] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
@@ -414,6 +417,39 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setMigrationBusy(false);
+    }
+  };
+
+  const runCloudVerification = async () => {
+    try {
+      setCloudVerifyBusy(true);
+      const result = await runSupabaseCloudVerification({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+      });
+      setCloudVerification(result);
+    } catch {
+      setCloudVerification({
+        ok: false,
+        company: {
+          id: String(company?.id || "").trim(),
+          name: String(company?.name || "").trim(),
+        },
+        validations: {
+          supabaseConfigured: isSupabaseReady,
+          signedIn: Boolean(user?.id),
+          hasCompany: Boolean(company?.id),
+        },
+        localCounts: null,
+        tableResults: [],
+        allMatched: false,
+        notices: [{ level: "error", code: "cloud_verification_failed", message: "Unable to run cloud verification." }],
+        noWritesPerformed: true,
+      });
+    } finally {
+      setCloudVerifyBusy(false);
     }
   };
 
@@ -1106,6 +1142,111 @@ export default function AdvancedSettingsScreen({
                     </div>
                   ) : null}
                 </div>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid rgba(148,163,184,0.18)",
+                }}
+              >
+                <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Verification</div>
+                <div className="pe-field-helper">
+                  Read-only check that reads migrated Supabase rows back and compares them against local data by count and legacy id. This performs no writes.
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={runCloudVerification}
+                    disabled={cloudVerifyBusy}
+                  >
+                    {cloudVerifyBusy ? "Verifying..." : "Verify Cloud Data"}
+                  </button>
+                </div>
+                {cloudVerification ? (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 6,
+                      padding: 10,
+                      borderRadius: 12,
+                      border: "1px solid rgba(148,163,184,0.18)",
+                      background: "rgba(15,23,42,0.34)",
+                    }}
+                  >
+                    <div className="pe-field-helper">
+                      Current workspace: <strong>{String(cloudVerification?.company?.name || "Unavailable")}</strong>
+                    </div>
+                    {Array.isArray(cloudVerification?.tableResults) && cloudVerification.tableResults.length > 0 ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {cloudVerification.tableResults.map((tableResult) => (
+                          <div key={String(tableResult?.table)} className="pe-field-helper">
+                            {String(tableResult?.table)}: local <strong>{Number(tableResult?.localCount ?? 0)}</strong>, cloud{" "}
+                            <strong>{tableResult?.cloudCount === null ? "unavailable" : Number(tableResult?.cloudCount ?? 0)}</strong>
+                            {" — "}
+                            <span
+                              style={{
+                                color: tableResult?.status === "matched"
+                                  ? "rgba(187,247,208,0.95)"
+                                  : tableResult?.status === "unavailable"
+                                    ? "rgba(253,224,71,0.95)"
+                                    : "rgba(248,113,113,0.95)",
+                              }}
+                            >
+                              {String(tableResult?.status || "unknown")}
+                            </span>
+                            {Array.isArray(tableResult?.missingLegacyIds) && tableResult.missingLegacyIds.length > 0
+                              ? `, missing cloud ids: ${tableResult.missingLegacyIds.join(", ")}`
+                              : ""}
+                            {Array.isArray(tableResult?.extraLegacyIds) && tableResult.extraLegacyIds.length > 0
+                              ? `, extra cloud ids: ${tableResult.extraLegacyIds.join(", ")}`
+                              : ""}
+                            {tableResult?.error ? `, error: ${tableResult.error}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {Array.isArray(cloudVerification?.notices) && cloudVerification.notices.length > 0 ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {cloudVerification.notices.map((notice) => (
+                          <div
+                            key={String(notice?.code || notice?.message)}
+                            className="pe-field-helper"
+                            style={{
+                              color: notice?.level === "error"
+                                ? "rgba(248,113,113,0.95)"
+                                : notice?.level === "warning"
+                                  ? "rgba(253,224,71,0.95)"
+                                  : "rgba(191,219,254,0.95)",
+                            }}
+                          >
+                            {String(notice?.message || "")}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="pe-field-helper"
+                      style={{
+                        color: cloudVerification?.allMatched
+                          ? "rgba(187,247,208,0.95)"
+                          : "rgba(253,224,71,0.95)",
+                      }}
+                    >
+                      {cloudVerification?.allMatched
+                        ? "Cloud verification passed. Supabase data matches local migration data."
+                        : "Cloud verification found mismatches. Review the table results above."}
+                    </div>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                      No Supabase writes were performed.
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 

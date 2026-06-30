@@ -7,6 +7,7 @@ import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
+import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -32,6 +33,11 @@ jest.mock("../lib/supabaseMigrationWriter", () => ({
   __esModule: true,
   isSupabaseMigrationPreviewReady: jest.fn(),
   runSupabaseMigrationWrite: jest.fn(),
+}));
+
+jest.mock("../lib/supabaseCloudVerification", () => ({
+  __esModule: true,
+  runSupabaseCloudVerification: jest.fn(),
 }));
 
 function buildAuthState(overrides = {}) {
@@ -102,6 +108,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     createSupabaseMigrationPreview.mockReset();
     runSupabaseMigrationWrite.mockReset();
     isSupabaseMigrationPreviewReady.mockReset();
+    runSupabaseCloudVerification.mockReset();
     createSupabaseMigrationPreview.mockResolvedValue({
       validations: {
         supabaseConfigured: true,
@@ -454,6 +461,69 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Cloud line items: estimate 0, invoice 0\./i)).toBeInTheDocument();
     expect(screen.getByText(/Line items will migrate after core customer\/project\/document rows are present in cloud/i)).toBeInTheDocument();
     expect(screen.getByText(/No Supabase writes were performed\./i)).toBeInTheDocument();
+  });
+
+  test("shows cloud verification results without performing writes", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    runSupabaseCloudVerification.mockResolvedValue({
+      ok: true,
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      validations: { supabaseConfigured: true, signedIn: true, hasCompany: true },
+      localCounts: {
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        invoices: 1,
+        invoicePayments: 1,
+        estimateLineItems: 1,
+        invoiceLineItems: 1,
+      },
+      tableResults: [
+        { table: "customers", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: false },
+        { table: "projects", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: false },
+        { table: "estimates", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: false },
+        { table: "invoices", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: false },
+        { table: "invoice_payments", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: false },
+        { table: "estimate_line_items", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: true },
+        { table: "invoice_line_items", localCount: 1, cloudCount: 1, status: "matched", missingLegacyIds: [], extraLegacyIds: [], countOnly: true },
+      ],
+      allMatched: true,
+      notices: [
+        { level: "info", code: "cloud_verification_passed", message: "Cloud verification passed. Supabase data matches local migration data." },
+      ],
+      noWritesPerformed: true,
+    });
+
+    const { container } = render(<AdvancedSettingsScreen />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Verify Cloud Data" }));
+    });
+
+    expect(runSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1", name: "Field Pocket LLC" }),
+    }));
+    expect(container.textContent).toMatch(/customers: local 1, cloud 1.*matched/i);
+    expect(container.textContent).toMatch(/estimate_line_items: local 1, cloud 1.*matched/i);
+    expect(container.textContent).toMatch(/invoice_line_items: local 1, cloud 1.*matched/i);
+    expect(container.textContent).toMatch(/Cloud verification passed\. Supabase data matches local migration data\./i);
+    expect(screen.getAllByText(/No Supabase writes were performed\./i).length).toBeGreaterThan(0);
   });
 
   test("requires preview plus typed MIGRATE before running the cloud migration write", async () => {
