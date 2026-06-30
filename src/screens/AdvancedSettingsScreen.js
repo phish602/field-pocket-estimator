@@ -212,6 +212,8 @@ export default function AdvancedSettingsScreen({
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
+  const [cloudPassword, setCloudPassword] = useState("");
+  const [authAction, setAuthAction] = useState("");
   const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
   const [migrationPreviewBusy, setMigrationPreviewBusy] = useState(false);
   const [migrationPreview, setMigrationPreview] = useState(null);
@@ -247,6 +249,7 @@ export default function AdvancedSettingsScreen({
     errorMessage: authErrorMessage,
     infoMessage: authInfoMessage,
     signInWithEmailOtp,
+    signInWithPassword,
     signOut,
   } = useSupabaseAuth();
   const {
@@ -379,8 +382,39 @@ export default function AdvancedSettingsScreen({
   };
 
   const requestCloudSignIn = async () => {
-    await signInWithEmailOtp(cloudEmail);
+    setAuthAction("otp");
+    try {
+      await signInWithEmailOtp(cloudEmail);
+    } finally {
+      setAuthAction("");
+    }
   };
+
+  const requestCloudPasswordSignIn = async () => {
+    setAuthAction("password");
+    try {
+      const response = await signInWithPassword(cloudEmail, cloudPassword);
+      if (response?.ok) {
+        setCloudPassword("");
+      }
+    } finally {
+      setAuthAction("");
+    }
+  };
+
+  const requestCloudSignOut = async () => {
+    setAuthAction("signout");
+    try {
+      const response = await signOut();
+      if (response?.ok) {
+        setCloudPassword("");
+      }
+    } finally {
+      setAuthAction("");
+    }
+  };
+
+  const authPending = authBusy || Boolean(authAction);
 
   const submitWorkspaceCreate = async () => {
     const response = await createWorkspace(workspaceName);
@@ -1139,10 +1173,10 @@ export default function AdvancedSettingsScreen({
                     <button
                       type="button"
                       className="pe-btn pe-btn-ghost"
-                      onClick={signOut}
-                      disabled={authBusy}
+                      onClick={requestCloudSignOut}
+                      disabled={authPending}
                     >
-                      {authBusy ? "Signing Out..." : "Sign Out"}
+                      {authAction === "signout" ? "Signing Out..." : "Sign Out"}
                     </button>
                   </div>
                 </>
@@ -1151,25 +1185,56 @@ export default function AdvancedSettingsScreen({
                   <div className="pe-field-helper">
                     Sign in with a magic link. Cloud data sync is not active yet.
                   </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "grid", gap: 8, maxWidth: 440 }}>
+                    <label className="pe-field-helper" htmlFor="cloud-account-email" style={{ marginTop: 2 }}>
+                      Email
+                    </label>
                     <input
+                      id="cloud-account-email"
                       type="email"
                       className="pe-input"
-                      style={{ minWidth: 220, flex: "1 1 220px" }}
                       value={cloudEmail}
                       onChange={(e) => setCloudEmail(e.target.value)}
                       placeholder="name@company.com"
                       autoComplete="email"
                       aria-label="Account email"
-                      disabled={authBusy}
+                      disabled={authPending}
                     />
                     <button
                       type="button"
                       className="pe-btn"
                       onClick={requestCloudSignIn}
-                      disabled={authBusy}
+                      disabled={authPending}
                     >
-                      {authBusy ? "Sending Link..." : "Email Sign-In Link"}
+                      {authAction === "otp" ? "Sending Link..." : "Email Sign-In Link"}
+                    </button>
+                    <div className="pe-field-helper" style={{ marginTop: 4 }}>
+                      Password sign-in
+                    </div>
+                    <div className="pe-field-helper">
+                      Use this if you already have a Supabase password.
+                    </div>
+                    <label className="pe-field-helper" htmlFor="cloud-account-password" style={{ marginTop: 2 }}>
+                      Password
+                    </label>
+                    <input
+                      id="cloud-account-password"
+                      type="password"
+                      className="pe-input"
+                      value={cloudPassword}
+                      onChange={(e) => setCloudPassword(e.target.value)}
+                      placeholder="Enter your password"
+                      autoComplete="current-password"
+                      aria-label="Account password"
+                      disabled={authPending}
+                    />
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={requestCloudPasswordSignIn}
+                      disabled={authPending}
+                    >
+                      {authAction === "password" ? "Signing In..." : "Sign in with password"}
                     </button>
                   </div>
                 </>

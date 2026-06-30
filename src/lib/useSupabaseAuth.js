@@ -142,6 +142,63 @@ export default function useSupabaseAuth() {
     }
   };
 
+  const signInWithPassword = async (email, password) => {
+    const client = getSupabaseClient();
+    const normalizedEmail = String(email || "").trim();
+    const suppliedPassword = String(password ?? "");
+
+    if (!isSupabaseConfigured || !client?.auth) {
+      const message = "Supabase not configured.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    if (!normalizedEmail) {
+      const message = "Enter an email address to sign in.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    if (!suppliedPassword) {
+      const message = "Enter your password to sign in.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    setAuthBusy(true);
+    setErrorMessage("");
+    setInfoMessage("");
+
+    try {
+      const { data, error } = await client.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: suppliedPassword,
+      });
+
+      if (error) {
+        const message = asMessage(error, "Unable to sign in with password.");
+        setErrorMessage(message);
+        return { ok: false, error: message };
+      }
+
+      const nextSession = data?.session || null;
+      const nextUser = data?.user || nextSession?.user || null;
+      const nextUserEmail = String(nextUser?.email || normalizedEmail).trim();
+      setSession(nextSession);
+      setInfoMessage(nextUserEmail ? `Signed in as ${nextUserEmail}.` : "Signed in.");
+      return { ok: true, session: nextSession, user: nextUser };
+    } catch (error) {
+      const message = asMessage(error, "Unable to sign in with password.");
+      setErrorMessage(message);
+      return { ok: false, error: message };
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const signOut = async () => {
     const client = getSupabaseClient();
 
@@ -189,6 +246,7 @@ export default function useSupabaseAuth() {
     errorMessage,
     infoMessage,
     signInWithEmailOtp,
+    signInWithPassword,
     signOut,
   };
 }

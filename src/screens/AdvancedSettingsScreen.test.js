@@ -128,6 +128,7 @@ function buildAuthState(overrides = {}) {
     errorMessage: "",
     infoMessage: "",
     signInWithEmailOtp: jest.fn(),
+    signInWithPassword: jest.fn(),
     signOut: jest.fn(),
     ...overrides,
   };
@@ -472,11 +473,13 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  test("shows signed-out cloud auth controls and sends an OTP sign-in request", () => {
+  test("shows signed-out cloud auth controls and sends an OTP sign-in request", async () => {
     const signInWithEmailOtp = jest.fn();
+    const signInWithPassword = jest.fn();
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       signInWithEmailOtp,
+      signInWithPassword,
     }));
 
     render(<AdvancedSettingsScreen />);
@@ -484,13 +487,76 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     fireEvent.change(screen.getByLabelText("Account email"), {
       target: { value: "owner@example.com" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Email Sign-In Link" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Email Sign-In Link" }));
+    });
 
     expect(signInWithEmailOtp).toHaveBeenCalledWith("owner@example.com");
+    expect(signInWithPassword).not.toHaveBeenCalled();
     expect(screen.getByText(/Cloud data sync is not active yet/i)).toBeInTheDocument();
+    expect(screen.getByText("Password sign-in")).toBeInTheDocument();
+    expect(screen.getByLabelText("Account password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in with password" })).toBeInTheDocument();
   });
 
-  test("shows signed-in cloud account state and allows sign out", () => {
+  test("sends a password sign-in request from the signed-out cloud auth controls", async () => {
+    const signInWithPassword = jest.fn().mockResolvedValue({ ok: true });
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      signInWithPassword,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    fireEvent.change(screen.getByLabelText("Account email"), {
+      target: { value: "owner@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Account password"), {
+      target: { value: "super-secret-password" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Sign in with password" }));
+    });
+
+    expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "super-secret-password");
+  });
+
+  test("disables the password button while a password sign-in request is pending", async () => {
+    let resolveSignIn;
+    const signInWithPassword = jest.fn(() => new Promise((resolve) => {
+      resolveSignIn = resolve;
+    }));
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      signInWithPassword,
+    }));
+
+    render(<AdvancedSettingsScreen />);
+
+    fireEvent.change(screen.getByLabelText("Account email"), {
+      target: { value: "owner@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Account password"), {
+      target: { value: "super-secret-password" },
+    });
+
+    const passwordButton = screen.getByRole("button", { name: "Sign in with password" });
+
+    await act(async () => {
+      fireEvent.click(passwordButton);
+    });
+
+    expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "super-secret-password");
+    expect(screen.getByRole("button", { name: "Signing In..." })).toBeDisabled();
+
+    await act(async () => {
+      resolveSignIn({ ok: true });
+    });
+
+    expect(screen.getByRole("button", { name: "Sign in with password" })).not.toBeDisabled();
+  });
+
+  test("shows signed-in cloud account state and allows sign out", async () => {
     const signOut = jest.fn();
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
@@ -506,7 +572,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("owner@example.com")).toBeInTheDocument();
     expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign Out" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Sign Out" }));
+    });
     expect(signOut).toHaveBeenCalledTimes(1);
   });
 

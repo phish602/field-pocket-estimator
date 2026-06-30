@@ -24,6 +24,9 @@ const useSupabaseAuth = require("./useSupabaseAuth").default;
 function createMockClient({
   session = null,
   signInError = null,
+  passwordSignInError = null,
+  passwordSignInSession = null,
+  passwordSignInUser = null,
   signOutError = null,
   getSessionError = null,
   exchangeSession = null,
@@ -45,6 +48,13 @@ function createMockClient({
       signInWithOtp: jest.fn(async () => ({
         data: {},
         error: signInError,
+      })),
+      signInWithPassword: jest.fn(async () => ({
+        data: {
+          session: passwordSignInSession,
+          user: passwordSignInUser || passwordSignInSession?.user || null,
+        },
+        error: passwordSignInError,
       })),
       exchangeCodeForSession: jest.fn(async () => ({
         data: { session: exchangeSession },
@@ -168,6 +178,55 @@ describe("useSupabaseAuth", () => {
     expect(mock.client.auth.exchangeCodeForSession).toHaveBeenCalledWith("bad-code");
     expect(result.current.session).toBeNull();
     expect(window.location.search).toContain("code=bad-code");
+  });
+
+  test("signs in with password without storing the password locally", async () => {
+    const signedInSession = { user: { id: "user_2", email: "owner@example.com" } };
+    const mock = createMockClient({
+      session: null,
+      passwordSignInSession: signedInSession,
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    const setItemSpy = jest.spyOn(Storage.prototype, "setItem");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signInWithPassword("owner@example.com", "super-secret-password");
+    });
+
+    expect(mock.client.auth.signInWithPassword).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      password: "super-secret-password",
+    });
+    expect(result.current.userEmail).toBe("owner@example.com");
+    expect(result.current.infoMessage).toBe("Signed in as owner@example.com.");
+    expect(setItemSpy).not.toHaveBeenCalled();
+  });
+
+  test("shows a clear password sign-in error and keeps the session empty on failure", async () => {
+    const mock = createMockClient({
+      session: null,
+      passwordSignInError: { message: "Invalid login credentials" },
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signInWithPassword("owner@example.com", "wrong-password");
+    });
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.errorMessage).toBe("Invalid login credentials");
   });
 
   test("sends magic-link sign-in requests and signs out through Supabase auth only", async () => {
