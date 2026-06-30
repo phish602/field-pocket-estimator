@@ -213,12 +213,30 @@ function sanitizeLegacyIdSegment(value, fallback = "line_item") {
   return normalized || fallback;
 }
 
-function buildStableLineItemLegacyId(parentLegacyId, item, index, entityType) {
-  const existing = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
-  if (existing) return existing;
+// Raw local line-item ids may be missing, reused, parent-scoped, or duplicated
+// across the company, so they are never used as the Supabase legacy_local_id.
+// stableIndex prefers sort_order only when every item in the parent's line_items
+// array has a defined, mutually-unique sort_order; otherwise it falls back to the
+// item's position in the normalized draft array. Mixing the two within one parent
+// could let a sort_order value collide with another item's array index, so the
+// choice is made once for the whole parent, not per item.
+function computeStableLineItemIndexes(items) {
+  const list = Array.isArray(items) ? items : [];
+  const sortOrders = list.map((item) => {
+    const raw = item?.sort_order;
+    if (raw === null || raw === undefined || raw === "") return null;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : null;
+  });
+  const allDefined = sortOrders.every((value) => value !== null);
+  const allUnique = allDefined && new Set(sortOrders).size === sortOrders.length;
+  if (allDefined && allUnique) return sortOrders;
+  return list.map((_, index) => index);
+}
+
+function buildDeterministicLineItemLegacyId(parentLegacyId, stableIndex, entityType) {
   const safeParent = sanitizeLegacyIdSegment(parentLegacyId, "parent");
-  const safeKind = sanitizeLegacyIdSegment(item?.kind, "line_item");
-  return `${entityType}:${safeParent}:${safeKind}:${index}`;
+  return `${entityType}:${safeParent}:line:${stableIndex}`;
 }
 
 function buildLineItemMetadata(item, { includeKind = false } = {}) {
@@ -411,14 +429,25 @@ function mapEstimateLineItemPayloads(draft, estimateIdByLegacyId) {
   const payloads = [];
   const issues = [];
   const seenLegacyIds = new Set();
+  const seenRawIds = new Set();
+  const normalizedRawDuplicates = new Set();
 
   (Array.isArray(draft?.estimates) ? draft.estimates : []).forEach((estimate) => {
     const parentLegacyId = asText(estimate?.legacy_local_id);
     const estimateId = estimateIdByLegacyId.get(parentLegacyId) || "";
     const companyId = asText(estimate?.company_id);
+    const items = Array.isArray(estimate?.line_items) ? estimate.line_items : [];
+    const stableIndexes = computeStableLineItemIndexes(items);
 
-    (Array.isArray(estimate?.line_items) ? estimate.line_items : []).forEach((item, index) => {
-      const legacyLocalId = buildStableLineItemLegacyId(parentLegacyId, item, index, "estimate");
+    items.forEach((item, index) => {
+      const legacyLocalId = buildDeterministicLineItemLegacyId(parentLegacyId, stableIndexes[index], "estimate");
+
+      const rawId = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
+      if (rawId) {
+        if (seenRawIds.has(rawId)) normalizedRawDuplicates.add(rawId);
+        seenRawIds.add(rawId);
+      }
+
       if (!parentLegacyId) {
         issues.push(buildNotice("error", `estimate_line_item_parent_missing:${index}`, "Estimate line item is missing its parent estimate local id."));
         return;
@@ -450,6 +479,15 @@ function mapEstimateLineItemPayloads(draft, estimateIdByLegacyId) {
     });
   });
 
+  if (normalizedRawDuplicates.size > 0) {
+    issues.push(buildNotice(
+      "warning",
+      "estimate_line_item_raw_ids_normalized",
+      "Duplicate raw estimate line-item ids were normalized into deterministic migration ids.",
+      { count: normalizedRawDuplicates.size }
+    ));
+  }
+
   return { payloads, issues };
 }
 
@@ -457,14 +495,25 @@ function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
   const payloads = [];
   const issues = [];
   const seenLegacyIds = new Set();
+  const seenRawIds = new Set();
+  const normalizedRawDuplicates = new Set();
 
   (Array.isArray(draft?.invoices) ? draft.invoices : []).forEach((invoice) => {
     const parentLegacyId = asText(invoice?.legacy_local_id);
     const invoiceId = invoiceIdByLegacyId.get(parentLegacyId) || "";
     const companyId = asText(invoice?.company_id);
+    const items = Array.isArray(invoice?.line_items) ? invoice.line_items : [];
+    const stableIndexes = computeStableLineItemIndexes(items);
 
-    (Array.isArray(invoice?.line_items) ? invoice.line_items : []).forEach((item, index) => {
-      const legacyLocalId = buildStableLineItemLegacyId(parentLegacyId, item, index, "invoice");
+    items.forEach((item, index) => {
+      const legacyLocalId = buildDeterministicLineItemLegacyId(parentLegacyId, stableIndexes[index], "invoice");
+
+      const rawId = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
+      if (rawId) {
+        if (seenRawIds.has(rawId)) normalizedRawDuplicates.add(rawId);
+        seenRawIds.add(rawId);
+      }
+
       if (!parentLegacyId) {
         issues.push(buildNotice("error", `invoice_line_item_parent_missing:${index}`, "Invoice line item is missing its parent invoice local id."));
         return;
@@ -494,6 +543,15 @@ function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
       });
     });
   });
+
+  if (normalizedRawDuplicates.size > 0) {
+    issues.push(buildNotice(
+      "warning",
+      "invoice_line_item_raw_ids_normalized",
+      "Duplicate raw invoice line-item ids were normalized into deterministic migration ids.",
+      { count: normalizedRawDuplicates.size }
+    ));
+  }
 
   return { payloads, issues };
 }
@@ -998,12 +1056,13 @@ export async function runSupabaseMigrationWrite({
   const estimateLineItemPayloads = mapEstimateLineItemPayloads(draft, estimateIdByLegacyId);
   const invoiceLineItemPayloads = mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId);
   const lineItemIssues = [...estimateLineItemPayloads.issues, ...invoiceLineItemPayloads.issues];
-  if (lineItemIssues.length > 0) {
+  notices.push(...lineItemIssues);
+  if (lineItemIssues.some((notice) => notice.level === "error")) {
     return {
       ok: false,
       blocked: true,
       reason: "Line-item migration write blocked by local validation issues.",
-      notices: lineItemIssues,
+      notices,
       cloudCountsBefore: cloudCounts,
       tableResults,
       noLocalDeletes: true,

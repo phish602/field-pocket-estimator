@@ -383,8 +383,8 @@ describe("supabaseMigrationWriter", () => {
       },
       existingEstimateRows: [{ id: "db_est_1", legacy_local_id: "est_1" }],
       existingInvoiceRows: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
-      existingEstimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "est_line_1" }],
-      existingInvoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "inv_line_1" }],
+      existingEstimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0" }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0" }],
     });
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
@@ -456,10 +456,10 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalled();
   });
 
-  test("creates deterministic line-item legacy ids when local items do not have ids", async () => {
+  test("generated estimate and invoice line-item ids include the parent local id and a stable index, never the raw item id", async () => {
     const mockClient = createMockClient({
-      estimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:labor:0" }],
-      invoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:invoice:0" }],
+      estimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0" }],
+      invoiceLineItemRows: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0" }],
     });
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
@@ -470,8 +470,9 @@ describe("supabaseMigrationWriter", () => {
           projectId: "proj_1",
           customerId: "cust_1",
           estimateNumber: "EST-1",
-          total: 100,
+          total: 300,
           labor: { lines: [{ description: "Labor", quantity: 1, rate: 100 }] },
+          materials: { items: [{ description: "Lumber", quantity: 1, price: 200 }] },
         }],
         invoices: [{
           id: "inv_1",
@@ -479,10 +480,13 @@ describe("supabaseMigrationWriter", () => {
           customerId: "cust_1",
           sourceEstimateId: "est_1",
           invoiceNumber: "INV-1",
-          invoiceTotal: 100,
+          invoiceTotal: 300,
           amountPaid: 25,
-          balanceRemaining: 75,
-          lineItems: [{ description: "Material", quantity: 1, price: 100, total: 100 }],
+          balanceRemaining: 275,
+          lineItems: [
+            { description: "Material", quantity: 1, price: 100, total: 100 },
+            { description: "Labor", quantity: 1, price: 200, total: 200 },
+          ],
           payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
         }],
       }),
@@ -495,18 +499,150 @@ describe("supabaseMigrationWriter", () => {
     });
 
     expect(result.ok).toBe(true);
+    // Two kinds (labor + materials) both start their own local index at 0, so
+    // sort_order collides across the parent's combined line_items array; the
+    // writer must fall back to the normalized array position, not raw ids.
     expect(mockClient.writeChains.estimate_line_items.upsert).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ legacy_local_id: "estimate:est_1:labor:0" }),
+        expect.objectContaining({ legacy_local_id: "estimate:est_1:line:0" }),
+        expect.objectContaining({ legacy_local_id: "estimate:est_1:line:1" }),
       ]),
       expect.any(Object),
     );
     expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ legacy_local_id: "invoice:inv_1:invoice:0" }),
+        expect.objectContaining({ legacy_local_id: "invoice:inv_1:line:0" }),
+        expect.objectContaining({ legacy_local_id: "invoice:inv_1:line:1" }),
       ]),
       expect.any(Object),
     );
+  });
+
+  test("does not block when raw invoice line-item ids duplicate across different invoices but generated ids are unique", async () => {
+    const mockClient = createMockClient({
+      invoiceRows: [
+        { id: "db_inv_1", legacy_local_id: "inv_1" },
+        { id: "db_inv_2", legacy_local_id: "inv_2" },
+      ],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [],
+        invoices: [
+          {
+            id: "inv_1",
+            projectId: "proj_1",
+            customerId: "cust_1",
+            invoiceNumber: "INV-1",
+            invoiceTotal: 100,
+            amountPaid: 0,
+            balanceRemaining: 100,
+            lineItems: [{ id: "dup_line", description: "Material A", quantity: 1, price: 100, total: 100 }],
+          },
+          {
+            id: "inv_2",
+            projectId: "proj_1",
+            customerId: "cust_1",
+            invoiceNumber: "INV-2",
+            invoiceTotal: 200,
+            amountPaid: 0,
+            balanceRemaining: 200,
+            lineItems: [{ id: "dup_line", description: "Material B", quantity: 1, price: 200, total: 200 }],
+          },
+        ],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({
+        localCounts: {
+          customers: 1,
+          projects: 1,
+          estimates: 0,
+          estimateLineItems: 0,
+          invoices: 2,
+          invoiceLineItems: 2,
+          invoicePayments: 0,
+        },
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(mockClient.writeChains.invoice_line_items.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ legacy_local_id: "invoice:inv_1:line:0" }),
+        expect.objectContaining({ legacy_local_id: "invoice:inv_2:line:0" }),
+      ]),
+      expect.any(Object),
+    );
+    expect(result.notices.some((notice) => notice.level === "error")).toBe(false);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "invoice_line_item_raw_ids_normalized" }),
+    ]));
+  });
+
+  test("still blocks when generated line-item migration ids collide", async () => {
+    // Two distinct (non-duplicate) parent local ids that sanitize to the same
+    // segment ("est 1" -> "est_1", "est_1" -> "est_1") so this exercises the
+    // line-item-level dedup itself, not the separate duplicate-parent-id guard.
+    const mockClient = createMockClient({
+      estimateRows: [
+        { id: "db_est_1", legacy_local_id: "est 1" },
+        { id: "db_est_2", legacy_local_id: "est_1" },
+      ],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [
+          {
+            id: "est 1",
+            projectId: "proj_1",
+            customerId: "cust_1",
+            estimateNumber: "EST-1",
+            total: 100,
+            labor: { lines: [{ id: "line_a", description: "Labor A", quantity: 1, rate: 100 }] },
+          },
+          {
+            id: "est_1",
+            projectId: "proj_1",
+            customerId: "cust_1",
+            estimateNumber: "EST-2",
+            total: 200,
+            labor: { lines: [{ id: "line_b", description: "Labor B", quantity: 1, rate: 200 }] },
+          },
+        ],
+        invoices: [],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({
+        localCounts: {
+          customers: 1,
+          projects: 1,
+          estimates: 2,
+          estimateLineItems: 2,
+          invoices: 0,
+          invoiceLineItems: 0,
+          invoicePayments: 0,
+        },
+      }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.notices.some((notice) =>
+      notice.level === "error" && notice.code.startsWith("duplicate_estimate_line_item_local_id")
+    )).toBe(true);
   });
 
   test("completes validation before writes and blocks early on local document issues", async () => {
