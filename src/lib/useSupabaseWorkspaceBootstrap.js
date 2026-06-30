@@ -55,8 +55,7 @@ export default function useSupabaseWorkspaceBootstrap({
       const companyResponse = await client
         .from("companies")
         .insert({
-          company_name: workspaceName,
-          display_name: workspaceName,
+          name: workspaceName,
           created_by: userId,
           updated_by: userId,
         })

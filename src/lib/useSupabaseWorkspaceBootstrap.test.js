@@ -82,7 +82,7 @@ describe("useSupabaseWorkspaceBootstrap", () => {
     const onCreated = jest.fn();
     const mock = createMockClient({
       companyResponse: {
-        data: { id: "company_1", company_name: "Field Pocket LLC", display_name: "Field Pocket LLC" },
+        data: { id: "company_1", name: "Field Pocket LLC" },
         error: null,
       },
       membershipResponse: {
@@ -105,11 +105,11 @@ describe("useSupabaseWorkspaceBootstrap", () => {
 
     expect(mock.client.from.mock.calls.map(([table]) => table)).toEqual(["companies", "company_users"]);
     expect(mock.companiesChain.insert).toHaveBeenCalledWith({
-      company_name: "Field Pocket LLC",
-      display_name: "Field Pocket LLC",
+      name: "Field Pocket LLC",
       created_by: "user_1",
       updated_by: "user_1",
     });
+    expect(mock.companiesChain.insert.mock.calls[0][0]).not.toHaveProperty("company_name");
     expect(mock.membershipChain.insert).toHaveBeenCalledWith({
       company_id: "company_1",
       user_id: "user_1",
@@ -128,7 +128,7 @@ describe("useSupabaseWorkspaceBootstrap", () => {
   test("surfaces membership-link failures without crashing", async () => {
     const mock = createMockClient({
       companyResponse: {
-        data: { id: "company_1", company_name: "Field Pocket LLC" },
+        data: { id: "company_1", name: "Field Pocket LLC" },
         error: null,
       },
       membershipResponse: {

@@ -336,7 +336,7 @@ export default function AdvancedSettingsScreen({
   const submitWorkspaceCreate = async () => {
     const response = await createWorkspace(workspaceName);
     if (response?.ok) {
-      setWorkspaceName(String(response?.result?.company?.company_name || response?.result?.company?.name || workspaceName).trim());
+      setWorkspaceName(String(response?.result?.company?.name || workspaceName).trim());
     }
   };
 
@@ -738,7 +738,7 @@ export default function AdvancedSettingsScreen({
                   ) : null}
                   {!accountLoading && hasCompany ? (
                     <div className="pe-field-helper">
-                      Company: <strong>{String(company?.name || company?.company_name || "Unnamed company")}</strong>
+                      Company: <strong>{String(company?.name || "Unnamed company")}</strong>
                     </div>
                   ) : null}
                   {!accountLoading && accountRole ? (
