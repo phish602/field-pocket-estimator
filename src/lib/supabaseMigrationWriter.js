@@ -12,6 +12,23 @@ const COUNTED_TABLES = [
   ["invoices", "invoices"],
   ["invoice_payments", "invoicePayments"],
 ];
+const PROJECT_STATUS_MAP = new Map([
+  ["active", "active"],
+  ["completed", "completed"],
+  ["archived", "archived"],
+  ["draft", "draft"],
+  ["open", "active"],
+  ["in_progress", "active"],
+  ["in-progress", "active"],
+  ["pending", "draft"],
+  ["planned", "draft"],
+  ["proposal", "draft"],
+  ["closed", "completed"],
+  ["done", "completed"],
+  ["complete", "completed"],
+  ["cancelled", "archived"],
+  ["canceled", "archived"],
+]);
 
 function asText(value) {
   return String(value || "").trim();
@@ -29,6 +46,7 @@ function buildTableResult(table, label, localCount, status = "pending", extra = 
     status,
     written: 0,
     skipped: 0,
+    reused: 0,
     failed: 0,
     ...extra,
   };
@@ -99,6 +117,19 @@ async function readCloudCounts(client, companyId) {
   return Object.fromEntries(entries);
 }
 
+async function readExistingCustomers(client, companyId) {
+  const response = await client
+    .from("customers")
+    .select("id, legacy_local_id")
+    .eq("company_id", companyId);
+
+  if (response?.error) {
+    throw response.error;
+  }
+
+  return Array.isArray(response?.data) ? response.data : [];
+}
+
 function collectInvoicePaymentValidationIssues(draft) {
   const warnings = [];
   const seen = new Set();
@@ -153,6 +184,68 @@ function collectDocumentIdentifierIssues(draft) {
   return notices;
 }
 
+function projectHasRealActivity(project, localSnapshot) {
+  const projectId = asText(project?.id || project?.legacy_local_id || project?.legacyLocalId);
+  const linkedEstimate = (Array.isArray(localSnapshot?.estimates) ? localSnapshot.estimates : []).some((estimate) => {
+    return asText(estimate?.projectId) === projectId;
+  });
+  const linkedInvoice = (Array.isArray(localSnapshot?.invoices) ? localSnapshot.invoices : []).some((invoice) => {
+    return asText(invoice?.projectId || invoice?.project?.id) === projectId;
+  });
+  return Boolean(
+    linkedEstimate ||
+    linkedInvoice ||
+    asText(project?.projectName || project?.name) ||
+    asText(project?.projectNumber) ||
+    asText(project?.notes || project?.projectNotes) ||
+    asText(project?.scopeSummary || project?.scopeNotes || project?.additionalNotes)
+  );
+}
+
+function normalizeProjectStatusForMigration(sourceProject, localSnapshot) {
+  const raw = asText(sourceProject?.status || sourceProject?.projectStatus).toLowerCase();
+  if (PROJECT_STATUS_MAP.has(raw)) {
+    return {
+      status: PROJECT_STATUS_MAP.get(raw),
+      changed: PROJECT_STATUS_MAP.get(raw) !== raw,
+      from: raw,
+    };
+  }
+
+  const fallback = projectHasRealActivity(sourceProject, localSnapshot) ? "active" : "draft";
+  return {
+    status: fallback,
+    changed: raw !== fallback,
+    from: raw,
+  };
+}
+
+function collectProjectStatusNormalization(localSnapshot) {
+  const normalized = [];
+  const issues = [];
+
+  (Array.isArray(localSnapshot?.projects) ? localSnapshot.projects : []).forEach((project, index) => {
+    const next = normalizeProjectStatusForMigration(project, localSnapshot);
+    if (!next.status) {
+      issues.push(buildNotice(
+        "error",
+        `project_status_unresolved:${index}`,
+        "Project status could not be normalized for migration.",
+      ));
+      return;
+    }
+    if (next.changed) {
+      normalized.push({
+        legacyLocalId: asText(project?.id || project?.legacy_local_id || project?.legacyLocalId) || `project_${index}`,
+        from: next.from || "(blank)",
+        to: next.status,
+      });
+    }
+  });
+
+  return { normalized, issues };
+}
+
 function classifyMappingWarnings(warnings) {
   return (Array.isArray(warnings) ? warnings : []).filter((warning) => {
     const code = asText(warning?.code);
@@ -187,20 +280,24 @@ function mapCustomerPayloads(draft, userId) {
   }));
 }
 
-function mapProjectPayloads(draft, customerIdByLegacyId, userId) {
-  return (Array.isArray(draft?.projects) ? draft.projects : []).map((project) => ({
+function mapProjectPayloads(draft, customerIdByLegacyId, userId, localSnapshot) {
+  return (Array.isArray(draft?.projects) ? draft.projects : []).map((project, index) => {
+    const sourceProject = Array.isArray(localSnapshot?.projects) ? localSnapshot.projects[index] : null;
+    const normalizedStatus = normalizeProjectStatusForMigration(sourceProject || project, localSnapshot).status;
+    return ({
     company_id: asText(project?.company_id),
     customer_id: customerIdByLegacyId.get(asText(project?.customer_legacy_local_id)) || null,
     legacy_local_id: asText(project?.legacy_local_id),
     project_number: project?.project_number || null,
     project_name: project?.project_name || null,
     site_address: project?.site_address || null,
-    status: project?.status || "active",
+    status: normalizedStatus || "draft",
     notes: project?.notes || null,
     scope_summary: project?.scope_summary || null,
     created_by: userId,
     updated_by: userId,
-  }));
+  });
+  });
 }
 
 function mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, userId) {
@@ -261,6 +358,42 @@ function mapInvoicePaymentPayloads(draft, invoiceIdByLegacyId, userId) {
 
 function buildLegacyIdMap(rows) {
   return new Map((Array.isArray(rows) ? rows : []).map((row) => [asText(row?.legacy_local_id), asText(row?.id)]));
+}
+
+function setsEqual(left, right) {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function summarizeNormalizedProjectStatuses(normalizedStatuses) {
+  if (!Array.isArray(normalizedStatuses) || normalizedStatuses.length === 0) return null;
+  const summary = normalizedStatuses
+    .map((entry) => `${entry.legacyLocalId}: ${entry.from} -> ${entry.to}`)
+    .join(", ");
+  return buildNotice("warning", "project_statuses_normalized", `Project statuses normalized for migration: ${summary}`);
+}
+
+function isFullMigrationAlreadyPresent(localCounts, cloudCounts) {
+  return (
+    Number(cloudCounts?.customers || 0) === Number(localCounts?.customers || 0) &&
+    Number(cloudCounts?.projects || 0) === Number(localCounts?.projects || 0) &&
+    Number(cloudCounts?.estimates || 0) === Number(localCounts?.estimates || 0) &&
+    Number(cloudCounts?.invoices || 0) === Number(localCounts?.invoices || 0) &&
+    Number(cloudCounts?.invoicePayments || 0) === Number(localCounts?.invoicePayments || 0)
+  );
+}
+
+function isCustomersOnlyPartialState(localCounts, cloudCounts) {
+  return (
+    Number(cloudCounts?.customers || 0) === Number(localCounts?.customers || 0) &&
+    Number(cloudCounts?.projects || 0) === 0 &&
+    Number(cloudCounts?.estimates || 0) === 0 &&
+    Number(cloudCounts?.invoices || 0) === 0 &&
+    Number(cloudCounts?.invoicePayments || 0) === 0
+  );
 }
 
 async function upsertTableRows(client, table, rows) {
@@ -348,10 +481,14 @@ export async function runSupabaseMigrationWrite({
     companyId,
     userId,
   });
+  const normalizedProjectStatuses = collectProjectStatusNormalization(localSnapshot);
 
   notices.push(...classifyMappingWarnings(collectBackendMappingWarnings(localSnapshot, { companyId, userId })));
   notices.push(...collectDocumentIdentifierIssues(draft));
   notices.push(...collectInvoicePaymentValidationIssues(draft));
+  notices.push(...normalizedProjectStatuses.issues);
+  const normalizationSummary = summarizeNormalizedProjectStatuses(normalizedProjectStatuses.normalized);
+  if (normalizationSummary) notices.push(normalizationSummary);
 
   if (artifact?.migrationReadiness?.parseErrorCount > 0) {
     notices.push(buildNotice("error", "local_data_unreadable", "Local export artifact contains unreadable JSON data."));
@@ -369,17 +506,18 @@ export async function runSupabaseMigrationWrite({
   }
 
   const cloudCounts = await readCloudCounts(client, companyId);
-  const occupiedTables = Object.entries(cloudCounts).filter(([, count]) => Number(count) > 0);
-  if (occupiedTables.length > 0) {
+  const localCounts = preview?.localCounts || {};
+
+  if (isFullMigrationAlreadyPresent(localCounts, cloudCounts)) {
     return {
       ok: false,
       blocked: true,
-      reason: "Cloud business tables already contain records. Migration is blocked without an override path.",
+      reason: "Cloud business tables already match the local migration counts.",
       notices: [
         buildNotice(
-          "error",
-          "cloud_tables_not_empty",
-          "Cloud business tables already contain records. Migration is blocked without an override path.",
+          "warning",
+          "already_migrated",
+          "Cloud business tables already match the local migration counts.",
           { cloudCounts }
         ),
       ],
@@ -389,24 +527,93 @@ export async function runSupabaseMigrationWrite({
     };
   }
 
-  const customerPayloads = mapCustomerPayloads(draft, userId);
-  const customerResponse = await upsertTableRows(client, "customers", customerPayloads);
-  if (customerResponse?.error) {
-    tableResults[0] = { ...tableResults[0], status: "failed", failed: customerPayloads.length, error: asText(customerResponse.error?.message) };
-    return {
-      ok: false,
-      blocked: false,
-      reason: asText(customerResponse.error?.message) || "Customer migration failed.",
-      notices: [buildNotice("error", "customers_write_failed", asText(customerResponse.error?.message) || "Customer migration failed.")],
-      cloudCountsBefore: cloudCounts,
-      tableResults,
-      noLocalDeletes: true,
-    };
-  }
-  tableResults[0] = { ...tableResults[0], status: "success", written: customerPayloads.length };
-  const customerIdByLegacyId = buildLegacyIdMap(customerResponse?.data);
+  let customerIdByLegacyId = new Map();
+  let shouldWriteCustomers = true;
 
-  const projectPayloads = mapProjectPayloads(draft, customerIdByLegacyId, userId);
+  if (isCustomersOnlyPartialState(localCounts, cloudCounts)) {
+    const existingCustomers = await readExistingCustomers(client, companyId);
+    const existingLegacyIds = new Set(existingCustomers.map((row) => asText(row?.legacy_local_id)).filter(Boolean));
+    const localLegacyIds = new Set(
+      (Array.isArray(draft?.customers) ? draft.customers : [])
+        .map((customer) => asText(customer?.legacy_local_id))
+        .filter(Boolean)
+    );
+
+    if (!setsEqual(existingLegacyIds, localLegacyIds)) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: "Partial customer migration exists but the cloud customer legacy ids do not match local customers.",
+        notices: [
+          buildNotice(
+            "error",
+            "partial_customer_mismatch",
+            "Partial customer migration exists but the cloud customer legacy ids do not match local customers.",
+            { cloudCounts }
+          ),
+        ],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+
+    customerIdByLegacyId = buildLegacyIdMap(existingCustomers);
+    shouldWriteCustomers = false;
+    tableResults[0] = {
+      ...tableResults[0],
+      status: "reused",
+      reused: existingCustomers.length,
+      skipped: existingCustomers.length,
+    };
+    notices.push(buildNotice(
+      "info",
+      "existing_customers_reused",
+      "Existing cloud customers were reused from the partial migration state.",
+      { reused: existingCustomers.length }
+    ));
+  } else {
+    const occupiedTables = Object.entries(cloudCounts).filter(([, count]) => Number(count) > 0);
+    if (occupiedTables.length > 0) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: "Cloud business tables already contain records. Migration is blocked without an override path.",
+        notices: [
+          buildNotice(
+            "error",
+            "cloud_tables_not_empty",
+            "Cloud business tables already contain records. Migration is blocked without an override path.",
+            { cloudCounts }
+          ),
+        ],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+  }
+
+  if (shouldWriteCustomers) {
+    const customerPayloads = mapCustomerPayloads(draft, userId);
+    const customerResponse = await upsertTableRows(client, "customers", customerPayloads);
+    if (customerResponse?.error) {
+      tableResults[0] = { ...tableResults[0], status: "failed", failed: customerPayloads.length, error: asText(customerResponse.error?.message) };
+      return {
+        ok: false,
+        blocked: false,
+        reason: asText(customerResponse.error?.message) || "Customer migration failed.",
+        notices: [buildNotice("error", "customers_write_failed", asText(customerResponse.error?.message) || "Customer migration failed.")],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+    tableResults[0] = { ...tableResults[0], status: "success", written: customerPayloads.length };
+    customerIdByLegacyId = buildLegacyIdMap(customerResponse?.data);
+  }
+
+  const projectPayloads = mapProjectPayloads(draft, customerIdByLegacyId, userId, localSnapshot);
   const projectResponse = await upsertTableRows(client, "projects", projectPayloads);
   if (projectResponse?.error) {
     tableResults[1] = { ...tableResults[1], status: "failed", failed: projectPayloads.length, error: asText(projectResponse.error?.message) };
@@ -481,6 +688,8 @@ export async function runSupabaseMigrationWrite({
     noLocalDeletes: true,
     cloudCountsBefore: cloudCounts,
     notices: [
+      buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
+      ...notices,
       buildNotice("info", "estimate_line_items_skipped", "Estimate line items were skipped in this guarded lane."),
       buildNotice("info", "invoice_line_items_skipped", "Invoice line items were skipped in this guarded lane."),
     ],

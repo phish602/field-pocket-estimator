@@ -502,6 +502,55 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Local data remains in localStorage after this migration step\./i)).toBeInTheDocument();
   });
 
+  test("shows reused customer counts when a partial migration resumes safely", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    isSupabaseMigrationPreviewReady.mockImplementation((preview) => Boolean(preview?.company?.id));
+    runSupabaseMigrationWrite.mockResolvedValue({
+      ok: true,
+      reason: "",
+      notices: [
+        { level: "info", code: "prevalidation_complete", message: "Prevalidation completed before any migration writes started." },
+        { level: "info", code: "existing_customers_reused", message: "Existing cloud customers were reused from the partial migration state." },
+      ],
+      tableResults: [
+        { table: "customers", label: "Customers", status: "reused", written: 0, reused: 1, skipped: 1, failed: 0 },
+        { table: "projects", label: "Projects", status: "success", written: 1, reused: 0, skipped: 0, failed: 0 },
+      ],
+      noLocalDeletes: true,
+    });
+
+    render(<AdvancedSettingsScreen />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Preview Local Data Migration" }));
+    });
+
+    fireEvent.change(screen.getByLabelText("Type MIGRATE to confirm"), {
+      target: { value: "MIGRATE" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Migrate Local Data to Cloud" }));
+    });
+
+    expect(screen.getByText(/Customers: reused, written 0, reused 1, skipped 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Existing cloud customers were reused from the partial migration state\./i)).toBeInTheDocument();
+  });
+
   test("shows no-membership state without crashing", () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,

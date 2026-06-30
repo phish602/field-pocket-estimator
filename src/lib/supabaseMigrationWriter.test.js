@@ -41,15 +41,24 @@ function buildPreview(overrides = {}) {
   };
 }
 
-function buildStorageSnapshot() {
+function buildStorageSnapshot({
+  customers,
+  projects,
+  estimates,
+  invoices,
+  companyProfile,
+  settings,
+  scopeTemplates,
+  auditEvents,
+} = {}) {
   return {
     getItem(key) {
       const values = {
-        "estipaid-company-profile-v1": JSON.stringify({ id: "local_company", companyName: "AAS Property Care" }),
-        "estipaid-customers-v1": JSON.stringify([{ id: "cust_1", name: "Acme Co" }]),
-        "estipaid-projects-v1": JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
-        "estipaid-estimates-v1": JSON.stringify([{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }]),
-        "estipaid-invoices-v1": JSON.stringify([{
+        "estipaid-company-profile-v1": JSON.stringify(companyProfile || { id: "local_company", companyName: "AAS Property Care" }),
+        "estipaid-customers-v1": JSON.stringify(customers || [{ id: "cust_1", name: "Acme Co" }]),
+        "estipaid-projects-v1": JSON.stringify(projects || [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
+        "estipaid-estimates-v1": JSON.stringify(estimates || [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }]),
+        "estipaid-invoices-v1": JSON.stringify(invoices || [{
           id: "inv_1",
           projectId: "proj_1",
           customerId: "cust_1",
@@ -60,9 +69,9 @@ function buildStorageSnapshot() {
           balanceRemaining: 75,
           payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
         }]),
-        "estipaid-settings-v1": JSON.stringify({}),
-        "estipaid-scope-templates-v1": JSON.stringify([]),
-        "estipaid-audit-events-v1": JSON.stringify([]),
+        "estipaid-settings-v1": JSON.stringify(settings || {}),
+        "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates || []),
+        "estipaid-audit-events-v1": JSON.stringify(auditEvents || []),
       };
       return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
     },
@@ -83,6 +92,7 @@ function createUpsertChain(response) {
 
 function createMockClient({
   counts = {},
+  existingCustomerRows,
   customerRows = [{ id: "db_cust_1", legacy_local_id: "cust_1" }],
   projectRows = [{ id: "db_proj_1", legacy_local_id: "proj_1" }],
   estimateRows = [{ id: "db_est_1", legacy_local_id: "est_1" }],
@@ -108,10 +118,18 @@ function createMockClient({
     invoices: createUpsertChain({ data: invoiceRows, error: invoiceError }),
     invoice_payments: createUpsertChain({ data: paymentRows, error: paymentError }),
   };
+  const readRowsByTable = {
+    customers: existingCustomerRows || customerRows,
+    projects: projectRows,
+    estimates: estimateRows,
+    invoices: invoiceRows,
+    invoice_payments: paymentRows,
+  };
 
   const from = jest.fn((table) => {
     const countChain = countChains[table];
     const writeChain = writeChains[table];
+    const readRows = readRowsByTable[table];
     if (!countChain || !writeChain) {
       throw new Error(`Unexpected table: ${table}`);
     }
@@ -119,7 +137,12 @@ function createMockClient({
     return {
       select: jest.fn((columns, options) => {
         const isCountQuery = options && options.head === true;
-        return isCountQuery ? countChain.select(columns, options) : undefined;
+        if (isCountQuery) {
+          return countChain.select(columns, options);
+        }
+        return {
+          eq: jest.fn(async () => ({ data: readRows, error: null })),
+        };
       }),
       upsert: writeChain.upsert,
     };
@@ -162,7 +185,7 @@ describe("supabaseMigrationWriter", () => {
 
   test("blocks migration when cloud business tables already contain records", async () => {
     const mockClient = createMockClient({
-      counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+      counts: { customers: 0, projects: 1, estimates: 0, invoices: 0, invoicePayments: 0 },
     });
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
@@ -179,12 +202,43 @@ describe("supabaseMigrationWriter", () => {
     expect(result.ok).toBe(false);
     expect(result.blocked).toBe(true);
     expect(result.cloudCountsBefore).toEqual({
-      customers: 1,
-      projects: 0,
+      customers: 0,
+      projects: 1,
       estimates: 0,
       invoices: 0,
       invoicePayments: 0,
     });
+  });
+
+  test("normalizes project statuses before writing and reports the mapping", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair", status: "closed" }],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.projects.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ legacy_local_id: "proj_1", status: "completed" }),
+      ]),
+      expect.any(Object),
+    );
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "project_statuses_normalized",
+        message: expect.stringContaining("proj_1: closed -> completed"),
+      }),
+    ]));
   });
 
   test("migrates customers, projects, estimates, invoices, and invoice payments in dependency order", async () => {
@@ -224,6 +278,112 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalled();
     expect(mockClient.writeChains.invoice_payments.upsert).toHaveBeenCalled();
+  });
+
+  test("reuses existing cloud customers for a safe customers-only partial migration", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+      existingCustomerRows: [{ id: "db_cust_1", legacy_local_id: "cust_1" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ customer_id: "db_cust_1" }),
+      ]),
+      expect.any(Object),
+    );
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "customers", status: "reused", reused: 1, skipped: 1 }),
+    ]));
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "existing_customers_reused" }),
+      expect.objectContaining({ code: "prevalidation_complete" }),
+    ]));
+  });
+
+  test("blocks partial migration resume when cloud customers do not match local legacy ids", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+      existingCustomerRows: [{ id: "db_cust_x", legacy_local_id: "cust_x" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/do not match local customers/i);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+  });
+
+  test("blocks reruns after the full migration already exists in cloud", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 1 },
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/already match the local migration counts/i);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+  });
+
+  test("completes validation before writes and blocks early on local document issues", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", total: 100 }],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/local validation issues/i);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_number_missing:0" }),
+    ]));
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
   });
 
   test("surfaces per-table failures without hiding partial progress", async () => {

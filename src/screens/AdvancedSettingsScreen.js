@@ -1066,6 +1066,7 @@ export default function AdvancedSettingsScreen({
                             <div key={String(tableResult?.table || tableResult?.label)} className="pe-field-helper">
                               {String(tableResult?.label || tableResult?.table)}: {String(tableResult?.status || "unknown")}
                               {typeof tableResult?.written === "number" ? `, written ${tableResult.written}` : ""}
+                              {typeof tableResult?.reused === "number" && tableResult.reused > 0 ? `, reused ${tableResult.reused}` : ""}
                               {typeof tableResult?.skipped === "number" && tableResult.skipped > 0 ? `, skipped ${tableResult.skipped}` : ""}
                               {typeof tableResult?.failed === "number" && tableResult.failed > 0 ? `, failed ${tableResult.failed}` : ""}
                             </div>
