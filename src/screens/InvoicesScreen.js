@@ -462,6 +462,7 @@ const invoiceMetricColumnStyle = {
   alignItems: "stretch",
   gap: 4,
   flex: "1 1 0",
+  minWidth: 0,
 };
 
 const invoiceMetricPillStyle = (highlight) => ({
@@ -473,8 +474,9 @@ const invoiceMetricPillStyle = (highlight) => ({
   fontSize: 13,
   fontWeight: 850,
   letterSpacing: "0.3px",
-  flexShrink: 0,
+  minWidth: 0,
   whiteSpace: "nowrap",
+  overflowWrap: "normal",
   color: "rgba(245,248,252,0.96)",
   textAlign: "center",
   flex: "1 1 0",
@@ -531,6 +533,31 @@ const invoiceDetailLabelStyle = {
   textTransform: "uppercase",
 };
 
+const invoiceSummaryRowStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  flexWrap: "wrap",
+  gap: 12,
+  minWidth: 0,
+};
+
+const invoiceSummaryLabelStyle = {
+  fontSize: 12,
+  opacity: 0.72,
+  minWidth: 0,
+  flex: "1 1 auto",
+};
+
+const invoiceSummaryValueStyle = {
+  fontWeight: 800,
+  minWidth: 0,
+  flex: "0 1 auto",
+  textAlign: "right",
+  whiteSpace: "nowrap",
+  overflowWrap: "normal",
+};
+
 const paymentConsoleMetricCardStyle = {
   borderRadius: 12,
   border: "1px solid rgba(255,255,255,0.08)",
@@ -550,11 +577,14 @@ const paymentConsoleMetricLabelStyle = {
 };
 
 const paymentConsoleMetricValueStyle = {
-  fontSize: 20,
-  lineHeight: 1.1,
+  fontSize: "clamp(9px, calc(3.7vw - 2.8px), 20px)",
+  lineHeight: 1.15,
   fontWeight: 900,
   color: "rgba(248,250,252,0.98)",
   fontVariantNumeric: "tabular-nums",
+  minWidth: 0,
+  whiteSpace: "nowrap",
+  overflowWrap: "normal",
 };
 
 const paymentConsoleMetricMetaStyle = {
@@ -3166,34 +3196,34 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                             {lang === "es" ? "Resumen" : "Summary"}
                           </div>
                           <div style={{ display: "grid", gap: 6 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Tipo" : "Type"}</div>
-                              <div style={{ fontWeight: 800 }}>{String(invoice?.invoiceType || "").toUpperCase() || "MANUAL"}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Tipo" : "Type"}</div>
+                              <div style={invoiceSummaryValueStyle}>{String(invoice?.invoiceType || "").toUpperCase() || "MANUAL"}</div>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Total" : "Invoice total"}</div>
-                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.invoiceTotal)}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Total" : "Invoice total"}</div>
+                              <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.invoiceTotal)}</div>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Pagado" : "Amount paid"}</div>
-                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.amountPaid)}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Pagado" : "Amount paid"}</div>
+                              <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.amountPaid)}</div>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Saldo" : "Balance remaining"}</div>
-                              <div style={{ fontWeight: 800 }}>{moneyUSD(invoice?.balanceRemaining)}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Saldo" : "Balance remaining"}</div>
+                              <div style={invoiceSummaryValueStyle}>{moneyUSD(invoice?.balanceRemaining)}</div>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Pago" : "Payment status"}</div>
-                              <div style={{ fontWeight: 800 }}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Pago" : "Payment status"}</div>
+                              <div style={invoiceSummaryValueStyle}>{formatPaymentStatus(invoice?.paymentStatus, lang)}</div>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                              <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Vence" : "Due date"}</div>
-                              <div style={{ fontWeight: 800 }}>{formatDateOnly(invoice?.dueDate) || "—"}</div>
+                            <div style={invoiceSummaryRowStyle}>
+                              <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Vence" : "Due date"}</div>
+                              <div style={invoiceSummaryValueStyle}>{formatDateOnly(invoice?.dueDate) || "—"}</div>
                             </div>
                             {invoice?.sourceEstimateId ? (
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                                <div style={{ fontSize: 12, opacity: 0.72 }}>{lang === "es" ? "Estimación padre" : "Parent estimate"}</div>
-                                <div style={{ fontWeight: 800 }}>{invoice?.estimateNumber || invoice?.sourceEstimateId}</div>
+                              <div style={invoiceSummaryRowStyle}>
+                                <div style={invoiceSummaryLabelStyle}>{lang === "es" ? "Estimación padre" : "Parent estimate"}</div>
+                                <div style={invoiceSummaryValueStyle}>{invoice?.estimateNumber || invoice?.sourceEstimateId}</div>
                               </div>
                             ) : null}
                           </div>

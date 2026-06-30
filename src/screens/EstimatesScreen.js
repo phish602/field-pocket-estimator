@@ -2586,6 +2586,7 @@ export default function EstimatesScreen({
                 gridTemplateRows: "auto auto auto",
                 rowGap: "12px",
                 width: "100%",
+                minWidth: 0,
               };
               const headerRow = {
                 display: "flex",
@@ -2648,8 +2649,9 @@ export default function EstimatesScreen({
                 fontSize: boardCols === 1 ? 11.5 : 12.5,
                 fontWeight: 800,
                 letterSpacing: "0.3px",
-                lineHeight: 1,
+                lineHeight: 1.15,
                 whiteSpace: "nowrap",
+                overflowWrap: "normal",
                 textAlign: "center",
                 flex: "1 1 0",
                 minWidth: 0,
@@ -3128,19 +3130,19 @@ export default function EstimatesScreen({
                               gap: 6,
                             }}
                           >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                              <div style={{ fontWeight: 900 }}>{r.name}</div>
-                              <div style={{ fontWeight: 900 }}>{money(r.billed)}</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                              <div style={{ fontWeight: 900, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 auto" }}>{r.name}</div>
+                              <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
                               <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
                               <div>{lang === "es" ? "Horas" : "Hours"}: {r.hours}</div>
-                              <div>{lang === "es" ? "Tarifa" : "Rate"}: {money(r.rate)}</div>
-                              <div>
+                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Tarifa" : "Rate"}: {money(r.rate)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>
                                 {lang === "es" ? "Int" : "Internal"}: {r.internalRate != null ? money(r.internalRate) : (lang === "es" ? "—" : "—")}
                               </div>
-                              <div>{labelProfit}: {money(r.profit)}</div>
-                              <div>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
                             </div>
                           </div>
                         ))}
@@ -3191,18 +3193,18 @@ export default function EstimatesScreen({
                               gap: 6,
                             }}
                           >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                              <div style={{ fontWeight: 900 }}>{r.name}</div>
-                              <div style={{ fontWeight: 900 }}>{money(r.billed)}</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                              <div style={{ fontWeight: 900, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 auto" }}>{r.name}</div>
+                              <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
                               <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
-                              <div>{lang === "es" ? "Precio" : "Price"}: {money(r.chargeEach)}</div>
-                              <div>
+                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Precio" : "Price"}: {money(r.chargeEach)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>
                                 {lang === "es" ? "Int" : "Internal"}: {r.internalEach != null ? money(r.internalEach) : (lang === "es" ? "—" : "—")}
                               </div>
-                              <div>{labelProfit}: {money(r.profit)}</div>
-                              <div>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
                             </div>
                           </div>
                         ))}
