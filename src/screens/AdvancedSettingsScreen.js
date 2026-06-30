@@ -1058,7 +1058,26 @@ export default function AdvancedSettingsScreen({
                 ) : onboardingStatusBusy && !onboardingStatus ? (
                   <div className="pe-field-helper">Checking cloud backup status...</div>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA ? (
-                  <div className="pe-field-helper">No saved estimates, invoices, customers, or projects were found on this device yet.</div>
+                  <>
+                    <div className="pe-field-helper">No saved estimates or invoices were found yet.</div>
+                    <div className="pe-field-helper">Create your first project to start cloud backup.</div>
+                  </>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE ? (
+                  <>
+                    <div className="pe-field-helper">Cloud data is available for this workspace.</div>
+                    <div className="pe-field-helper">This device does not have local estimates or invoices yet.</div>
+                    <div className="pe-field-helper">Restore to this device is coming next.</div>
+                    <div>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        disabled
+                        title="Restoring cloud data to a device is not implemented yet."
+                      >
+                        Restore Cloud Data to This Device (Coming next)
+                      </button>
+                    </div>
+                  </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
@@ -1073,6 +1092,13 @@ export default function AdvancedSettingsScreen({
                       Your data is backed up to the cloud.
                     </div>
                     <div className="pe-field-helper">Cloud data matches this device.</div>
+                  </>
+                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                      This device has local data that does not fully match the cloud.
+                    </div>
+                    <div className="pe-field-helper">Review before syncing or restoring.</div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
                   || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ERROR ? (

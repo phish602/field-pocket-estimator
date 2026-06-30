@@ -9,9 +9,18 @@ export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 export const CLOUD_ONBOARDING_STATUS = {
   SIGNED_OUT: "signed_out",
   NO_WORKSPACE: "no_workspace",
+  // Neither this device nor the cloud workspace has any core business data.
   NO_LOCAL_DATA: "no_local_data",
+  // This device has no local core data, but the cloud workspace does
+  // (e.g. a fresh second device signing into an already-backed-up workspace).
+  CLOUD_AVAILABLE_EMPTY_DEVICE: "cloud_available_empty_device",
+  // This device has local data and the cloud workspace has none yet.
   READY_TO_BACKUP: "ready_to_backup",
   ALREADY_BACKED_UP: "already_backed_up",
+  // Both sides have core data, but verification could not confirm they match
+  // (different device, partial sync, etc.) -- needs human review, not an
+  // automatic merge or overwrite.
+  LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
   BACKUP_COMPLETED: "backup_completed",
   NEEDS_ATTENTION: "needs_attention",
   ERROR: "error",
@@ -22,7 +31,8 @@ function asText(value) {
 }
 
 // Mirrors isSupabaseMigrationPreviewReady's own "is there anything to back
-// up" definition so the two stay in agreement.
+// up" definition so the two stay in agreement. Used by the explicit backup
+// flow (Phase B), unchanged from Gate 9.
 function totalLocalRecords(localCounts) {
   const counts = localCounts || {};
   return (
@@ -31,6 +41,20 @@ function totalLocalRecords(localCounts) {
     Number(counts.estimates || 0) +
     Number(counts.invoices || 0) +
     Number(counts.invoicePayments || 0)
+  );
+}
+
+// "Core" business docs only -- customers/projects/estimates/invoices. Used
+// to classify device emptiness (Phase A). Line items and payments are
+// dependent data: if their parent docs are zero, they don't change whether
+// a device counts as empty.
+function sumCoreDocCounts(counts) {
+  const c = counts || {};
+  return (
+    Number(c.customers || 0) +
+    Number(c.projects || 0) +
+    Number(c.estimates || 0) +
+    Number(c.invoices || 0)
   );
 }
 
@@ -80,10 +104,11 @@ function buildBackupResult(status, extra = {}) {
   };
 }
 
-// Phase A: read-only status check. Runs migration preview and, if local data
-// exists, cloud verification, to decide whether the cloud already matches
-// local data (already_backed_up) or a one-click backup should be offered
-// (ready_to_backup). Never writes.
+// Phase A: read-only status check. Runs migration preview, and cloud
+// verification only when both sides might have data, to classify this
+// device/workspace pair (signed out, no workspace, no data anywhere, cloud
+// data on an empty device, ready to back up, already matched, or a
+// local/cloud mismatch needing review). Never writes, never restores.
 export async function checkSupabaseCloudOnboardingStatus({
   storageSnapshot,
   configured = false,
@@ -98,15 +123,32 @@ export async function checkSupabaseCloudOnboardingStatus({
 
   try {
     const preview = await createSupabaseMigrationPreview(context);
+    const localCoreCount = sumCoreDocCounts(preview?.localCounts);
+    const cloudCountKnown = Boolean(preview?.cloudCountCheckAvailable);
+    const cloudCoreCount = cloudCountKnown ? sumCoreDocCounts(preview?.cloudCounts) : 0;
 
-    if (totalLocalRecords(preview?.localCounts) === 0) {
-      return buildStatusResult(CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA, { preview });
+    if (localCoreCount === 0) {
+      // This device has no estimates/invoices/customers/projects of its own.
+      // Distinguish "nothing exists yet anywhere" from "a second device
+      // signing into a workspace that's already backed up".
+      return buildStatusResult(
+        cloudCoreCount > 0 ? CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE : CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA,
+        { preview }
+      );
     }
 
+    if (cloudCountKnown && cloudCoreCount === 0) {
+      // Confidently empty cloud -- no need for a row-level verification call.
+      return buildStatusResult(CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP, { preview });
+    }
+
+    // Both sides may have data (or the cloud count check itself failed) --
+    // only a precise id-level comparison can tell us whether they actually
+    // match, so this is the one case verification is worth the extra reads.
     const verification = await runSupabaseCloudVerification(context);
 
     return buildStatusResult(
-      verification?.allMatched ? CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP : CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+      verification?.allMatched ? CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP : CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
       { preview, verification }
     );
   } catch (error) {

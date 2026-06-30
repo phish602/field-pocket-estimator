@@ -126,9 +126,10 @@ describe("supabaseCloudOnboarding", () => {
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
     });
 
-    test("returns no_local_data when local counts are all zero", async () => {
+    test("returns no_local_data when local and cloud core counts are both zero", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
         localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+        cloudCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
       }));
 
       const result = await checkSupabaseCloudOnboardingStatus(baseContext);
@@ -136,6 +137,20 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA);
       expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+    });
+
+    test("returns cloud_available_empty_device when this device has no local core data but the cloud workspace does, and never calls migration write", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+        cloudCounts: { customers: 7, projects: 9, estimates: 8, invoices: 10, invoicePayments: 3 },
+      }));
+
+      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE);
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(result.noWritesPerformed).toBe(true);
     });
 
     test("returns already_backed_up when verification confirms a full match, without calling migration write", async () => {
@@ -149,14 +164,53 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.noWritesPerformed).toBe(true);
     });
 
-    test("returns ready_to_backup when local data exists but cloud does not yet match", async () => {
+    test("returns ready_to_backup when local data exists and the cloud workspace is empty", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        cloudCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+      }));
+
+      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP);
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+    });
+
+    test("returns local_cloud_mismatch when both sides have data but verification does not confirm a match, and never calls migration write", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
       mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: false }));
 
       const result = await checkSupabaseCloudOnboardingStatus(baseContext);
 
-      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP);
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH);
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(result.noWritesPerformed).toBe(true);
+    });
+
+    test("falls back to verification when the cloud count check itself is unavailable", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        cloudCountCheckAvailable: false,
+        cloudCounts: null,
+      }));
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalled();
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP);
+    });
+
+    test("never writes to localStorage while checking status", async () => {
+      const setItemSpy = jest.fn();
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: false }));
+
+      await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        storageSnapshot: { getItem: () => null, setItem: setItemSpy },
+      });
+
+      expect(setItemSpy).not.toHaveBeenCalled();
     });
   });
 

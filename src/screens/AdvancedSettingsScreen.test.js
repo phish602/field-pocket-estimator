@@ -53,8 +53,10 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
     NO_LOCAL_DATA: "no_local_data",
+    CLOUD_AVAILABLE_EMPTY_DEVICE: "cloud_available_empty_device",
     READY_TO_BACKUP: "ready_to_backup",
     ALREADY_BACKED_UP: "already_backed_up",
+    LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
     BACKUP_COMPLETED: "backup_completed",
     NEEDS_ATTENTION: "needs_attention",
     ERROR: "error",
@@ -674,6 +676,84 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     expect(screen.getByText(/We found saved estimates, invoices, customers, and projects on this device\./i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back Up My Data to Cloud" })).toBeInTheDocument();
+  });
+
+  test("cloud_available_empty_device state explains a fresh device and never calls migration write", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+
+    const setItemSpy = jest.spyOn(window.localStorage.__proto__, "setItem");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud data is available for this workspace.")).toBeInTheDocument();
+    expect(screen.getByText("This device does not have local estimates or invoices yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    const restoreButton = screen.getByRole("button", { name: /Restore Cloud Data to This Device/i });
+    expect(restoreButton).toBeDisabled();
+    expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(setItemSpy).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
+  });
+
+  test("local_cloud_mismatch state asks for review and does not auto-offer one-click backup", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: null,
+      verification: { ok: true, allMatched: false },
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("This device has local data that does not fully match the cloud.")).toBeInTheDocument();
+    expect(screen.getByText("Review before syncing or restoring.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
   });
 
   test("clicking Back Up My Data to Cloud runs the onboarding backup and shows success with no local deletion message", async () => {
