@@ -202,6 +202,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Templates")).toBeInTheDocument();
     expect(screen.getByText("Reports & Bookkeeping")).toBeInTheDocument();
     expect(screen.getByText("Developer Tools")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download Backup JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export Raw App Data" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import Raw App Data" })).toBeInTheDocument();
 
@@ -212,6 +213,41 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(onOpenCompanyProfile).toHaveBeenCalledTimes(1);
     expect(onOpenTemplates).toHaveBeenCalledTimes(1);
     expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  test("downloads the local backup artifact without mutating stored app data", async () => {
+    render(<AdvancedSettingsScreen />);
+
+    const beforeCompanyProfile = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
+    const beforeCustomers = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+    const beforeProjects = localStorage.getItem(STORAGE_KEYS.PROJECTS);
+    const beforeEstimates = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+    const beforeInvoices = localStorage.getItem(STORAGE_KEYS.INVOICES);
+    const beforeSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+
+    fireEvent.click(screen.getByRole("button", { name: /download backup json/i }));
+
+    expect(screen.getByRole("status")).toHaveTextContent(/backup json downloaded:/i);
+    expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
+    expect(capturedBlob).toBeTruthy();
+
+    const appendedAnchor = appendChildSpy.mock.calls
+      .map(([node]) => node)
+      .find((node) => node?.tagName === "A");
+    expect(appendedAnchor).toBeTruthy();
+    expect(appendedAnchor.download).toMatch(/^estipaid-localstorage-export-\d{8}-\d{6}\.json$/);
+
+    const payload = JSON.parse(await readBlobText(capturedBlob));
+    expect(payload.source).toBe("localStorage");
+    expect(payload.app).toBe("EstiPaid");
+    expect(payload.artifactVersion).toBe("localstorage-export-artifact-v1");
+
+    expect(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE)).toBe(beforeCompanyProfile);
+    expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBe(beforeCustomers);
+    expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBe(beforeProjects);
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(beforeEstimates);
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(beforeInvoices);
+    expect(localStorage.getItem(STORAGE_KEYS.SETTINGS)).toBe(beforeSettings);
   });
 
   test("shows clarified real settings and hides misleading pricing controls", () => {

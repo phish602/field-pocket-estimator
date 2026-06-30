@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from 
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
 import { appendAuditEvent, createStoredAuditEvent, readStoredAuditEvents } from "../utils/auditStore";
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
+import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 
 const ESTIPAID_PREFIX = "estipaid-";
 
@@ -261,6 +262,23 @@ export default function AdvancedSettingsScreen({
       downloadJson(payload, `estipaid-export-${toFileStamp()}.json`);
     } catch {
       window.alert("Export failed.");
+    } finally {
+      setBusyLabel("");
+    }
+  };
+
+  const downloadBackupJson = () => {
+    try {
+      setBusyLabel("Preparing backup...");
+      const result = triggerLocalStorageExportDownload({
+        storageSnapshot: localStorage,
+        BlobConstructor: Blob,
+        URLObject: URL,
+        documentObject: document,
+      });
+      showDiagnosticsMessage(`Backup JSON downloaded: ${result.filename}`);
+    } catch {
+      showDiagnosticsMessage("Unable to download backup JSON.");
     } finally {
       setBusyLabel("");
     }
@@ -699,6 +717,9 @@ export default function AdvancedSettingsScreen({
                 >
                   {diagnosticsBusy ? "Exporting..." : "Export Diagnostics"}
                 </button>
+                <button type="button" className="pe-btn pe-btn-ghost" onClick={downloadBackupJson}>
+                  Download Backup JSON
+                </button>
                 <button type="button" className="pe-btn pe-btn-ghost" onClick={exportData}>
                   Export Raw App Data
                 </button>
@@ -729,7 +750,7 @@ export default function AdvancedSettingsScreen({
               ) : null}
 
               <div className="pe-field-helper" style={{ marginTop: 2 }}>
-                Diagnostics exports create a redacted support bundle. Raw app data import/export is for local support workflows.
+                Diagnostics exports create a redacted support bundle. Backup JSON downloads the migration-ready localStorage artifact. Raw app data import/export is for local support workflows.
               </div>
               {diagnosticsMessage ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: diagnosticsMessage.includes("Unable") ? "rgba(248,113,113,0.95)" : "rgba(187,247,208,0.95)" }}>
