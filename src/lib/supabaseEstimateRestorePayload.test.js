@@ -50,6 +50,23 @@ function localEstimateFixture(overrides = {}) {
   };
 }
 
+function buildScopeImages(count = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `scope-image-${index + 1}`,
+    name: `Reference Photo ${index + 1}.jpg`,
+    mimeType: "image/jpeg",
+    dataUrl: `data:image/jpeg;base64,scopephoto${index + 1}`,
+    storedWidth: 1200,
+    storedHeight: 900,
+    storedSizeBytes: 2048 + index,
+    layout: {
+      size: index % 2 === 0 ? "medium" : "large",
+      align: index % 3 === 0 ? "left" : "center",
+      caption: index % 2 === 0,
+    },
+  }));
+}
+
 function createMockClient({ cloudRows = [], readError = null, updateResponses = {} } = {}) {
   const updateCalls = [];
   const eqCallsByUpdate = [];
@@ -128,6 +145,25 @@ describe("supabaseEstimateRestorePayload", () => {
       expect(payload.estimate.labor.lines[0].hours).toBe(40);
       expect(payload.estimate.materials.markupPct).toBe(18);
       expect(payload.estimate.ui.materialsMode).toBe("itemized");
+    });
+
+    test("preserves scope images at the real scopeImages path without truncating them", () => {
+      const scopeImages = buildScopeImages(8);
+      const estimate = localEstimateFixture({
+        scopeNotes: "Lobby repairs\n[scope-image:scope-image-1]\n[scope-image:scope-image-8]",
+        scopeImages,
+      });
+      const payload = buildEstimateRestorePayload(estimate);
+
+      expect(payload.estimate.scopeImages).toEqual(scopeImages);
+      expect(payload.estimate.scopeImages).toHaveLength(8);
+      expect(payload.estimate.scopeImages[0]).toEqual(expect.objectContaining({
+        id: "scope-image-1",
+        dataUrl: expect.stringContaining("data:image/jpeg;base64,scopephoto1"),
+        layout: expect.objectContaining({ size: "medium", align: "left", caption: true }),
+      }));
+      expect(payload.estimate.scopeNotes).toContain("[scope-image:scope-image-1]");
+      expect(payload.estimate.scopeNotes).toContain("[scope-image:scope-image-8]");
     });
   });
 

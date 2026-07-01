@@ -310,6 +310,23 @@ function createLaborLine(overrides = {}) {
   };
 }
 
+function createScopeImages(count = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `scope-image-${index + 1}`,
+    name: `Reference Photo ${index + 1}.jpg`,
+    mimeType: "image/jpeg",
+    dataUrl: `data:image/jpeg;base64,scopephoto${index + 1}`,
+    storedWidth: 1200,
+    storedHeight: 900,
+    storedSizeBytes: 4096 + index,
+    layout: {
+      size: index % 2 === 0 ? "medium" : "large",
+      align: index % 3 === 0 ? "left" : "center",
+      caption: index % 2 === 0,
+    },
+  }));
+}
+
 function createSavedInvoice(overrides = {}) {
   const customer = createCustomer();
 
@@ -634,6 +651,7 @@ describe("EstimateForm invoice edit fallback", () => {
 
   test("hydrates a valid saved estimate edit target with labor and materials intact", async () => {
     const customer = createCustomer();
+    const scopeImages = createScopeImages(8);
     const savedEstimate = createSavedEstimate({
       customer: {
         ...createCustomer(),
@@ -673,6 +691,8 @@ describe("EstimateForm invoice edit fallback", () => {
         docType: "estimate",
         materialsMode: "itemized",
       },
+      scopeNotes: "Repair guest bath finishes.\n[scope-image:scope-image-1]\n[scope-image:scope-image-8]",
+      scopeImages,
     });
     mockInitialState = clone(DEFAULT_STATE);
 
@@ -689,6 +709,10 @@ describe("EstimateForm invoice edit fallback", () => {
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
     });
+
+    expect(screen.getByText("Scope photos: 8 of 8 used — remove a photo before adding another.")).toBeInTheDocument();
+    expect(screen.getByAltText("Reference Photo 1.jpg")).toHaveAttribute("src", scopeImages[0].dataUrl);
+    expect(screen.getByAltText("Reference Photo 8.jpg")).toHaveAttribute("src", scopeImages[7].dataUrl);
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};
@@ -721,6 +745,7 @@ describe("EstimateForm invoice edit fallback", () => {
       ],
     }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
+    expect(hydratedState.scopeImages).toEqual(scopeImages);
   });
 
   test("does not show Trade Scope Starter in new estimate or new invoice builder modes", async () => {
@@ -1105,19 +1130,23 @@ describe("EstimateForm invoice edit fallback", () => {
 
   test("estimate PDF export removes the dedicated trade starter payload while preserving actual scope text", async () => {
     const customer = createCustomer();
+    const scopeImages = createScopeImages(2);
     const savedEstimate = createSavedEstimate({
       scopeNotes: [
         "Repair wall damage in the lobby and repaint affected areas.",
         "",
+        "[scope-image:scope-image-1]",
         "Trade Insert: Painting",
         "- Mask surfaces",
         "- Apply finish coats",
+        "[scope-image:scope-image-2]",
       ].join("\n"),
       tradeInsert: {
         key: "painting",
         text: "Trade Insert: Painting\n- Mask surfaces\n- Apply finish coats",
       },
       additionalNotes: "Night work by request.",
+      scopeImages,
     });
     mockInitialState = clone(savedEstimate);
 
@@ -1142,7 +1171,9 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(payload.docType).toBe("estimate");
     expect(payload.tradeInsertText).toBeUndefined();
     expect(payload.scopeNotes).toContain("Repair wall damage in the lobby and repaint affected areas.");
+    expect(payload.scopeNotes).toContain("[scope-image:scope-image-1]");
     expect(payload.scopeNotes).not.toMatch(/Trade Insert:/i);
     expect(payload.additionalNotes).toBe("Night work by request.");
+    expect(payload.scopeImages).toEqual(scopeImages);
   });
 });

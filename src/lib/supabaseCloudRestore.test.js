@@ -183,6 +183,23 @@ function localEstimateFixture(overrides = {}) {
   };
 }
 
+function buildScopeImages(count = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `scope-image-${index + 1}`,
+    name: `Reference Photo ${index + 1}.jpg`,
+    mimeType: "image/jpeg",
+    dataUrl: `data:image/jpeg;base64,scopephoto${index + 1}`,
+    storedWidth: 1200,
+    storedHeight: 900,
+    storedSizeBytes: 3072 + index,
+    layout: {
+      size: index % 2 === 0 ? "medium" : "large",
+      align: index % 3 === 0 ? "left" : "center",
+      caption: index % 2 === 0,
+    },
+  }));
+}
+
 function cloudEstimateRow(overrides = {}) {
   return {
     id: "db_est_1",
@@ -671,6 +688,42 @@ describe("supabaseCloudRestore", () => {
       // synthesize labor/materials state -- it should only ever come from
       // the captured restore_payload.estimate object.
       expect(restoredEstimates[0].labor.lines[0].hours).toBe(40);
+    });
+
+    test("restores scope images from restore_payload unchanged, including the full 8-photo app limit", async () => {
+      const scopeImages = buildScopeImages(8);
+      const estimateWithScopeImages = localEstimateFixture({
+        scopeNotes: "Repair lobby wall\n[scope-image:scope-image-1]\n[scope-image:scope-image-8]",
+        scopeImages,
+      });
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow({
+            restore_payload: {
+              schema: "estipaid.estimate.restore_payload",
+              version: 1,
+              capturedFrom: "localStorage",
+              legacyLocalId: "est_1",
+              estimate: estimateWithScopeImages,
+            },
+          })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      const restoredEstimates = JSON.parse(storage.__store["estipaid-estimates-v1"]);
+      expect(restoredEstimates[0].scopeImages).toEqual(scopeImages);
+      expect(restoredEstimates[0].scopeImages).toHaveLength(8);
+      expect(restoredEstimates[0].scopeNotes).toContain("[scope-image:scope-image-1]");
+      expect(restoredEstimates[0].scopeNotes).toContain("[scope-image:scope-image-8]");
+      expect(restoredEstimates[0].scopeImages[7]).toEqual(expect.objectContaining({
+        id: "scope-image-8",
+        dataUrl: expect.stringContaining("data:image/jpeg;base64,scopephoto8"),
+      }));
     });
 
     test("does not restore estimates from display fields alone when restore_payload is missing", async () => {
