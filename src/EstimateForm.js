@@ -2106,6 +2106,120 @@ export default function EstimateForm(props) {
   ]);
 
   useEffect(() => {
+    if (!isEditMode || isInvoiceEditMode || !editingRecordId) return;
+
+    const storedEstimate = readSavedDocList(ESTIMATES_KEY).find(
+      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
+    );
+    if (!storedEstimate || typeof storedEstimate !== "object") return;
+
+    const liveLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const storedLabor = storedEstimate?.labor && typeof storedEstimate.labor === "object"
+      ? storedEstimate.labor
+      : null;
+    const storedLines = Array.isArray(storedLabor?.lines) ? storedLabor.lines : [];
+    const liveEstimateDocNumber = String(state?.job?.docNumber || state?.estimateNumber || "").trim();
+    const shouldRecoverEstimateCore = !liveEstimateDocNumber;
+    const shouldRecoverLabor =
+      shouldRecoverEstimateCore
+      || (
+        !liveLines.some((line) => isMeaningfulLaborLine(line))
+        && storedLines.some((line) => isMeaningfulLaborLine(line))
+      );
+
+    if (shouldRecoverEstimateCore) {
+      const storedCustomer = storedEstimate?.customer && typeof storedEstimate.customer === "object"
+        ? storedEstimate.customer
+        : {};
+      const storedJob = storedEstimate?.job && typeof storedEstimate.job === "object"
+        ? storedEstimate.job
+        : {};
+      patch("projectId", String(storedEstimate?.projectId || "").trim());
+      patch("customer", {
+        ...(DEFAULT_STATE?.customer || {}),
+        ...storedCustomer,
+        id: String(storedEstimate?.customerId || storedCustomer?.id || "").trim(),
+        name: String(
+          storedEstimate?.customerName
+          || storedCustomer?.name
+          || storedCustomer?.displayName
+          || storedCustomer?.companyName
+          || ""
+        ).trim(),
+        projectName: String(storedEstimate?.projectName || storedCustomer?.projectName || "").trim(),
+      });
+      patch("job", {
+        ...(DEFAULT_STATE?.job || {}),
+        ...storedJob,
+        docNumber: String(storedEstimate?.estimateNumber || storedJob?.docNumber || "").trim(),
+      });
+      patch("estimateNumber", String(storedEstimate?.estimateNumber || "").trim());
+      patch("status", String(storedEstimate?.status || "").trim());
+      patch("scopeNotes", String(storedEstimate?.scopeNotes || "").trim());
+      patch("tradeInsert", storedEstimate?.tradeInsert && typeof storedEstimate.tradeInsert === "object"
+        ? { ...storedEstimate.tradeInsert }
+        : { key: "", text: "" });
+      patch("additionalNotes", String(storedEstimate?.additionalNotes || "").trim());
+    }
+
+    if (shouldRecoverLabor) {
+      patch("labor.lines", storedLines.map((line) => ({ ...line })));
+      patch("labor.hazardPct", storedLabor?.hazardPct ?? 0);
+      patch("labor.riskPct", storedLabor?.riskPct ?? 0);
+      patch("labor.multiplier", storedLabor?.multiplier ?? 1);
+    }
+
+    const storedMaterials = storedEstimate?.materials && typeof storedEstimate.materials === "object"
+      ? storedEstimate.materials
+      : null;
+    const storedMaterialItems = Array.isArray(storedMaterials?.items) ? storedMaterials.items : [];
+    const liveMaterialItems = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    const liveMaterialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
+    const storedMaterialsMode = resolveExportMaterialsMode(storedEstimate, "itemized");
+    const liveHasMeaningfulItemizedMaterials = liveMaterialItems.some((item) => !isBlankMaterialItem(item));
+    const storedHasMeaningfulItemizedMaterials = storedMaterialItems.some((item) => !isBlankMaterialItem(item));
+    const liveHasMeaningfulBlanketMaterials = Boolean(
+      String(state?.materials?.blanketCost ?? "").trim()
+      || String(state?.materials?.blanketInternalCost ?? "").trim()
+      || String(state?.materials?.materialsBlanketDescription ?? "").trim()
+    );
+    const storedHasMeaningfulBlanketMaterials = Boolean(
+      String(storedMaterials?.blanketCost ?? "").trim()
+      || String(storedMaterials?.blanketInternalCost ?? "").trim()
+      || String(storedMaterials?.materialsBlanketDescription ?? "").trim()
+    );
+    const shouldRecoverMaterials =
+      shouldRecoverEstimateCore
+      || (
+      (storedMaterialsMode === "itemized" && storedHasMeaningfulItemizedMaterials && !liveHasMeaningfulItemizedMaterials)
+      || (storedMaterialsMode === "blanket" && storedHasMeaningfulBlanketMaterials && !liveHasMeaningfulBlanketMaterials)
+      || (
+        storedMaterialsMode !== liveMaterialsMode
+        && (storedHasMeaningfulItemizedMaterials || storedHasMeaningfulBlanketMaterials)
+      ));
+
+    if (!shouldRecoverMaterials) return;
+
+    patch("ui.materialsMode", storedMaterialsMode);
+    patch("materials.items", storedMaterialItems.map((item) => ({ ...item })));
+    patch("materials.markupPct", storedMaterials?.markupPct ?? 0);
+    patch("materials.blanketCost", storedMaterials?.blanketCost ?? "");
+    patch("materials.blanketInternalCost", storedMaterials?.blanketInternalCost ?? "");
+    patch("materials.materialsBlanketDescription", storedMaterials?.materialsBlanketDescription ?? "");
+  }, [
+    editingRecordId,
+    isEditMode,
+    isInvoiceEditMode,
+    patch,
+    state?.labor?.lines,
+    state?.materials?.blanketCost,
+    state?.materials?.blanketInternalCost,
+    state?.materials?.items,
+    state?.materials?.materialsBlanketDescription,
+    state?.ui?.materialsMode,
+  ]);
+
+  useEffect(() => {
     if (isEditMode) return;
     if (guidedDocType !== "invoice") return;
 

@@ -632,6 +632,97 @@ describe("EstimateForm invoice edit fallback", () => {
     expectTradeScopeStarterUiAbsent();
   });
 
+  test("hydrates a valid saved estimate edit target with labor and materials intact", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate({
+      customer: {
+        ...createCustomer(),
+        projectName: "Restored Guest Bath Refresh",
+        projectSameAsCustomer: false,
+      },
+      labor: {
+        lines: [createLaborLine({
+          role: "Electrician",
+          label: "Electrician",
+          qty: "2",
+          hours: "40",
+          rate: "145.75",
+          trueRateInternal: "60",
+        })],
+        hazardPct: 1,
+        riskPct: 1,
+        multiplier: 1.08,
+      },
+      materials: {
+        items: [
+          {
+            id: "mat_restore_1",
+            desc: "LED fixture",
+            qty: "3",
+            unitCostInternal: "85",
+            costInternal: "255",
+            priceEach: "145",
+          },
+        ],
+        markupPct: 0,
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+      },
+      ui: {
+        docType: "estimate",
+        materialsMode: "itemized",
+      },
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT ESTIMATE");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
+    });
+
+    const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
+    const hydratedState = replaceStateCall[0] || {};
+
+    expect(hydratedState.labor).toEqual(expect.objectContaining({
+      hazardPct: 1,
+      riskPct: 1,
+      multiplier: 1.08,
+      lines: [
+        expect.objectContaining({
+          role: "Electrician",
+          label: "Electrician",
+          qty: "2",
+          hours: "40",
+          rate: "145.75",
+          trueRateInternal: "60",
+        }),
+      ],
+    }));
+    expect(hydratedState.materials).toEqual(expect.objectContaining({
+      markupPct: 0,
+      items: [
+        expect.objectContaining({
+          desc: "LED fixture",
+          qty: "3",
+          unitCostInternal: "85",
+          costInternal: "255",
+          priceEach: "145",
+        }),
+      ],
+    }));
+    expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
+  });
+
   test("does not show Trade Scope Starter in new estimate or new invoice builder modes", async () => {
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
@@ -691,6 +782,96 @@ describe("EstimateForm invoice edit fallback", () => {
 
     expect(fallbackState.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
     expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBeNull();
+  });
+
+  test("recovers restored estimate labor and materials from the saved edit target when a blank draft would otherwise win", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate({
+      customer: {
+        ...createCustomer(),
+        projectName: "Hilton Guest Bath Refresh",
+        projectSameAsCustomer: false,
+      },
+      labor: {
+        lines: [
+          createLaborLine({
+            id: "restored_labor_1",
+            role: "Electrician",
+            label: "Electrician",
+            qty: "2",
+            hours: "40",
+            rate: "145.75",
+            trueRateInternal: "60",
+          }),
+        ],
+        hazardPct: 1,
+        riskPct: 1,
+        multiplier: 1.08,
+      },
+      materials: {
+        items: [
+          {
+            id: "restored_material_1",
+            desc: "Vanity light",
+            qty: "2",
+            unitCostInternal: "70",
+            costInternal: "140",
+            priceEach: "135",
+          },
+        ],
+        markupPct: 0,
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+      },
+      ui: {
+        docType: "estimate",
+        materialsMode: "itemized",
+      },
+    });
+    const blankEstimateState = clone(DEFAULT_STATE);
+    blankEstimateState.ui = {
+      ...(blankEstimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    blankEstimateState.meta = {
+      ...(blankEstimateState.meta || {}),
+      savedDocId: savedEstimate.id,
+    };
+    mockInitialState = blankEstimateState;
+    mockSuppressReplaceState = true;
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT ESTIMATE");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
+      expect(screen.getByText("#EST-2001")).toBeInTheDocument();
+    });
+
+    expect(mockPatch).toHaveBeenCalledWith("ui.materialsMode", "itemized");
+    expect(mockPatch).toHaveBeenCalledWith("materials.items", [
+      expect.objectContaining({
+        id: "restored_material_1",
+        desc: "Vanity light",
+        qty: "2",
+        unitCostInternal: "70",
+        costInternal: "140",
+        priceEach: "135",
+      }),
+    ]);
+    expect(mockPatch).toHaveBeenCalledWith("materials.markupPct", 0);
+    expect(mockPatch).toHaveBeenCalledWith("materials.blanketCost", "");
+    expect(mockPatch).toHaveBeenCalledWith("materials.blanketInternalCost", "");
+    expect(mockPatch).toHaveBeenCalledWith("materials.materialsBlanketDescription", "");
   });
 
   test("hydrates a valid saved invoice edit target without wiping invoice data", async () => {
