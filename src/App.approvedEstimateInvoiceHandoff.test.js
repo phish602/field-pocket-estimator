@@ -246,6 +246,9 @@ function createEstimate({
   projectId,
   customer,
   scopeNotes,
+  additionalNotes = "",
+  tradeInsert = { key: "", text: "" },
+  scopeImages = [],
   materialsMode,
   total,
   laborLine,
@@ -289,6 +292,9 @@ function createEstimate({
       poNumber: `PO-${estimateNumber}`,
     },
     scopeNotes,
+    additionalNotes,
+    tradeInsert: clone(tradeInsert),
+    scopeImages: scopeImages.map((image) => clone(image)),
     ui: {
       docType: "estimate",
       materialsMode,
@@ -415,6 +421,23 @@ function readStoredEstimates() {
   }
 }
 
+function createScopeImages(count = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `scope-image-${index + 1}`,
+    name: `Scope Photo ${index + 1}.jpg`,
+    mimeType: "image/jpeg",
+    dataUrl: `data:image/jpeg;base64,scope${index + 1}`,
+    storedWidth: 1200,
+    storedHeight: 900,
+    storedSizeBytes: 4096 + index,
+    layout: {
+      size: "medium",
+      align: "center",
+      caption: index % 2 === 0,
+    },
+  }));
+}
+
 function expectEditInvoiceTargetWasSet(setItemSpy, expectedId) {
   const matchingCall = setItemSpy.mock.calls.find(
     ([key, value]) => key === EDIT_INVOICE_TARGET_KEY && value === expectedId
@@ -533,7 +556,11 @@ describe("App approved estimate invoice builder handoff", () => {
       sourceEstimateId: estimate.id,
       scopeNotes: estimate.scopeNotes,
     }));
-    expect(createdInvoice.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "itemized" }));
+    expect(createdInvoice.ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      materialsMode: "itemized",
+      includeInvoiceScopeNotes: true,
+    }));
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       estimateNumber: estimate.estimateNumber,
       customerId: customer.id,
@@ -638,6 +665,7 @@ describe("App approved estimate invoice builder handoff", () => {
       expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
       expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
+      expect(screen.getByLabelText(/Include on Invoice/i)).toBeChecked();
     });
 
     const invoices = readStoredInvoices();
@@ -653,7 +681,11 @@ describe("App approved estimate invoice builder handoff", () => {
       sourceEstimateId: estimate.id,
       scopeNotes: estimate.scopeNotes,
     }));
-    expect(createdInvoice.ui).toEqual(expect.objectContaining({ docType: "invoice", materialsMode: "blanket" }));
+    expect(createdInvoice.ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      materialsMode: "blanket",
+      includeInvoiceScopeNotes: true,
+    }));
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       estimateNumber: estimate.estimateNumber,
       customerId: customer.id,
@@ -774,12 +806,100 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       additionalChargesRevenue: 350,
     }));
-    expect(createdInvoice.additionalNotes).toBe(
-      "Scope from estimate: Emergency Sunday service call with same-day mobilization."
-    );
+    expect(createdInvoice.scopeNotes).toBe(estimate.scopeNotes);
+    expect(createdInvoice.additionalNotes).toBe("");
+    expect(createdInvoice.ui).toEqual(expect.objectContaining({ includeInvoiceScopeNotes: true }));
     expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
 
     expectEditInvoiceTargetWasSet(setItemSpy, createdInvoice.id);
+  });
+
+  test("approved estimate invoice builder preserves estimate scope notes, notes, trade insert, and scope images", async () => {
+    const customer = createCustomer({
+      id: "cust_scope_carry",
+      name: "Scope Carry Customer",
+      projectName: "Scope Carry Project",
+      projectNumber: "P-4302B",
+      address: "987 Scope Way",
+    });
+    const scopeImages = createScopeImages(2);
+    const tradeInsert = {
+      key: "painting",
+      text: "Trade Insert: Painting\n- Protect adjacent finishes\n- Apply two finish coats",
+    };
+    const estimate = createEstimate({
+      id: "est_scope_carry",
+      status: "approved",
+      estimateNumber: "EST-4302B",
+      projectId: "proj_scope_carry",
+      customer,
+      scopeNotes: [
+        "Repair drywall in the lobby and repaint the patched area.",
+        "",
+        "[scope-image:scope-image-1]",
+        "Trade Insert: Painting",
+        "- Protect adjacent finishes",
+        "- Apply two finish coats",
+        "[scope-image:scope-image-2]",
+      ].join("\n"),
+      additionalNotes: "Night work only. Coordinate access with the manager.",
+      tradeInsert,
+      scopeImages,
+      materialsMode: "itemized",
+      total: 980,
+      laborLine: {
+        id: "labor_scope_carry_1",
+        role: "painter",
+        label: "Painter",
+        qty: "1",
+        hours: "8",
+        rate: "85",
+        trueRateInternal: "55",
+        internalRate: "55",
+        markupPct: "0",
+      },
+      materialItem: {
+        id: "material_scope_carry_1",
+        desc: "Paint and patch materials",
+        qty: "1",
+        unitCostInternal: "120",
+        costInternal: "120",
+        priceEach: "180",
+        markupPct: "0",
+      },
+      blanketMaterials: {
+        blanketCost: "",
+        blanketInternalCost: "",
+        materialsBlanketDescription: "",
+        markupPct: 0,
+        item: { id: "blanket_placeholder", desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" },
+      },
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    await screen.findByRole("button", { name: /Create Invoice/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
+
+    await screen.findByRole("heading", { name: /EDIT INVOICE/i });
+
+    const createdInvoice = readStoredInvoices()[0];
+
+    expect(createdInvoice.scopeNotes).toBe(estimate.scopeNotes);
+    expect(createdInvoice.additionalNotes).toBe(estimate.additionalNotes);
+    expect(createdInvoice.tradeInsert).toEqual(tradeInsert);
+    expect(createdInvoice.scopeImages).toEqual(scopeImages);
+    expect(createdInvoice.ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      includeInvoiceScopeNotes: true,
+    }));
+    expect(createdInvoice.materials).toEqual(expect.objectContaining({
+      items: [expect.objectContaining({ desc: "Paint and patch materials" })],
+    }));
+    expect(createdInvoice.invoiceTotal).toBe(980);
   });
 
   test("No, Later dismisses safely without opening the builder or creating an invoice", async () => {

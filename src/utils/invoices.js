@@ -1236,6 +1236,35 @@ function baseInvoiceDraft(nowTs) {
   };
 }
 
+function buildInvoiceScopeCarryover(source = {}, options = {}) {
+  const sourceScopeNotes = asText(source?.scopeNotes).trim();
+  const tradeInsert = source?.tradeInsert && typeof source.tradeInsert === "object"
+    ? deepClone(source.tradeInsert)
+    : { key: "", text: "" };
+  const fallbackTradeInsertText = asText(tradeInsert?.text).trim();
+  const scopeNotes = sourceScopeNotes || fallbackTradeInsertText;
+  const additionalNotes = [
+    asText(source?.additionalNotes).trim(),
+    asText(options?.note).trim(),
+  ].filter(Boolean).join("\n\n");
+  const scopeImages = Array.isArray(source?.scopeImages)
+    ? deepClone(source.scopeImages.filter(Boolean))
+    : [];
+  const includeInvoiceScopeNotes = Boolean(
+    scopeNotes
+    || scopeImages.length > 0
+    || asText(tradeInsert?.text)
+  );
+
+  return {
+    scopeNotes,
+    additionalNotes,
+    tradeInsert,
+    scopeImages,
+    includeInvoiceScopeNotes,
+  };
+}
+
 export function createManualInvoiceDraft(existingInvoices, options = {}) {
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = generateNextInvoiceNumber(existingInvoices);
@@ -1279,10 +1308,7 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = generateNextInvoiceNumber(invoices);
   const snapshot = buildEstimateInvoiceSnapshot(estimate);
-  const note = asText(options?.note).trim();
-  const sourceScopeNotes = asText(estimate?.scopeNotes).trim();
-  const scopeCarryoverNote = sourceScopeNotes ? `Scope from estimate: ${sourceScopeNotes}` : "";
-  const combinedAdditionalNotes = [note, scopeCarryoverNote].filter(Boolean).join("\n\n");
+  const scopeCarryover = buildInvoiceScopeCarryover(estimate, { note: options?.note });
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
   const dueDate = normalizeIsoDate(options?.dueDate || estimate?.job?.due);
   const draft = baseInvoiceDraft(now);
@@ -1309,7 +1335,10 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   draft.balanceRemaining = amountResolution.amount;
   draft.paymentStatus = PAYMENT_STATUSES.UNPAID;
   draft.payments = [];
-  draft.additionalNotes = combinedAdditionalNotes;
+  draft.scopeNotes = scopeCarryover.scopeNotes;
+  draft.additionalNotes = scopeCarryover.additionalNotes;
+  draft.tradeInsert = scopeCarryover.tradeInsert;
+  draft.scopeImages = scopeCarryover.scopeImages;
   draft.customer = {
     ...(draft.customer || {}),
     ...(snapshot.customer || {}),
@@ -1330,6 +1359,7 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
     ...(draft.ui || {}),
     docType: "invoice",
     materialsMode: "blanket",
+    includeInvoiceScopeNotes: scopeCarryover.includeInvoiceScopeNotes,
   };
   draft.labor = {
     ...(draft.labor || {}),
@@ -1437,14 +1467,7 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     ?? snapshot?.approvedTotal
     ?? 0
   );
-
-  // Explicitly carry the estimate's scope notes into a durable invoice field
-  // rather than relying on the object spread below (scopeNotes itself is
-  // cleared on invoice autosave, so it must not be the durable home for this text).
-  const sourceScopeNotes = asText(source?.scopeNotes).trim();
-  const existingAdditionalNotes = asText(source?.additionalNotes).trim();
-  const scopeCarryoverNote = sourceScopeNotes ? `Scope from estimate: ${sourceScopeNotes}` : "";
-  const combinedAdditionalNotes = [existingAdditionalNotes, scopeCarryoverNote].filter(Boolean).join("\n\n");
+  const scopeCarryover = buildInvoiceScopeCarryover(source);
 
   const draft = normalizeInvoiceRecord({
     ...source,
@@ -1473,11 +1496,15 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     payments: [],
     date: invoiceDate,
     dueDate,
-    additionalNotes: combinedAdditionalNotes,
+    scopeNotes: scopeCarryover.scopeNotes,
+    additionalNotes: scopeCarryover.additionalNotes,
+    tradeInsert: scopeCarryover.tradeInsert,
+    scopeImages: scopeCarryover.scopeImages,
     ui: {
       ...(source?.ui || {}),
       docType: "invoice",
       materialsMode,
+      includeInvoiceScopeNotes: scopeCarryover.includeInvoiceScopeNotes,
     },
     customer: {
       ...(source?.customer || {}),
