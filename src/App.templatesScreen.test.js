@@ -40,7 +40,8 @@ function buildEstimatorDraft(overrides = {}) {
       location: "",
       ...(overrides.job || {}),
     },
-    scopeNotes: "",
+    scopeNotes: overrides.scopeNotes !== undefined ? overrides.scopeNotes : "",
+    scopeImages: Array.isArray(overrides.scopeImages) ? overrides.scopeImages : [],
     labor: {
       hazardPct: 0,
       riskPct: 0,
@@ -78,6 +79,23 @@ function readStoredTemplates() {
 
 function readEstimatorDraft() {
   return JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE) || "null");
+}
+
+function buildScopeImages(count = 1, startIndex = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `scope-image-${startIndex + index}`,
+    name: `Template Photo ${startIndex + index}.jpg`,
+    mimeType: "image/jpeg",
+    dataUrl: `data:image/jpeg;base64,templatephoto${startIndex + index}`,
+    storedWidth: 1024,
+    storedHeight: 768,
+    storedSizeBytes: 140000 + index,
+    layout: {
+      size: index % 2 === 0 ? "medium" : "large",
+      align: index % 2 === 0 ? "center" : "left",
+      caption: index % 2 === 0,
+    },
+  }));
 }
 
 function buildFullWorkTemplate(overrides = {}) {
@@ -134,10 +152,12 @@ function openTemplatesFromMenu() {
 }
 
 async function openEstimateBuilderViaCreate() {
+  seedCompanyProfile();
   fireEvent.click(screen.getByLabelText("Create"));
   const launcher = await screen.findByRole("dialog", { name: /Start New/i });
   fireEvent.click(within(launcher).getByRole("button", { name: /^Estimate$|^New Estimate$|^Resume Estimate Draft$/i }));
   await screen.findByText(/Estimate Builder/i);
+  await screen.findByText(/Your saved templates/i);
 }
 
 function getSavedTemplateSelect() {
@@ -154,6 +174,12 @@ function setScopeText(text) {
   fireEvent.input(editor);
 }
 
+function getScopeEditor() {
+  const editor = document.querySelector(".pe-scope-textarea");
+  if (!editor) throw new Error("Scope editor not found");
+  return editor;
+}
+
 beforeEach(() => {
   localStorage.clear();
   seedCompanyProfile();
@@ -168,10 +194,12 @@ test("1. Hamburger Templates opens a real Templates screen with a useful empty s
   expect(await screen.findByRole("heading", { name: "Templates" })).toBeInTheDocument();
   expect(screen.getByText(/No saved templates yet/i)).toBeInTheDocument();
   expect(screen.getByText(/does not replace customer or job details/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open Estimate Builder/i })).not.toBeInTheDocument();
 });
 
-test("2. Saving a template from builder stores scope, labor, materials, additional charges, and excludes customer or job identity", async () => {
+test("2. Saving a template from builder stays in place, shows success, and stores the existing template shape", async () => {
   jest.spyOn(window, "prompt").mockReturnValue("Roof Repair Package");
+  const scopeImages = buildScopeImages(2);
   seedEstimatorDraft({
     customer: {
       id: "cust_123",
@@ -183,7 +211,8 @@ test("2. Saving a template from builder stores scope, labor, materials, addition
       docNumber: "EST-101",
       location: "Roof Section A",
     },
-    scopeNotes: "Repair the leaking roof curb and reseal all flashing.",
+    scopeNotes: "Repair the leaking roof curb and reseal all flashing.\n[scope-image:scope-image-1]\n[scope-image:scope-image-2]",
+    scopeImages,
     labor: {
       lines: [
         {
@@ -223,14 +252,18 @@ test("2. Saving a template from builder stores scope, labor, materials, addition
   render(<App />);
 
   await openEstimateBuilderViaCreate();
-  setScopeText("Repair the leaking roof curb and reseal all flashing.");
+  setScopeText("Repair the leaking roof curb and reseal all flashing.\n[scope-image:scope-image-1]\n[scope-image:scope-image-2]");
   fireEvent.click(screen.getByRole("button", { name: /Save as Template/i }));
+
+  expect(await screen.findByText("Template saved")).toBeInTheDocument();
+  expect(screen.getByText(/Estimate Builder/i)).toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Leave edit session" })).not.toBeInTheDocument();
 
   const storedTemplates = readStoredTemplates();
   expect(storedTemplates).toHaveLength(1);
   expect(storedTemplates[0]).toMatchObject({
     name: "Roof Repair Package",
-    scopeText: "Repair the leaking roof curb and reseal all flashing.",
+    scopeText: "Repair the leaking roof curb and reseal all flashing.\n[scope-image:scope-image-1]\n[scope-image:scope-image-2]",
     laborItems: [
       expect.objectContaining({
         label: "Technician",
@@ -252,6 +285,7 @@ test("2. Saving a template from builder stores scope, labor, materials, addition
     ],
     additionalNotes: "Dispose of debris and clean the work area.",
     sourceEstimateNumber: "EST-101",
+    scopeImages,
   });
   expect(storedTemplates[0].customer).toBeUndefined();
   expect(storedTemplates[0].customerId).toBeUndefined();
@@ -261,6 +295,13 @@ test("2. Saving a template from builder stores scope, labor, materials, addition
   expect(storedTemplates[0].job).toBeUndefined();
   expect(storedTemplates[0].paymentStatus).toBeUndefined();
   expect(storedTemplates[0].savedDocId).toBeUndefined();
+
+  expect(getScopeEditor().textContent).toContain("Repair the leaking roof curb and reseal all flashing.");
+  expect(screen.getByPlaceholderText(CUSTOMER_SEARCH_PLACEHOLDER)).toHaveValue("Customer A");
+
+  openTemplatesFromMenu();
+  expect(await screen.findByRole("heading", { name: "Templates" })).toBeInTheDocument();
+  expect(screen.getByText("Roof Repair Package")).toBeInTheDocument();
 });
 
 test("3. Templates screen lists saved template and shows work-package counts", async () => {
@@ -276,7 +317,11 @@ test("3. Templates screen lists saved template and shows work-package counts", a
 });
 
 test("4. Builder dropdown applies a full work-package template to a different customer without changing the customer", async () => {
-  seedTemplates([buildFullWorkTemplate()]);
+  const scopeImages = buildScopeImages(2, 7);
+  seedTemplates([buildFullWorkTemplate({
+    scopeText: "Repair the leaking roof curb and reseal all flashing.\n[scope-image:scope-image-7]\n[scope-image:scope-image-8]",
+    scopeImages,
+  })]);
   seedEstimatorDraft({
     customer: {
       id: "cust_other",
@@ -292,17 +337,29 @@ test("4. Builder dropdown applies a full work-package template to a different cu
   await waitFor(() => {
     const draft = readEstimatorDraft();
     expect(draft.customer.name).toBe("Different Customer");
-    expect(draft.scopeNotes).toBe("Repair the leaking roof curb and reseal all flashing.");
+    expect(draft.scopeNotes).toContain("Repair the leaking roof curb and reseal all flashing.");
+    expect(draft.scopeNotes).toContain("[scope-image:scope-image-1]");
+    expect(draft.scopeNotes).toContain("[scope-image:scope-image-2]");
+    expect(draft.scopeImages).toEqual([
+      expect.objectContaining({ id: "scope-image-1", name: "Template Photo 7.jpg" }),
+      expect.objectContaining({ id: "scope-image-2", name: "Template Photo 8.jpg" }),
+    ]);
     expect(draft.labor.lines[0]).toEqual(expect.objectContaining({ label: "Technician", hours: "4" }));
     expect(draft.materials.items[0]).toEqual(expect.objectContaining({ desc: "Sealant kit", priceEach: "45" }));
     expect(draft.additionalCharges.items[0]).toEqual(expect.objectContaining({ desc: "Lift rental", priceEach: "150" }));
     expect(draft.additionalNotes).toBe("Dispose of debris and clean the work area.");
   });
+  expect(screen.getByAltText("Template Photo 7.jpg")).toBeInTheDocument();
+  expect(screen.getByAltText("Template Photo 8.jpg")).toBeInTheDocument();
 });
 
 test("5. Applying a full template asks for confirmation before replacing existing work content and only replaces work fields", async () => {
   const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
-  seedTemplates([buildFullWorkTemplate()]);
+  const scopeImages = buildScopeImages(2, 7);
+  seedTemplates([buildFullWorkTemplate({
+    scopeText: "Repair the leaking roof curb and reseal all flashing.\n[scope-image:scope-image-7]\n[scope-image:scope-image-8]",
+    scopeImages,
+  })]);
   seedEstimatorDraft({
     customer: {
       id: "cust_current",
@@ -320,6 +377,7 @@ test("5. Applying a full template asks for confirmation before replacing existin
       items: [{ id: "old_charge", desc: "Old Charge", qty: "1", priceEach: "25" }],
     },
     additionalNotes: "Old terms",
+    scopeImages: buildScopeImages(1),
   });
 
   render(<App />);
@@ -335,12 +393,84 @@ test("5. Applying a full template asks for confirmation before replacing existin
     const draft = readEstimatorDraft();
     expect(draft.customer.name).toBe("Current Customer");
     expect(draft.customer.projectName).toBe("Existing Project");
-    expect(draft.scopeNotes).toBe("Repair the leaking roof curb and reseal all flashing.");
+    expect(draft.scopeNotes).toContain("Repair the leaking roof curb and reseal all flashing.");
+    expect(draft.scopeNotes).toContain("[scope-image:scope-image-1]");
+    expect(draft.scopeNotes).toContain("[scope-image:scope-image-2]");
+    expect(draft.scopeImages).toEqual([
+      expect.objectContaining({ id: "scope-image-1", name: "Template Photo 7.jpg" }),
+      expect.objectContaining({ id: "scope-image-2", name: "Template Photo 8.jpg" }),
+    ]);
     expect(draft.labor.lines[0]).toEqual(expect.objectContaining({ label: "Technician" }));
     expect(draft.materials.items[0]).toEqual(expect.objectContaining({ desc: "Sealant kit" }));
     expect(draft.additionalCharges.items[0]).toEqual(expect.objectContaining({ desc: "Lift rental" }));
     expect(draft.additionalNotes).toBe("Dispose of debris and clean the work area.");
   });
+});
+
+test("9. Applying a template with more than 8 scope photos shows a friendly message and leaves the estimate unchanged", async () => {
+  const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+  jest.spyOn(window, "confirm").mockReturnValue(true);
+  seedTemplates([buildFullWorkTemplate({
+    id: "tmpl_too_many_scope_photos",
+    name: "Too Many Scope Photos",
+    scopeText: "Too many photos template",
+    scopeImages: buildScopeImages(9),
+  })]);
+  seedEstimatorDraft({
+    customer: {
+      id: "cust_limit",
+      name: "Limit Customer",
+    },
+    scopeNotes: "Keep this scope as-is.",
+  });
+
+  render(<App />);
+
+  await openEstimateBuilderViaCreate();
+  fireEvent.change(getSavedTemplateSelect(), { target: { value: "tmpl_too_many_scope_photos" } });
+
+  expect(alertSpy).toHaveBeenCalledWith("This template has too many photos for this document. Remove some photos and try again.");
+
+  await waitFor(() => {
+    const draft = readEstimatorDraft();
+    expect(draft.scopeNotes).toBe("Keep this scope as-is.");
+    expect(Array.isArray(draft.scopeImages) ? draft.scopeImages : []).toHaveLength(0);
+  });
+});
+
+test("10. Save as Template shows a friendly storage-full message when template storage hits quota", async () => {
+  jest.spyOn(window, "prompt").mockReturnValue("Quota Template");
+  seedEstimatorDraft({
+    customer: {
+      id: "cust_quota_template",
+      name: "Quota Template Customer",
+      projectName: "Quota Template Project",
+      projectAddress: "123 Jobsite Ave",
+    },
+    job: {
+      docNumber: "EST-QT-1",
+      location: "Roof Section B",
+    },
+    scopeNotes: "Quota template scope.\n[scope-image:scope-image-1]",
+    scopeImages: buildScopeImages(1),
+  });
+
+  render(<App />);
+
+  await openEstimateBuilderViaCreate();
+
+  const actualSetItem = Storage.prototype.setItem;
+  jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+    if (key === STORAGE_KEYS.SCOPE_TEMPLATES) {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    }
+    return actualSetItem.call(this, key, value);
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: /Save as Template/i }));
+
+  expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+  expect(readStoredTemplates()).toEqual([]);
 });
 
 test("6. Existing scope-only legacy template still appears and applies scope safely", async () => {
@@ -376,8 +506,7 @@ test("6. Existing scope-only legacy template still appears and applies scope saf
   expect(await screen.findByText("Legacy Scope Template")).toBeInTheDocument();
   expect(screen.getByText(/Scope-only legacy/i)).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: /Open Estimate Builder/i }));
-  expect(await screen.findByText(/Estimate Builder/i)).toBeInTheDocument();
+  await openEstimateBuilderViaCreate();
 
   fireEvent.change(getSavedTemplateSelect(), { target: { value: "tmpl_legacy_scope" } });
 
@@ -404,8 +533,7 @@ test("7. Deleting a template removes it from Templates screen and builder dropdo
   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
   expect(screen.queryByText("Roof Repair Package")).toBeNull();
 
-  fireEvent.click(screen.getAllByRole("button", { name: /Open Estimate Builder/i })[0]);
-  expect(await screen.findByText(/Estimate Builder/i)).toBeInTheDocument();
+  await openEstimateBuilderViaCreate();
   expect(screen.getByText(/None saved — use Save as Template below/i)).toBeInTheDocument();
 });
 
@@ -417,7 +545,6 @@ test("8. Templates screen and builder dropdown share the same template source", 
   openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: /Open Estimate Builder/i }));
-  expect(await screen.findByText(/Estimate Builder/i)).toBeInTheDocument();
+  await openEstimateBuilderViaCreate();
   expect(within(getSavedTemplateSelect()).getByRole("option", { name: "Roof Repair Package" })).toBeInTheDocument();
 });

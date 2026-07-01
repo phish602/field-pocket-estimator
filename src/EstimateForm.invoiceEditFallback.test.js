@@ -241,10 +241,19 @@ jest.mock("./pdf", () => ({
   exportPdf: (...args) => mockExportPdf(...args),
 }));
 
+jest.mock("./lib/scopeImageStorage", () => {
+  const actual = jest.requireActual("./lib/scopeImageStorage");
+  return {
+    ...actual,
+    normalizeScopeImageForStorage: jest.fn(),
+  };
+});
+
 import EstimateForm from "./EstimateForm";
-import { DEFAULT_STATE } from "./estimator/defaultState";
+import { DEFAULT_STATE, STORAGE_KEY } from "./estimator/defaultState";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES } from "./constants/routes";
+import { normalizeScopeImageForStorage } from "./lib/scopeImageStorage";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -256,6 +265,10 @@ function renderEstimateFormInStrictMode() {
       <EstimateForm />
     </React.StrictMode>
   );
+}
+
+function getScopeImageInput() {
+  return document.querySelector('input[type="file"][accept="image/png,image/jpeg,image/webp"]');
 }
 
 function expectTradeScopeStarterUiAbsent() {
@@ -559,11 +572,19 @@ function seedProjectCreateSeed({ project, customer }) {
 }
 
 describe("EstimateForm invoice edit fallback", () => {
+  let alertSpy;
+
   beforeEach(() => {
     localStorage.clear();
     jest.clearAllMocks();
     mockInitialState = null;
     mockSuppressReplaceState = false;
+    alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+    normalizeScopeImageForStorage.mockReset();
+  });
+
+  afterEach(() => {
+    alertSpy.mockRestore();
   });
 
   test("uses invoice-specific Start Here guidance while keeping the invoice toggle hidden and estimate mode unchanged", async () => {
@@ -1175,5 +1196,224 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(payload.scopeNotes).not.toMatch(/Trade Insert:/i);
     expect(payload.additionalNotes).toBe("Night work by request.");
     expect(payload.scopeImages).toEqual(scopeImages);
+  });
+
+  test("stores compressed scope photo metadata and inserts its marker into scope notes", async () => {
+    mockInitialState = clone(DEFAULT_STATE);
+    normalizeScopeImageForStorage.mockResolvedValue({
+      mimeType: "image/jpeg",
+      dataUrl: "data:image/jpeg;base64,compressed-scope-photo",
+      originalSizeBytes: 2400000,
+      storedSizeBytes: 140000,
+      originalWidth: 4032,
+      originalHeight: 3024,
+      storedWidth: 1024,
+      storedHeight: 768,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    const input = getScopeImageInput();
+    const file = new File(["raw-photo"], "Lobby Damage.jpg", { type: "image/jpeg" });
+    Object.defineProperty(file, "size", { value: 2400000 });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(normalizeScopeImageForStorage).toHaveBeenCalledWith(file);
+    });
+
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenCalledWith("scopeNotes", "[scope-image:scope-image-1]");
+      expect(mockPatch).toHaveBeenCalledWith("scopeImages", [
+        expect.objectContaining({
+          id: "scope-image-1",
+          name: "Lobby Damage.jpg",
+          mimeType: "image/jpeg",
+          dataUrl: "data:image/jpeg;base64,compressed-scope-photo",
+          storedSizeBytes: 140000,
+          storedWidth: 1024,
+          storedHeight: 768,
+          layout: expect.objectContaining({ size: "medium", align: "center", caption: false }),
+        }),
+      ]);
+      expect(screen.getByText(/Scope photos:\s*1 of 8 used/i)).toBeInTheDocument();
+    });
+  });
+
+  test("keeps the 8-photo cap when another scope photo is selected", async () => {
+    const savedEstimate = createSavedEstimate({
+      scopeImages: createScopeImages(8),
+      scopeNotes: "Existing scope notes",
+    });
+    mockInitialState = clone(savedEstimate);
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    const input = getScopeImageInput();
+    const file = new File(["raw-photo"], "Overflow Photo.jpg", { type: "image/jpeg" });
+    Object.defineProperty(file, "size", { value: 1900000 });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    expect(normalizeScopeImageForStorage).not.toHaveBeenCalled();
+    expect(window.alert).toHaveBeenCalledWith("This document already has 8 scope photos. Remove one before adding another.");
+  });
+
+  test("shows a friendly error when scope photo processing fails", async () => {
+    mockInitialState = clone(DEFAULT_STATE);
+    normalizeScopeImageForStorage.mockRejectedValue(new Error("Could not process this photo. Try another image."));
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    const input = getScopeImageInput();
+    const file = new File(["bad-photo"], "Broken Photo.heic", { type: "image/heic" });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(window.alert).toHaveBeenCalledWith("Could not process this photo. Try another image.");
+    });
+    expect(mockPatch).not.toHaveBeenCalledWith("scopeImages", expect.anything());
+  });
+
+  test("shows a friendly storage-full message when the builder draft cannot persist during save", async () => {
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    estimateState.customer = {
+      ...(estimateState.customer || {}),
+      name: "Quota Customer",
+      fullName: "Quota Customer",
+      displayName: "Quota Customer",
+      projectName: "Quota Project",
+      projectNumber: "QT-1001",
+    };
+    estimateState.job = {
+      ...(estimateState.job || {}),
+      date: "2026-06-30",
+      docNumber: "EST-QUOTA-1",
+    };
+    estimateState.scopeNotes = "Document scope with photos.";
+    mockInitialState = estimateState;
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(estimateState),
+      meta: {
+        ...(estimateState.meta || {}),
+        ...metaPatch,
+        lastSavedAt: FIXED_TIMESTAMP,
+      },
+    }));
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
+
+    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  test("failed new estimate save keeps the chambered draft and resume state intact", async () => {
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    estimateState.customer = {
+      ...(estimateState.customer || {}),
+      name: "Failed Save Customer",
+      fullName: "Failed Save Customer",
+      displayName: "Failed Save Customer",
+      projectName: "Failed Save Project",
+      projectNumber: "FS-1001",
+    };
+    estimateState.job = {
+      ...(estimateState.job || {}),
+      date: "2026-07-01",
+      docNumber: "EST-FAIL-1",
+    };
+    estimateState.scopeNotes = "This draft should remain available after a failed save.";
+    mockInitialState = estimateState;
+    const draftRaw = JSON.stringify(estimateState);
+    localStorage.setItem(STORAGE_KEY, draftRaw);
+    localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+    localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(estimateState),
+      meta: {
+        ...(estimateState.meta || {}),
+        ...metaPatch,
+        lastSavedAt: FIXED_TIMESTAMP,
+      },
+    }));
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    const actualSetItem = Storage.prototype.setItem;
+    jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+      if (key === STORAGE_KEYS.ESTIMATES) {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      }
+      return actualSetItem.call(this, key, value);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
+
+    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(draftRaw);
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+    expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+  });
+
+  test("shows a friendly storage-full message when updating an estimate hits localStorage quota", async () => {
+    const customer = createCustomer();
+    const savedEstimate = createSavedEstimate({
+      scopeNotes: "Existing saved estimate scope.",
+    });
+    mockInitialState = clone(savedEstimate);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(savedEstimate),
+      meta: {
+        ...(savedEstimate.meta || {}),
+        ...metaPatch,
+        lastSavedAt: FIXED_TIMESTAMP,
+      },
+    }));
+
+    seedEstimateStorage({
+      estimate: savedEstimate,
+      customer,
+      editEstimateTargetId: savedEstimate.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByRole("button", { name: /save estimate|update estimate/i });
+
+    const actualSetItem = Storage.prototype.setItem;
+    jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+      if (key === STORAGE_KEYS.ESTIMATES) {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      }
+      return actualSetItem.call(this, key, value);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /save estimate|update estimate/i }));
+
+    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
   });
 });

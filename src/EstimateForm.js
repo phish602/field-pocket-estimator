@@ -87,19 +87,23 @@ import useGuidedBuild, {
   hasGuidedRuntimeResidue,
 } from "./estimator/guided/useGuidedBuild";
 import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockpitTotals";
+import {
+  estimateDataUrlBytes,
+  isStorageQuotaExceededError,
+  normalizeScopeImageForStorage,
+  SCOPE_IMAGE_HARD_MAX_STORED_BYTES,
+} from "./lib/scopeImageStorage";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
 const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
 const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
 const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
-const SCOPE_IMAGE_UPLOAD_MAX_DIMENSION = 1600;
-const SCOPE_IMAGE_UPLOAD_HARD_LIMIT_BYTES = 25 * 1024 * 1024;
-const SCOPE_IMAGE_UPLOAD_COMPRESS_THRESHOLD_BYTES = 1.5 * 1024 * 1024;
-const SCOPE_IMAGE_UPLOAD_JPEG_QUALITY = 0.82;
 const MAX_SCOPE_IMAGES_PER_DOCUMENT = 8;
-const MAX_SCOPE_IMAGE_STORED_BYTES = 900000;
-const MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES = 3500000;
+const MAX_SCOPE_IMAGE_STORED_BYTES = SCOPE_IMAGE_HARD_MAX_STORED_BYTES;
+const MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES = 800 * 1024;
+const SCOPE_IMAGE_MARKER_PATTERN = /\[scope-image:([a-zA-Z0-9_-]+)\]/g;
+const STORAGE_FULL_MESSAGE = "Storage is full. Remove some photos or templates and try again.";
 const I18N = {
   en: {
     standard: "Standard (1.00×)",
@@ -827,6 +831,29 @@ function restoreLiveDraftFromEditSessionStash() {
   } catch {}
 }
 
+function dispatchLocalStorageUpdate(key, value = "") {
+  try {
+    window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key, value } }));
+  } catch {}
+}
+
+function clearSuccessfulCreateDraftChamber() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEY, "");
+
+  try {
+    localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEYS.ESTIMATE_DRAFT, "");
+
+  try {
+    localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "");
+}
+
 function buildCleanBuilderState(docType = "estimate") {
   const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
   let next = {};
@@ -1459,6 +1486,7 @@ export default function EstimateForm(props) {
       return "estimate";
     }
   }, [isEditMode]);
+  const [suppressDraftPersistenceUntilUnmount, setSuppressDraftPersistenceUntilUnmount] = useState(false);
   const lang = useMemo(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
@@ -1495,7 +1523,7 @@ export default function EstimateForm(props) {
     clearAll,
     saveNow,
     replaceState,
-  } = hook({ persistDraft: !isEditMode && initialDraftDocType !== "invoice" });
+  } = hook({ persistDraft: !isEditMode && initialDraftDocType !== "invoice" && !suppressDraftPersistenceUntilUnmount });
   const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
   const scopeImages = Array.isArray(state?.scopeImages) ? state.scopeImages.filter(Boolean) : [];
@@ -3379,6 +3407,7 @@ export default function EstimateForm(props) {
         }
       )
       || hasMeaningfulTemplateAdditionalChargeContent(candidate?.additionalChargeItems ?? candidate?.additionalCharges?.items)
+      || (Array.isArray(candidate?.scopeImages) && candidate.scopeImages.length > 0)
     );
   }
 
@@ -3438,6 +3467,87 @@ export default function EstimateForm(props) {
     }));
   }
 
+  function buildTemplateScopeImagesForSave() {
+    return (Array.isArray(scopeImages) ? scopeImages : []).map((image) => {
+      const id = String(image?.id || "").trim();
+      const dataUrl = String(image?.dataUrl || "").trim();
+      if (!id || !dataUrl) return null;
+      const storedWidth = Number(image?.storedWidth || 0);
+      const storedHeight = Number(image?.storedHeight || 0);
+      const storedSizeBytes = Number(image?.storedSizeBytes || 0);
+      const originalWidth = Number(image?.originalWidth || 0);
+      const originalHeight = Number(image?.originalHeight || 0);
+      const originalSizeBytes = Number(image?.originalSizeBytes || 0);
+      const createdAt = Number(image?.createdAt || 0);
+      const layout = image?.layout && typeof image.layout === "object"
+        ? {
+            size: ["small", "medium", "large"].includes(String(image.layout.size || "").trim().toLowerCase())
+              ? String(image.layout.size).trim().toLowerCase()
+              : "medium",
+            align: ["left", "center", "right"].includes(String(image.layout.align || "").trim().toLowerCase())
+              ? String(image.layout.align).trim().toLowerCase()
+              : "center",
+            caption: Boolean(image.layout.caption),
+          }
+        : null;
+
+      return {
+        id,
+        name: String(image?.name || id).trim() || id,
+        ...(String(image?.mimeType || "").trim() ? { mimeType: String(image.mimeType).trim().toLowerCase() } : {}),
+        dataUrl,
+        ...(Number.isFinite(storedWidth) && storedWidth > 0 ? { storedWidth } : {}),
+        ...(Number.isFinite(storedHeight) && storedHeight > 0 ? { storedHeight } : {}),
+        ...(Number.isFinite(storedSizeBytes) && storedSizeBytes > 0 ? { storedSizeBytes } : {}),
+        ...(layout ? { layout } : {}),
+        ...(Number.isFinite(originalWidth) && originalWidth > 0 ? { originalWidth } : {}),
+        ...(Number.isFinite(originalHeight) && originalHeight > 0 ? { originalHeight } : {}),
+        ...(Number.isFinite(originalSizeBytes) && originalSizeBytes > 0 ? { originalSizeBytes } : {}),
+        ...(Number.isFinite(createdAt) && createdAt > 0 ? { createdAt } : {}),
+      };
+    }).filter(Boolean);
+  }
+
+  function buildAppliedTemplateScopeImages(templateScopeImages, templateScopeText) {
+    const templateImages = Array.isArray(templateScopeImages) ? templateScopeImages.filter(Boolean) : [];
+    if (templateImages.length === 0) {
+      return {
+        nextScopeImages: null,
+        nextScopeText: String(templateScopeText || ""),
+      };
+    }
+
+    if (templateImages.length > MAX_SCOPE_IMAGES_PER_DOCUMENT) {
+      throw new Error("This template has too many photos for this document. Remove some photos and try again.");
+    }
+
+    const remappedImages = [];
+    const remappedIds = new Map();
+    for (const templateImage of templateImages) {
+      const nextId = getNextScopeImageId(remappedImages);
+      const sourceId = String(templateImage?.id || "").trim();
+      if (sourceId) remappedIds.set(sourceId, nextId);
+      remappedImages.push({
+        ...templateImage,
+        id: nextId,
+        name: String(templateImage?.name || nextId).trim() || nextId,
+      });
+    }
+
+    const nextScopeText = String(templateScopeText || "").replace(
+      SCOPE_IMAGE_MARKER_PATTERN,
+      (fullMatch, imageId) => {
+        const nextId = remappedIds.get(String(imageId || "").trim());
+        return nextId ? `[scope-image:${nextId}]` : fullMatch;
+      }
+    );
+
+    return {
+      nextScopeImages: remappedImages,
+      nextScopeText,
+    };
+  }
+
   function cloneTemplateLaborItemsForApply(items) {
     if (!Array.isArray(items) || items.length === 0) {
       return [createBlankTemplateLaborLine()];
@@ -3469,87 +3579,101 @@ export default function EstimateForm(props) {
     }));
   }
 
-  function handleSaveScopeTemplate() {
-    const currentScopeText = String(scopeNotes || "").trim();
-    const currentAdditionalNotes = String(additionalNotes || "").trim();
-    const currentMaterialsMode = state?.ui?.materialsMode === "blanket" ? "blanket" : "itemized";
-    const laborItems = buildTemplateLaborItemsForSave();
-    const materialItems = buildTemplateMaterialItemsForSave();
-    const additionalChargeItems = buildTemplateAdditionalChargeItemsForSave();
-    const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
-    const materialsBlanketCost = state?.materials?.blanketCost ?? "";
-    const materialsBlanketInternalCost = state?.materials?.blanketInternalCost ?? "";
-    const materialsMarkupPct = state?.materials?.markupPct ?? "";
-    const hasTemplateContent = hasMeaningfulTemplateWorkPackageContent({
-      scopeText: currentScopeText,
-      laborItems,
-      materialItems,
-      additionalChargeItems,
-      additionalNotes: currentAdditionalNotes,
-      materialsBlanketDescription,
-      materialsBlanketCost,
-      materialsBlanketInternalCost,
-      materialsMarkupPct,
-    });
-    if (!hasTemplateContent) {
-      window.alert("Add scope, labor, materials, additional charges, or notes before saving a template.");
-      return;
-    }
-
-    const defaultName = createScopeTemplate({
-      scopeText: currentScopeText,
-      laborItems,
-      materialItems,
-      additionalChargeItems,
-      additionalNotes: currentAdditionalNotes,
-      ...(currentMaterialsMode === "blanket"
-        ? {
-          materialsMode: "blanket",
-          materialsBlanketDescription,
-          materialsBlanketCost,
-          materialsBlanketInternalCost,
-          materialsMarkupPct,
-        }
-        : {
-          materialsMode: "itemized",
-        }),
-    })?.name || "Untitled work template";
-    const enteredName = window.prompt("Name this work template:", defaultName);
-    if (enteredName === null) return;
-
-    const template = createScopeTemplate({
-      name: String(enteredName || "").trim() || defaultName,
-      scopeText: currentScopeText,
-      laborItems,
-      materialItems,
-      additionalChargeItems,
-      additionalNotes: currentAdditionalNotes,
-      ...(currentMaterialsMode === "blanket"
-        ? {
-          materialsMode: "blanket",
-          materialsBlanketDescription,
-          materialsBlanketCost,
-          materialsBlanketInternalCost,
-          materialsMarkupPct,
-        }
-        : {
-          materialsMode: "itemized",
-        }),
-      ...(scopeTemplateSourceId ? { sourceEstimateId: scopeTemplateSourceId } : {}),
-      ...(scopeTemplateSourceNumber ? { sourceEstimateNumber: scopeTemplateSourceNumber } : {}),
-    });
-    if (!template) return;
-
-    const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates]);
-    setScopeTemplates(nextTemplates);
+  function handleSaveScopeTemplate(event) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
     try {
-      window.dispatchEvent(new CustomEvent("pe-localstorage", {
-        detail: {
-          key: STORAGE_KEYS.SCOPE_TEMPLATES,
-          value: JSON.stringify(nextTemplates),
-        },
-      }));
-    } catch {}
+      const currentScopeText = String(scopeNotes || "").trim();
+      const currentAdditionalNotes = String(additionalNotes || "").trim();
+      const currentMaterialsMode = state?.ui?.materialsMode === "blanket" ? "blanket" : "itemized";
+      const laborItems = buildTemplateLaborItemsForSave();
+      const materialItems = buildTemplateMaterialItemsForSave();
+      const additionalChargeItems = buildTemplateAdditionalChargeItemsForSave();
+      const templateScopeImages = buildTemplateScopeImagesForSave();
+      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
+      const materialsBlanketCost = state?.materials?.blanketCost ?? "";
+      const materialsBlanketInternalCost = state?.materials?.blanketInternalCost ?? "";
+      const materialsMarkupPct = state?.materials?.markupPct ?? "";
+      const hasTemplateContent = hasMeaningfulTemplateWorkPackageContent({
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        materialsBlanketDescription,
+        materialsBlanketCost,
+        materialsBlanketInternalCost,
+        materialsMarkupPct,
+        scopeImages: templateScopeImages,
+      });
+      if (!hasTemplateContent) {
+        window.alert("Add scope, labor, materials, additional charges, or notes before saving a template.");
+        return;
+      }
+
+      const defaultName = createScopeTemplate({
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        scopeImages: templateScopeImages,
+        ...(currentMaterialsMode === "blanket"
+          ? {
+            materialsMode: "blanket",
+            materialsBlanketDescription,
+            materialsBlanketCost,
+            materialsBlanketInternalCost,
+            materialsMarkupPct,
+          }
+          : {
+            materialsMode: "itemized",
+          }),
+      })?.name || "Untitled work template";
+      const enteredName = window.prompt("Name this work template:", defaultName);
+      if (enteredName === null) return;
+
+      const template = createScopeTemplate({
+        name: String(enteredName || "").trim() || defaultName,
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        scopeImages: templateScopeImages,
+        ...(currentMaterialsMode === "blanket"
+          ? {
+            materialsMode: "blanket",
+            materialsBlanketDescription,
+            materialsBlanketCost,
+            materialsBlanketInternalCost,
+            materialsMarkupPct,
+          }
+          : {
+            materialsMode: "itemized",
+          }),
+        ...(scopeTemplateSourceId ? { sourceEstimateId: scopeTemplateSourceId } : {}),
+        ...(scopeTemplateSourceNumber ? { sourceEstimateNumber: scopeTemplateSourceNumber } : {}),
+      });
+      if (!template) return;
+
+      const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates], { throwOnError: true });
+      setScopeTemplates(nextTemplates);
+      setSavePrompt({ tone: "success", message: "Template saved" });
+      try {
+        window.dispatchEvent(new CustomEvent("pe-localstorage", {
+          detail: {
+            key: STORAGE_KEYS.SCOPE_TEMPLATES,
+            value: JSON.stringify(nextTemplates),
+          },
+        }));
+      } catch {}
+    } catch (error) {
+      setSavePrompt({
+        tone: "error",
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again.",
+      });
+    }
   }
 
   function handleApplyScopeTemplate(templateId) {
@@ -3558,14 +3682,14 @@ export default function EstimateForm(props) {
     const template = scopeTemplates.find((entry) => String(entry?.id || "").trim() === nextId);
     if (!template) return;
     const isLegacyScopeTemplate = isLegacyScopeTemplateRecord(template);
-    const nextScopeText = String(template.scopeText || "");
+    const templateScopeText = String(template.scopeText || "");
     if (isLegacyScopeTemplate) {
       const currentScopeText = String(scopeNotes || "");
-      if (currentScopeText.trim() && currentScopeText.trim() !== nextScopeText.trim()) {
+      if (currentScopeText.trim() && currentScopeText.trim() !== templateScopeText.trim()) {
         const ok = window.confirm("Replace current scope text with this template? Customer, project, line items, and totals will stay as-is.");
         if (!ok) return;
       }
-      patch("scopeNotes", nextScopeText);
+      patch("scopeNotes", templateScopeText);
       return;
     }
 
@@ -3580,8 +3704,24 @@ export default function EstimateForm(props) {
       if (!ok) return;
     }
 
+    let nextScopeImages = null;
+    let nextScopeText = templateScopeText;
+    try {
+      const appliedTemplateImages = buildAppliedTemplateScopeImages(
+        template?.scopeImages,
+        templateScopeText
+      );
+      nextScopeImages = appliedTemplateImages.nextScopeImages;
+      nextScopeText = appliedTemplateImages.nextScopeText;
+    } catch (error) {
+      window.alert(error?.message || "This template has too many photos for this document. Remove some photos and try again.");
+      return;
+    }
     const templateMaterialsMode = template?.materialsMode === "blanket" ? "blanket" : "itemized";
     patch("scopeNotes", nextScopeText);
+    if (Array.isArray(nextScopeImages)) {
+      patch("scopeImages", nextScopeImages);
+    }
     patch("labor.lines", cloneTemplateLaborItemsForApply(template?.laborItems));
     patch("ui.materialsMode", templateMaterialsMode);
     patch("materials.items", cloneTemplateMaterialItemsForApply(template?.materialItems));
@@ -3636,109 +3776,6 @@ export default function EstimateForm(props) {
     if (scopeImageInputRef.current?.click) {
       scopeImageInputRef.current.click();
     }
-  }
-
-  function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("Unable to read that image."));
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function loadImageFromFile(file) {
-    return new Promise((resolve, reject) => {
-      const objectUrl = URL.createObjectURL(file);
-      const image = new Image();
-      image.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(image);
-      };
-      image.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        reject(new Error("That image could not be loaded."));
-      };
-      image.src = objectUrl;
-    });
-  }
-
-  function estimateDataUrlBytes(dataUrl) {
-    const base64 = String(dataUrl || "").split(",")[1] || "";
-    if (!base64) return 0;
-    const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-    return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
-  }
-
-  async function normalizeScopeImageForStorage(file) {
-    const mimeType = String(file?.type || "").trim().toLowerCase();
-    if (!["image/png", "image/jpeg", "image/webp"].includes(mimeType)) {
-      throw new Error("Please choose a PNG, JPEG, or WebP image.");
-    }
-    if (Number(file?.size || 0) > SCOPE_IMAGE_UPLOAD_HARD_LIMIT_BYTES) {
-      throw new Error("That image is too large to process safely. Please choose a smaller photo.");
-    }
-
-    const image = await loadImageFromFile(file);
-    const originalWidth = Number(image.naturalWidth || image.width || 0);
-    const originalHeight = Number(image.naturalHeight || image.height || 0);
-    if (!originalWidth || !originalHeight) {
-      throw new Error("That image is missing dimensions.");
-    }
-
-    const scale = Math.min(
-      1,
-      SCOPE_IMAGE_UPLOAD_MAX_DIMENSION / originalWidth,
-      SCOPE_IMAGE_UPLOAD_MAX_DIMENSION / originalHeight
-    );
-    const storedWidth = Math.max(1, Math.round(originalWidth * scale));
-    const storedHeight = Math.max(1, Math.round(originalHeight * scale));
-    const needsResize = scale < 1;
-    const needsCompression = needsResize || Number(file?.size || 0) > SCOPE_IMAGE_UPLOAD_COMPRESS_THRESHOLD_BYTES;
-
-    if (!needsCompression && mimeType === "image/png") {
-      const dataUrl = await readFileAsDataUrl(file);
-      return {
-        mimeType,
-        dataUrl,
-        originalSizeBytes: Number(file?.size || 0),
-        storedSizeBytes: Number(file?.size || 0),
-        originalWidth,
-        originalHeight,
-        storedWidth: originalWidth,
-        storedHeight: originalHeight,
-      };
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = storedWidth;
-    canvas.height = storedHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("That image could not be processed.");
-    }
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, storedWidth, storedHeight);
-    ctx.drawImage(image, 0, 0, storedWidth, storedHeight);
-
-    const storedMimeType = "image/jpeg";
-    const dataUrl = canvas.toDataURL(storedMimeType, SCOPE_IMAGE_UPLOAD_JPEG_QUALITY);
-    if (!/^data:image\/jpeg;base64,/i.test(dataUrl)) {
-      throw new Error("That image could not be saved safely.");
-    }
-
-    return {
-      mimeType: storedMimeType,
-      dataUrl,
-      originalSizeBytes: Number(file?.size || 0),
-      storedSizeBytes: estimateDataUrlBytes(dataUrl),
-      originalWidth,
-      originalHeight,
-      storedWidth,
-      storedHeight,
-    };
   }
 
   async function handleScopeImageFileSelected(event) {
@@ -5077,6 +5114,18 @@ export default function EstimateForm(props) {
         setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
         return;
       }
+      if (!isEditMode) {
+        let persistedDraftRaw = "";
+        try {
+          persistedDraftRaw = String(localStorage.getItem(STORAGE_KEY) || "");
+        } catch {
+          persistedDraftRaw = "";
+        }
+        if (persistedDraftRaw !== JSON.stringify(persistedState)) {
+          setSavePrompt({ tone: "error", message: STORAGE_FULL_MESSAGE });
+          return;
+        }
+      }
 
       if (saveDocType === "invoice" && Number(totalRevenue || 0) <= 0) {
         setSavePrompt({ tone: "warn", message: "Cannot save invoice yet. Invoice total must be greater than $0.00." });
@@ -5450,6 +5499,11 @@ export default function EstimateForm(props) {
         ? `${saveDocType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`
         : (projectName || customerName);
       setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
+      const shouldClearCreateDraftAfterSave = !isEditMode && saveDocType === "estimate";
+      if (shouldClearCreateDraftAfterSave) {
+        setSuppressDraftPersistenceUntilUnmount(true);
+        clearSuccessfulCreateDraftChamber();
+      }
 
       // Keep the edit-session target (and persistDraft:false) active for the
       // entire success-toast delay below. Clearing it earlier flips this
@@ -5474,11 +5528,19 @@ export default function EstimateForm(props) {
             openedDocNumberRef.current = "";
             setEditTarget(null);
           }
-          window.dispatchEvent(new Event(navEvent));
+          if (shouldClearCreateDraftAfterSave) {
+            clearSuccessfulCreateDraftChamber();
+          }
+          window.dispatchEvent(new CustomEvent(navEvent, {
+            detail: { skipCreateDraftSave: shouldClearCreateDraftAfterSave },
+          }));
         } catch {}
       }, 180);
-    } catch {
-      setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+    } catch (error) {
+      setSavePrompt({
+        tone: "error",
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again.",
+      });
     }
   };
 
@@ -7049,6 +7111,10 @@ export default function EstimateForm(props) {
                 className="pe-btn pe-btn-ghost"
                 type="button"
                 style={styles.sectionFooterBtn}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
                 onClick={handleSaveScopeTemplate}
                 title="Save the current work package as a reusable template"
               >

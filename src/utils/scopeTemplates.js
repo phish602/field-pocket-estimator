@@ -131,6 +131,45 @@ function normalizeAdditionalChargeTemplateItem(record = {}) {
   };
 }
 
+function normalizeScopeImageLayout(value) {
+  const source = isPlainObject(value) ? value : {};
+  const size = String(source.size || "medium").trim().toLowerCase();
+  const align = String(source.align || "center").trim().toLowerCase();
+  return {
+    size: ["small", "medium", "large"].includes(size) ? size : "medium",
+    align: ["left", "center", "right"].includes(align) ? align : "center",
+    caption: Boolean(source.caption),
+  };
+}
+
+function normalizeScopeTemplateImage(record = {}) {
+  const source = isPlainObject(record) ? record : {};
+  const id = String(source.id || "").trim();
+  const dataUrl = String(source.dataUrl || "").trim();
+  if (!id || !dataUrl) return null;
+
+  const name = String(source.name || id).trim() || id;
+  const mimeType = String(source.mimeType || "").trim().toLowerCase();
+  const storedWidth = Number(source.storedWidth || 0);
+  const storedHeight = Number(source.storedHeight || 0);
+  const storedSizeBytes = Number(source.storedSizeBytes || 0);
+
+  return {
+    id,
+    name,
+    ...(mimeType ? { mimeType } : {}),
+    dataUrl,
+    ...(Number.isFinite(storedWidth) && storedWidth > 0 ? { storedWidth } : {}),
+    ...(Number.isFinite(storedHeight) && storedHeight > 0 ? { storedHeight } : {}),
+    ...(Number.isFinite(storedSizeBytes) && storedSizeBytes > 0 ? { storedSizeBytes } : {}),
+    ...(source.layout ? { layout: normalizeScopeImageLayout(source.layout) } : {}),
+    ...(Number.isFinite(Number(source.originalWidth)) && Number(source.originalWidth) > 0 ? { originalWidth: Number(source.originalWidth) } : {}),
+    ...(Number.isFinite(Number(source.originalHeight)) && Number(source.originalHeight) > 0 ? { originalHeight: Number(source.originalHeight) } : {}),
+    ...(Number.isFinite(Number(source.originalSizeBytes)) && Number(source.originalSizeBytes) > 0 ? { originalSizeBytes: Number(source.originalSizeBytes) } : {}),
+    ...(Number.isFinite(Number(source.createdAt)) && Number(source.createdAt) > 0 ? { createdAt: Number(source.createdAt) } : {}),
+  };
+}
+
 function normalizeTemplateItems(records, normalizeRecord) {
   const arr = Array.isArray(records) ? records : [];
   const next = [];
@@ -161,6 +200,7 @@ function buildTemplateNameFallback(scopeText, laborItems, materialItems, additio
     String(additionalChargeItems?.[0]?.desc || "").trim(),
     additionalNotes,
     String(blanketSource.materialsBlanketDescription || "").trim(),
+    String(blanketSource.scopeImages?.[0]?.name || "").trim(),
   ];
   for (const candidate of candidates) {
     const firstLine = String(candidate || "")
@@ -245,6 +285,13 @@ export function normalizeScopeTemplateRecord(record = {}, options = {}) {
     source.additionalNotes
     ?? options.additionalNotes
   );
+  const scopeImages = normalizeTemplateItems(
+    readArrayCandidate(
+      source.scopeImages,
+      options.scopeImages
+    ),
+    normalizeScopeTemplateImage
+  );
   const materialsModeRaw = String(
     source.materialsMode
     || source.ui?.materialsMode
@@ -283,6 +330,7 @@ export function normalizeScopeTemplateRecord(record = {}, options = {}) {
     || additionalChargeItems.length
     || additionalNotes
     || hasBlanketMaterials
+    || scopeImages.length
   );
   if (!scopeText && !hasStructuredContent) return null;
 
@@ -297,6 +345,7 @@ export function normalizeScopeTemplateRecord(record = {}, options = {}) {
     additionalNotes,
     {
       materialsBlanketDescription,
+      scopeImages,
     }
   );
   if (!name) return null;
@@ -319,6 +368,7 @@ export function normalizeScopeTemplateRecord(record = {}, options = {}) {
     materialItems,
     additionalChargeItems,
     additionalNotes,
+    ...(scopeImages.length ? { scopeImages } : {}),
     schemaVersion,
     ...(materialsMode ? { materialsMode } : {}),
     ...(materialsBlanketDescription ? { materialsBlanketDescription } : {}),
@@ -364,11 +414,13 @@ export function readStoredScopeTemplates() {
   }
 }
 
-export function writeStoredScopeTemplates(templates) {
+export function writeStoredScopeTemplates(templates, options = {}) {
   const next = normalizeScopeTemplateList(templates);
   try {
     localStorage.setItem(SCOPE_TEMPLATES_KEY, JSON.stringify(next));
-  } catch {}
+  } catch (error) {
+    if (options?.throwOnError) throw error;
+  }
   return next;
 }
 

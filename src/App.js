@@ -2690,7 +2690,8 @@ const [spinTick, setSpinTick] = useState(0);
     return !!gate?.allowed;
   }, [enterTab, prepareCompanyProfileReturnTarget]);
 
-  const performNavigation = useCallback((tab) => {
+  const performNavigation = useCallback((tab, options = {}) => {
+    const skipCreateDraftSave = Boolean(options?.skipCreateDraftSave);
     const isBuilderTarget =
       tab === ROUTES.CREATE
       || tab === ROUTES.ESTIMATE_BUILDER
@@ -2710,7 +2711,7 @@ const [spinTick, setSpinTick] = useState(0);
       setShowCreateFromEditModal(false);
     }
     try {
-      if (activeTab === ROUTES.CREATE && nextTab !== ROUTES.CREATE) {
+      if (activeTab === ROUTES.CREATE && nextTab !== ROUTES.CREATE && !skipCreateDraftSave) {
         try { localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1"); } catch {}
         window.dispatchEvent(new Event("estipaid:draft-save-now"));
       }
@@ -2736,7 +2737,7 @@ const [spinTick, setSpinTick] = useState(0);
       return;
     }
 
-    performNavigation(tab);
+    performNavigation(tab, options);
   }, [activeTab, userProfileDirty, createEditSessionActive, performNavigation]);
 
   const navigateToCompanyProfile = useCallback((options = {}) => {
@@ -2988,7 +2989,7 @@ const [spinTick, setSpinTick] = useState(0);
   }, [clearEstimateOpenCustomersGuard, navigateTo]);
 
   useEffect(() => {
-    const onNavEstimates = () => {
+    const onNavEstimates = (event) => {
       if (activeTab === ROUTES.CREATE) {
         const returnTarget = readProjectDetailReturnTarget();
         if (returnTarget?.route === ROUTES.PROJECT_DETAIL) {
@@ -3000,9 +3001,14 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
-      try { navigateTo(ROUTES.ESTIMATES, { bypassDirtyGuard: true }); } catch {}
+      try {
+        navigateTo(ROUTES.ESTIMATES, {
+          bypassDirtyGuard: true,
+          skipCreateDraftSave: Boolean(event?.detail?.skipCreateDraftSave),
+        });
+      } catch {}
     };
-    const onNavInvoices = () => {
+    const onNavInvoices = (event) => {
       if (activeTab === ROUTES.CREATE) {
         const returnTarget = readProjectDetailReturnTarget();
         if (returnTarget?.route === ROUTES.PROJECT_DETAIL) {
@@ -3014,7 +3020,12 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
-      try { navigateTo(ROUTES.INVOICES, { bypassDirtyGuard: true }); } catch {}
+      try {
+        navigateTo(ROUTES.INVOICES, {
+          bypassDirtyGuard: true,
+          skipCreateDraftSave: Boolean(event?.detail?.skipCreateDraftSave),
+        });
+      } catch {}
     };
     window.addEventListener("estipaid:navigate-estimates", onNavEstimates);
     window.addEventListener("estipaid:navigate-invoices", onNavInvoices);

@@ -130,7 +130,7 @@ export default function TemplatesScreen({ onOpenBuilder }) {
 
   return (
     <div className="pe-wrap" style={{ display: "grid", gap: 14 }}>
-      <div className="pe-builder-bar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div className="pe-builder-bar" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div style={{ minWidth: 0 }}>
           <h1 className="pe-title screenTitle" style={{ margin: 0 }}>Templates</h1>
           <div className="pe-muted" style={{ marginTop: 4 }}>
@@ -140,15 +140,6 @@ export default function TemplatesScreen({ onOpenBuilder }) {
             Applying a template updates work content only and does not replace customer or job details.
           </div>
         </div>
-        <button
-          className="pe-btn pe-btn-ghost"
-          type="button"
-          onClick={() => {
-            if (typeof onOpenBuilder === "function") onOpenBuilder();
-          }}
-        >
-          Open Estimate Builder
-        </button>
       </div>
 
       <section className="pe-card" style={{ display: "grid", gap: 12 }}>
@@ -180,17 +171,6 @@ export default function TemplatesScreen({ onOpenBuilder }) {
             <div style={{ fontSize: 16, fontWeight: 800 }}>No saved templates yet</div>
             <div className="pe-muted">
               Create a reusable work package in the builder, then use “Save as Template” to keep it for future customers and jobs.
-            </div>
-            <div>
-              <button
-                className="pe-btn"
-                type="button"
-                onClick={() => {
-                  if (typeof onOpenBuilder === "function") onOpenBuilder();
-                }}
-              >
-                Open Estimate Builder
-              </button>
             </div>
           </div>
         ) : (
