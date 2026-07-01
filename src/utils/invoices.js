@@ -73,6 +73,10 @@ function asText(value) {
   return String(value || "").trim();
 }
 
+function normalizeTextKey(value) {
+  return asText(value).toLowerCase().replace(/\s+/g, " ");
+}
+
 function normalizeAdditionalChargeItems(items) {
   if (!Array.isArray(items)) return [];
   return items
@@ -528,6 +532,103 @@ function dedupeInvoices(records) {
   });
 }
 
+function buildRecordIdMap(records) {
+  return new Map(
+    (Array.isArray(records) ? records : [])
+      .filter(Boolean)
+      .map((record) => [asText(record?.id), record])
+      .filter(([id]) => Boolean(id))
+  );
+}
+
+function findCustomerRecord(customerById, customerId, customerName) {
+  if (customerId && customerById.has(customerId)) return customerById.get(customerId) || null;
+  const normalizedName = normalizeTextKey(customerName);
+  if (!normalizedName) return null;
+  for (const record of customerById.values()) {
+    const candidateName = normalizeTextKey(
+      record?.name
+      || record?.displayName
+      || record?.companyName
+      || record?.fullName
+      || record?.contactName
+    );
+    if (candidateName && candidateName === normalizedName) return record;
+  }
+  return null;
+}
+
+function resolveInvoiceNormalizationOptions(options = {}) {
+  const customerById = options?.customerById instanceof Map
+    ? options.customerById
+    : buildRecordIdMap(Array.isArray(options?.customers) ? options.customers : readStoredCustomers());
+  const projectById = options?.projectById instanceof Map
+    ? options.projectById
+    : buildRecordIdMap(Array.isArray(options?.projects) ? options.projects : readStoredProjects());
+  return { customerById, projectById };
+}
+
+function hasStructuredInvoiceSections(source) {
+  return Boolean(
+    (Array.isArray(source?.labor?.lines) && source.labor.lines.length > 0)
+    || (Array.isArray(source?.laborLines) && source.laborLines.length > 0)
+    || (Array.isArray(source?.materials?.items) && source.materials.items.length > 0)
+    || (Array.isArray(source?.materialItems) && source.materialItems.length > 0)
+    || (Array.isArray(source?.additionalCharges?.items) && source.additionalCharges.items.length > 0)
+    || (Array.isArray(source?.additionalChargeItems) && source.additionalChargeItems.length > 0)
+  );
+}
+
+function readThinInvoiceLineItems(source) {
+  if (Array.isArray(source?.lineItems) && source.lineItems.length > 0) return source.lineItems;
+  if (Array.isArray(source?.invoiceLineItems) && source.invoiceLineItems.length > 0) return source.invoiceLineItems;
+  if (Array.isArray(source?.items) && source.items.length > 0) return source.items;
+  return [];
+}
+
+function mapThinInvoiceLineItemsToMaterials(source) {
+  if (hasStructuredInvoiceSections(source)) return [];
+  const lineItems = readThinInvoiceLineItems(source);
+  return lineItems
+    .filter(Boolean)
+    .map((item, index) => {
+      const qty = Math.max(
+        1,
+        toCurrencyNumber(
+          item?.qty
+          ?? item?.quantity
+          ?? 1
+        )
+      );
+      const explicitPrice = firstFiniteNumber(
+        item?.priceEach,
+        item?.price,
+        item?.unitPrice,
+        item?.unit_price
+      );
+      const explicitTotal = firstFiniteNumber(
+        item?.total,
+        item?.totalPrice,
+        item?.total_price
+      );
+      const priceEach = explicitPrice !== null
+        ? roundCurrency(explicitPrice)
+        : roundCurrency((explicitTotal ?? 0) / (qty || 1));
+
+      return {
+        id: asText(item?.id) || `invoice_line_${index}`,
+        desc: asText(item?.desc || item?.description || item?.label || item?.name),
+        qty,
+        priceEach,
+        markupPct: toCurrencyNumber(item?.markupPct),
+        unitCostInternal: item?.unitCostInternal ?? item?.costInternal ?? "",
+        costInternal: item?.costInternal ?? "",
+        note: asText(item?.note || item?.unit),
+      };
+    })
+    .filter((item) => item.desc || item.priceEach || item.qty);
+}
+
 export function generateNextInvoiceNumber(invoices) {
   const arr = Array.isArray(invoices) ? invoices.filter(Boolean) : [];
   let max = 0;
@@ -712,7 +813,7 @@ export function readStoredInvoices() {
       }
     } catch {}
 
-    const nextInvoices = normalizeInvoiceList(merged);
+    const nextInvoices = normalizeInvoiceList(merged, resolveInvoiceNormalizationOptions());
     return nextInvoices;
   } catch {
     return [];
@@ -721,7 +822,7 @@ export function readStoredInvoices() {
 
 export function writeStoredInvoices(invoices) {
   const previousInvoices = readStoredInvoices();
-  const next = normalizeInvoiceList(invoices);
+  const next = normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions());
   const sync = backfillProjectCollections({
     customers: readStoredCustomers(),
     projects: readStoredProjects(),
@@ -797,8 +898,9 @@ export function buildEstimateInvoiceSnapshot(estimate) {
   };
 }
 
-export function normalizeInvoiceRecord(record) {
+export function normalizeInvoiceRecord(record, options = {}) {
   const source = record && typeof record === "object" ? deepClone(record) : {};
+  const { customerById, projectById } = resolveInvoiceNormalizationOptions(options);
   const snapshot = source?.sourceEstimateSnapshot && typeof source.sourceEstimateSnapshot === "object"
     ? deepClone(source.sourceEstimateSnapshot)
     : null;
@@ -814,11 +916,42 @@ export function normalizeInvoiceRecord(record) {
   const paymentStatus = lifecycle.paymentStatus;
   const balanceRemaining = lifecycle.balanceRemaining;
   const dueDate = lifecycle.dueDate;
-
-  const customerName = asText(source?.customerName || source?.customer?.name || snapshot?.customerName);
-  const customerId = asText(source?.customerId || source?.customer?.id || snapshot?.customerId);
-  const projectName = asText(source?.projectName || source?.customer?.projectName || snapshot?.projectName);
-  const projectNumber = asText(source?.projectNumber || source?.customer?.projectNumber || snapshot?.projectNumber);
+  const requestedProjectId = asText(source?.projectId || source?.project?.id || snapshot?.projectId);
+  const storedProject = requestedProjectId ? (projectById.get(requestedProjectId) || null) : null;
+  const customerId = asText(
+    source?.customerId
+    || source?.customer?.id
+    || storedProject?.customerId
+    || snapshot?.customerId
+  );
+  const storedCustomer = findCustomerRecord(
+    customerById,
+    customerId,
+    source?.customerName || source?.customer?.name || source?.customer?.displayName || snapshot?.customerName
+  );
+  const customerName = asText(
+    source?.customerName
+    || source?.customer?.name
+    || source?.customer?.displayName
+    || storedCustomer?.name
+    || storedCustomer?.displayName
+    || storedCustomer?.companyName
+    || storedCustomer?.fullName
+    || storedCustomer?.contactName
+    || snapshot?.customerName
+  );
+  const projectName = asText(
+    source?.projectName
+    || source?.customer?.projectName
+    || storedProject?.projectName
+    || snapshot?.projectName
+  );
+  const projectNumber = asText(
+    source?.projectNumber
+    || source?.customer?.projectNumber
+    || storedProject?.projectNumber
+    || snapshot?.projectNumber
+  );
   const invoiceType = normalizeInvoiceType(
     source?.invoiceType || (sourceEstimateId ? INVOICE_TYPES.CUSTOM : INVOICE_TYPES.MANUAL)
   );
@@ -844,6 +977,8 @@ export function normalizeInvoiceRecord(record) {
       createdAt,
       updatedAt,
     }, { nowTs: updatedAt }).id;
+  const fallbackMaterialItems = mapThinInvoiceLineItemsToMaterials(source);
+  const hasFallbackMaterialItems = fallbackMaterialItems.length > 0;
   const normalizedSnapshot = sourceEstimateId
     ? {
         ...(snapshot || {}),
@@ -854,6 +989,17 @@ export function normalizeInvoiceRecord(record) {
   const financialSummary = extractFinancialSummaryFromDoc(source, {
     approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
   });
+  const projectAddress = asText(
+    source?.projectAddress
+    || source?.customer?.projectAddress
+    || storedProject?.siteAddress
+    || storedCustomer?.projectAddress
+    || storedCustomer?.address
+    || source?.job?.location
+  );
+  const resolvedMaterialsMode = hasFallbackMaterialItems
+    ? "itemized"
+    : resolveMaterialsMode(source);
 
   return {
     ...source,
@@ -863,6 +1009,7 @@ export function normalizeInvoiceRecord(record) {
     ui: {
       ...(source?.ui || {}),
       docType: "invoice",
+      materialsMode: resolvedMaterialsMode,
     },
     invoiceType,
     invoiceNumber,
@@ -883,18 +1030,33 @@ export function normalizeInvoiceRecord(record) {
     sourceEstimateSnapshot: normalizedSnapshot,
     date: invoiceDate,
     dueDate,
+    additionalNotes: asText(source?.additionalNotes || source?.notes),
     job: {
       ...(source?.job || {}),
       date: invoiceDate,
       due: dueDate,
       docNumber: invoiceNumber,
+      location: asText(source?.job?.location || projectAddress),
+      projectName,
+      projectNumber,
     },
     customer: {
+      ...(storedCustomer && typeof storedCustomer === "object" ? storedCustomer : {}),
       ...(source?.customer || {}),
       id: customerId,
       name: customerName,
       projectName,
       projectNumber,
+      projectAddress,
+      address: asText(source?.customer?.address || storedCustomer?.address || projectAddress),
+    },
+    materials: {
+      ...(source?.materials || {}),
+      items: hasFallbackMaterialItems
+        ? fallbackMaterialItems
+        : (Array.isArray(source?.materials?.items)
+          ? source.materials.items
+          : (Array.isArray(source?.materialItems) ? source.materialItems : [])),
     },
     additionalCharges: {
       ...(source?.additionalCharges || {}),
@@ -915,9 +1077,12 @@ export function normalizeInvoiceRecord(record) {
   };
 }
 
-export function normalizeInvoiceList(records) {
+export function normalizeInvoiceList(records, options = {}) {
   const arr = Array.isArray(records) ? records.filter(Boolean) : [];
-  const normalized = arr.map((invoice) => normalizeInvoiceRecord(invoice)).sort(sortInvoicesByDateDesc);
+  const normalizationOptions = resolveInvoiceNormalizationOptions(options);
+  const normalized = arr
+    .map((invoice) => normalizeInvoiceRecord(invoice, normalizationOptions))
+    .sort(sortInvoicesByDateDesc);
   return dedupeInvoices(normalized);
 }
 

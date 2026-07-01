@@ -515,9 +515,14 @@ function createRetainedInvoiceDraft() {
   return state;
 }
 
-function seedInvoiceStorage({ invoice, customer, estimatorState, editInvoiceTargetId = "" }) {
+function seedInvoiceStorage({ invoice, customer, project = null, estimatorState, editInvoiceTargetId = "" }) {
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
   localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([invoice]));
+  if (project) {
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.PROJECTS);
+  }
 
   if (estimatorState) {
     localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, JSON.stringify(estimatorState));
@@ -956,6 +961,117 @@ describe("EstimateForm invoice edit fallback", () => {
 
     expect(hydratedState.meta).toEqual(expect.objectContaining({ savedDocId: savedInvoice.id }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
+  });
+
+  test("hydrates a thin restored invoice edit target into populated invoice builder data", async () => {
+    const customer = createCustomer();
+    const project = createProject();
+    const restoredInvoice = {
+      id: "sample_invoice_hilton_mobilization_deposit",
+      customerId: customer.id,
+      projectId: project.id,
+      sourceEstimateId: "est_1",
+      invoiceNumber: "INV-2601",
+      status: "sent",
+      paymentStatus: "partial",
+      invoiceTotal: 1000,
+      amountPaid: 250,
+      balanceRemaining: 750,
+      date: "2026-01-01",
+      dueDate: "2026-02-01",
+      notes: "Mobilization deposit for the Hilton refresh.",
+      lineItems: [
+        {
+          id: "invoice:inv_1:line:0",
+          description: "Mobilization deposit",
+          quantity: 1,
+          unit: "ea",
+          price: 1000,
+          total: 1000,
+        },
+        {
+          id: "invoice:inv_1:line:1",
+          description: "Permits",
+          quantity: 1,
+          unit: "ea",
+          price: 250,
+          total: 250,
+        },
+      ],
+      payments: [
+        {
+          id: "pay_1",
+          amount: 250,
+          method: "cash",
+          status: "paid",
+          paidAt: "2026-01-15",
+        },
+      ],
+    };
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedInvoiceStorage({
+      invoice: restoredInvoice,
+      customer,
+      project,
+      editInvoiceTargetId: restoredInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
+    });
+
+    const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
+    const hydratedState = replaceStateCall[0] || {};
+
+    expect(hydratedState.customer).toEqual(expect.objectContaining({
+      id: customer.id,
+      name: customer.name,
+      projectName: project.projectName,
+      projectAddress: project.siteAddress,
+    }));
+    expect(hydratedState.job).toEqual(expect.objectContaining({
+      docNumber: "INV-2601",
+      location: project.siteAddress,
+      projectName: project.projectName,
+    }));
+    expect(hydratedState.ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      materialsMode: "itemized",
+    }));
+    expect(hydratedState.materials).toEqual(expect.objectContaining({
+      items: [
+        expect.objectContaining({
+          id: "invoice:inv_1:line:0",
+          desc: "Mobilization deposit",
+          qty: 1,
+          priceEach: 1000,
+          note: "ea",
+        }),
+        expect.objectContaining({
+          id: "invoice:inv_1:line:1",
+          desc: "Permits",
+          qty: 1,
+          priceEach: 250,
+          note: "ea",
+        }),
+      ],
+    }));
+    expect(hydratedState.invoiceTotal).toBe(1000);
+    expect(hydratedState.total).toBe(1000);
+    expect(hydratedState.paymentStatus).toBe("partial");
+    expect(hydratedState.amountPaid).toBe(250);
+    expect(hydratedState.balanceRemaining).toBe(750);
+    expect(hydratedState.lineItems).toEqual(restoredInvoice.lineItems);
+    expect(hydratedState.payments).toEqual([
+      expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" }),
+    ]);
+    expect(hydratedState.additionalNotes).toBe("Mobilization deposit for the Hilton refresh.");
   });
 
   test("old saved estimate and invoice records with trade starter data still load safely without showing the starter UI", async () => {
