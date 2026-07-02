@@ -127,8 +127,6 @@ function buildAuthState(overrides = {}) {
     userEmail: "",
     errorMessage: "",
     infoMessage: "",
-    signInWithEmailOtp: jest.fn(),
-    signInWithPassword: jest.fn(),
     signOut: jest.fn(),
     ...overrides,
   };
@@ -455,7 +453,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByText(/Configure business defaults, document behavior, internal visibility, and local tools/i)).toBeInTheDocument();
     expect(screen.getByText("Business Profile")).toBeInTheDocument();
-    expect(screen.getByText("Account & Cloud Sync")).toBeInTheDocument();
+    expect(screen.getByText("Account")).toBeInTheDocument();
     expect(screen.getByText("Templates")).toBeInTheDocument();
     expect(screen.getByText("Reports & Bookkeeping")).toBeInTheDocument();
     expect(screen.getByText("Developer Tools")).toBeInTheDocument();
@@ -473,87 +471,18 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(onOpenSnapshot).toHaveBeenCalledTimes(1);
   });
 
-  test("shows signed-out cloud auth controls and sends an OTP sign-in request", async () => {
-    const signInWithEmailOtp = jest.fn();
-    const signInWithPassword = jest.fn();
+  test("shows signed-out fallback guidance without duplicate login fields", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
-      signInWithEmailOtp,
-      signInWithPassword,
     }));
 
     render(<AdvancedSettingsScreen />);
 
-    fireEvent.change(screen.getByLabelText("Account email"), {
-      target: { value: "owner@example.com" },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Email Sign-In Link" }));
-    });
-
-    expect(signInWithEmailOtp).toHaveBeenCalledWith("owner@example.com");
-    expect(signInWithPassword).not.toHaveBeenCalled();
-    expect(screen.getByText(/Cloud data sync is not active yet/i)).toBeInTheDocument();
-    expect(screen.getByText("Password sign-in")).toBeInTheDocument();
-    expect(screen.getByLabelText("Account password")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in with password" })).toBeInTheDocument();
-  });
-
-  test("sends a password sign-in request from the signed-out cloud auth controls", async () => {
-    const signInWithPassword = jest.fn().mockResolvedValue({ ok: true });
-    useSupabaseAuth.mockReturnValue(buildAuthState({
-      configured: true,
-      signInWithPassword,
-    }));
-
-    render(<AdvancedSettingsScreen />);
-
-    fireEvent.change(screen.getByLabelText("Account email"), {
-      target: { value: "owner@example.com" },
-    });
-    fireEvent.change(screen.getByLabelText("Account password"), {
-      target: { value: "super-secret-password" },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Sign in with password" }));
-    });
-
-    expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "super-secret-password");
-  });
-
-  test("disables the password button while a password sign-in request is pending", async () => {
-    let resolveSignIn;
-    const signInWithPassword = jest.fn(() => new Promise((resolve) => {
-      resolveSignIn = resolve;
-    }));
-    useSupabaseAuth.mockReturnValue(buildAuthState({
-      configured: true,
-      signInWithPassword,
-    }));
-
-    render(<AdvancedSettingsScreen />);
-
-    fireEvent.change(screen.getByLabelText("Account email"), {
-      target: { value: "owner@example.com" },
-    });
-    fireEvent.change(screen.getByLabelText("Account password"), {
-      target: { value: "super-secret-password" },
-    });
-
-    const passwordButton = screen.getByRole("button", { name: "Sign in with password" });
-
-    await act(async () => {
-      fireEvent.click(passwordButton);
-    });
-
-    expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "super-secret-password");
-    expect(screen.getByRole("button", { name: "Signing In..." })).toBeDisabled();
-
-    await act(async () => {
-      resolveSignIn({ ok: true });
-    });
-
-    expect(screen.getByRole("button", { name: "Sign in with password" })).not.toBeDisabled();
+    expect(screen.getAllByText("Sign in from the welcome screen to use cloud backup.").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Account email")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Email Sign-In Link" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with password" })).not.toBeInTheDocument();
   });
 
   test("shows signed-in cloud account state and allows sign out", async () => {
@@ -568,8 +497,12 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     render(<AdvancedSettingsScreen />);
 
-    expect(screen.getByText(/Signed in as/i)).toBeInTheDocument();
+    expect(screen.getByText(/Signed in as:/i)).toBeInTheDocument();
     expect(screen.getByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Account email")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Email Sign-In Link" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with password" })).not.toBeInTheDocument();
     expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
 
     await act(async () => {
@@ -729,7 +662,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
     });
 
-    expect(screen.getByText("Sign in to access cloud backup and restore.")).toBeInTheDocument();
+    expect(screen.getAllByText("Sign in from the welcome screen to use cloud backup.").length).toBeGreaterThan(0);
     expect(screen.queryByText("Developer Migration Tools")).not.toBeInTheDocument();
     expect(checkSupabaseCloudOnboardingStatus).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();

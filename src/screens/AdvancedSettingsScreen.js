@@ -220,8 +220,6 @@ export default function AdvancedSettingsScreen({
   const [busyLabel, setBusyLabel] = useState("");
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
-  const [cloudEmail, setCloudEmail] = useState("");
-  const [cloudPassword, setCloudPassword] = useState("");
   const [authAction, setAuthAction] = useState("");
   const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
   const [migrationPreviewBusy, setMigrationPreviewBusy] = useState(false);
@@ -257,9 +255,6 @@ export default function AdvancedSettingsScreen({
     user,
     userEmail,
     errorMessage: authErrorMessage,
-    infoMessage: authInfoMessage,
-    signInWithEmailOtp,
-    signInWithPassword,
     signOut,
   } = useSupabaseAuth();
   const {
@@ -391,34 +386,10 @@ export default function AdvancedSettingsScreen({
     }
   };
 
-  const requestCloudSignIn = async () => {
-    setAuthAction("otp");
-    try {
-      await signInWithEmailOtp(cloudEmail);
-    } finally {
-      setAuthAction("");
-    }
-  };
-
-  const requestCloudPasswordSignIn = async () => {
-    setAuthAction("password");
-    try {
-      const response = await signInWithPassword(cloudEmail, cloudPassword);
-      if (response?.ok) {
-        setCloudPassword("");
-      }
-    } finally {
-      setAuthAction("");
-    }
-  };
-
   const requestCloudSignOut = async () => {
     setAuthAction("signout");
     try {
-      const response = await signOut();
-      if (response?.ok) {
-        setCloudPassword("");
-      }
+      await signOut();
     } finally {
       setAuthAction("");
     }
@@ -1141,9 +1112,9 @@ export default function AdvancedSettingsScreen({
 
           <div style={shortcutGridStyle}>
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
-              <div className="pe-field-label" style={{ marginBottom: 2 }}>Account &amp; Cloud Sync</div>
+              <div className="pe-field-label" style={{ marginBottom: 2 }}>Account</div>
               <div className="pe-field-helper" style={{ marginTop: -4 }}>
-                Connect your cloud account first. Customer, project, estimate, and invoice storage still remains local in this lane.
+                Cloud backup uses your signed-in EstiPaid account. Customer, project, estimate, and invoice storage still remains local in this lane.
               </div>
               {!isSupabaseReady ? (
                 <>
@@ -1159,7 +1130,7 @@ export default function AdvancedSettingsScreen({
               ) : userEmail ? (
                 <>
                   <div className="pe-field-helper">
-                    Signed in as <strong>{userEmail}</strong>.
+                    Signed in as: <strong>{userEmail}</strong>
                   </div>
                   {accountLoading ? (
                     <div className="pe-field-helper">Checking company membership...</div>
@@ -1224,63 +1195,7 @@ export default function AdvancedSettingsScreen({
                   </div>
                 </>
               ) : (
-                <>
-                  <div className="pe-field-helper">
-                    Sign in with a magic link. Cloud data sync is not active yet.
-                  </div>
-                  <div style={{ display: "grid", gap: 8, maxWidth: 440 }}>
-                    <label className="pe-field-helper" htmlFor="cloud-account-email" style={{ marginTop: 2 }}>
-                      Email
-                    </label>
-                    <input
-                      id="cloud-account-email"
-                      type="email"
-                      className="pe-input"
-                      value={cloudEmail}
-                      onChange={(e) => setCloudEmail(e.target.value)}
-                      placeholder="name@company.com"
-                      autoComplete="email"
-                      aria-label="Account email"
-                      disabled={authPending}
-                    />
-                    <button
-                      type="button"
-                      className="pe-btn"
-                      onClick={requestCloudSignIn}
-                      disabled={authPending}
-                    >
-                      {authAction === "otp" ? "Sending Link..." : "Email Sign-In Link"}
-                    </button>
-                    <div className="pe-field-helper" style={{ marginTop: 4 }}>
-                      Password sign-in
-                    </div>
-                    <div className="pe-field-helper">
-                      Use this if you already have a Supabase password.
-                    </div>
-                    <label className="pe-field-helper" htmlFor="cloud-account-password" style={{ marginTop: 2 }}>
-                      Password
-                    </label>
-                    <input
-                      id="cloud-account-password"
-                      type="password"
-                      className="pe-input"
-                      value={cloudPassword}
-                      onChange={(e) => setCloudPassword(e.target.value)}
-                      placeholder="Enter your password"
-                      autoComplete="current-password"
-                      aria-label="Account password"
-                      disabled={authPending}
-                    />
-                    <button
-                      type="button"
-                      className="pe-btn pe-btn-ghost"
-                      onClick={requestCloudPasswordSignIn}
-                      disabled={authPending}
-                    >
-                      {authAction === "password" ? "Signing In..." : "Sign in with password"}
-                    </button>
-                  </div>
-                </>
+                <div className="pe-field-helper">Sign in from the welcome screen to use cloud backup.</div>
               )}
               {authErrorMessage ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
@@ -1295,11 +1210,6 @@ export default function AdvancedSettingsScreen({
               {!authErrorMessage && !accountError && workspaceError ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(248,113,113,0.95)" }}>
                   {workspaceError}
-                </div>
-              ) : null}
-              {!authErrorMessage && authInfoMessage ? (
-                <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
-                  {authInfoMessage}
                 </div>
               ) : null}
               {!authErrorMessage && !accountError && workspaceSuccess ? (
@@ -1318,7 +1228,7 @@ export default function AdvancedSettingsScreen({
               >
                 <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Backup</div>
                 {!isSupabaseReady || !userEmail ? (
-                  <div className="pe-field-helper">Sign in to access cloud backup and restore.</div>
+                  <div className="pe-field-helper">Sign in from the welcome screen to use cloud backup.</div>
                 ) : !hasCompany ? (
                   <div className="pe-field-helper">Create a cloud workspace before backing up your data.</div>
                 ) : onboardingBackupBusy ? (
