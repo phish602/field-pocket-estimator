@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -269,6 +269,12 @@ function renderEstimateFormInStrictMode() {
 
 function getScopeImageInput() {
   return document.querySelector('input[type="file"][accept="image/png,image/jpeg,image/webp"]');
+}
+
+function expectDisplayedInvoiceTotal(amountLabel) {
+  const totalSection = screen.getByText("Invoice Total").closest(".pe-total");
+  expect(totalSection).not.toBeNull();
+  expect(within(totalSection).getByText(amountLabel)).toBeInTheDocument();
 }
 
 function expectTradeScopeStarterUiAbsent() {
@@ -961,6 +967,7 @@ describe("EstimateForm invoice edit fallback", () => {
 
     expect(hydratedState.meta).toEqual(expect.objectContaining({ savedDocId: savedInvoice.id }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
+    expectDisplayedInvoiceTotal("$300.00");
   });
 
   test("hydrates a thin restored invoice edit target into populated invoice builder data", async () => {
@@ -986,8 +993,8 @@ describe("EstimateForm invoice edit fallback", () => {
           description: "Mobilization deposit",
           quantity: 1,
           unit: "ea",
-          price: 1000,
-          total: 1000,
+          price: 750,
+          total: 750,
         },
         {
           id: "invoice:inv_1:line:1",
@@ -1050,7 +1057,7 @@ describe("EstimateForm invoice edit fallback", () => {
           id: "invoice:inv_1:line:0",
           desc: "Mobilization deposit",
           qty: 1,
-          priceEach: 1000,
+          priceEach: 750,
           note: "ea",
         }),
         expect.objectContaining({
@@ -1072,6 +1079,68 @@ describe("EstimateForm invoice edit fallback", () => {
       expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" }),
     ]);
     expect(hydratedState.additionalNotes).toBe("Mobilization deposit for the Hilton refresh.");
+    expectDisplayedInvoiceTotal("$1,000.00");
+  });
+
+  test("hydrates an estimate-created thin invoice with invoiceTotal into a nonzero opened invoice total", async () => {
+    const customer = createCustomer();
+    const project = createProject();
+    const estimateCreatedThinInvoice = {
+      id: "invoice_from_estimate_thin",
+      invoiceNumber: "INV-EST-560",
+      customerId: customer.id,
+      projectId: project.id,
+      sourceEstimateId: "est_approved_560",
+      sourceEstimateSnapshot: {
+        estimateId: "est_approved_560",
+        estimateNumber: "EST-560",
+        customerId: customer.id,
+        customerName: customer.name,
+        projectId: project.id,
+        projectName: project.projectName,
+        approvedTotal: 560,
+        totalRevenue: 560,
+        grandTotal: 560,
+        total: 560,
+      },
+      status: "sent",
+      paymentStatus: "unpaid",
+      invoiceTotal: 560,
+      total: 560,
+      amountPaid: 0,
+      balanceRemaining: 560,
+      date: "2026-06-10",
+      dueDate: "2026-06-24",
+      notes: "Created from approved estimate without stored line rows.",
+      payments: [],
+    };
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedInvoiceStorage({
+      invoice: estimateCreatedThinInvoice,
+      customer,
+      project,
+      editInvoiceTargetId: estimateCreatedThinInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
+      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
+    });
+
+    const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
+    const hydratedState = replaceStateCall[0] || {};
+
+    expect(hydratedState.invoiceTotal).toBe(560);
+    expect(hydratedState.total).toBe(560);
+    expect(hydratedState.paymentStatus).toBe("unpaid");
+    expect(hydratedState.amountPaid).toBe(0);
+    expect(hydratedState.balanceRemaining).toBe(560);
+    expectDisplayedInvoiceTotal("$560.00");
   });
 
   test("old saved estimate and invoice records with trade starter data still load safely without showing the starter UI", async () => {

@@ -45,6 +45,26 @@ function readCompanyStripeAccountId() {
   }
 }
 
+function shouldClearInvoiceCreateDraftOnOpen() {
+  try {
+    const restoreDraftFlag = String(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE) || "").trim();
+    if (restoreDraftFlag !== "1") return false;
+
+    const liveRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE) || "";
+    if (liveRaw) {
+      const parsed = JSON.parse(liveRaw);
+      return parsed?.ui?.docType === "invoice";
+    }
+
+    const draftRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT) || "";
+    if (!draftRaw) return false;
+    const parsedDraft = JSON.parse(draftRaw);
+    return parsedDraft?.ui?.docType === "invoice";
+  } catch {
+    return false;
+  }
+}
+
 function normalizeStripeCheckoutSessionRef(entry) {
   const status = String(entry?.status || "pending").trim().toLowerCase();
   return {
@@ -1616,9 +1636,11 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
-      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
-      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
-      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+      if (shouldClearInvoiceCreateDraftOnOpen()) {
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+        localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+      }
       if (id) localStorage.setItem(EDIT_INVOICE_TARGET_KEY, id);
       else localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}

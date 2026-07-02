@@ -977,8 +977,12 @@ export function normalizeInvoiceRecord(record, options = {}) {
       createdAt,
       updatedAt,
     }, { nowTs: updatedAt }).id;
+  const hasStructuredSections = hasStructuredInvoiceSections(source);
   const fallbackMaterialItems = mapThinInvoiceLineItemsToMaterials(source);
   const hasFallbackMaterialItems = fallbackMaterialItems.length > 0;
+  const sourceMaterials = source?.materials && typeof source.materials === "object" ? source.materials : {};
+  const explicitBlanketCost = sourceMaterials.blanketCost ?? source?.blanketCost ?? source?.materialsCost;
+  const hasExplicitBlanketCost = String(explicitBlanketCost ?? "").trim() !== "";
   const normalizedSnapshot = sourceEstimateId
     ? {
         ...(snapshot || {}),
@@ -1000,6 +1004,9 @@ export function normalizeInvoiceRecord(record, options = {}) {
   const resolvedMaterialsMode = hasFallbackMaterialItems
     ? "itemized"
     : resolveMaterialsMode(source);
+  const normalizedBlanketCost = hasExplicitBlanketCost
+    ? explicitBlanketCost
+    : (!hasStructuredSections && !hasFallbackMaterialItems && invoiceTotal > 0 ? invoiceTotal : "");
 
   return {
     ...source,
@@ -1051,12 +1058,13 @@ export function normalizeInvoiceRecord(record, options = {}) {
       address: asText(source?.customer?.address || storedCustomer?.address || projectAddress),
     },
     materials: {
-      ...(source?.materials || {}),
+      ...sourceMaterials,
       items: hasFallbackMaterialItems
         ? fallbackMaterialItems
         : (Array.isArray(source?.materials?.items)
           ? source.materials.items
           : (Array.isArray(source?.materialItems) ? source.materialItems : [])),
+      blanketCost: normalizedBlanketCost,
     },
     additionalCharges: {
       ...(source?.additionalCharges || {}),

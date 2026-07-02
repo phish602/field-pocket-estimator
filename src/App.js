@@ -1386,6 +1386,8 @@ function CreateFlow({
   const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
   const [isSeedReady, setIsSeedReady] = useState(() => {
     try {
+      const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
+      if (estimateEditTarget || invoiceEditTarget) return true;
       const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
       const parsed = raw ? safeParseJson(raw) : null;
       const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
@@ -1398,6 +1400,12 @@ function CreateFlow({
 
   useLayoutEffect(() => {
     try {
+      const { estimateEditTarget, invoiceEditTarget } = readValidatedCreateEditTargets();
+      if (estimateEditTarget || invoiceEditTarget) {
+        setTypeSwitchGuardPending(false);
+        setIsSeedReady(true);
+        return;
+      }
       const raw = localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE);
       const parsed = raw ? safeParseJson(raw) : null;
       const currentDocType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
