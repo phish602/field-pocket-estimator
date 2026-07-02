@@ -1149,7 +1149,7 @@ export default function AdvancedSettingsScreen({
                     <>
                       <div className="pe-field-helper">No company membership found yet.</div>
                       <div className="pe-field-helper">
-                        This creates your cloud workspace only. Data migration/sync is not enabled yet.
+                        This creates your cloud workspace only. Backup and restore become available after setup.
                       </div>
                       <div style={{ display: "grid", gap: 8, maxWidth: 440 }}>
                         <label className="pe-field-helper" htmlFor="cloud-workspace-name" style={{ marginTop: 2 }}>
@@ -1181,7 +1181,10 @@ export default function AdvancedSettingsScreen({
                     <div className="pe-field-helper">Company record not found for this membership yet.</div>
                   ) : null}
                   <div className="pe-field-helper">
-                    Cloud account connected. Data migration/sync not enabled yet.
+                    Cloud account connected.
+                  </div>
+                  <div className="pe-field-helper">
+                    Backup and restore are available for this workspace.
                   </div>
                   <div>
                     <button

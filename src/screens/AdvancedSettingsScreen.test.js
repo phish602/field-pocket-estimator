@@ -503,7 +503,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Email Sign-In Link" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with password" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
+    expect(screen.getByText("Cloud account connected.")).toBeInTheDocument();
+    expect(screen.getByText("Backup and restore are available for this workspace.")).toBeInTheDocument();
+    expect(screen.queryByText(/Data migration\/sync not enabled yet/i)).not.toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Sign Out" }));
@@ -536,7 +538,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Field Pocket LLC")).toBeInTheDocument();
     expect(screen.getByText(/Role:/i)).toBeInTheDocument();
     expect(screen.getByText("owner")).toBeInTheDocument();
-    expect(screen.getByText(/Data migration\/sync not enabled yet/i)).toBeInTheDocument();
+    expect(screen.getByText("Cloud account connected.")).toBeInTheDocument();
+    expect(screen.getByText("Backup and restore are available for this workspace.")).toBeInTheDocument();
+    expect(screen.queryByText(/Data migration\/sync not enabled yet/i)).not.toBeInTheDocument();
   });
 
   test("shows migration preview results without performing writes", async () => {
