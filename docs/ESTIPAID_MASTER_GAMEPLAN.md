@@ -155,6 +155,8 @@ Clean payload queues background sync.
 Failed sync does not lose local saved work.
 Cloud conflict stops and warns instead of overwriting blindly.
 
+Future portal events such as customer approval, denial, comments, PDF snapshot creation, and portal link sent (see Phase 14) should be treated as durable mutation sources for automatic cloud backup.
+
 ## Phase 7 — Production/App Store Polish
 
 Goal:
@@ -168,6 +170,50 @@ Includes:
 - Storage warnings
 - Final backup/restore/sync polish
 - Deploy/App Store prep
+
+## Phase 14 — Customer Approval Portal / Send-to-Customer Workflow
+
+Goal:
+EstiPaid export should eventually become more than PDF download. A finalized estimate or invoice can be sent to the customer as a secure online portal link, not just a PDF attachment.
+
+Desired future flow:
+1. Estimate or invoice is finalized.
+2. App creates a secure customer portal link.
+3. Customer receives link by email or text.
+4. Customer opens portal without needing an EstiPaid account.
+5. Customer can view the document online.
+6. Customer can download PDF.
+7. Customer can comment / request changes.
+8. Customer can approve or deny.
+9. Approval/denial automatically updates EstiPaid.
+10. Estimate/project/job status advances inside the app.
+11. Portal activity is logged.
+12. Portal events trigger automatic cloud backup dirty markers in the future (see Phase 6).
+
+Product requirements:
+- Customer does not need an EstiPaid account.
+- Secure tokenized link.
+- Link tied to one document/version.
+- Customer approves the exact sent version, not a moving live estimate.
+- PDF snapshot stored for the sent version.
+- Approval updates estimate status and project/job status.
+- Denial/comment moves the job to a follow-up/change-request state.
+- PDF download link available from the portal.
+- Email/SMS send layer is provider-abstracted.
+- Later support resend, revoke, expire links, and backup/audit trail.
+- Portal actions must become durable mutation events for the cloud backup queue.
+
+Sub-gates:
+- Gate 14A — Portal data model and sent document versions
+- Gate 14B — PDF snapshot storage
+- Gate 14C — Secure public customer portal page
+- Gate 14D — Customer approve / deny / comment actions
+- Gate 14E — Email/SMS send layer
+- Gate 14F — App-side portal activity center
+- Gate 14G — Link revoke / expire / resend
+- Gate 14H — Portal events integrated with automatic cloud backup queue
+
+This phase is later product work. It is not part of the current execution priority below unless Adrian explicitly reprioritizes it.
 
 ## Engine Rules
 
