@@ -211,6 +211,7 @@ jest.mock("./utils/settings", () => {
 
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { readCloudBackupQueueState } from "./lib/cloudBackupQueue";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -1051,6 +1052,13 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
     expectEditInvoiceTargetWasNotSet(setItemSpy);
+
+    // Marking an estimate approved is a conscious durable status change and
+    // must mark automatic cloud backup dirty.
+    const backupQueueState = readCloudBackupQueueState();
+    expect(backupQueueState.pending).toBe(true);
+    expect(backupQueueState.domains).toContain("estimates");
+    expect(backupQueueState.severity).toBe("money_critical");
   });
 
   test("marking approved still prompts when linked invoices leave a remaining balance", async () => {

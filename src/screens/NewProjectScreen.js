@@ -7,6 +7,7 @@ import {
   readStoredProjects,
   writeStoredProjects,
 } from "../utils/projects";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const PROJECT_STATUS_OPTIONS = [
   { key: "draft", label: "Draft" },
@@ -31,6 +32,12 @@ function readCustomers() {
 function writeCustomers(list) {
   try {
     localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(Array.isArray(list) ? list : []));
+    markCloudBackupDirty({
+      reason: "customer_data_saved",
+      domains: ["customers"],
+      severity: "normal",
+      source: "writeCustomers",
+    });
   } catch {}
 }
 

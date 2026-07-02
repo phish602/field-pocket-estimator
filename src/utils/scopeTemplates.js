@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const SCOPE_TEMPLATES_KEY = STORAGE_KEYS.SCOPE_TEMPLATES;
 const WORK_PACKAGE_TEMPLATE_SCHEMA_VERSION = 2;
@@ -418,6 +419,12 @@ export function writeStoredScopeTemplates(templates, options = {}) {
   const next = normalizeScopeTemplateList(templates);
   try {
     localStorage.setItem(SCOPE_TEMPLATES_KEY, JSON.stringify(next));
+    markCloudBackupDirty({
+      reason: "template_data_saved",
+      domains: ["templates"],
+      severity: "normal",
+      source: "writeStoredScopeTemplates",
+    });
   } catch (error) {
     if (options?.throwOnError) throw error;
   }

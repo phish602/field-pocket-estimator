@@ -3,6 +3,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { appendAuditEvent, createStoredAuditEvent } from "./auditStore";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
 
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -340,6 +341,12 @@ export function readStoredProjects() {
 export function writeStoredProjects(projects) {
   const next = normalizeProjectList(projects);
   localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
+  markCloudBackupDirty({
+    reason: "project_data_saved",
+    domains: ["projects"],
+    severity: "normal",
+    source: "writeStoredProjects",
+  });
   return next;
 }
 

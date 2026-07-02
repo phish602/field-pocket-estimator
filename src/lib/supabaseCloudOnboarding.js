@@ -1,6 +1,7 @@
 import { createSupabaseMigrationPreview } from "./supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "./supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { clearCloudBackupDirty } from "./cloudBackupQueue";
 
 export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 
@@ -198,6 +199,10 @@ export async function runSupabaseCloudOnboardingBackup({
     if (!verification?.ok || !verification?.allMatched) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult, verification });
     }
+
+    // Verification confirmed the cloud write actually landed and matches
+    // local data -- the queue is current, not just "attempted".
+    clearCloudBackupDirty("manual_backup_success");
 
     return buildBackupResult(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED, { preview, writeResult, verification });
   } catch (error) {

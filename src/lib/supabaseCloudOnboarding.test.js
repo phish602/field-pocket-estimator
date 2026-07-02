@@ -24,6 +24,7 @@ const {
   runSupabaseCloudOnboardingBackup,
   CLOUD_ONBOARDING_STATUS,
 } = require("./supabaseCloudOnboarding");
+const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
 
 function buildPreview(overrides = {}) {
   return {
@@ -265,6 +266,39 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.noLocalDeletes).toBe(true);
       expect(result.writeResult.ok).toBe(true);
       expect(result.verification.allMatched).toBe(true);
+    });
+
+    test("a confirmed successful backup clears the local cloud backup dirty queue", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "pre_backup_stale_marker", domains: ["invoices"], severity: "money_critical" });
+      expect(readCloudBackupQueueState().pending).toBe(true);
+
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
+      const queueState = readCloudBackupQueueState();
+      expect(queueState.pending).toBe(false);
+      expect(queueState.status).toBe("current");
+    });
+
+    test("does not clear the backup dirty queue when verification does not confirm a match", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "pre_backup_stale_marker", domains: ["invoices"], severity: "money_critical" });
+
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: false }));
+
+      const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(readCloudBackupQueueState().pending).toBe(true);
     });
 
     test("reports needs_attention, not success, when the migration writer blocks", async () => {

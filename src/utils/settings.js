@@ -3,6 +3,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { normalizePercentInput } from "./format";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 export const DEFAULT_SETTINGS = {
   pricing: {
@@ -129,6 +130,12 @@ export function saveSettings(next) {
     try {
       window.dispatchEvent(new Event("estipaid:settings-changed"));
     } catch {}
+    markCloudBackupDirty({
+      reason: "settings_saved",
+      domains: ["app_settings"],
+      severity: "normal",
+      source: "saveSettings",
+    });
     return true;
   } catch {
     return false;

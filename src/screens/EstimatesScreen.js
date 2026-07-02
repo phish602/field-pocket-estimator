@@ -18,6 +18,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -122,6 +123,12 @@ function writeStoredEstimatesPreservingLegacy(nextEstimates) {
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
+  markCloudBackupDirty({
+    reason: "estimate_data_saved",
+    domains: ["estimates"],
+    severity: "money_critical",
+    source: "writeStoredEstimatesPreservingLegacy",
+  });
 }
 
 function readCustomers() {

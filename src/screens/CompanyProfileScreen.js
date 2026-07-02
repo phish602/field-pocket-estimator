@@ -10,6 +10,7 @@ import {
   loadCompanyProfile,
   normalizeCompanyProfile,
 } from "../utils/storage";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
@@ -200,6 +201,12 @@ function saveProfile(p) {
       // notify shell listeners
       window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: JSON.stringify(normalized) } }));
     } catch {}
+    markCloudBackupDirty({
+      reason: "company_profile_saved",
+      domains: ["company_profile"],
+      severity: "normal",
+      source: "saveProfile",
+    });
     return true;
   } catch {
     return false;
@@ -608,6 +615,12 @@ export default function CompanyProfileScreen() {
   const doClearProfile = () => {
     try {
       localStorage.removeItem(PROFILE_KEY);
+      markCloudBackupDirty({
+        reason: "company_profile_cleared",
+        domains: ["company_profile"],
+        severity: "normal",
+        source: "doClearProfile",
+      });
     } catch {}
 
     const cleared = stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });

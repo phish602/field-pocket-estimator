@@ -10,6 +10,7 @@ const {
   CLOUD_RESTORE_STATUS,
 } = require("./supabaseCloudRestore");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
+const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
 
 function buildEmptyStorageSnapshot(overrides = {}) {
   const values = {
@@ -597,6 +598,23 @@ describe("supabaseCloudRestore", () => {
           payments: [expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" })],
         }),
       ]);
+    });
+
+    test("a successful restore clears cloud backup dirty instead of marking it (local now equals cloud)", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "pre_restore_stale_marker", domains: ["customers"], severity: "normal" });
+      expect(readCloudBackupQueueState().pending).toBe(true);
+
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      const queueState = readCloudBackupQueueState();
+      expect(queueState.pending).toBe(false);
+      expect(queueState.status).toBe("current");
     });
 
     test("empty-device restore writes company profile, settings, and scope templates when a valid bundle exists", async () => {

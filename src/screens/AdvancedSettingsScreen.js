@@ -29,6 +29,7 @@ import {
   updateSupabaseAppRestoreBundle,
   APP_RESTORE_BUNDLE_STATUS,
 } from "../lib/supabaseAppRestoreBundle";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
@@ -862,6 +863,15 @@ export default function AdvancedSettingsScreen({
 
       const keysObj = asObject(parsed.keys);
       let writeCount = 0;
+      const importedDomains = new Set();
+      const IMPORT_KEY_DOMAINS = {
+        [STORAGE_KEYS.CUSTOMERS]: "customers",
+        [STORAGE_KEYS.PROJECTS]: "projects",
+        [STORAGE_KEYS.ESTIMATES]: "estimates",
+        [STORAGE_KEYS.INVOICES]: "invoices",
+        [STORAGE_KEYS.SCOPE_TEMPLATES]: "templates",
+        [STORAGE_KEYS.COMPANY_PROFILE]: "company_profile",
+      };
 
       Object.keys(keysObj).forEach((key) => {
         if (!key.startsWith(ESTIPAID_PREFIX)) return;
@@ -871,6 +881,7 @@ export default function AdvancedSettingsScreen({
         try {
           localStorage.setItem(key, raw);
           writeCount += 1;
+          if (IMPORT_KEY_DOMAINS[key]) importedDomains.add(IMPORT_KEY_DOMAINS[key]);
         } catch {}
       });
 
@@ -886,6 +897,14 @@ export default function AdvancedSettingsScreen({
       const mergedSettings = mergeSettingsSafe(loadSettings(), asObject(importedSettings));
       saveSettings(mergedSettings);
       setSettings(mergedSettings);
+      if (importedDomains.size > 0) {
+        markCloudBackupDirty({
+          reason: "bulk_json_import",
+          domains: [...importedDomains],
+          severity: "money_critical",
+          source: "importJsonFile",
+        });
+      }
       window.alert(`Import complete. Updated ${writeCount + 1} key(s).`);
     } catch {
       window.alert("Import failed.");

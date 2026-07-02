@@ -2,6 +2,7 @@ import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { clearCloudBackupDirty } from "./cloudBackupQueue";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
@@ -601,6 +602,10 @@ export async function executeSupabaseCloudRestore({
     includeScopeTemplates: Array.isArray(payload.scopeTemplates),
     values: payload,
   });
+
+  // A successful restore makes local data equal to cloud by definition --
+  // there is nothing dirty to back up, so clear (not mark) the queue.
+  clearCloudBackupDirty("cloud_restore_success");
 
   return buildExecuteResult(CLOUD_RESTORE_STATUS.RESTORED, {
     restored: true,

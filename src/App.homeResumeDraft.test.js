@@ -2,6 +2,7 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { readCloudBackupQueueState } from "./lib/cloudBackupQueue";
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -562,6 +563,11 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
     ]);
     expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBeNull();
   });
+
+  // A real, conscious "Save Estimate" must mark automatic cloud backup dirty.
+  const backupQueueState = readCloudBackupQueueState();
+  expect(backupQueueState.pending).toBe(true);
+  expect(backupQueueState.domains).toContain("estimates");
 
   fireEvent.click(screen.getByLabelText("Home"));
 

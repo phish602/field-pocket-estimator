@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -158,6 +159,12 @@ function persistCustomers(list) {
   const safe = Array.isArray(list) ? list : [];
   try {
     localStorage.setItem(CUSTOMERS_KEY, JSON.stringify(safe));
+    markCloudBackupDirty({
+      reason: "customer_data_saved",
+      domains: ["customers"],
+      severity: "normal",
+      source: "persistCustomers",
+    });
   } catch {}
 }
 

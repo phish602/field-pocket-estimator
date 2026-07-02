@@ -81,6 +81,7 @@ import {
 } from "./utils/projects";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
+import { markCloudBackupDirty } from "./lib/cloudBackupQueue";
 import useGuidedBuild, {
   buildCanonicalBlankDisplayState,
   hasCoreGuidedDraftState,
@@ -681,6 +682,12 @@ function writeStoredEstimatesLocal(nextEstimates) {
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
+  markCloudBackupDirty({
+    reason: "estimate_data_saved",
+    domains: ["estimates"],
+    severity: "money_critical",
+    source: "writeStoredEstimatesLocal",
+  });
 }
 
 function hasExplicitInternalCostInputs(doc) {

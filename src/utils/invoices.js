@@ -5,6 +5,7 @@ import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { appendAuditEvents, createStoredAuditEvent } from "./auditStore";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import {
   backfillProjectCollections,
   createProjectRecord,
@@ -837,6 +838,12 @@ export function writeStoredInvoices(invoices) {
     const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
     if (auditEvents.length > 0) appendAuditEvents(auditEvents);
   } catch {}
+  markCloudBackupDirty({
+    reason: "invoice_data_saved",
+    domains: ["invoices", "invoice_payments"],
+    severity: "money_critical",
+    source: "writeStoredInvoices",
+  });
   return sync.invoices;
 }
 
