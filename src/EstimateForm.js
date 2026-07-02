@@ -1472,9 +1472,12 @@ export default function EstimateForm(props) {
   const isEditMode = Boolean(editingRecordId);
   const isInvoiceEditMode = isEditMode && editingTargetType === "invoice";
   const isEditModeRef = useRef(isEditMode);
+  const editingRecordIdRef = useRef(editingRecordId);
+  const editingTargetTypeRef = useRef(editingTargetType);
   const openedEditIdRef = useRef(editingRecordId);
   const openedDocNumberRef = useRef("");
   const stashedLiveDraftForEditIdRef = useRef("");
+  const editSessionCleanupTimerRef = useRef(0);
   const initialDraftDocType = useMemo(() => {
     if (isEditMode) return "estimate";
     try {
@@ -1615,7 +1618,9 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     isEditModeRef.current = isEditMode;
-  }, [isEditMode]);
+    editingRecordIdRef.current = editingRecordId;
+    editingTargetTypeRef.current = editingTargetType;
+  }, [isEditMode, editingRecordId, editingTargetType]);
 
   useEffect(() => {
     replaceStateRef.current = replaceState;
@@ -1669,12 +1674,42 @@ export default function EstimateForm(props) {
   }, [editingRecordId, editingTargetType, isEditMode]);
 
   useEffect(() => {
+    // A remount (real or React StrictMode's dev-only simulated one) reaches
+    // this setup right after the cleanup below scheduled a deferred clear.
+    // Cancel it here so a simulated unmount never actually wipes a still-live
+    // edit session's pending target out from under it.
+    if (editSessionCleanupTimerRef.current) {
+      window.clearTimeout(editSessionCleanupTimerRef.current);
+      editSessionCleanupTimerRef.current = 0;
+    }
     return () => {
       if (!isEditModeRef.current) return;
-      clearPendingEditTarget();
-      // Only restore here if save/cancel haven't already consumed the stash
-      // for this session — otherwise this redundant call would find nothing
-      // left to restore and incorrectly wipe the just-restored live draft.
+      const recordIdAtCleanup = editingRecordIdRef.current;
+      const targetTypeAtCleanup = editingTargetTypeRef.current;
+      // Defer rather than clearing synchronously: StrictMode's dev-only
+      // mount->cleanup->remount simulation runs this cleanup even when the
+      // component isn't really unmounting. Deferring lets the setup above
+      // cancel the clear before it runs. On a genuine unmount there is no
+      // matching setup to cancel it, so it still fires shortly after.
+      editSessionCleanupTimerRef.current = window.setTimeout(() => {
+        editSessionCleanupTimerRef.current = 0;
+        // Only clear if nothing else has since taken over the pending edit
+        // target slot (e.g. the user opened a different saved record before
+        // this deferred cleanup could run).
+        const stillPending = readPendingEditTarget();
+        const stillSameTarget = stillPending
+          && stillPending.id === recordIdAtCleanup
+          && stillPending.type === targetTypeAtCleanup;
+        if (!stillPending || stillSameTarget) {
+          clearPendingEditTarget();
+        }
+      }, 0);
+      // Restoring the stashed live draft stays synchronous and immediate
+      // (unlike the deferred clear above): the hydration effect re-stashes
+      // on every remount whenever the ref was reset, so StrictMode's
+      // simulated cleanup->remount cycle round-trips this correctly without
+      // needing to be deferred. Deferring it too would let it fire after a
+      // genuinely later, unrelated edit session has already started.
       if (stashedLiveDraftForEditIdRef.current) {
         restoreLiveDraftFromEditSessionStash();
         stashedLiveDraftForEditIdRef.current = "";

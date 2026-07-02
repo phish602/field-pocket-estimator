@@ -1,3 +1,4 @@
+import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
@@ -84,10 +85,15 @@ function buildSavedInvoice({ id, customerName, projectName, docNumber, updatedAt
   return {
     id,
     docType: "invoice",
-    status: "unpaid",
+    status: "sent",
+    paymentStatus: "unpaid",
     customerName,
     projectName,
     invoiceNumber: docNumber,
+    invoiceTotal: 500,
+    total: 500,
+    amountPaid: 0,
+    balanceRemaining: 500,
     customer: {
       name: customerName,
       projectName,
@@ -149,6 +155,273 @@ test("Home Resume Draft opens the live estimate draft instead of the newest save
   });
   expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
   expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+});
+
+test("opening and leaving an existing invoice preserves an unrelated chambered estimate draft", async () => {
+  const liveDraft = buildLiveDraft({
+    docType: "estimate",
+    customerName: "Chamber Draft Customer",
+    projectName: "Chamber Draft Project",
+    docNumber: "CHAMBER-EST-1",
+    scopeNotes: "Resume this estimate after reviewing invoices.",
+  });
+  const draftRaw = JSON.stringify(liveDraft);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
+  localStorage.setItem(
+    STORAGE_KEYS.INVOICES,
+    JSON.stringify([
+      buildSavedInvoice({
+        id: "saved-invoice-open",
+        customerName: "Saved Invoice Customer",
+        projectName: "Saved Invoice Project",
+        docNumber: "SAVED-INV-OPEN",
+        updatedAt: Date.now(),
+      }),
+    ])
+  );
+
+  const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  render(<App />);
+
+  fireEvent.click(screen.getByLabelText("Invoices"));
+  fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+  expect(await screen.findByText("EDIT INVOICE")).toBeInTheDocument();
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+
+  await waitFor(() => {
+    expect(screen.queryByText("EDIT INVOICE")).not.toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByLabelText("Home"));
+  expect(await screen.findByRole("button", { name: /Resume Draft/i })).toBeInTheDocument();
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  confirmSpy.mockRestore();
+});
+
+test("opening and leaving an existing estimate preserves the chambered create draft", async () => {
+  const chamberDraft = buildLiveDraft({
+    docType: "estimate",
+    customerName: "Chamber Draft Customer",
+    projectName: "Chamber Draft Project",
+    docNumber: "CHAMBER-EST-2",
+    scopeNotes: "Resume this estimate after reviewing another saved estimate.",
+  });
+  const draftRaw = JSON.stringify(chamberDraft);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+  localStorage.setItem(
+    STORAGE_KEYS.ESTIMATES,
+    JSON.stringify([
+      buildSavedEstimate({
+        id: "saved-estimate-open-2",
+        customerName: "Saved Other Estimate Customer",
+        projectName: "Saved Other Estimate Project",
+        docNumber: "SAVED-EST-OTHER",
+        updatedAt: Date.now(),
+      }),
+    ])
+  );
+
+  const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  render(<App />);
+
+  fireEvent.click(screen.getByLabelText("Estimates"));
+
+  fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+  expect(await screen.findByText("EDIT ESTIMATE")).toBeInTheDocument();
+  // ESTIMATE_DRAFT and RESTORE_DRAFT_ON_CREATE must be untouched during an edit session
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+
+  await waitFor(() => {
+    expect(screen.queryByText("EDIT ESTIMATE")).not.toBeInTheDocument();
+  });
+
+  // After cancel, the stash restores ESTIMATOR_STATE back to the chamber draft
+  fireEvent.click(screen.getByLabelText("Home"));
+  expect(await screen.findByRole("button", { name: /Resume Draft/i })).toBeInTheDocument();
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  confirmSpy.mockRestore();
+});
+
+test("opening existing invoice does not show Continue Estimate blocker when estimate draft is chambered", async () => {
+  const chamberDraft = buildLiveDraft({
+    docType: "estimate",
+    customerName: "Blocker Test Customer",
+    projectName: "Blocker Test Project",
+    docNumber: "BLOCKER-EST-1",
+    scopeNotes: "This draft should not trigger a type-switch guard.",
+  });
+  const draftRaw = JSON.stringify(chamberDraft);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
+  localStorage.setItem(
+    STORAGE_KEYS.INVOICES,
+    JSON.stringify([
+      buildSavedInvoice({
+        id: "saved-invoice-blocker-test",
+        customerName: "Invoice Blocker Customer",
+        projectName: "Invoice Blocker Project",
+        docNumber: "INV-BLOCKER-1",
+        updatedAt: Date.now(),
+      }),
+    ])
+  );
+
+  render(<App />);
+
+  fireEvent.click(screen.getByLabelText("Invoices"));
+  fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+  // Must go directly to EDIT INVOICE without showing the type-switch guard
+  expect(await screen.findByText("EDIT INVOICE")).toBeInTheDocument();
+  expect(screen.queryByText(/Continue Estimate/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Start Blank Invoice/i)).not.toBeInTheDocument();
+  // Draft keys must be intact
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+});
+
+test("StrictMode: opening existing invoice does not show Continue Estimate blocker (matches the real dev-server render path in index.js)", async () => {
+  // index.js renders <App /> inside <React.StrictMode>. Its dev-only
+  // mount->cleanup->remount effect simulation is what actually triggers the
+  // "Continue Estimate / Start Blank Invoice" blocker on live/mobile devices
+  // (npm start), even though a plain render(<App />) below never reproduces
+  // it. Wrapping here closes that gap.
+  const chamberDraft = buildLiveDraft({
+    docType: "estimate",
+    customerName: "StrictMode Blocker Customer",
+    projectName: "StrictMode Blocker Project",
+    docNumber: "STRICT-EST-1",
+    scopeNotes: "This draft must survive StrictMode's dev-only double-effect simulation.",
+  });
+  const draftRaw = JSON.stringify(chamberDraft);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
+  localStorage.setItem(
+    STORAGE_KEYS.INVOICES,
+    JSON.stringify([
+      buildSavedInvoice({
+        id: "strict-invoice-1",
+        customerName: "StrictMode Invoice Customer",
+        projectName: "StrictMode Invoice Project",
+        docNumber: "INV-STRICT-1",
+        updatedAt: Date.now(),
+      }),
+    ])
+  );
+
+  render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+
+  fireEvent.click(screen.getByLabelText("Invoices"));
+  fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+  expect(await screen.findByText("EDIT INVOICE")).toBeInTheDocument();
+  expect(screen.queryByText(/Continue Estimate/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Start Blank Invoice/i)).not.toBeInTheDocument();
+
+  // Let the deferred (setTimeout-based) cleanup/consume timers settle, then
+  // confirm the chambered draft was never wiped by the StrictMode simulation.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+});
+
+test("StrictMode: opening an existing estimate preserves the chambered estimate draft and restores it after cancel (matches the real dev-server render path in index.js)", async () => {
+  const chamberDraft = buildLiveDraft({
+    docType: "estimate",
+    customerName: "StrictMode Estimate Chamber Customer",
+    projectName: "StrictMode Estimate Chamber Project",
+    docNumber: "STRICT-EST-CHAMBER-1",
+    scopeNotes: "This chambered estimate draft must survive opening a different existing estimate.",
+  });
+  const draftRaw = JSON.stringify(chamberDraft);
+
+  localStorage.setItem(STORAGE_KEYS.ESTIMATOR_STATE, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
+  localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+  localStorage.setItem(
+    STORAGE_KEYS.ESTIMATES,
+    JSON.stringify([
+      buildSavedEstimate({
+        id: "strict-estimate-1",
+        customerName: "StrictMode Estimate Customer",
+        projectName: "StrictMode Estimate Project",
+        docNumber: "EST-STRICT-1",
+        updatedAt: Date.now(),
+      }),
+    ])
+  );
+
+  const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+
+  fireEvent.click(screen.getByLabelText("Estimates"));
+  fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
+
+  expect(await screen.findByText("EDIT ESTIMATE")).toBeInTheDocument();
+
+  // Let the deferred (setTimeout-based) cleanup/consume timers settle, then
+  // confirm the chambered draft was never wiped by the StrictMode simulation.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+  await waitFor(() => {
+    expect(screen.queryByText("EDIT ESTIMATE")).not.toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByLabelText("Home"));
+  expect(await screen.findByRole("button", { name: /Resume Draft/i })).toBeInTheDocument();
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+
+  confirmSpy.mockRestore();
 });
 
 test("Home Resume Draft opens Invoice Builder for a live invoice draft even when newer saved docs exist", async () => {
