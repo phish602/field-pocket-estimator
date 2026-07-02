@@ -31,6 +31,10 @@ function createMockClient({
   getSessionError = null,
   exchangeSession = null,
   exchangeError = null,
+  signUpError = null,
+  signUpSession = null,
+  signUpUser = null,
+  resetPasswordError = null,
 } = {}) {
   let authListener = null;
   const subscription = { unsubscribe: jest.fn() };
@@ -55,6 +59,17 @@ function createMockClient({
           user: passwordSignInUser || passwordSignInSession?.user || null,
         },
         error: passwordSignInError,
+      })),
+      signUp: jest.fn(async () => ({
+        data: {
+          session: signUpSession,
+          user: signUpUser || signUpSession?.user || null,
+        },
+        error: signUpError,
+      })),
+      resetPasswordForEmail: jest.fn(async () => ({
+        data: {},
+        error: resetPasswordError,
       })),
       exchangeCodeForSession: jest.fn(async () => ({
         data: { session: exchangeSession },
@@ -257,5 +272,91 @@ describe("useSupabaseAuth", () => {
     expect(mock.client.auth.signOut).toHaveBeenCalledTimes(1);
     expect(result.current.session).toBeNull();
     expect(result.current.infoMessage).toBe("Signed out.");
+  });
+
+  test("creates an account with password and signs in immediately when a session is returned", async () => {
+    const newSession = { user: { id: "user_3", email: "new@example.com" } };
+    const mock = createMockClient({ session: null, signUpSession: newSession });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signUpWithPassword("new@example.com", "new-password");
+    });
+
+    expect(mock.client.auth.signUp).toHaveBeenCalledWith({
+      email: "new@example.com",
+      password: "new-password",
+      options: { emailRedirectTo: window.location.origin },
+    });
+    expect(result.current.userEmail).toBe("new@example.com");
+    expect(result.current.errorMessage).toBe("");
+  });
+
+  test("shows a clear error when account creation fails", async () => {
+    const mock = createMockClient({
+      session: null,
+      signUpError: { message: "User already registered" },
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signUpWithPassword("owner@example.com", "some-password");
+    });
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.errorMessage).toBe("User already registered");
+  });
+
+  test("sends a password reset email and reports a readable confirmation", async () => {
+    const mock = createMockClient({ session: null });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.resetPasswordForEmail("owner@example.com");
+    });
+
+    expect(mock.client.auth.resetPasswordForEmail).toHaveBeenCalledWith(
+      "owner@example.com",
+      { redirectTo: window.location.origin }
+    );
+    expect(result.current.infoMessage).toContain("owner@example.com");
+  });
+
+  test("shows a clear error when the password reset email fails to send", async () => {
+    const mock = createMockClient({
+      session: null,
+      resetPasswordError: { message: "Email rate limit exceeded" },
+    });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.resetPasswordForEmail("owner@example.com");
+    });
+
+    expect(result.current.errorMessage).toBe("Email rate limit exceeded");
   });
 });

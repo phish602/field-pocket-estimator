@@ -21,6 +21,8 @@ import { migrateLegacyStorageNamespace } from "./utils/storage";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "./utils/projects";
 import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
+import useSupabaseAuth from "./lib/useSupabaseAuth";
+import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -2457,7 +2459,7 @@ const styles = {
   stepLabel: { fontWeight: 800, fontSize: 12, letterSpacing: "0.2px" },
 };
 
-export default function App() {
+function EstiPaidAppShell() {
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return undefined;
     installDevJobLearningConsole();
@@ -4365,4 +4367,57 @@ const gated = false;
       ) : null}
     </div>
   );
+}
+
+const authLoadingWrapStyle = {
+  minHeight: "100dvh",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "24px 16px",
+  boxSizing: "border-box",
+};
+
+function AuthLoadingScreen() {
+  return (
+    <div style={authLoadingWrapStyle}>
+      <div style={{ display: "grid", gap: 12, justifyItems: "center" }}>
+        <img
+          src={DEFAULT_LOGO}
+          alt="EstiPaid"
+          style={{ height: 64, width: "auto", display: "block" }}
+          draggable={false}
+        />
+        <div
+          className="pe-field-helper"
+          style={{ fontSize: 12.5, letterSpacing: "0.5px", opacity: 0.8 }}
+        >
+          Checking your session...
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Local/offline use is preserved when Supabase is not configured for this
+// deployment (e.g. the current Jest test environment, or a build without
+// REACT_APP_SUPABASE_* env vars): the app shell renders directly, exactly as
+// it always has. Sign-in is only enforced when a real Supabase project is
+// wired up for this build.
+export default function App() {
+  const auth = useSupabaseAuth();
+
+  if (!auth.configured) {
+    return <EstiPaidAppShell />;
+  }
+
+  if (auth.loading) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (!auth.session) {
+    return <AuthScreen auth={auth} />;
+  }
+
+  return <EstiPaidAppShell />;
 }

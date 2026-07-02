@@ -199,6 +199,115 @@ export default function useSupabaseAuth() {
     }
   };
 
+  const signUpWithPassword = async (email, password) => {
+    const client = getSupabaseClient();
+    const normalizedEmail = String(email || "").trim();
+    const suppliedPassword = String(password ?? "");
+
+    if (!isSupabaseConfigured || !client?.auth) {
+      const message = "Supabase not configured.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    if (!normalizedEmail) {
+      const message = "Enter an email address to create an account.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    if (!suppliedPassword) {
+      const message = "Enter a password to create an account.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    setAuthBusy(true);
+    setErrorMessage("");
+    setInfoMessage("");
+
+    try {
+      const redirectTo = getRedirectUrl();
+      const { data, error } = await client.auth.signUp({
+        email: normalizedEmail,
+        password: suppliedPassword,
+        options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+      });
+
+      if (error) {
+        const message = asMessage(error, "Unable to create account.");
+        setErrorMessage(message);
+        return { ok: false, error: message };
+      }
+
+      const nextSession = data?.session || null;
+      const nextUser = data?.user || nextSession?.user || null;
+      if (nextSession) {
+        setSession(nextSession);
+        setInfoMessage(normalizedEmail ? `Account created. Signed in as ${normalizedEmail}.` : "Account created.");
+      } else {
+        setInfoMessage(`Check ${normalizedEmail} to confirm your account.`);
+      }
+      return { ok: true, session: nextSession, user: nextUser };
+    } catch (error) {
+      const message = asMessage(error, "Unable to create account.");
+      setErrorMessage(message);
+      return { ok: false, error: message };
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const resetPasswordForEmail = async (email) => {
+    const client = getSupabaseClient();
+    const normalizedEmail = String(email || "").trim();
+
+    if (!isSupabaseConfigured || !client?.auth) {
+      const message = "Supabase not configured.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    if (!normalizedEmail) {
+      const message = "Enter an email address to reset your password.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    setAuthBusy(true);
+    setErrorMessage("");
+    setInfoMessage("");
+
+    try {
+      const redirectTo = getRedirectUrl();
+      const { error } = await client.auth.resetPasswordForEmail(
+        normalizedEmail,
+        redirectTo ? { redirectTo } : undefined
+      );
+
+      if (error) {
+        const message = asMessage(error, "Unable to send password reset email.");
+        setErrorMessage(message);
+        return { ok: false, error: message };
+      }
+
+      const message = `Check ${normalizedEmail} for a password reset link.`;
+      setInfoMessage(message);
+      return { ok: true };
+    } catch (error) {
+      const message = asMessage(error, "Unable to send password reset email.");
+      setErrorMessage(message);
+      return { ok: false, error: message };
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const signOut = async () => {
     const client = getSupabaseClient();
 
@@ -247,6 +356,8 @@ export default function useSupabaseAuth() {
     infoMessage,
     signInWithEmailOtp,
     signInWithPassword,
+    signUpWithPassword,
+    resetPasswordForEmail,
     signOut,
   };
 }
