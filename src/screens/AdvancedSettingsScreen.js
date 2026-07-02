@@ -29,7 +29,9 @@ import {
   updateSupabaseAppRestoreBundle,
   APP_RESTORE_BUNDLE_STATUS,
 } from "../lib/supabaseAppRestoreBundle";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { markCloudBackupDirty, readCloudBackupQueueState, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
+import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "../lib/cloudBackupRunLock";
+import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
@@ -233,6 +235,8 @@ export default function AdvancedSettingsScreen({
   const [onboardingStatusBusy, setOnboardingStatusBusy] = useState(false);
   const [onboardingStatus, setOnboardingStatus] = useState(null);
   const [onboardingBackupBusy, setOnboardingBackupBusy] = useState(false);
+  const [autoBackupQueueState, setAutoBackupQueueState] = useState(() => readCloudBackupQueueState());
+  const [autoBackupWorkerRunning, setAutoBackupWorkerRunning] = useState(false);
   const [restorePreviewBusy, setRestorePreviewBusy] = useState(false);
   const [restorePreview, setRestorePreview] = useState(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -554,6 +558,9 @@ export default function AdvancedSettingsScreen({
   }, [isSupabaseReady, user, company, accountRole]);
 
   const runCloudBackup = async () => {
+    // Shared with the Gate 13B automatic background worker so a manual click
+    // and an automatic run never execute a cloud backup at the same time.
+    if (!acquireCloudBackupRunLock()) return;
     try {
       setOnboardingBackupBusy(true);
       const result = await runSupabaseCloudOnboardingBackup({
@@ -574,9 +581,56 @@ export default function AdvancedSettingsScreen({
         noLocalDeletes: true,
       });
     } finally {
+      releaseCloudBackupRunLock();
       setOnboardingBackupBusy(false);
     }
   };
+
+  // Read-only: mirrors the Gate 13A cloud-backup queue and the Gate 13B
+  // worker's live running state so this screen can show a calm, separate
+  // "automatic backup" status line without changing the onboarding flow
+  // above. Never writes.
+  useEffect(() => {
+    const refreshQueueState = () => setAutoBackupQueueState(readCloudBackupQueueState());
+
+    const onStorageEvent = (event) => {
+      const key = event?.detail?.key;
+      if (key && key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE) return;
+      refreshQueueState();
+    };
+
+    const onWorkerRunningEvent = (event) => {
+      setAutoBackupWorkerRunning(Boolean(event?.detail?.running));
+    };
+
+    refreshQueueState();
+
+    try {
+      window.addEventListener("pe-localstorage", onStorageEvent);
+      window.addEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
+    } catch {}
+
+    return () => {
+      try {
+        window.removeEventListener("pe-localstorage", onStorageEvent);
+        window.removeEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
+      } catch {}
+    };
+  }, []);
+
+  const autoBackupRunning = onboardingBackupBusy || autoBackupWorkerRunning;
+  // "Current" is only shown once a backup has actually been confirmed --
+  // a fresh queue that has never been dirty and never backed up has nothing
+  // to report yet, so the detailed status below speaks for it instead.
+  const autoBackupDisplayState = autoBackupRunning
+    ? "running"
+    : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.FAILED
+      ? "failed"
+      : autoBackupQueueState.pending
+        ? "pending"
+        : autoBackupQueueState.lastSuccessfulBackupAt
+          ? "current"
+          : "none";
 
   // Read-only: once onboarding detects a fresh device with cloud data
   // available, check exactly what (if anything) is safely restorable. Never
@@ -1249,6 +1303,38 @@ export default function AdvancedSettingsScreen({
                 }}
               >
                 <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Backup</div>
+                {isSupabaseReady && userEmail && hasCompany && autoBackupDisplayState !== "none" ? (
+                  <div style={{ display: "grid", gap: 2 }}>
+                    {autoBackupDisplayState === "running" ? (
+                      <div role="status" aria-live="polite" className="pe-field-helper">
+                        Backing up changes...
+                      </div>
+                    ) : autoBackupDisplayState === "failed" ? (
+                      <>
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                          Cloud backup needs attention
+                        </div>
+                        <div className="pe-field-helper">Your work is saved on this device. Cloud backup will retry.</div>
+                      </>
+                    ) : autoBackupDisplayState === "pending" ? (
+                      <>
+                        <div className="pe-field-helper">Cloud backup pending</div>
+                        <div className="pe-field-helper">Your latest changes are saved on this device and will back up automatically.</div>
+                      </>
+                    ) : (
+                      <>
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                          Cloud backup is up to date.
+                        </div>
+                        {autoBackupQueueState.lastSuccessfulBackupAt ? (
+                          <div className="pe-field-helper" style={{ opacity: 0.75 }}>
+                            Last backed up {new Date(autoBackupQueueState.lastSuccessfulBackupAt).toLocaleString()}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                ) : null}
                 {!isSupabaseReady || !userEmail ? (
                   <div className="pe-field-helper">Sign in from the welcome screen to use cloud backup.</div>
                 ) : !hasCompany ? (

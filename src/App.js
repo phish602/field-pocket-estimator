@@ -22,6 +22,8 @@ import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./uti
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "./utils/projects";
 import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
 import useSupabaseAuth from "./lib/useSupabaseAuth";
+import useSupabaseAccount from "./lib/useSupabaseAccount";
+import useCloudAutoBackup from "./lib/useCloudAutoBackup";
 import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -4406,6 +4408,18 @@ function AuthLoadingScreen() {
 // wired up for this build.
 export default function App() {
   const auth = useSupabaseAuth();
+  const account = useSupabaseAccount({ configured: auth.configured, user: auth.user });
+
+  // Gate 13B: background automatic cloud backup worker. Called unconditionally
+  // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
+  // Supabase is configured, and a workspace exists.
+  useCloudAutoBackup({
+    enabled: Boolean(auth.configured && auth.session),
+    configured: auth.configured,
+    user: auth.user,
+    company: account.company,
+    role: account.role,
+  });
 
   if (!auth.configured) {
     return <EstiPaidAppShell />;

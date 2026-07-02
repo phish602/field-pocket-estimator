@@ -26,6 +26,12 @@ import {
   updateSupabaseAppRestoreBundle,
   APP_RESTORE_BUNDLE_STATUS,
 } from "../lib/supabaseAppRestoreBundle";
+import {
+  markCloudBackupDirty,
+  clearCloudBackupDirty,
+  recordCloudBackupAttemptFailure,
+} from "../lib/cloudBackupQueue";
+import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -177,6 +183,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
   }
 
   beforeEach(() => {
+    localStorage.removeItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
     useSupabaseAuth.mockReturnValue(buildAuthState());
     useSupabaseAccount.mockReturnValue(buildAccountState());
     useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
@@ -913,6 +920,92 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("No cloud data was deleted.")).toBeInTheDocument();
     expect(screen.getByText("No existing local data was overwritten.")).toBeInTheDocument();
     expect(screen.queryByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).not.toBeInTheDocument();
+  });
+
+  function mockSignedInWithCompany() {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+  }
+
+  test("shows the calm automatic backup pending status when the Gate 13A queue is dirty", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup pending")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your latest changes are saved on this device and will back up automatically.")
+    ).toBeInTheDocument();
+  });
+
+  test("shows the calm automatic backup running status while the background worker is backing up", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup pending")).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
+    });
+
+    expect(screen.getByText("Backing up changes...")).toBeInTheDocument();
+    expect(screen.queryByText("Cloud backup pending")).not.toBeInTheDocument();
+  });
+
+  test("shows the calm automatic backup current status once the queue clears with a confirmed backup", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+    clearCloudBackupDirty("manual_backup_success");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+    expect(screen.getByText(/Last backed up/)).toBeInTheDocument();
+  });
+
+  test("shows the calm automatic backup failed status and keeps it pending after a recorded failure", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+    recordCloudBackupAttemptFailure("Unable to reach Supabase.");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup needs attention")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your work is saved on this device. Cloud backup will retry.")
+    ).toBeInTheDocument();
   });
 
   test("restore success reports company profile, logo, settings, and scope templates restored when the app bundle is present", async () => {
