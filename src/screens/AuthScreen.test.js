@@ -156,7 +156,7 @@ describe("App-level auth gating", () => {
     seedBaselineLocalData();
     render(<App />);
 
-    expect(await screen.findByText(/Sign in to sync your company/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Sign in to back up and restore your company/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Invoices")).not.toBeInTheDocument();
   });
 
@@ -167,21 +167,21 @@ describe("App-level auth gating", () => {
     render(<App />);
 
     expect(await screen.findByLabelText("Invoices")).toBeInTheDocument();
-    expect(screen.queryByText(/Sign in to sync your company/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sign in to back up and restore your company/i)).not.toBeInTheDocument();
   });
 
   test("sign-in success renders app shell", async () => {
     seedBaselineLocalData();
     render(<App />);
 
-    await screen.findByText(/Sign in to sync your company/i);
+    await screen.findByText(/Sign in to back up and restore your company/i);
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "owner@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-password" } });
     fireEvent.click(screen.getByRole("button", { name: /^Sign In$/i }));
 
     expect(await screen.findByLabelText("Invoices")).toBeInTheDocument();
-    expect(screen.queryByText(/Sign in to sync your company/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sign in to back up and restore your company/i)).not.toBeInTheDocument();
   });
 
   test("sign-in failure shows a readable error and stays on AuthScreen", async () => {
@@ -189,7 +189,7 @@ describe("App-level auth gating", () => {
     seedBaselineLocalData();
     render(<App />);
 
-    await screen.findByText(/Sign in to sync your company/i);
+    await screen.findByText(/Sign in to back up and restore your company/i);
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "owner@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong-password" } });
@@ -211,12 +211,24 @@ describe("App-level auth gating", () => {
       mockSetSharedSession(null);
     });
 
-    expect(await screen.findByText(/Sign in to sync your company/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Sign in to back up and restore your company/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Invoices")).not.toBeInTheDocument();
   });
 });
 
 describe("AuthScreen standalone", () => {
+  test("renders a polished login screen with brand, heading, and explainer", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    expect(screen.getByAltText("EstiPaid")).toBeInTheDocument();
+    expect(screen.getAllByText("Sign In").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/Sign in to back up and restore your company/i)
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
   test("shows Create Account and Forgot Password affordances when supported", () => {
     render(<AuthScreen auth={buildAuthProp()} />);
 
@@ -240,9 +252,9 @@ describe("AuthScreen standalone", () => {
     expect(screen.queryByText(/Signed in as/i)).not.toBeInTheDocument();
   });
 
-  test("use different account clears remembered-account copy", () => {
+  test("use different account clears remembered-account block from view", () => {
     const clearRememberedAccount = jest.fn();
-    render(
+    const { rerender } = render(
       <AuthScreen
         auth={buildAuthProp({
           rememberedEmail: "owner@example.com",
@@ -251,9 +263,23 @@ describe("AuthScreen standalone", () => {
       />
     );
 
+    expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: /Use Different Account/i }));
 
     expect(clearRememberedAccount).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <AuthScreen
+        auth={buildAuthProp({
+          rememberedEmail: "",
+          clearRememberedAccount,
+        })}
+      />
+    );
+
+    expect(screen.queryByText(/Welcome back/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Last used account:/i)).not.toBeInTheDocument();
   });
 
   test("hides Create Account and Forgot Password when not supported", () => {
@@ -372,5 +398,30 @@ describe("AuthScreen standalone", () => {
     render(<AuthScreen auth={buildAuthProp({ authBusy: true })} />);
 
     expect(screen.getByRole("button", { name: /Signing In\.\.\./i })).toBeDisabled();
+  });
+
+  test("Sign In is the primary submit action", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    const submitButtons = screen.getAllByRole("button", { name: /^Sign In$/i });
+    expect(submitButtons).toHaveLength(1);
+    expect(submitButtons[0]).toHaveAttribute("type", "submit");
+
+    const otherButtons = screen.getAllByRole("button").filter((btn) => btn !== submitButtons[0]);
+    otherButtons.forEach((btn) => {
+      expect(btn).toHaveAttribute("type", "button");
+    });
+  });
+
+  test("keyboard form submit (Enter/Go) still calls signInWithPassword", () => {
+    const signInWithPassword = jest.fn(async () => ({ ok: true }));
+    const { container } = render(<AuthScreen auth={buildAuthProp({ signInWithPassword })} />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "owner@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-password" } });
+
+    fireEvent.submit(container.querySelector("form"));
+
+    expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "correct-password");
   });
 });
