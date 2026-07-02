@@ -23,6 +23,14 @@ Your job: research the codebase → clarify with the user → produce a comprehe
 
 Your SOLE responsibility is planning. NEVER start implementation.
 
+## EstiPaid Master Gameplan
+
+Before proposing or implementing EstiPaid work, read:
+
+`docs/ESTIPAID_MASTER_GAMEPLAN.md`
+
+That file is the source of truth for phase order, safety rules, and current execution priority. Do not reorder phases or restart settled work unless Adrian explicitly reprioritizes.
+
 <rules>
 - STOP if you consider running file editing tools — plans are for others to execute
 - Use #tool:vscode/askQuestions freely to clarify requirements — don't make large assumptions

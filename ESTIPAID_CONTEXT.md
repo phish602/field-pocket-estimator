@@ -9,6 +9,16 @@
 
 ---
 
+## EstiPaid Master Gameplan
+
+Before proposing or implementing EstiPaid work, read:
+
+`docs/ESTIPAID_MASTER_GAMEPLAN.md`
+
+That file is the source of truth for phase order, safety rules, and current execution priority. Do not reorder phases or restart settled work unless Adrian explicitly reprioritizes.
+
+---
+
 ## Core operating mode
 - Treat this file as the long-form baseline for EstiPaid work
 - Do not ask me to restate stable project history unless the current task truly depends on it
