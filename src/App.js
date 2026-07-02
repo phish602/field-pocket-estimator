@@ -24,6 +24,8 @@ import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
 import useSupabaseAuth from "./lib/useSupabaseAuth";
 import useSupabaseAccount from "./lib/useSupabaseAccount";
 import useCloudAutoBackup from "./lib/useCloudAutoBackup";
+import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
+import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
 import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -1779,6 +1781,8 @@ function HomeScreen({
         </div>
       </div>
 
+      <CloudBackupStatusBadge />
+
       {hasLiveDraft ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
           <div className="pe-card pe-home-momentum-panel" style={{ padding: 0, overflow: "hidden" }}>
@@ -3143,6 +3147,18 @@ const [spinTick, setSpinTick] = useState(0);
 
     window.addEventListener("estipaid:profile-save-return", onProfileSaveReturn);
     return () => window.removeEventListener("estipaid:profile-save-return", onProfileSaveReturn);
+  }, [navigateTo]);
+
+  // Gate 13C: a completed Restore From Cloud should feel finished, not
+  // stranded on Advanced Settings -- send the user Home so restored data is
+  // visible without clicking around. Never fires on restore failure (the
+  // event is only dispatched after a confirmed successful restore).
+  useEffect(() => {
+    const onCloudRestoreComplete = () => {
+      try { navigateTo(ROUTES.HOME, { bypassDirtyGuard: true }); } catch {}
+    };
+    window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onCloudRestoreComplete);
+    return () => window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onCloudRestoreComplete);
   }, [navigateTo]);
 
   useEffect(() => {

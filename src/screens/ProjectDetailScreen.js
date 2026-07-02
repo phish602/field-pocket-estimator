@@ -289,6 +289,7 @@ const S = {
     display: "grid",
     gap: 4,
     minWidth: 0,
+    maxWidth: "100%",
   },
   heroFinancialLabel: {
     fontSize: 10.5,
@@ -298,11 +299,14 @@ const S = {
     color: "rgba(230,241,248,0.4)",
   },
   heroFinancialValue: {
-    fontSize: 25,
+    fontSize: "clamp(1.1rem, 4.2vw, 1.5625rem)",
     lineHeight: 1.1,
     fontWeight: 800,
     fontVariantNumeric: "tabular-nums",
     color: "rgba(230,241,248,0.96)",
+    minWidth: 0,
+    maxWidth: "100%",
+    overflowWrap: "anywhere",
   },
   heroFinancialMeta: {
     fontSize: 11.5,
@@ -671,7 +675,10 @@ export default function ProjectDetailScreen({
   const isArchivedProject = storedProjectStatus === "archived";
   const overviewValueStyle = S.overviewValue;
   const projectNameStyle = isPhone ? { ...S.projectName, fontSize: 24 } : S.projectName;
-  const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : S.heroFinancialGrid;
+  // Mobile-safe: a fixed 2-column grid left large dollar values (e.g.
+  // $9,209.68) crowding or spilling across neighboring cards on narrow
+  // phones. Single column guarantees each card gets the full row width.
+  const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "1fr" } : S.heroFinancialGrid;
   const overviewGridStyle = S.overviewGrid;
   const docFlowGridStyle = isPhone ? { ...S.docFlowGrid, gridTemplateColumns: "1fr" } : S.docFlowGrid;
   const nextStepTone = overdueCount > 0

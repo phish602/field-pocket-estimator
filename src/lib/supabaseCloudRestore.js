@@ -6,6 +6,22 @@ import { clearCloudBackupDirty } from "./cloudBackupQueue";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
+// Gate 13C: fired once a restore has finished writing local data, dispatching
+// its change events, and clearing the backup queue -- so the app shell can
+// navigate the user to Home and surface a success signal instead of leaving
+// them on a stale screen. Same-tab only; never fired on failure.
+export const CLOUD_RESTORE_COMPLETE_EVENT = "estipaid:cloud-restore-complete";
+
+// In-memory only (never persisted): lets a component that mounts *after* the
+// event already fired (e.g. Home, freshly mounted by the app shell's
+// navigation-on-restore) still know a restore just completed, without
+// relying on event-listener mount order.
+let lastRestoreCompleteAt = 0;
+
+export function getLastCloudRestoreCompleteAt() {
+  return lastRestoreCompleteAt;
+}
+
 export const CLOUD_RESTORE_STATUS = {
   SIGNED_OUT: "signed_out",
   NO_WORKSPACE: "no_workspace",
@@ -606,6 +622,13 @@ export async function executeSupabaseCloudRestore({
   // A successful restore makes local data equal to cloud by definition --
   // there is nothing dirty to back up, so clear (not mark) the queue.
   clearCloudBackupDirty("cloud_restore_success");
+
+  try {
+    lastRestoreCompleteAt = Date.now();
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent(CLOUD_RESTORE_COMPLETE_EVENT, { detail: { restored: true, at: lastRestoreCompleteAt } }));
+    }
+  } catch {}
 
   return buildExecuteResult(CLOUD_RESTORE_STATUS.RESTORED, {
     restored: true,
