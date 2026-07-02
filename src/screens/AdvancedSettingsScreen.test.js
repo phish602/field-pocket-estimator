@@ -596,7 +596,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     expect(screen.getByText(/Company:/i)).toBeInTheDocument();
@@ -624,7 +624,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     await act(async () => {
@@ -693,7 +693,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       noWritesPerformed: true,
     });
 
-    const { container } = render(<AdvancedSettingsScreen />);
+    const { container } = render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Verify Cloud Data" }));
@@ -726,10 +726,11 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
     });
 
-    expect(screen.getByText("Sign in to back up your data to the cloud.")).toBeInTheDocument();
+    expect(screen.getByText("Sign in to access cloud backup and restore.")).toBeInTheDocument();
+    expect(screen.queryByText("Developer Migration Tools")).not.toBeInTheDocument();
     expect(checkSupabaseCloudOnboardingStatus).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
   });
@@ -749,7 +750,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
     });
 
     expect(screen.getByText("Create a cloud workspace before backing up your data.")).toBeInTheDocument();
@@ -783,12 +784,12 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
     });
 
-    expect(screen.getByText("Your data is backed up to the cloud.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
@@ -796,7 +797,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
-  test("ready local data state offers Back Up My Data to Cloud", async () => {
+  test("ready local data state offers Back Up This Device", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -825,8 +826,8 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText(/We found saved estimates, invoices, customers, and projects on this device\./i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back Up My Data to Cloud" })).toBeInTheDocument();
+    expect(screen.getByText("This device has work that is not backed up yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
   });
 
   test("cloud_available_empty_device state explains a fresh device, offers restore only after eligibility check, and never calls migration write", async () => {
@@ -875,21 +876,18 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud data is available for this workspace.")).toBeInTheDocument();
-    expect(screen.getByText("This device does not have local estimates or invoices yet.")).toBeInTheDocument();
-    expect(screen.getByText("Business records can be restored on an empty device, but company profile, logo, settings, and scope templates are not part of Supabase restore yet. They need a separate backup/update step.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.getByText("Cloud data found.")).toBeInTheDocument();
+    expect(screen.getByText("This device has no saved work yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Developer Migration Tools")).not.toBeInTheDocument();
     expect(previewSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
       storageSnapshot: localStorage,
       configured: true,
       company: expect.objectContaining({ id: "company_1" }),
     }));
     const restoreButton = screen.getByRole("button", { name: "Restore Cloud Data to This Device" });
-    expect(restoreButton).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "nope" } });
-    expect(restoreButton).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
     expect(restoreButton).not.toBeDisabled();
+    expect(screen.queryByLabelText("Type RESTORE to confirm")).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
@@ -957,10 +955,16 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
-
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Restore Cloud Data to This Device" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Restore cloud data to this device?" })).toBeInTheDocument();
+    expect(screen.getByText("This will copy your cloud backup onto this device.")).toBeInTheDocument();
+    expect(screen.getByText("It will not delete your cloud backup.")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
     });
 
     expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
@@ -971,7 +975,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud data restored to this device.")).toBeInTheDocument();
     expect(screen.getByText("No cloud data was deleted.")).toBeInTheDocument();
     expect(screen.getByText("No existing local data was overwritten.")).toBeInTheDocument();
-    expect(screen.getByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).toBeInTheDocument();
+    expect(screen.queryByText("Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.")).not.toBeInTheDocument();
   });
 
   test("restore success reports company profile, logo, settings, and scope templates restored when the app bundle is present", async () => {
@@ -1040,10 +1044,12 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    fireEvent.change(screen.getByLabelText("Type RESTORE to confirm"), { target: { value: "RESTORE" } });
-
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Restore Cloud Data to This Device" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
     });
 
     expect(screen.getByText("Company profile, logo, settings, and scope templates restored.")).toBeInTheDocument();
@@ -1124,9 +1130,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("This device has local data that does not fully match the cloud.")).toBeInTheDocument();
-    expect(screen.getByText("Review before syncing or restoring.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back Up My Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.getByText("This device and cloud backup are different.")).toBeInTheDocument();
+    expect(screen.getByText("Review before backing up or restoring.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
@@ -1134,7 +1140,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
-  test("clicking Back Up My Data to Cloud runs the onboarding backup and shows success with no local deletion message", async () => {
+  test("clicking Back Up This Device runs the onboarding backup and shows success with no local deletion message", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -1172,7 +1178,15 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back Up My Data to Cloud" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back Up This Device" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Back up this device to cloud?" })).toBeInTheDocument();
+    expect(screen.getByText("This will copy this device's saved work to your cloud backup.")).toBeInTheDocument();
+    expect(screen.getByText("It will not delete local data on this device.")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
     });
 
     expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
@@ -1181,7 +1195,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       company: expect.objectContaining({ id: "company_1" }),
       role: "owner",
     }));
-    expect(screen.getByText("Your data is backed up to the cloud.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
     expect(screen.getByText("No local data was deleted.")).toBeInTheDocument();
   });
@@ -1224,15 +1238,19 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back Up My Data to Cloud" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back Up This Device" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
     });
 
     expect(screen.getByText("We couldn't finish cloud backup automatically.")).toBeInTheDocument();
-    expect(screen.getByText("Open developer migration tools for details.")).toBeInTheDocument();
-    expect(screen.queryByText("Your data is backed up to the cloud.")).not.toBeInTheDocument();
+    expect(screen.getByText("Review this device and cloud backup before trying again.")).toBeInTheDocument();
+    expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
   });
 
-  test("technical migration tools remain available but separated under Developer Migration Tools", async () => {
+  test("technical migration tools remain available behind the explicit Developer Migration Tools gate", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -1250,7 +1268,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     expect(screen.getByText("Developer Migration Tools")).toBeInTheDocument();
@@ -1284,7 +1302,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     const button = screen.getByRole("button", { name: "Update App Restore Bundle" });
@@ -1338,7 +1356,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     fireEvent.change(screen.getByLabelText("Type BUNDLE to confirm"), { target: { value: "BUNDLE" } });
@@ -1373,7 +1391,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     }));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     const updateButton = screen.getByRole("button", { name: "Update Estimate Restore Payloads" });
@@ -1417,7 +1435,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     const setItemSpy = jest.spyOn(window.localStorage.__proto__, "setItem");
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     fireEvent.change(screen.getByLabelText("Type PAYLOAD to confirm"), { target: { value: "PAYLOAD" } });
@@ -1457,7 +1475,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     isSupabaseMigrationPreviewReady.mockImplementation((preview) => Boolean(preview?.company?.id));
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     const migrateButton = screen.getByRole("button", { name: "Migrate Local Data to Cloud" });
@@ -1529,7 +1547,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      render(<AdvancedSettingsScreen />);
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
     });
 
     await act(async () => {

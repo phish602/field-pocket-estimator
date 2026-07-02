@@ -31,6 +31,7 @@ import {
 } from "../lib/supabaseAppRestoreBundle";
 
 const ESTIPAID_PREFIX = "estipaid-";
+const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -128,11 +129,18 @@ function inferWorkspaceName() {
   return String(profile?.companyName || profile?.name || "").trim();
 }
 
-function getRestoreCoverageNoticeMessages(result) {
-  return (Array.isArray(result?.notices) ? result.notices : [])
-    .filter((notice) => String(notice?.code || "").trim() === "supplemental_restore_not_available")
-    .map((notice) => String(notice?.message || "").trim())
-    .filter(Boolean);
+function resolveDeveloperCloudToolsEnabled(explicitValue) {
+  if (typeof explicitValue === "boolean") return explicitValue;
+  try {
+    if (localStorage.getItem(DEV_CLOUD_TOOLS_FLAG) === "1") return true;
+  } catch {}
+  try {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search || "");
+      if (params.get("devCloudTools") === "1") return true;
+    }
+  } catch {}
+  return false;
 }
 
 function SettingRow({ title, hint, control }) {
@@ -206,6 +214,7 @@ export default function AdvancedSettingsScreen({
   onOpenTemplates = null,
   onOpenSnapshot = null,
   snapshotAvailable = false,
+  developerCloudToolsEnabled,
 } = {}) {
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
@@ -227,7 +236,6 @@ export default function AdvancedSettingsScreen({
   const [onboardingBackupBusy, setOnboardingBackupBusy] = useState(false);
   const [restorePreviewBusy, setRestorePreviewBusy] = useState(false);
   const [restorePreview, setRestorePreview] = useState(null);
-  const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState(null);
   const [appBundleConfirmText, setAppBundleConfirmText] = useState("");
@@ -236,9 +244,11 @@ export default function AdvancedSettingsScreen({
   const [estimatePayloadConfirmText, setEstimatePayloadConfirmText] = useState("");
   const [estimatePayloadBusy, setEstimatePayloadBusy] = useState(false);
   const [estimatePayloadResult, setEstimatePayloadResult] = useState(null);
+  const [cloudConfirmDialog, setCloudConfirmDialog] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
   const isDevBuild = process.env.NODE_ENV !== "production";
+  const showDeveloperCloudTools = resolveDeveloperCloudToolsEnabled(developerCloudToolsEnabled);
   const {
     configured: isSupabaseReady,
     missingEnvKeys,
@@ -646,9 +656,6 @@ export default function AdvancedSettingsScreen({
         company,
       });
       setRestoreResult(result);
-      if (result?.restored) {
-        setRestoreConfirmText("");
-      }
     } catch {
       setRestoreResult({
         status: CLOUD_RESTORE_STATUS.ERROR,
@@ -660,6 +667,42 @@ export default function AdvancedSettingsScreen({
       });
     } finally {
       setRestoreBusy(false);
+    }
+  };
+
+  const requestCloudBackupConfirmation = () => {
+    setCloudConfirmDialog({
+      action: "backup",
+      title: "Back up this device to cloud?",
+      lines: [
+        "This will copy this device's saved work to your cloud backup.",
+        "It will not delete local data on this device.",
+      ],
+      confirmLabel: "Back Up Now",
+    });
+  };
+
+  const requestCloudRestoreConfirmation = () => {
+    setCloudConfirmDialog({
+      action: "restore",
+      title: "Restore cloud data to this device?",
+      lines: [
+        "This will copy your cloud backup onto this device.",
+        "It will not delete your cloud backup.",
+      ],
+      confirmLabel: "Restore Data",
+    });
+  };
+
+  const confirmCloudAction = async () => {
+    const action = String(cloudConfirmDialog?.action || "").trim();
+    setCloudConfirmDialog(null);
+    if (action === "backup") {
+      await runCloudBackup();
+      return;
+    }
+    if (action === "restore") {
+      await runCloudRestore();
     }
   };
 
@@ -1275,7 +1318,7 @@ export default function AdvancedSettingsScreen({
               >
                 <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Backup</div>
                 {!isSupabaseReady || !userEmail ? (
-                  <div className="pe-field-helper">Sign in to back up your data to the cloud.</div>
+                  <div className="pe-field-helper">Sign in to access cloud backup and restore.</div>
                 ) : !hasCompany ? (
                   <div className="pe-field-helper">Create a cloud workspace before backing up your data.</div>
                 ) : onboardingBackupBusy ? (
@@ -1284,13 +1327,13 @@ export default function AdvancedSettingsScreen({
                   <div className="pe-field-helper">Checking cloud backup status...</div>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA ? (
                   <>
-                    <div className="pe-field-helper">No saved estimates or invoices were found yet.</div>
+                    <div className="pe-field-helper">This device has no saved work yet.</div>
                     <div className="pe-field-helper">Create your first project to start cloud backup.</div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE ? (
                   <>
-                    <div className="pe-field-helper">Cloud data is available for this workspace.</div>
-                    <div className="pe-field-helper">This device does not have local estimates or invoices yet.</div>
+                    <div className="pe-field-helper">Cloud data found.</div>
+                    <div className="pe-field-helper">This device has no saved work yet.</div>
                     {restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED ? (
                       <>
                         <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
@@ -1305,10 +1348,6 @@ export default function AdvancedSettingsScreen({
                           <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
                             Company profile, logo, settings, and scope templates restored.
                           </div>
-                        ) : getRestoreCoverageNoticeMessages(restoreResult).length > 0 ? (
-                          <div className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                            Business records restored. Company profile, logo, settings, and scope templates need a separate backup/update step.
-                          </div>
                         ) : null}
                       </>
                     ) : restoreBusy ? (
@@ -1318,7 +1357,7 @@ export default function AdvancedSettingsScreen({
                         <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
                           {restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
                             ? "This device already has local data. Restore is blocked to prevent overwriting."
-                            : "Restore could not be completed. Open developer migration tools for details."}
+                            : "Restore could not be completed on this device."}
                         </div>
                       </>
                     ) : restorePreviewBusy && !restorePreview ? (
@@ -1330,30 +1369,13 @@ export default function AdvancedSettingsScreen({
                         {restorePreview?.partial ? (
                           <div className="pe-field-helper">Estimates can&apos;t be restored yet; customers, projects, and invoices will be.</div>
                         ) : null}
-                        {getRestoreCoverageNoticeMessages(restorePreview).map((message) => (
-                          <div key={`restore-preview-${message}`} className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                            {message}
-                          </div>
-                        ))}
-                        <label className="pe-field-helper" htmlFor="restore-confirm-input" style={{ marginTop: 2 }}>
-                          Type RESTORE to confirm
-                        </label>
-                        <input
-                          id="restore-confirm-input"
-                          type="text"
-                          className="pe-input"
-                          value={restoreConfirmText}
-                          onChange={(e) => setRestoreConfirmText(e.target.value)}
-                          placeholder="RESTORE"
-                          disabled={restoreBusy}
-                          style={{ maxWidth: 220 }}
-                        />
+                        <div className="pe-field-helper">Restore is available for this device.</div>
                         <div>
                           <button
                             type="button"
                             className="pe-btn"
-                            onClick={runCloudRestore}
-                            disabled={restoreBusy || restoreConfirmText !== "RESTORE"}
+                            onClick={requestCloudRestoreConfirmation}
+                            disabled={restoreBusy}
                           >
                             Restore Cloud Data to This Device
                           </button>
@@ -1366,7 +1388,7 @@ export default function AdvancedSettingsScreen({
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
-                      Your data is backed up to the cloud.
+                      Cloud backup is up to date.
                     </div>
                     <div className="pe-field-helper">Cloud data matches this device.</div>
                     <div className="pe-field-helper">No local data was deleted.</div>
@@ -1374,16 +1396,16 @@ export default function AdvancedSettingsScreen({
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
-                      Your data is backed up to the cloud.
+                      Cloud backup is up to date.
                     </div>
                     <div className="pe-field-helper">Cloud data matches this device.</div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                      This device has local data that does not fully match the cloud.
+                      This device and cloud backup are different.
                     </div>
-                    <div className="pe-field-helper">Review before syncing or restoring.</div>
+                    <div className="pe-field-helper">Review before backing up or restoring.</div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
                   || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ERROR ? (
@@ -1391,21 +1413,25 @@ export default function AdvancedSettingsScreen({
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
                       We couldn&apos;t finish cloud backup automatically.
                     </div>
-                    <div className="pe-field-helper">Open developer migration tools for details.</div>
+                    <div className="pe-field-helper">
+                      {showDeveloperCloudTools
+                        ? "Open developer migration tools for details."
+                        : "Review this device and cloud backup before trying again."}
+                    </div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP ? (
                   <>
                     <div className="pe-field-helper">
-                      We found saved estimates, invoices, customers, and projects on this device.
+                      This device has work that is not backed up yet.
                     </div>
                     <div>
                       <button
                         type="button"
                         className="pe-btn"
-                        onClick={runCloudBackup}
+                        onClick={requestCloudBackupConfirmation}
                         disabled={onboardingBackupBusy}
                       >
-                        Back Up My Data to Cloud
+                        Back Up This Device
                       </button>
                     </div>
                   </>
@@ -1416,6 +1442,8 @@ export default function AdvancedSettingsScreen({
                 )}
               </div>
 
+              {showDeveloperCloudTools ? (
+                <>
               <div
                 style={{
                   display: "grid",
@@ -1889,6 +1917,8 @@ export default function AdvancedSettingsScreen({
                   ) : null}
                 </div>
               </div>
+                </>
+              ) : null}
             </div>
 
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
@@ -2028,6 +2058,60 @@ export default function AdvancedSettingsScreen({
           </div>
         </div>
       </div>
+      {cloudConfirmDialog ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cloud-confirm-dialog-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(2,6,23,0.66)",
+            display: "grid",
+            placeItems: "center",
+            padding: 20,
+            zIndex: 60,
+          }}
+        >
+          <div
+            className="pe-card pe-card-content"
+            style={{
+              width: "min(100%, 460px)",
+              display: "grid",
+              gap: 12,
+              borderRadius: 18,
+              border: "1px solid rgba(148,163,184,0.24)",
+              background: "linear-gradient(180deg, rgba(30,41,59,0.96), rgba(15,23,42,0.98))",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.38)",
+            }}
+          >
+            <div id="cloud-confirm-dialog-title" className="pe-field-label" style={{ marginBottom: 0 }}>
+              {cloudConfirmDialog.title}
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              {cloudConfirmDialog.lines.map((line) => (
+                <div key={line} className="pe-field-helper">{line}</div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setCloudConfirmDialog(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pe-btn"
+                onClick={confirmCloudAction}
+              >
+                {cloudConfirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
