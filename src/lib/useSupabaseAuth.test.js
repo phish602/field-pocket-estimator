@@ -220,6 +220,7 @@ describe("useSupabaseAuth", () => {
     });
     expect(result.current.userEmail).toBe("owner@example.com");
     expect(result.current.infoMessage).toBe("Signed in as owner@example.com.");
+    expect(result.current.rememberedEmail).toBe("owner@example.com");
     expect(setItemSpy).not.toHaveBeenCalled();
   });
 
@@ -271,7 +272,36 @@ describe("useSupabaseAuth", () => {
 
     expect(mock.client.auth.signOut).toHaveBeenCalledTimes(1);
     expect(result.current.session).toBeNull();
-    expect(result.current.infoMessage).toBe("Signed out.");
+    expect(result.current.infoMessage).toBe("");
+    expect(result.current.rememberedEmail).toBe("owner@example.com");
+  });
+
+  test("clears stale signed-in copy after auth state changes to signed out", async () => {
+    const initialSession = { user: { email: "owner@example.com" } };
+    const mock = createMockClient({ session: initialSession });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.userEmail).toBe("owner@example.com");
+    });
+
+    await act(async () => {
+      await result.current.signInWithPassword("owner@example.com", "correct-password");
+    });
+
+    expect(result.current.infoMessage).toBe("Signed in as owner@example.com.");
+
+    act(() => {
+      mock.emitAuthStateChange("SIGNED_OUT", null);
+    });
+
+    expect(result.current.session).toBeNull();
+    expect(result.current.userEmail).toBe("");
+    expect(result.current.infoMessage).toBe("");
+    expect(result.current.rememberedEmail).toBe("owner@example.com");
   });
 
   test("creates an account with password and signs in immediately when a session is returned", async () => {

@@ -132,6 +132,8 @@ function buildAuthProp(overrides = {}) {
     authBusy: false,
     errorMessage: "",
     infoMessage: "",
+    rememberedEmail: "",
+    clearRememberedAccount: jest.fn(),
     signInWithPassword: jest.fn(async () => ({ ok: true })),
     signUpWithPassword: jest.fn(async () => ({ ok: true })),
     resetPasswordForEmail: jest.fn(async () => ({ ok: true })),
@@ -222,6 +224,38 @@ describe("AuthScreen standalone", () => {
     expect(screen.getByRole("button", { name: /Forgot Password\?/i })).toBeInTheDocument();
   });
 
+  test("shows remembered-account copy instead of stale signed-in copy when signed out", () => {
+    render(
+      <AuthScreen
+        auth={buildAuthProp({
+          rememberedEmail: "owner@example.com",
+          infoMessage: "",
+        })}
+      />
+    );
+
+    expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
+    expect(screen.getByText(/Last used account:/i)).toBeInTheDocument();
+    expect(screen.getByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.queryByText(/Signed in as/i)).not.toBeInTheDocument();
+  });
+
+  test("use different account clears remembered-account copy", () => {
+    const clearRememberedAccount = jest.fn();
+    render(
+      <AuthScreen
+        auth={buildAuthProp({
+          rememberedEmail: "owner@example.com",
+          clearRememberedAccount,
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Use Different Account/i }));
+
+    expect(clearRememberedAccount).toHaveBeenCalledTimes(1);
+  });
+
   test("hides Create Account and Forgot Password when not supported", () => {
     render(
       <AuthScreen
@@ -293,6 +327,21 @@ describe("AuthScreen standalone", () => {
     );
 
     expect(screen.getByText("Check owner@example.com for a password reset link.")).toBeInTheDocument();
+  });
+
+  test("email and password fields expose password-manager-friendly autocomplete attributes", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "current-password");
+
+    fireEvent.click(screen.getByRole("button", { name: /Create Account/i }));
+
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "new-password");
+
+    fireEvent.click(screen.getByRole("button", { name: /Back to Sign In/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Forgot Password\?/i }));
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autocomplete", "email");
   });
 
   test("forgot-password failure shows a readable error", async () => {

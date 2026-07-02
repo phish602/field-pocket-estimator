@@ -102,6 +102,8 @@ export default function AuthScreen({ auth }) {
     authBusy = false,
     errorMessage = "",
     infoMessage = "",
+    rememberedEmail = "",
+    clearRememberedAccount,
     signInWithPassword,
     signUpWithPassword,
     resetPasswordForEmail,
@@ -113,11 +115,19 @@ export default function AuthScreen({ auth }) {
   const [mode, setMode] = useState(MODES.SIGN_IN);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const showRememberedAccount = !errorMessage && !infoMessage && !!rememberedEmail;
 
   const copy = modeCopy(mode);
 
   const switchMode = (nextMode) => {
     setMode(nextMode);
+  };
+
+  const handleUseDifferentAccount = () => {
+    clearRememberedAccount?.();
+    setMode(MODES.SIGN_IN);
+    setEmail("");
+    setPassword("");
   };
 
   const handleSubmit = async (event) => {
@@ -153,6 +163,38 @@ export default function AuthScreen({ auth }) {
           Sign in to sync your company, customers, estimates, invoices, templates, and settings.
         </div>
 
+        {showRememberedAccount ? (
+          <div
+            className="pe-field-helper"
+            style={{
+              display: "grid",
+              gap: 6,
+              textAlign: "center",
+              color: "rgba(220,229,238,0.8)",
+              marginTop: -2,
+            }}
+          >
+            <div style={{ fontSize: 12.5, letterSpacing: "0.5px", textTransform: "uppercase", opacity: 0.78 }}>
+              Welcome back
+            </div>
+            <div>
+              Last used account: <strong>{rememberedEmail}</strong>
+            </div>
+            {typeof clearRememberedAccount === "function" ? (
+              <div>
+                <button
+                  type="button"
+                  style={linkButtonStyle}
+                  onClick={handleUseDifferentAccount}
+                  disabled={authBusy}
+                >
+                  Use Different Account
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         <div style={fieldGroupStyle}>
           <label className="pe-field-label" htmlFor="auth-email">
             Email
@@ -164,7 +206,12 @@ export default function AuthScreen({ auth }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="name@company.com"
+            name="email"
             autoComplete="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            inputMode="email"
+            spellCheck={false}
             aria-label="Email"
             disabled={authBusy}
           />
@@ -182,6 +229,7 @@ export default function AuthScreen({ auth }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter your password"
+              name="password"
               autoComplete={mode === MODES.SIGN_UP ? "new-password" : "current-password"}
               aria-label="Password"
               disabled={authBusy}

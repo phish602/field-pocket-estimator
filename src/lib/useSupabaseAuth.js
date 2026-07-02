@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseClient, isSupabaseConfigured, supabaseEnv } from "./supabaseClient";
 
 function asMessage(error, fallback) {
@@ -39,6 +39,19 @@ export default function useSupabaseAuth() {
   const [authBusy, setAuthBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
+  const [rememberedEmail, setRememberedEmail] = useState("");
+  const sessionRef = useRef(null);
+  const rememberedEmailRef = useRef("");
+
+  const normalizeEmail = useCallback((value) => String(value || "").trim(), []);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    rememberedEmailRef.current = rememberedEmail;
+  }, [rememberedEmail]);
 
   useEffect(() => {
     const client = getSupabaseClient();
@@ -58,7 +71,10 @@ export default function useSupabaseAuth() {
           if (error) {
             setErrorMessage(asMessage(error, "Unable to complete Supabase sign-in."));
           } else {
-            setSession(data?.session || null);
+            const nextSession = data?.session || null;
+            const nextUserEmail = normalizeEmail(nextSession?.user?.email);
+            setSession(nextSession);
+            if (nextUserEmail) setRememberedEmail(nextUserEmail);
             clearAuthCallbackUrl();
           }
         }
@@ -68,7 +84,10 @@ export default function useSupabaseAuth() {
         if (error) {
           setErrorMessage(asMessage(error, "Unable to read Supabase session."));
         } else {
-          setSession(data?.session || null);
+          const nextSession = data?.session || null;
+          const nextUserEmail = normalizeEmail(nextSession?.user?.email);
+          setSession(nextSession);
+          if (nextUserEmail) setRememberedEmail(nextUserEmail);
         }
       } catch (error) {
         if (!active) return;
@@ -82,9 +101,18 @@ export default function useSupabaseAuth() {
 
     const authListener = client.auth.onAuthStateChange((_event, nextSession) => {
       if (!active) return;
+      const nextUserEmail = normalizeEmail(nextSession?.user?.email);
+      const previousUserEmail = normalizeEmail(sessionRef.current?.user?.email) || rememberedEmailRef.current;
       setSession(nextSession || null);
       setLoading(false);
-      if (nextSession) setErrorMessage("");
+      if (nextSession) {
+        if (nextUserEmail) setRememberedEmail(nextUserEmail);
+        setErrorMessage("");
+        return;
+      }
+      if (previousUserEmail) setRememberedEmail(previousUserEmail);
+      setErrorMessage("");
+      setInfoMessage("");
     });
 
     const subscription = authListener?.data?.subscription || authListener?.subscription || null;
@@ -93,7 +121,7 @@ export default function useSupabaseAuth() {
       active = false;
       subscription?.unsubscribe?.();
     };
-  }, []);
+  }, [normalizeEmail]);
 
   const signInWithEmailOtp = async (email) => {
     const client = getSupabaseClient();
@@ -131,6 +159,7 @@ export default function useSupabaseAuth() {
       }
 
       const message = `Check ${normalizedEmail} for your sign-in link.`;
+      setRememberedEmail(normalizedEmail);
       setInfoMessage(message);
       return { ok: true };
     } catch (error) {
@@ -186,8 +215,9 @@ export default function useSupabaseAuth() {
 
       const nextSession = data?.session || null;
       const nextUser = data?.user || nextSession?.user || null;
-      const nextUserEmail = String(nextUser?.email || normalizedEmail).trim();
+      const nextUserEmail = normalizeEmail(nextUser?.email || normalizedEmail);
       setSession(nextSession);
+      if (nextUserEmail) setRememberedEmail(nextUserEmail);
       setInfoMessage(nextUserEmail ? `Signed in as ${nextUserEmail}.` : "Signed in.");
       return { ok: true, session: nextSession, user: nextUser };
     } catch (error) {
@@ -245,6 +275,7 @@ export default function useSupabaseAuth() {
 
       const nextSession = data?.session || null;
       const nextUser = data?.user || nextSession?.user || null;
+      if (normalizedEmail) setRememberedEmail(normalizedEmail);
       if (nextSession) {
         setSession(nextSession);
         setInfoMessage(normalizedEmail ? `Account created. Signed in as ${normalizedEmail}.` : "Account created.");
@@ -329,8 +360,10 @@ export default function useSupabaseAuth() {
         setErrorMessage(message);
         return { ok: false, error: message };
       }
+      const nextRememberedEmail = normalizeEmail(sessionRef.current?.user?.email) || rememberedEmailRef.current;
       setSession(null);
-      setInfoMessage("Signed out.");
+      if (nextRememberedEmail) setRememberedEmail(nextRememberedEmail);
+      setInfoMessage("");
       return { ok: true };
     } catch (error) {
       const message = asMessage(error, "Unable to sign out.");
@@ -341,8 +374,14 @@ export default function useSupabaseAuth() {
     }
   };
 
+  const clearRememberedAccount = useCallback(() => {
+    setRememberedEmail("");
+    setErrorMessage("");
+    setInfoMessage("");
+  }, []);
+
   const user = session?.user || null;
-  const userEmail = String(user?.email || "").trim();
+  const userEmail = normalizeEmail(user?.email);
 
   return {
     configured: isSupabaseConfigured,
@@ -352,6 +391,7 @@ export default function useSupabaseAuth() {
     session,
     user,
     userEmail,
+    rememberedEmail,
     errorMessage,
     infoMessage,
     signInWithEmailOtp,
@@ -359,5 +399,6 @@ export default function useSupabaseAuth() {
     signUpWithPassword,
     resetPasswordForEmail,
     signOut,
+    clearRememberedAccount,
   };
 }
