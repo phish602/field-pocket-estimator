@@ -438,7 +438,10 @@ async function continueCurrentDraftFromGuard() {
 async function openProjectDetail() {
   render(<App />);
 
-  fireEvent.click(screen.getByRole("button", { name: /projects/i }));
+  // Gate 13H: Projects moved out of the bottom nav (replaced by Home) into
+  // the hamburger menu.
+  fireEvent.click(screen.getByLabelText(/open menu/i));
+  fireEvent.click(screen.getByRole("button", { name: /^projects$/i }));
   await screen.findByTestId("projects-screen");
 
   fireEvent.click(screen.getByRole("button", { name: /open project detail/i }));

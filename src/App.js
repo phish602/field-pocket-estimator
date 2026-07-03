@@ -726,6 +726,25 @@ function IconBase({ children, size = 24, viewBox = "0 0 24 24" }) {
   );
 }
 
+function IconHome({ size = 24 }) {
+  return (
+    <IconBase size={size}>
+      <BlueprintCorners size={24} />
+      <g
+        stroke="currentColor"
+        strokeWidth="2"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M5 11.2 12 5.5l7 5.7" opacity="0.95" />
+        <path d="M6.6 10v7.3c0 .55.45 1 1 1H16.4c.55 0 1-.45 1-1V10" opacity="0.9" />
+        <path d="M10 18.3v-4.2h4v4.2" opacity="0.75" />
+      </g>
+    </IconBase>
+  );
+}
+
 function IconCustomers({ size = 24 }) {
   return (
     <IconBase size={size}>
@@ -789,25 +808,6 @@ function IconInvoices({ size = 24 }) {
         <circle cx="15.9" cy="15.3" r="2.35" opacity="0.88" />
         <path d="M15.9 13.95v2.7" opacity="0.88" />
         <path d="M16.75 14.5c-.2-.34-.56-.55-.96-.55-.58 0-1.05.39-1.05.88 0 .48.36.72 1.05.88.68.16 1.04.4 1.04.88 0 .49-.46.88-1.04.88-.47 0-.85-.18-1.08-.57" opacity="0.88" />
-      </g>
-    </IconBase>
-  );
-}
-
-function IconProjects({ size = 24 }) {
-  return (
-    <IconBase size={size}>
-      <BlueprintCorners size={24} />
-      <g
-        stroke="currentColor"
-        strokeWidth="2"
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <rect x="6" y="6.5" width="12" height="4" rx="1" opacity="0.95" />
-        <rect x="6" y="13" width="5.5" height="5" rx="1" opacity="0.8" />
-        <rect x="12.5" y="13" width="5.5" height="5" rx="1" opacity="0.65" />
       </g>
     </IconBase>
   );
@@ -1017,7 +1017,7 @@ function TopBar({
           key={`header-brand-wrap-${routeEnterKey || "default"}`}
           type="button"
           style={styles.headerSpinBtn}
-          aria-label="Home"
+          aria-label="Go to Home"
           title="Home"
           onClick={(e) => {
             if (e?.currentTarget?.__lpFired) return;
@@ -1096,7 +1096,7 @@ function BottomNav({
 }) {
   const tabs = useMemo(
     () => [
-      { key: ROUTES.PROJECTS, label: "Projects", Icon: IconProjects },
+      { key: ROUTES.HOME, label: "Home", Icon: IconHome },
       { key: ROUTES.CUSTOMERS, label: "Customers", Icon: IconCustomers },
       { key: ROUTES.CREATE, label: "Create", Icon: IconCreate, center: true },
       { key: ROUTES.ESTIMATES, label: "Estimates", Icon: IconEstimates },
@@ -1343,6 +1343,16 @@ function Drawer({ open, onClose, onSelect, disabled }) {
         </div>
 
         <div style={styles.drawerList}>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            style={styles.drawerItem}
+            onClick={() => onSelect(ROUTES.PROJECTS)}
+            disabled={disabled}
+          >
+            Projects
+          </button>
+
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
@@ -3983,6 +3993,11 @@ const gated = false;
 
     if (key === ROUTES.CREATE) {
       onCreateButtonRoute();
+      return;
+    }
+
+    if (key === ROUTES.PROJECTS) {
+      navigateTo(ROUTES.PROJECTS);
       return;
     }
 
