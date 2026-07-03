@@ -216,4 +216,30 @@ describe("compact mobile copy on narrow viewports", () => {
 
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restored");
   });
+
+  test("running state gets a little extra breathing room over other narrow states", async () => {
+    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+    await renderAndSettle();
+    const pendingWidth = Number(screen.getByTestId("cloud-header-status-chip").style.maxWidth.replace("px", ""));
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
+    });
+    const runningWidth = Number(screen.getByTestId("cloud-header-status-chip").style.maxWidth.replace("px", ""));
+
+    expect(runningWidth).toBeGreaterThan(pendingWidth);
+  });
+
+  test("pending is more visible than the muted default (not the same washed-out color)", async () => {
+    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+    await renderAndSettle();
+
+    const chip = screen.getByTestId("cloud-header-status-chip");
+    expect(chip.style.color).not.toBe("rgba(230, 241, 248, 0.62)");
+    // Calm/blue-toned, not the failed-state yellow and not the current-state green.
+    expect(chip.style.color).not.toBe("rgba(253, 224, 71, 0.95)");
+    expect(chip.style.color).not.toBe("rgba(187, 247, 208, 0.9)");
+  });
 });

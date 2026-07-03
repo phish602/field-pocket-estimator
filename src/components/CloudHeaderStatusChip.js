@@ -45,17 +45,32 @@ export default function CloudHeaderStatusChip({ style } = {}) {
   // availability, then a confirmed "up to date" -- otherwise nothing to say.
   let label = null;
   let color = "rgba(230,241,248,0.62)";
+  let background = "rgba(255,255,255,0.05)";
+  let border = "1px solid rgba(255,255,255,0.1)";
+  // Gate 13G micro amendment: "Backing up" is the longest narrow label, so it
+  // gets a touch more room than the other compact states; nothing else
+  // changes size.
+  let narrowMaxWidth = 88;
   if (restoredRecently) {
     label = "Restored";
     color = "rgba(187,247,208,0.95)";
   } else if (displayState === "running") {
     label = isNarrow ? "Backing up" : "Backing up...";
     color = "rgba(99,179,237,0.95)";
+    narrowMaxWidth = 96;
   } else if (displayState === "failed") {
     label = isNarrow ? "Backup issue" : "Backup needs attention";
     color = "rgba(253,224,71,0.95)";
   } else if (displayState === "pending") {
     label = isNarrow ? "Pending" : "Backup pending";
+    // Gate 13G micro amendment: the previous default color read as muted to
+    // the point of looking disabled. A calm blue-gray (distinct from the
+    // brighter "running" blue and the green "current"/"restored" tones, and
+    // nowhere near the failed-state yellow) reads as "waiting" without
+    // looking like a warning.
+    color = "rgba(191,214,235,0.92)";
+    background = "rgba(148,177,209,0.1)";
+    border = "1px solid rgba(148,177,209,0.32)";
   } else if (restoreAvailable) {
     label = isNarrow ? "Restore" : "Restore available";
     color = "rgba(99,179,237,0.95)";
@@ -74,11 +89,11 @@ export default function CloudHeaderStatusChip({ style } = {}) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        maxWidth: isNarrow ? 88 : 132,
+        maxWidth: isNarrow ? narrowMaxWidth : 132,
         padding: isNarrow ? "5px 8px" : "5px 9px",
         borderRadius: 999,
-        background: "rgba(255,255,255,0.05)",
-        border: "1px solid rgba(255,255,255,0.1)",
+        background,
+        border,
         fontSize: isNarrow ? 10 : 10.5,
         fontWeight: 700,
         lineHeight: 1.2,
