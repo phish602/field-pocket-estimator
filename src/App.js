@@ -29,6 +29,7 @@ import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "./lib/useCloudRestorePrompt";
 import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
 import CloudHomeRestorePrompt from "./components/CloudHomeRestorePrompt";
 import CloudHeaderStatusChip from "./components/CloudHeaderStatusChip";
+import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -972,6 +973,12 @@ function TopBar({
   const src = topRightLogoSrc || DEFAULT_LOGO;
   const isHome = !showHeaderSpin;
   const estiLogoRef = useRef(null);
+  // Gate 13G amendment: the center mark is absolutely centered regardless of
+  // how wide the header's flex siblings are, so on narrow phones it could
+  // overlap the (now wider, chip-carrying) right-side group. Hiding it there
+  // removes the collision risk entirely without touching its layout math.
+  const isNarrowViewport = useIsNarrowViewport();
+  const showCenterMark = !isHome && !isNarrowViewport;
 
   const restartSpin = (el) => {
     if (!el) return;
@@ -981,9 +988,9 @@ function TopBar({
   };
 
   useEffect(() => {
-    if (isHome) return;
+    if (!showCenterMark) return;
     restartSpin(estiLogoRef.current);
-  }, [routeEnterKey, isHome]);
+  }, [routeEnterKey, showCenterMark]);
 
   return (
     <div
@@ -1005,7 +1012,7 @@ function TopBar({
 
       
 
-      {!isHome ? (
+      {showCenterMark ? (
         <button
           key={`header-brand-wrap-${routeEnterKey || "default"}`}
           type="button"

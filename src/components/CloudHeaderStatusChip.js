@@ -11,9 +11,15 @@
 // harmless when there's nothing to restore (it just returns Home), and it
 // reopens the Home restore card when "Not now" had dismissed it for the
 // session -- so the restore path is never buried behind Advanced Settings.
+//
+// Gate 13G amendment: on narrow/phone widths the full-length copy ("Cloud up
+// to date", "Backup needs attention") was wide enough to crowd the header's
+// center mark. Below the shared narrow-viewport breakpoint this now uses
+// short labels instead -- same priority logic, same tap behavior.
 
 import useCloudBackupStatus from "../lib/useCloudBackupStatus";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
+import useIsNarrowViewport from "../lib/useIsNarrowViewport";
 
 function reopenRestorePrompt() {
   try {
@@ -25,8 +31,9 @@ export default function CloudHeaderStatusChip({ style } = {}) {
   const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently } = useCloudBackupStatus();
   // hasChamberedDraft is intentionally not threaded in here -- it only
   // changes which of the two actionable restore states applies, and both
-  // read identically ("Restore available") in this compact chip.
+  // read identically ("Restore available" / "Restore") in this compact chip.
   const { state: restorePromptState } = useCloudRestorePrompt({ hasChamberedDraft: false });
+  const isNarrow = useIsNarrowViewport();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
 
@@ -42,18 +49,18 @@ export default function CloudHeaderStatusChip({ style } = {}) {
     label = "Restored";
     color = "rgba(187,247,208,0.95)";
   } else if (displayState === "running") {
-    label = "Backing up...";
+    label = isNarrow ? "Backing up" : "Backing up...";
     color = "rgba(99,179,237,0.95)";
   } else if (displayState === "failed") {
-    label = "Backup needs attention";
+    label = isNarrow ? "Backup issue" : "Backup needs attention";
     color = "rgba(253,224,71,0.95)";
   } else if (displayState === "pending") {
-    label = "Backup pending";
+    label = isNarrow ? "Pending" : "Backup pending";
   } else if (restoreAvailable) {
-    label = "Restore available";
+    label = isNarrow ? "Restore" : "Restore available";
     color = "rgba(99,179,237,0.95)";
   } else if (displayState === "current") {
-    label = "Cloud up to date";
+    label = isNarrow ? "Cloud OK" : "Cloud up to date";
     color = "rgba(187,247,208,0.9)";
   }
 
@@ -67,12 +74,12 @@ export default function CloudHeaderStatusChip({ style } = {}) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        maxWidth: 132,
-        padding: "5px 9px",
+        maxWidth: isNarrow ? 88 : 132,
+        padding: isNarrow ? "5px 8px" : "5px 9px",
         borderRadius: 999,
         background: "rgba(255,255,255,0.05)",
         border: "1px solid rgba(255,255,255,0.1)",
-        fontSize: 10.5,
+        fontSize: isNarrow ? 10 : 10.5,
         fontWeight: 700,
         lineHeight: 1.2,
         color,

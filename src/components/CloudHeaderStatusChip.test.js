@@ -40,6 +40,10 @@ const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
 
+function setViewportWidth(width) {
+  Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: width });
+}
+
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
     configured: true,
@@ -63,8 +67,13 @@ async function renderAndSettle(props = {}) {
 
 beforeEach(() => {
   localStorage.clear();
+  setViewportWidth(1024);
   signInWithCompany();
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP });
+});
+
+afterEach(() => {
+  setViewportWidth(1024);
 });
 
 test("renders nothing when there is no meaningful backup/restore state", async () => {
@@ -148,4 +157,63 @@ test("does not render when there is no cloud workspace", async () => {
   await renderAndSettle();
 
   expect(screen.queryByTestId("cloud-header-status-chip")).not.toBeInTheDocument();
+});
+
+describe("compact mobile copy on narrow viewports", () => {
+  beforeEach(() => {
+    setViewportWidth(375);
+  });
+
+  test("shows Cloud OK instead of the full 'Cloud up to date' copy", async () => {
+    clearCloudBackupDirty("test_backup_success");
+
+    await renderAndSettle();
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
+  });
+
+  test("shows Pending instead of the full 'Backup pending' copy", async () => {
+    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+    await renderAndSettle();
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Pending");
+  });
+
+  test("shows Backing up instead of the full 'Backing up...' copy", async () => {
+    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+    await renderAndSettle();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
+    });
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up");
+  });
+
+  test("shows Backup issue instead of the full 'Backup needs attention' copy", async () => {
+    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+    recordCloudBackupAttemptFailure("network_error");
+
+    await renderAndSettle();
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+  });
+
+  test("shows Restore instead of the full 'Restore available' copy", async () => {
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+
+    await renderAndSettle();
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore");
+  });
+
+  test("still shows Restored (already short) after a completed restore", async () => {
+    await renderAndSettle();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("estipaid:cloud-restore-complete", { detail: { restored: true } }));
+    });
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restored");
+  });
 });
