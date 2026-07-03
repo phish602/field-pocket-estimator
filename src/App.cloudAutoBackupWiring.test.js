@@ -16,9 +16,31 @@ jest.mock("./lib/useCloudAutoBackup", () => ({
   default: jest.fn(() => ({ running: false })),
 }));
 
+// Gate 13F: Home now also runs the cloud-restore-prompt onboarding check.
+// Resolve it immediately here so this file's assertions (which finish
+// synchronously after render) aren't racing an unmocked async Supabase call.
+jest.mock("./lib/supabaseCloudOnboarding", () => ({
+  __esModule: true,
+  checkSupabaseCloudOnboardingStatus: jest.fn(),
+  runSupabaseCloudOnboardingBackup: jest.fn(),
+  CLOUD_ONBOARDING_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NO_LOCAL_DATA: "no_local_data",
+    CLOUD_AVAILABLE_EMPTY_DEVICE: "cloud_available_empty_device",
+    READY_TO_BACKUP: "ready_to_backup",
+    ALREADY_BACKED_UP: "already_backed_up",
+    LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
+    BACKUP_COMPLETED: "backup_completed",
+    NEEDS_ATTENTION: "needs_attention",
+    ERROR: "error",
+  },
+}));
+
 const useSupabaseAuth = require("./lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
+const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 function buildAuthState(overrides = {}) {
   return {
@@ -55,6 +77,7 @@ function buildAccountState(overrides = {}) {
 beforeEach(() => {
   useSupabaseAccount.mockReturnValue(buildAccountState());
   useCloudAutoBackup.mockReturnValue({ running: false });
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
 });
 
 test("worker is disabled while signed out even when Supabase is configured", () => {
@@ -77,7 +100,7 @@ test("worker is disabled when Supabase is not configured, regardless of session"
   );
 });
 
-test("worker is enabled only once signed in and Supabase is configured, using account company/role", () => {
+test("worker is enabled only once signed in and Supabase is configured, using account company/role", async () => {
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
     configured: true,
@@ -104,5 +127,5 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
       role: "owner",
     })
   );
-  expect(screen.getByLabelText(/open menu/i)).toBeInTheDocument();
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
 });

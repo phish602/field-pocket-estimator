@@ -26,6 +26,7 @@ import useSupabaseAccount from "./lib/useSupabaseAccount";
 import useCloudAutoBackup from "./lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
 import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
+import CloudHomeRestorePrompt from "./components/CloudHomeRestorePrompt";
 import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -1782,6 +1783,7 @@ function HomeScreen({
       </div>
 
       <CloudBackupStatusBadge />
+      <CloudHomeRestorePrompt hasChamberedDraft={hasLiveDraft} />
 
       {hasLiveDraft ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
@@ -3095,6 +3097,17 @@ const [spinTick, setSpinTick] = useState(0);
       window.removeEventListener("estipaid:navigate-user-profile", onNavUserProfile);
     };
   }, [navigateToCompanyProfile]);
+
+  // Gate 13F amendment: "Manage Restore in Settings" from Home's cautious
+  // cloud-restore card routes here instead of offering a restore action that
+  // would predictably be blocked (local data already exists).
+  useEffect(() => {
+    const onNavCloudSettings = () => {
+      try { navigateTo(ROUTES.ADVANCED); } catch {}
+    };
+    window.addEventListener("estipaid:navigate-cloud-settings", onNavCloudSettings);
+    return () => window.removeEventListener("estipaid:navigate-cloud-settings", onNavCloudSettings);
+  }, [navigateTo]);
 
   useEffect(() => {
     const onProfileSaveReturn = () => {
