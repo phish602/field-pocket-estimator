@@ -8,6 +8,7 @@ const {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
   CLOUD_RESTORE_STATUS,
+  CLOUD_RESTORE_COMPLETE_EVENT,
 } = require("./supabaseCloudRestore");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
 const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
@@ -615,6 +616,42 @@ describe("supabaseCloudRestore", () => {
       const queueState = readCloudBackupQueueState();
       expect(queueState.pending).toBe(false);
       expect(queueState.status).toBe("current");
+    });
+
+    test("a successful restore dispatches the cloud-restore-complete event so the app shell can navigate Home", async () => {
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const onComplete = jest.fn();
+      window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      try {
+        const storage = buildWritableStorage();
+        const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+        expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+        expect(onComplete).toHaveBeenCalledTimes(1);
+      } finally {
+        window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      }
+    });
+
+    test("a failed/blocked restore does not dispatch the cloud-restore-complete event", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({ customers: [cloudCustomerRow({ legacy_local_id: "" })] }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const onComplete = jest.fn();
+      window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      try {
+        const storage = buildWritableStorage();
+        const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+        expect(result.status).toBe(CLOUD_RESTORE_STATUS.ERROR);
+        expect(onComplete).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      }
     });
 
     test("empty-device restore writes company profile, settings, and scope templates when a valid bundle exists", async () => {
