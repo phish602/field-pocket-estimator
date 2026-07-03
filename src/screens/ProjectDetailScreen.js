@@ -10,6 +10,7 @@ import {
   updateProjectStoredStatus,
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
+import useCloudBackupStatus from "../lib/useCloudBackupStatus";
 
 const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
@@ -160,7 +161,10 @@ const PROJECT_STATUS_COLORS = {
 
 const S = {
   screen: {
-    padding: "0 0 32px",
+    // Extra tail buffer on top of the app shell's own footer-height +
+    // safe-area padding, since this screen's danger-zone/delete section can
+    // run long and sit right at that boundary.
+    padding: "0 0 calc(40px + env(safe-area-inset-bottom, 0px))",
     minHeight: "100%",
     color: "rgba(230,241,248,0.92)",
   },
@@ -244,11 +248,16 @@ const S = {
     color: "rgba(230,241,248,0.6)",
   },
   projectName: {
-    fontSize: 28,
+    // clamp() keeps desktop/tablet at the original 28px while shrinking
+    // smoothly (rather than a hard JS breakpoint swap) on narrow phones, and
+    // overflowWrap "anywhere" guarantees a single long unbroken word can't
+    // push past the card edge the way "break-word" sometimes allows.
+    fontSize: "clamp(1.2rem, 5.5vw, 1.75rem)",
     fontWeight: 800,
-    lineHeight: 1.25,
+    lineHeight: 1.15,
     color: "rgba(230,241,248,0.96)",
-    overflowWrap: "break-word",
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
   },
   customerName: {
     fontSize: 15,
@@ -554,6 +563,7 @@ export default function ProjectDetailScreen({
   onOpenInvoice,
 }) {
   const [projectId] = useState(() => readProjectDetailTarget());
+  const cloudBackupStatus = useCloudBackupStatus();
   const [refreshSeq, setRefreshSeq] = useState(0);
   const [deleteConfirmValue, setDeleteConfirmValue] = useState("");
   const [deleteMessage, setDeleteMessage] = useState("");
@@ -674,11 +684,16 @@ export default function ProjectDetailScreen({
     && Number(totals.balanceRemaining || 0) === 0;
   const isArchivedProject = storedProjectStatus === "archived";
   const overviewValueStyle = S.overviewValue;
-  const projectNameStyle = isPhone ? { ...S.projectName, fontSize: 24 } : S.projectName;
+  // clamp() in S.projectName already shrinks smoothly on narrow phones, so
+  // no isPhone override is needed here (Gate 13D).
+  const projectNameStyle = S.projectName;
   // Mobile-safe: a fixed 2-column grid left large dollar values (e.g.
   // $9,209.68) crowding or spilling across neighboring cards on narrow
   // phones. Single column guarantees each card gets the full row width.
   const heroFinancialGridStyle = isPhone ? { ...S.heroFinancialGrid, gridTemplateColumns: "1fr" } : S.heroFinancialGrid;
+  // Tighten vertical weight on phone -- same hero content, less padding/gap.
+  const heroCardStyle = isPhone ? { ...S.heroCard, padding: "16px 14px 14px", gap: 10 } : S.heroCard;
+  const heroHeaderStyle = isPhone ? { ...S.heroHeader, gap: 10 } : S.heroHeader;
   const overviewGridStyle = S.overviewGrid;
   const docFlowGridStyle = isPhone ? { ...S.docFlowGrid, gridTemplateColumns: "1fr" } : S.docFlowGrid;
   const nextStepTone = overdueCount > 0
@@ -808,19 +823,34 @@ export default function ProjectDetailScreen({
     },
   ];
 
+  // Gate 13D: compact backup chip beside the existing document-count/Updated
+  // chips -- not a full card. Same state source as the Home CloudBackupStatusBadge
+  // (useCloudBackupStatus), only meaningful copy, and only rendered when there
+  // is something to report (never for a device that has no cloud workspace or
+  // has never been dirty/backed up).
+  const backupChip = (() => {
+    if (!cloudBackupStatus.isSupabaseReady || !cloudBackupStatus.userEmail || !cloudBackupStatus.hasCompany) return null;
+    if (cloudBackupStatus.restoredRecently) return { label: "Restored", color: "rgba(187,247,208,0.92)" };
+    if (cloudBackupStatus.displayState === "running") return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
+    if (cloudBackupStatus.displayState === "failed") return { label: "Backup needs attention", color: "rgba(253,224,71,0.92)" };
+    if (cloudBackupStatus.displayState === "pending") return { label: "Backup pending", color: null };
+    if (cloudBackupStatus.displayState === "current") return { label: "Cloud up to date", color: "rgba(187,247,208,0.92)" };
+    return null;
+  })();
+
   return (
-    <div style={S.screen}>
+    <div className="pe-project-detail-screen" style={S.screen}>
       <div style={S.topBar}>
         <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
       </div>
 
       {/* Hero */}
-      <div style={S.heroCard}>
-        <div style={S.heroHeader}>
+      <div style={heroCardStyle}>
+        <div style={heroHeaderStyle}>
           <div style={S.heroHeaderTop}>
             <div style={S.heroIdentity}>
               <div style={S.heroEyebrow}>Project</div>
-              <div style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
+              <div className="pe-project-detail-title" style={projectNameStyle}>{project.projectName || "Untitled Project"}</div>
               {project.projectNumber ? <div style={{ fontSize: 11.5, fontWeight: 700, color: "rgba(230,241,248,0.4)", letterSpacing: "0.05em" }}>Project #{project.projectNumber}</div> : null}
               {customer ? (
                 <div style={S.customerName}>{customer.name || customer.companyName || customer.fullName || "—"}</div>
@@ -834,6 +864,14 @@ export default function ProjectDetailScreen({
               <div style={S.heroContextRow}>
                 <div style={S.heroContextPill}>{documentCount === 1 ? "1 document" : `${documentCount} documents`}</div>
                 <div style={S.heroContextPill}>{latestActivityAt ? `Updated ${fmtDate(latestActivityAt)}` : "No recent activity"}</div>
+                {backupChip ? (
+                  <div
+                    data-testid="project-detail-backup-chip"
+                    style={{ ...S.heroContextPill, ...(backupChip.color ? { color: backupChip.color } : {}) }}
+                  >
+                    {backupChip.label}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
