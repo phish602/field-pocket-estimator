@@ -77,7 +77,7 @@ function triggerBuilderNavigation() {
 }
 
 // Opens CreateLauncher and clicks the "Invoice" button, triggering onCreateButtonRoute(INVOICE).
-// For a valid non-void edit target, this shows the "Start new estimate" modal WITHOUT mounting
+// For a valid non-void edit target, this shows the "Start new document" modal WITHOUT mounting
 // EstimateForm — so the key is not consumed and remains in localStorage for assertion.
 function triggerCreateInvoiceFromLauncher() {
   act(() => {
@@ -116,7 +116,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
   test("accepts a non-void invoice target: edit session is flagged active and modal appears on Create Invoice", () => {
     // Non-void (sent) invoice — should be accepted by validation, not cleared by the void guard.
     // We test via CreateLauncher → Invoice button path, which calls onCreateButtonRoute(INVOICE).
-    // With a valid invoiceEditTarget, the "Start new estimate" modal appears instead of navigating,
+    // With a valid invoiceEditTarget, the "Start new document" modal appears instead of navigating,
     // and EstimateForm does NOT mount — so the key is not consumed and remains in localStorage.
     const activeInv = makeActiveInvoice("inv_sent_valid");
     localStorage.setItem(INVOICES_KEY, JSON.stringify([activeInv]));
@@ -126,7 +126,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
     triggerCreateInvoiceFromLauncher();
 
     // Modal is shown because invoiceEditTarget was valid (non-void), proving the guard did not fire
-    expect(screen.getByRole("dialog", { name: /Start new estimate/i })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Start new document/i })).toBeInTheDocument();
     // Key was not consumed (builder didn't mount, no EstimateForm hydration)
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBe("inv_sent_valid");
   });

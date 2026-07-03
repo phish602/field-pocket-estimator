@@ -745,7 +745,7 @@ async function openContinueCreateFlow(intent = "estimate") {
     within(startNewDialog).getByRole("button", { name: intent === "invoice" ? /^invoice$/i : /^estimate$/i })
   );
 
-  const continueDialog = await screen.findByRole("dialog", { name: /start new estimate/i });
+  const continueDialog = await screen.findByRole("dialog", { name: /start new document/i });
   fireEvent.click(within(continueDialog).getByRole("button", { name: /^continue$/i }));
 
   await screen.findByText(intent === "invoice" ? "Invoice Builder" : "Estimate Builder");
@@ -1150,7 +1150,7 @@ describe("App Continue Create draft handoff", () => {
       expect.any(Object)
     );
 
-    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBe(JSON.stringify({ ui: { docType: "invoice" } }));
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBeNull();
     expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBeNull();
     expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBeNull();
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();

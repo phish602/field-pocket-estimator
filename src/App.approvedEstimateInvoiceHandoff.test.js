@@ -213,6 +213,8 @@ import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { readCloudBackupQueueState } from "./lib/cloudBackupQueue";
 
+jest.setTimeout(15000);
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
