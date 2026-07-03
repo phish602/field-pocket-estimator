@@ -8,6 +8,7 @@ import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -1610,6 +1611,7 @@ export default function CustomersScreen({
               </button>
             </div>
           </div>
+          <CloudBackupInlineStatus style={{ margin: "-6px 0 8px" }} />
 
             <div className="pe-company-form-inner pe-customer-edit-form">
             <div className="pe-company-form-section">

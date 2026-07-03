@@ -7,6 +7,7 @@ import {
   writeStoredScopeTemplates,
 } from "../utils/scopeTemplates";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 function formatTemplateTimestamp(value) {
   const ts = Number(value || 0);
@@ -156,6 +157,7 @@ export default function TemplatesScreen({ onOpenBuilder }) {
             {templates.length} {templates.length === 1 ? "template" : "templates"}
           </div>
         </div>
+        <CloudBackupInlineStatus />
 
         {templateCards.length === 0 ? (
           <div

@@ -8,6 +8,7 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROJECT_STATUS_OPTIONS = [
   { key: "draft", label: "Draft" },
@@ -567,6 +568,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
         >
           Create Project
         </button>
+        <CloudBackupInlineStatus style={{ marginTop: 8, textAlign: "center" }} />
       </div>
     </div>
   );

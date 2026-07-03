@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { readStoredProjects, updateProjectMetadata } from "../utils/projects";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 // Reads the same target key used by ProjectDetailScreen — no separate key needed.
 const DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
@@ -354,6 +355,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
         >
           Save Changes
         </button>
+        <CloudBackupInlineStatus style={{ marginTop: 8, textAlign: "center" }} />
       </div>
     </div>
   );

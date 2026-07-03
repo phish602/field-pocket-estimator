@@ -11,6 +11,7 @@ import {
   normalizeCompanyProfile,
 } from "../utils/storage";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
@@ -846,6 +847,7 @@ const stripeActionGroupStyle = {
             </div>
           </div>
         </div>
+        <CloudBackupInlineStatus style={{ margin: "-4px 0 8px" }} />
 
         {showMissingRequiredPrompt && missingRequiredFields.length ? (
           <div className="pe-company-missing-banner" role="alert" aria-live="assertive">

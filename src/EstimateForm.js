@@ -12,6 +12,7 @@ import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from ".
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
+import CloudBackupInlineStatus from "./components/CloudBackupInlineStatus";
 import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
 import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
 import { getAssistConfig } from "./estimator/aiAssist/registry";
@@ -6242,6 +6243,7 @@ export default function EstimateForm(props) {
             </button>
           </div>
         </div>
+        <CloudBackupInlineStatus style={{ marginTop: 6, textAlign: "center" }} />
       </div>
     </div>
   );
