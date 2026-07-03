@@ -1969,6 +1969,9 @@ export default function EstimateForm(props) {
 
     const contextCustomerId = String(context.customerId || "").trim();
     const contextCustomerName = String(context.customerName || "").trim().toLowerCase();
+    if (!manualContext && !contextCustomerId && !contextCustomerName) {
+      return;
+    }
     const customerMatches = contextCustomerId
       ? nextCustomerId === contextCustomerId
       : (!!nextCustomerName && nextCustomerName === contextCustomerName);

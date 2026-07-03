@@ -12,6 +12,7 @@ const mockSaveNow = jest.fn();
 const mockExportPdf = jest.fn(() => Promise.resolve());
 let mockInitialState = null;
 let mockSuppressReplaceState = false;
+let mockLatestState = null;
 
 jest.mock("./estimator/useEstimatorState", () => {
   const React = require("react");
@@ -61,6 +62,7 @@ jest.mock("./estimator/useEstimatorState", () => {
 
   function useMockEstimatorState() {
     const [state, setState] = React.useState(() => normalizeState(mockInitialState || {}));
+    mockLatestState = clone(state);
 
     const patch = React.useCallback((path, value) => {
       mockPatch(path, value);
@@ -590,6 +592,7 @@ describe("EstimateForm invoice edit fallback", () => {
     jest.clearAllMocks();
     mockInitialState = null;
     mockSuppressReplaceState = false;
+    mockLatestState = null;
     alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
     normalizeScopeImageForStorage.mockReset();
   });
@@ -659,6 +662,84 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(screen.getByText(/Linked customer:/i)).toBeInTheDocument();
     expect(screen.getByDisplayValue(project.projectName)).toBeInTheDocument();
     expectTradeScopeStarterUiAbsent();
+  });
+
+  test("preserves a seeded project link when the project gets its first customer in the builder", async () => {
+    const customer = createCustomer();
+    const project = createProject({
+      id: "proj_seed_unassigned",
+      customerId: "",
+      customerName: "",
+      projectName: "Unassigned Seed Project",
+      siteAddress: "500 Seed Row",
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
+    localStorage.setItem(
+      "estipaid-project-detail-return-target-v1",
+      JSON.stringify({
+        route: ROUTES.PROJECT_DETAIL,
+        projectId: project.id,
+      }),
+    );
+    localStorage.setItem(
+      PROJECT_CREATE_SEED_KEY,
+      JSON.stringify({
+        projectId: project.id,
+        customerId: "",
+        customerName: "",
+        projectName: project.projectName,
+        siteAddress: project.siteAddress,
+      }),
+    );
+    mockSaveNow.mockImplementation(() => {
+      const persisted = clone(mockLatestState || {});
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      return persisted;
+    });
+
+    render(<EstimateForm />);
+
+    await screen.findByText("Estimate Builder");
+
+    const customerInput = screen.getByPlaceholderText("Search or select a customer…");
+    customerInput.getBoundingClientRect = () => ({
+      width: 260,
+      height: 44,
+      top: 120,
+      right: 280,
+      bottom: 164,
+      left: 20,
+      x: 20,
+      y: 120,
+      toJSON() {
+        return this;
+      },
+    });
+    fireEvent.focus(customerInput);
+    fireEvent.change(customerInput, { target: { value: customer.name } });
+
+    const customerOption = await screen.findByText(customer.name, { selector: "div" });
+    fireEvent.pointerDown(customerOption);
+
+    const dateInput = document.querySelector('input[type="date"]');
+    expect(dateInput).not.toBeNull();
+    fireEvent.change(dateInput, { target: { value: "2026-07-03" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save Estimate" }));
+
+    await waitFor(() => {
+      const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+      expect(savedEstimates).toHaveLength(1);
+      expect(savedEstimates[0]).toEqual(expect.objectContaining({
+        projectId: project.id,
+        customerId: customer.id,
+        customerName: customer.name,
+      }));
+    });
+
+    expect(mockPatch).not.toHaveBeenCalledWith("projectId", "");
   });
 
   test("shows Start Here in estimate edit mode while invoice edit mode stays unchanged", async () => {
