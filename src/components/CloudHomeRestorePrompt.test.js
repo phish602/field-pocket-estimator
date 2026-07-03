@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import CloudHomeRestorePrompt from "./CloudHomeRestorePrompt";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -220,4 +221,19 @@ test("Not now dismisses the prompt", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Not now" }));
 
   expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+});
+
+test("the header's show-restore-prompt event reopens the card after Not now dismissed it", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+
+  await renderAndSettle();
+  fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+  expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+
+  act(() => {
+    window.dispatchEvent(new CustomEvent(SHOW_CLOUD_RESTORE_PROMPT_EVENT));
+  });
+
+  expect(screen.getByTestId("cloud-home-restore-prompt")).toBeInTheDocument();
+  expect(screen.getByText("Cloud backup found")).toBeInTheDocument();
 });

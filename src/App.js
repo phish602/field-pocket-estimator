@@ -25,8 +25,10 @@ import useSupabaseAuth from "./lib/useSupabaseAuth";
 import useSupabaseAccount from "./lib/useSupabaseAccount";
 import useCloudAutoBackup from "./lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
+import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "./lib/useCloudRestorePrompt";
 import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
 import CloudHomeRestorePrompt from "./components/CloudHomeRestorePrompt";
+import CloudHeaderStatusChip from "./components/CloudHeaderStatusChip";
 import AuthScreen from "./screens/AuthScreen";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -1048,26 +1050,29 @@ function TopBar({
         />
       )}
 
-<button
-        key={`header-user-wrap-${routeEnterKey || "default"}`}
-        className="pe-btn pe-btn-ghost"
-        type="button"
-        style={styles.headerIconBtn}
-        onClick={onProfile}
-  aria-label="Open Company Profile"
-      >
-        <div style={styles.profileLogoWrap}>
-          {showAddLogoCue ? <span style={styles.profileLogoCueRing} aria-hidden="true" /> : null}
-          <img
-            src={src}
-            alt="Company logo"
-            style={styles.profileLogo}
-            draggable={false}
-          />
-          {showAddLogoCue ? <span style={styles.profileLogoCueBadge} aria-hidden="true">+</span> : null}
-          {showAddLogoCue ? <span style={styles.profileLogoCueText} aria-hidden="true">Add Logo</span> : null}
-        </div>
-      </button>
+<div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <CloudHeaderStatusChip />
+        <button
+          key={`header-user-wrap-${routeEnterKey || "default"}`}
+          className="pe-btn pe-btn-ghost"
+          type="button"
+          style={styles.headerIconBtn}
+          onClick={onProfile}
+          aria-label="Open Company Profile"
+        >
+          <div style={styles.profileLogoWrap}>
+            {showAddLogoCue ? <span style={styles.profileLogoCueRing} aria-hidden="true" /> : null}
+            <img
+              src={src}
+              alt="Company logo"
+              style={styles.profileLogo}
+              draggable={false}
+            />
+            {showAddLogoCue ? <span style={styles.profileLogoCueBadge} aria-hidden="true">+</span> : null}
+            {showAddLogoCue ? <span style={styles.profileLogoCueText} aria-hidden="true">Add Logo</span> : null}
+          </div>
+        </button>
+      </div>
     </div>
   );
 }
@@ -3107,6 +3112,17 @@ const [spinTick, setSpinTick] = useState(0);
     };
     window.addEventListener("estipaid:navigate-cloud-settings", onNavCloudSettings);
     return () => window.removeEventListener("estipaid:navigate-cloud-settings", onNavCloudSettings);
+  }, [navigateTo]);
+
+  // Gate 13G: the header's compact restore chip dispatches this to reopen
+  // the Home restore card after "Not now" dismissed it for the session --
+  // navigate Home so the (now un-dismissed) card is actually visible.
+  useEffect(() => {
+    const onShowCloudRestorePrompt = () => {
+      try { navigateTo(ROUTES.HOME, { bypassDirtyGuard: true }); } catch {}
+    };
+    window.addEventListener(SHOW_CLOUD_RESTORE_PROMPT_EVENT, onShowCloudRestorePrompt);
+    return () => window.removeEventListener(SHOW_CLOUD_RESTORE_PROMPT_EVENT, onShowCloudRestorePrompt);
   }, [navigateTo]);
 
   useEffect(() => {

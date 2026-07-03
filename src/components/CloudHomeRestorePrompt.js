@@ -18,7 +18,7 @@
 // still wants the full manual restore/backup review.
 
 import { useEffect, useState } from "react";
-import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE } from "../lib/useCloudRestorePrompt";
+import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import { executeSupabaseCloudRestore, CLOUD_RESTORE_STATUS } from "../lib/supabaseCloudRestore";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
 
@@ -72,6 +72,18 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     setRestoreResult(null);
     setBackupResult(null);
   }, [state]);
+
+  // Gate 13G: "Not now" only hides the large card for the session -- it
+  // never removes the header's compact restore chip. Tapping that chip
+  // dispatches this event so the card reappears without a page reload.
+  useEffect(() => {
+    const onShowPrompt = () => {
+      try { sessionStorage.removeItem(DISMISS_KEY); } catch {}
+      setDismissed(false);
+    };
+    window.addEventListener(SHOW_CLOUD_RESTORE_PROMPT_EVENT, onShowPrompt);
+    return () => window.removeEventListener(SHOW_CLOUD_RESTORE_PROMPT_EVENT, onShowPrompt);
+  }, []);
 
   if (dismissed) return null;
   if (state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE

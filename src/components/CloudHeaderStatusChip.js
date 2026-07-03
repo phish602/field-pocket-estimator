@@ -1,0 +1,90 @@
+// @ts-nocheck
+/* eslint-disable */
+
+// Gate 13G: a compact cloud backup/restore status chip for the app's
+// reactive/sticky header, so this signal is visible everywhere (not just
+// buried in Home's scrollable content). Reuses the same shared signals as
+// the Home badge (useCloudBackupStatus) and the Home restore card
+// (useCloudRestorePrompt) -- no new backup/restore logic, presentation only.
+//
+// Tapping the chip always dispatches the same "show restore prompt" event:
+// harmless when there's nothing to restore (it just returns Home), and it
+// reopens the Home restore card when "Not now" had dismissed it for the
+// session -- so the restore path is never buried behind Advanced Settings.
+
+import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
+
+function reopenRestorePrompt() {
+  try {
+    window.dispatchEvent(new CustomEvent(SHOW_CLOUD_RESTORE_PROMPT_EVENT));
+  } catch {}
+}
+
+export default function CloudHeaderStatusChip({ style } = {}) {
+  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently } = useCloudBackupStatus();
+  // hasChamberedDraft is intentionally not threaded in here -- it only
+  // changes which of the two actionable restore states applies, and both
+  // read identically ("Restore available") in this compact chip.
+  const { state: restorePromptState } = useCloudRestorePrompt({ hasChamberedDraft: false });
+
+  if (!isSupabaseReady || !userEmail || !hasCompany) return null;
+
+  const restoreAvailable = restorePromptState === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
+    || restorePromptState === CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS;
+
+  // Priority: a just-completed restore, then backup pending/running/failed
+  // (local safety) always wins over a restore recommendation, then restore
+  // availability, then a confirmed "up to date" -- otherwise nothing to say.
+  let label = null;
+  let color = "rgba(230,241,248,0.62)";
+  if (restoredRecently) {
+    label = "Restored";
+    color = "rgba(187,247,208,0.95)";
+  } else if (displayState === "running") {
+    label = "Backing up...";
+    color = "rgba(99,179,237,0.95)";
+  } else if (displayState === "failed") {
+    label = "Backup needs attention";
+    color = "rgba(253,224,71,0.95)";
+  } else if (displayState === "pending") {
+    label = "Backup pending";
+  } else if (restoreAvailable) {
+    label = "Restore available";
+    color = "rgba(99,179,237,0.95)";
+  } else if (displayState === "current") {
+    label = "Cloud up to date";
+    color = "rgba(187,247,208,0.9)";
+  }
+
+  if (!label) return null;
+
+  return (
+    <button
+      type="button"
+      data-testid="cloud-header-status-chip"
+      onClick={reopenRestorePrompt}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        maxWidth: 132,
+        padding: "5px 9px",
+        borderRadius: 999,
+        background: "rgba(255,255,255,0.05)",
+        border: "1px solid rgba(255,255,255,0.1)",
+        fontSize: 10.5,
+        fontWeight: 700,
+        lineHeight: 1.2,
+        color,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        cursor: "pointer",
+        font: "inherit",
+        ...style,
+      }}
+    >
+      {label}
+    </button>
+  );
+}

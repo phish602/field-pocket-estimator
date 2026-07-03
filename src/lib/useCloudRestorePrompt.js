@@ -18,6 +18,13 @@ import useSupabaseAccount from "./useSupabaseAccount";
 import useCloudBackupStatus from "./useCloudBackupStatus";
 import { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
 
+// Gate 13G: dispatched by the header's compact restore chip (and anything
+// else that wants to bring the Home restore card back after "Not now"
+// dismissed it for the session). CloudHomeRestorePrompt listens for this to
+// clear its session dismissal; the app shell listens for it to navigate Home
+// so the card is actually visible when it reappears.
+export const SHOW_CLOUD_RESTORE_PROMPT_EVENT = "estipaid:show-cloud-restore-prompt";
+
 export const CLOUD_RESTORE_PROMPT_STATE = {
   HIDDEN: "hidden",
   // Cloud has data and this device's core records (customers/projects/
