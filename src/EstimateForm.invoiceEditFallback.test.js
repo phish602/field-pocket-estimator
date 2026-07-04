@@ -642,6 +642,65 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(screen.getByText("Scope of Work")).toBeInTheDocument();
   });
 
+  test("renders the Send to Customer skeleton for estimates without displacing save or export actions", async () => {
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    estimateState.customer = {
+      ...(estimateState.customer || {}),
+      name: "Portal Estimate Customer",
+      projectName: "Portal Estimate Project",
+    };
+    estimateState.scopeNotes = "Portal-ready estimate copy.";
+    mockInitialState = estimateState;
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    expect(screen.getByRole("button", { name: /send to customer/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save estimate/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /export pdf/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /send to customer/i }));
+
+    expect(screen.getByText("Approve Estimate")).toBeInTheDocument();
+    expect(screen.getByText("Request Changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy secure link/i })).toBeDisabled();
+    expect(screen.getByText("Secure customer links will be enabled after the portal backend is connected.")).toBeInTheDocument();
+  });
+
+  test("renders invoice acknowledgment copy in the Send to Customer skeleton", async () => {
+    const invoiceState = clone(DEFAULT_STATE);
+    invoiceState.ui = {
+      ...(invoiceState.ui || {}),
+      docType: "invoice",
+      materialsMode: "blanket",
+    };
+    invoiceState.customer = {
+      ...(invoiceState.customer || {}),
+      name: "Portal Invoice Customer",
+      projectName: "Portal Invoice Project",
+    };
+    invoiceState.job = {
+      ...(invoiceState.job || {}),
+      docNumber: "INV-PORTAL-1",
+    };
+    mockInitialState = invoiceState;
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Invoice Builder");
+
+    fireEvent.click(screen.getByRole("button", { name: /send to customer/i }));
+
+    expect(screen.getByText("Acknowledge Invoice")).toBeInTheDocument();
+    expect(screen.queryByText("Approve Invoice")).not.toBeInTheDocument();
+  });
+
   test("shows Start Here for seeded new estimate flow while keeping project and customer context linked", async () => {
     const customer = createCustomer();
     const project = createProject();

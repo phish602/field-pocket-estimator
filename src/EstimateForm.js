@@ -90,6 +90,7 @@ import useGuidedBuild, {
   hasGuidedRuntimeResidue,
 } from "./estimator/guided/useGuidedBuild";
 import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockpitTotals";
+import CustomerPortalSharePanel from "./components/portal/CustomerPortalSharePanel";
 import {
   estimateDataUrlBytes,
   isStorageQuotaExceededError,
@@ -7783,6 +7784,7 @@ export default function EstimateForm(props) {
           style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
       </section>
+      <CustomerPortalSharePanel documentType={uiDocType} />
 
       </div>
         </div>
