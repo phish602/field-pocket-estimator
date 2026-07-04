@@ -73,6 +73,7 @@ import {
   validateInvoiceAgainstEstimate,
   writeStoredInvoices,
 } from "./utils/invoices";
+import { generateNextEstimateNumber } from "./utils/estimateNumbers";
 import {
   backfillProjectCollections,
   readStoredProjects,
@@ -5094,7 +5095,7 @@ export default function EstimateForm(props) {
       ).trim();
       const docNumber = saveDocType === "invoice"
         ? (docNumberRaw || generateNextInvoiceNumber(existingInvoices))
-        : docNumberRaw;
+        : (docNumberRaw || generateNextEstimateNumber(existingEstimates));
 
       const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
       const existingById = savedDocId

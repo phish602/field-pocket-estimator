@@ -1590,7 +1590,99 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
-  test("failed new estimate save keeps the chambered draft and resume state intact", async () => {
+  test("saving an estimate without a document number generates and persists a stable estimate number", async () => {
+    const customer = {
+      id: "cust_missing_number",
+      name: "Missing Number Customer",
+      fullName: "Missing Number Customer",
+      displayName: "Missing Number Customer",
+      customerType: "residential",
+      projectName: "Missing Number Project",
+      projectNumber: "",
+      projectAddress: "400 Repair Way",
+      address: "400 Repair Way",
+      city: "Phoenix",
+      state: "AZ",
+      zip: "85001",
+    };
+    const project = {
+      id: "proj_missing_number",
+      customerId: customer.id,
+      customerName: customer.name,
+      projectName: customer.projectName,
+      siteAddress: customer.projectAddress,
+      status: "estimating",
+    };
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
+
+    const estimateState = clone(DEFAULT_STATE);
+    estimateState.ui = {
+      ...(estimateState.ui || {}),
+      docType: "estimate",
+      materialsMode: "blanket",
+    };
+    estimateState.customer = {
+      ...(estimateState.customer || {}),
+      id: customer.id,
+      name: customer.name,
+      fullName: customer.fullName,
+      displayName: customer.displayName,
+      projectName: customer.projectName,
+      projectNumber: "",
+    };
+    estimateState.job = {
+      ...(estimateState.job || {}),
+      date: "2026-07-03",
+      docNumber: "",
+    };
+    estimateState.scopeNotes = "Estimate should auto-fill a number during save.";
+    estimateState.projectId = project.id;
+    estimateState.total = 420;
+    estimateState.grandTotal = 420;
+    estimateState.totalRevenue = 420;
+    mockInitialState = estimateState;
+    mockSaveNow.mockImplementation((metaPatch = {}, options = {}) => {
+      const persisted = clone(mockLatestState || {});
+      const nextPersisted = {
+        ...persisted,
+        meta: {
+          ...(persisted.meta || {}),
+          ...metaPatch,
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPersisted));
+      if (options?.persistDraft !== false) {
+        localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, JSON.stringify(nextPersisted));
+      }
+      return nextPersisted;
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Estimate Builder");
+
+    fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
+
+    await waitFor(() => {
+      const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+      expect(savedEstimates).toHaveLength(1);
+      expect(savedEstimates[0]).toEqual(expect.objectContaining({
+        customerId: customer.id,
+        customerName: customer.name,
+        projectId: project.id,
+        estimateNumber: "EST-0001",
+      }));
+      expect(savedEstimates[0].job).toEqual(expect.objectContaining({ docNumber: "EST-0001" }));
+    });
+
+    await waitFor(() => {
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBeNull();
+    });
+  });
+
+  test("failed new estimate save keeps the draft visible and does not create a saved estimate", async () => {
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
       ...(estimateState.ui || {}),
@@ -1640,9 +1732,9 @@ describe("EstimateForm invoice edit fallback", () => {
     fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
 
     expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(draftRaw);
-    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
-    expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
+    expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Failed Save Customer");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Failed Save Project");
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBeNull();
   });
 
   test("shows a friendly storage-full message when updating an estimate hits localStorage quota", async () => {

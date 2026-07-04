@@ -55,37 +55,41 @@ function buildStorageSnapshot({
   scopeTemplates,
   auditEvents,
 } = {}) {
+  const values = {
+    "estipaid-company-profile-v1": JSON.stringify(companyProfile || { id: "local_company", companyName: "AAS Property Care" }),
+    "estipaid-customers-v1": JSON.stringify(customers || [{ id: "cust_1", name: "Acme Co" }]),
+    "estipaid-projects-v1": JSON.stringify(projects || [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
+    "estipaid-estimates-v1": JSON.stringify(estimates || [{
+      id: "est_1",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      estimateNumber: "EST-1",
+      total: 100,
+      labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
+    }]),
+    "estipaid-invoices-v1": JSON.stringify(invoices || [{
+      id: "inv_1",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      sourceEstimateId: "est_1",
+      invoiceNumber: "INV-1",
+      invoiceTotal: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
+      payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
+    }]),
+    "estipaid-settings-v1": JSON.stringify(settings || {}),
+    "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates || []),
+    "estipaid-audit-events-v1": JSON.stringify(auditEvents || []),
+  };
+
   return {
     getItem(key) {
-      const values = {
-        "estipaid-company-profile-v1": JSON.stringify(companyProfile || { id: "local_company", companyName: "AAS Property Care" }),
-        "estipaid-customers-v1": JSON.stringify(customers || [{ id: "cust_1", name: "Acme Co" }]),
-        "estipaid-projects-v1": JSON.stringify(projects || [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
-        "estipaid-estimates-v1": JSON.stringify(estimates || [{
-          id: "est_1",
-          projectId: "proj_1",
-          customerId: "cust_1",
-          estimateNumber: "EST-1",
-          total: 100,
-          labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
-        }]),
-        "estipaid-invoices-v1": JSON.stringify(invoices || [{
-          id: "inv_1",
-          projectId: "proj_1",
-          customerId: "cust_1",
-          sourceEstimateId: "est_1",
-          invoiceNumber: "INV-1",
-          invoiceTotal: 100,
-          amountPaid: 25,
-          balanceRemaining: 75,
-          lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
-          payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
-        }]),
-        "estipaid-settings-v1": JSON.stringify(settings || {}),
-        "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates || []),
-        "estipaid-audit-events-v1": JSON.stringify(auditEvents || []),
-      };
       return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+    },
+    setItem(key, value) {
+      values[key] = value;
     },
   };
 }
@@ -794,13 +798,24 @@ describe("supabaseMigrationWriter", () => {
     )).toBe(true);
   });
 
-  test("completes validation before writes and blocks early on local document issues", async () => {
+  test("completes validation before writes and blocks early on unrepaired local document issues", async () => {
     const mockClient = createMockClient();
     mockGetSupabaseClient.mockReturnValue(mockClient);
 
     const result = await runSupabaseMigrationWrite({
       storageSnapshot: buildStorageSnapshot({
-        estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", total: 100 }],
+        invoices: [{
+          id: "inv_missing_number",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          sourceEstimateId: "est_1",
+          invoiceNumber: "",
+          invoiceTotal: 100,
+          amountPaid: 0,
+          balanceRemaining: 100,
+          lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
+          payments: [],
+        }],
       }),
       configured: true,
       user: { id: "user_1" },
@@ -814,10 +829,169 @@ describe("supabaseMigrationWriter", () => {
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/local validation issues/i);
     expect(result.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "estimate_number_missing:0" }),
+      expect.objectContaining({ code: "invoice_number_missing:0" }),
     ]));
     expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
     expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+  });
+
+  test("repairs missing estimate numbers before cloud backup and persists the repaired value", async () => {
+    const mockClient = createMockClient({
+      estimateRows: [{ id: "db_est_missing_number", legacy_local_id: "est_missing_number" }],
+      estimateLineItemRows: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_missing_number:line:0" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    const storageSnapshot = buildStorageSnapshot({
+      estimates: [{
+        id: "est_missing_number",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        total: 100,
+        grandTotal: 100,
+        totalRevenue: 100,
+        labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
+        job: { date: "2026-07-03", docNumber: "" },
+      }],
+      invoices: [],
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_numbers_repaired" }),
+    ]));
+    expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "est_missing_number",
+          estimate_number: "EST-0001",
+          total_amount: 100,
+        }),
+      ]),
+      expect.any(Object),
+    );
+
+    const persisted = JSON.parse(storageSnapshot.getItem("estipaid-estimates-v1"));
+    expect(persisted[0]).toEqual(expect.objectContaining({
+      id: "est_missing_number",
+      estimateNumber: "EST-0001",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      total: 100,
+    }));
+    expect(persisted[0].job).toEqual(expect.objectContaining({ docNumber: "EST-0001" }));
+  });
+
+  test("repairs multiple missing estimate numbers uniquely and keeps the repaired values stable across backups", async () => {
+    const mockClient = createMockClient({
+      estimateRows: [
+        { id: "db_est_1", legacy_local_id: "est_missing_1" },
+        { id: "db_est_2", legacy_local_id: "est_existing" },
+        { id: "db_est_3", legacy_local_id: "est_missing_2" },
+      ],
+      estimateLineItemRows: [
+        { id: "db_est_line_1", legacy_local_id: "estimate:est_missing_1:line:0" },
+        { id: "db_est_line_2", legacy_local_id: "estimate:est_existing:line:0" },
+        { id: "db_est_line_3", legacy_local_id: "estimate:est_missing_2:line:0" },
+      ],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    const storageSnapshot = buildStorageSnapshot({
+      estimates: [
+        {
+          id: "est_missing_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          total: 100,
+          labor: { lines: [{ id: "line_1", description: "Labor 1", quantity: 1, rate: 100 }] },
+          job: { date: "2026-07-03", docNumber: "" },
+        },
+        {
+          id: "est_existing",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          estimateNumber: "EST-0021",
+          total: 120,
+          labor: { lines: [{ id: "line_2", description: "Labor 2", quantity: 1, rate: 120 }] },
+          job: { date: "2026-07-03", docNumber: "EST-0021" },
+        },
+        {
+          id: "est_missing_2",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          total: 140,
+          labor: { lines: [{ id: "line_3", description: "Labor 3", quantity: 1, rate: 140 }] },
+          job: { date: "2026-07-03", docNumber: "" },
+        },
+      ],
+      invoices: [],
+    });
+    const preview = buildPreview({
+      localCounts: {
+        customers: 1,
+        projects: 1,
+        estimates: 3,
+        estimateLineItems: 3,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+      },
+      cloudCounts: {
+        customers: 0,
+        projects: 0,
+        estimates: 0,
+        estimateLineItems: 0,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+      },
+    });
+
+    const first = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview,
+    });
+
+    expect(first.ok).toBe(true);
+    const repairedOnce = JSON.parse(storageSnapshot.getItem("estipaid-estimates-v1"));
+    expect(repairedOnce.map((estimate) => estimate.estimateNumber)).toEqual([
+      "EST-0022",
+      "EST-0021",
+      "EST-0023",
+    ]);
+
+    const second = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview,
+    });
+
+    expect(second.ok).toBe(true);
+    expect(second.notices.some((notice) => notice.code === "estimate_numbers_repaired")).toBe(false);
+    const repairedTwice = JSON.parse(storageSnapshot.getItem("estipaid-estimates-v1"));
+    expect(repairedTwice.map((estimate) => estimate.estimateNumber)).toEqual([
+      "EST-0022",
+      "EST-0021",
+      "EST-0023",
+    ]);
   });
 
   test("surfaces per-table failures without hiding partial progress", async () => {

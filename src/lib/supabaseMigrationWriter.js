@@ -1,6 +1,7 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { collectBackendMappingWarnings, mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import { repairStoredEstimateNumbers } from "../utils/estimateNumbers";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -789,6 +790,18 @@ export async function runSupabaseMigrationWrite({
 
   const artifact = buildLocalStorageExportArtifact(storageSnapshot);
   const localSnapshot = buildLocalSnapshotFromArtifact(artifact);
+  const estimateNumberRepair = repairStoredEstimateNumbers(storageSnapshot);
+  if (estimateNumberRepair.changed) {
+    localSnapshot.estimates = Array.isArray(estimateNumberRepair.estimates)
+      ? estimateNumberRepair.estimates
+      : [];
+    notices.push(buildNotice(
+      "warning",
+      "estimate_numbers_repaired",
+      `Repaired missing estimate numbers for ${estimateNumberRepair.repairs.length} local estimate${estimateNumberRepair.repairs.length === 1 ? "" : "s"} before cloud backup.`,
+      { repairs: estimateNumberRepair.repairs }
+    ));
+  }
   const draft = mapLocalSnapshotToBackendDraft(localSnapshot, {
     companyId,
     userId,
