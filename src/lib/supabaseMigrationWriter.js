@@ -629,6 +629,16 @@ function isCustomersOnlyPartialState(localCounts, cloudCounts) {
 // invoice always blocks and must be resolved via restore instead.
 const CLOUD_ONLY_REPLACEABLE_TABLES = new Set(["customers", "projects", "estimates"]);
 
+// Estimates have cloud-side children (estimate_line_items) that are only
+// verified by count, not id. Deleting a cloud-only estimate without also
+// deleting its line items would leave those line items orphaned in the
+// cloud -- the estimate count would match, but estimate_line_items would
+// stay permanently inflated, so verification would never clear and the app
+// would look stuck on "Data mismatch" forever even though replace "worked".
+const CLOUD_ONLY_CHILD_TABLES = {
+  estimates: { table: "estimate_line_items", parentColumn: "estimate_id" },
+};
+
 async function collectExistingCloudResumeIssues(client, companyId, draft, { allowCloudOnlyReplacement = false } = {}) {
   const notices = [];
   const replacements = [];
@@ -652,7 +662,12 @@ async function collectExistingCloudResumeIssues(client, companyId, draft, { allo
     if (cloudOnlyIds.length === 0) continue;
 
     if (allowCloudOnlyReplacement && CLOUD_ONLY_REPLACEABLE_TABLES.has(table)) {
-      replacements.push({ table, label, legacyIds: cloudOnlyIds });
+      const cloudOnlyIdSet = new Set(cloudOnlyIds);
+      const cloudRowIds = existingRows
+        .filter((row) => cloudOnlyIdSet.has(asText(row?.legacy_local_id)))
+        .map((row) => asText(row?.id))
+        .filter(Boolean);
+      replacements.push({ table, label, legacyIds: cloudOnlyIds, cloudRowIds });
       continue;
     }
 
@@ -677,6 +692,20 @@ async function deleteCloudOnlyRows(client, table, companyId, legacyIds) {
     .delete()
     .eq("company_id", companyId)
     .in("legacy_local_id", legacyIds);
+
+  return { error: response?.error || null };
+}
+
+async function deleteOrphanedChildRows(client, table, companyId, parentColumn, parentRowIds) {
+  if (!Array.isArray(parentRowIds) || parentRowIds.length === 0) {
+    return { error: null };
+  }
+
+  const response = await client
+    .from(table)
+    .delete()
+    .eq("company_id", companyId)
+    .in(parentColumn, parentRowIds);
 
   return { error: response?.error || null };
 }
@@ -969,6 +998,36 @@ export async function runSupabaseMigrationWrite({
 
       if (resumeIssues.replacements.length > 0) {
         for (const replacement of resumeIssues.replacements) {
+          // Delete cloud-side children first (e.g. estimate_line_items),
+          // before their parent row, so a leftover child row can never
+          // survive the parent's deletion and keep verification permanently
+          // mismatched. Harmless no-op if the parent has no children.
+          const childTable = CLOUD_ONLY_CHILD_TABLES[replacement.table];
+          if (childTable && replacement.cloudRowIds?.length > 0) {
+            const { error: childError } = await deleteOrphanedChildRows(
+              client,
+              childTable.table,
+              companyId,
+              childTable.parentColumn,
+              replacement.cloudRowIds
+            );
+            if (childError) {
+              return {
+                ok: false,
+                blocked: false,
+                reason: asText(childError?.message) || `Failed to replace cloud-only ${childTable.table} rows.`,
+                notices: [buildNotice(
+                  "error",
+                  `${childTable.table}_cloud_only_replace_failed`,
+                  asText(childError?.message) || `Failed to replace cloud-only ${childTable.table} rows.`
+                )],
+                cloudCountsBefore: cloudCounts,
+                tableResults,
+                noLocalDeletes: true,
+              };
+            }
+          }
+
           const { error } = await deleteCloudOnlyRows(client, replacement.table, companyId, replacement.legacyIds);
           if (error) {
             return {

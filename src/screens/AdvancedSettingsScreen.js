@@ -45,6 +45,49 @@ function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 
+// Tables the deliberate "Replace Cloud Backup With This Device" action is
+// allowed to remove cloud-only rows from (kept in sync with
+// CLOUD_ONLY_REPLACEABLE_TABLES in supabaseMigrationWriter.js). Invoices and
+// invoice payments are financial records and are never removed by Replace.
+const REPLACEABLE_MISMATCH_TABLES = new Set(["customers", "projects", "estimates"]);
+
+// A generic "Cloud verification found mismatches" notice tells the user
+// something is wrong but not what, or which action (Restore vs Replace)
+// would actually fix it. This turns the per-table verification result into
+// a short, concrete reason per table so the user is never stuck guessing.
+function describeVerificationMismatchTables(verification) {
+  const results = Array.isArray(verification?.tableResults) ? verification.tableResults : [];
+  return results
+    .filter((result) => String(result?.status || "") === "mismatch" || String(result?.status || "") === "unavailable")
+    .map((result) => {
+      const table = String(result?.table || "").trim();
+      const label = table.replace(/_/g, " ");
+      if (String(result?.status) === "unavailable") {
+        return `${label}: could not be verified (${String(result?.error || "cloud read failed")}).`;
+      }
+      const missing = Array.isArray(result?.missingLegacyIds) ? result.missingLegacyIds.length : 0;
+      const extra = Array.isArray(result?.extraLegacyIds) ? result.extraLegacyIds.length : 0;
+      const countOnly = Boolean(result?.countOnly);
+      const parts = [];
+      if (extra > 0) parts.push(`${extra} only in the cloud`);
+      if (missing > 0) parts.push(`${missing} only on this device`);
+      if (parts.length === 0) {
+        parts.push(countOnly ? "row count does not match" : "does not match");
+      }
+      let hint;
+      if (extra > 0 && REPLACEABLE_MISMATCH_TABLES.has(table)) {
+        hint = "Replace can remove the cloud-only rows.";
+      } else if (extra > 0) {
+        hint = "Replace will not remove these (invoices/payments are protected) -- restore cloud data here to review them instead.";
+      } else if (missing > 0) {
+        hint = "Restore can bring the missing rows down, or back up this device to push them up.";
+      } else {
+        hint = "Restore or replace should clear this once run.";
+      }
+      return `${label}: ${parts.join(", ")}. ${hint}`;
+    });
+}
+
 function safeJsonParse(raw) {
   try {
     return JSON.parse(raw);
@@ -706,6 +749,7 @@ export default function AdvancedSettingsScreen({
       || backupAttentionDetail
       || ""
   ).trim();
+  const mismatchTableDetails = describeVerificationMismatchTables(onboardingStatus?.verification || cloudVerification);
 
   // Read-only: once onboarding detects a fresh device with cloud data
   // available, check exactly what (if anything) is safely restorable. Never
@@ -757,6 +801,23 @@ export default function AdvancedSettingsScreen({
         company,
       });
       setRestoreResult(result);
+      // executeSupabaseCloudRestore never re-verifies on its own, so without
+      // this the mismatch state on this screen would never clear after a
+      // successful restore -- only the header chip's separate hook refreshes
+      // on the restore-complete event. Re-check the same way runSafeMetadataRepair
+      // does after a repair.
+      if (result?.status === CLOUD_RESTORE_STATUS.RESTORED && isSupabaseReady && user?.id && company?.id) {
+        try {
+          const nextStatus = await checkSupabaseCloudOnboardingStatus({
+            storageSnapshot: localStorage,
+            configured: isSupabaseReady,
+            user,
+            company,
+            role: accountRole,
+          });
+          setOnboardingStatus(nextStatus);
+        } catch {}
+      }
     } catch {
       setRestoreResult({
         status: CLOUD_RESTORE_STATUS.ERROR,
@@ -1607,6 +1668,15 @@ export default function AdvancedSettingsScreen({
                     {cloudBackupDetail ? (
                       <div className="pe-field-helper" style={{ opacity: 0.82 }}>
                         {cloudBackupDetail}
+                      </div>
+                    ) : null}
+                    {mismatchTableDetails.length > 0 ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {mismatchTableDetails.map((line) => (
+                          <div key={line} className="pe-field-helper" style={{ opacity: 0.82 }}>
+                            {line}
+                          </div>
+                        ))}
                       </div>
                     ) : null}
                     {restoreResult ? (

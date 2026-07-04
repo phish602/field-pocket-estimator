@@ -169,6 +169,7 @@ function createMockClient({
     customers: createDeleteChain({ error: deleteErrors.customers || null }),
     projects: createDeleteChain({ error: deleteErrors.projects || null }),
     estimates: createDeleteChain({ error: deleteErrors.estimates || null }),
+    estimate_line_items: createDeleteChain({ error: deleteErrors.estimate_line_items || null }),
     invoices: createDeleteChain({ error: deleteErrors.invoices || null }),
     invoice_payments: createDeleteChain({ error: deleteErrors.invoice_payments || null }),
   };
@@ -315,6 +316,36 @@ describe("supabaseMigrationWriter", () => {
     expect(result.replacedCloudOnlyRows).toEqual([
       expect.objectContaining({ table: "estimates", legacyIds: ["cloud_only_est"] }),
     ]);
+  });
+
+  test("replace-cloud option also removes the cloud-only estimate's orphaned line items so verification can actually clear", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(true);
+    // The estimate's cloud-side line items (matched by the raw cloud
+    // estimate id, not the legacy_local_id) must be deleted before the
+    // estimate row itself, or they'd be permanently orphaned in the cloud
+    // and estimate_line_items count would never match local again.
+    expect(mockClient.deleteChains.estimate_line_items.delete).toHaveBeenCalled();
+    expect(mockClient.deleteChains.estimate_line_items.eq).toHaveBeenCalledWith("company_id", "company_1");
+    expect(mockClient.deleteChains.estimate_line_items.in).toHaveBeenCalledWith("estimate_id", ["db_est_x"]);
   });
 
   test("replace-cloud option never deletes cloud-only invoice rows -- it still blocks and requires restore instead", async () => {
