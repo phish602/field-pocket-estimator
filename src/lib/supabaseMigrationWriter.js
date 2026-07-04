@@ -1,8 +1,12 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { collectBackendMappingWarnings, mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
-import { repairStoredEstimateNumbers } from "../utils/estimateNumbers";
 import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
+import {
+  buildIntegrityNotices,
+  buildLocalSnapshotFromArtifact,
+  repairStoredLocalDataIntegrity,
+} from "./localDataIntegrity";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -57,20 +61,6 @@ function buildTableResult(table, label, localCount, status = "pending", extra = 
     reused: 0,
     failed: 0,
     ...extra,
-  };
-}
-
-function buildLocalSnapshotFromArtifact(artifact) {
-  const migration = artifact?.parsedData?.migration || {};
-  return {
-    companyProfile: migration?.companyProfile?.parsed || null,
-    customers: Array.isArray(migration?.customers?.parsed) ? migration.customers.parsed : [],
-    projects: Array.isArray(migration?.projects?.parsed) ? migration.projects.parsed : [],
-    estimates: Array.isArray(migration?.estimates?.parsed) ? migration.estimates.parsed : [],
-    invoices: Array.isArray(migration?.invoices?.parsed) ? migration.invoices.parsed : [],
-    settings: migration?.settings?.parsed || null,
-    scopeTemplates: Array.isArray(migration?.scopeTemplates?.parsed) ? migration.scopeTemplates.parsed : [],
-    auditEvents: Array.isArray(migration?.auditEvents?.parsed) ? migration.auditEvents.parsed : [],
   };
 }
 
@@ -323,10 +313,9 @@ function classifyMappingWarnings(warnings) {
   return (Array.isArray(warnings) ? warnings : []).filter((warning) => {
     const code = asText(warning?.code);
     const severity = asText(warning?.severity).toLowerCase();
-    if (severity === "error") return true;
-    if (code.startsWith("project_customer_ref_missing:")) return true;
-    if (code.startsWith("invoice_source_estimate_missing:")) return true;
-    if (code.startsWith("document_number_collision:")) return true;
+    if (severity === "error") {
+      return !code.startsWith("duplicate_local_id:");
+    }
     return false;
   }).map((warning) => buildNotice(
     "error",
@@ -816,18 +805,29 @@ export async function runSupabaseMigrationWrite({
   }
 
   const artifact = buildLocalStorageExportArtifact(storageSnapshot);
-  const localSnapshot = buildLocalSnapshotFromArtifact(artifact);
-  const estimateNumberRepair = repairStoredEstimateNumbers(storageSnapshot);
-  if (estimateNumberRepair.changed) {
-    localSnapshot.estimates = Array.isArray(estimateNumberRepair.estimates)
-      ? estimateNumberRepair.estimates
-      : [];
+  let localSnapshot = buildLocalSnapshotFromArtifact(artifact);
+  const repairedLocalData = repairStoredLocalDataIntegrity(storageSnapshot);
+  localSnapshot = repairedLocalData.snapshot;
+  if (repairedLocalData.changed) {
     notices.push(buildNotice(
       "warning",
-      "estimate_numbers_repaired",
-      `Repaired missing estimate numbers for ${estimateNumberRepair.repairs.length} local estimate${estimateNumberRepair.repairs.length === 1 ? "" : "s"} before cloud backup.`,
-      { repairs: estimateNumberRepair.repairs }
+      "safe_metadata_repaired",
+      "Safe metadata was repaired before cloud backup. Totals, payments, and visible document values were not changed.",
+      { repairs: repairedLocalData.repairs }
     ));
+  }
+  const integrity = repairedLocalData.integrity;
+  notices.push(...buildIntegrityNotices(integrity));
+  if (integrity?.backupReadiness?.blocked) {
+    return {
+      ok: false,
+      blocked: true,
+      reason: "Migration write blocked by local validation issues.",
+      notices,
+      integrity,
+      tableResults,
+      noLocalDeletes: true,
+    };
   }
   const mappedDraft = mapLocalSnapshotToBackendDraft(localSnapshot, {
     companyId,
@@ -867,6 +867,7 @@ export async function runSupabaseMigrationWrite({
       blocked: true,
       reason: "Migration write blocked by local validation issues.",
       notices,
+      integrity,
       tableResults,
       noLocalDeletes: true,
     };
@@ -1095,6 +1096,8 @@ export async function runSupabaseMigrationWrite({
     companyId,
     noLocalDeletes: true,
     cloudCountsBefore: cloudCounts,
+    integrity,
+    repairSummary: repairedLocalData.repairs,
     notices: [
       buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
       ...notices,

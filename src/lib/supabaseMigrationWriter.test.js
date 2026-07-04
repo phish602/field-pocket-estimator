@@ -520,6 +520,154 @@ describe("supabaseMigrationWriter", () => {
     );
   });
 
+  test("repairs stale invoice sourceEstimateId before backup without changing invoice business values", async () => {
+    const mockClient = createMockClient({
+      estimateRows: [{ id: "db_est_2", legacy_local_id: "est_2" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const storageSnapshot = buildStorageSnapshot({
+      estimates: [{
+        id: "est_2",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        estimateNumber: "EST-2",
+        total: 250,
+      }],
+      invoices: [{
+        id: "inv_1",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        sourceEstimateId: "missing_estimate",
+        sourceEstimateSnapshot: { estimateId: "missing_estimate", estimateNumber: "EST-404" },
+        estimateNumber: "EST-404",
+        invoiceNumber: "INV-100",
+        invoiceTotal: 250,
+        total: 250,
+        amountPaid: 50,
+        balanceRemaining: 200,
+        payments: [{ id: "pay_1", amount: 50, method: "cash", status: "paid" }],
+      }],
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          source_estimate_legacy_id: null,
+          estimate_id: null,
+          estimate_number: "EST-404",
+          invoice_number: "INV-100",
+          total_amount: 250,
+          amount_paid: 50,
+          balance_remaining: 200,
+        }),
+      ]),
+      expect.any(Object),
+    );
+
+    const repairedInvoices = JSON.parse(storageSnapshot.getItem("estipaid-invoices-v1"));
+    expect(repairedInvoices[0]).toEqual(expect.objectContaining({
+      sourceEstimateId: "",
+      sourceEstimateSnapshot: null,
+      estimateNumber: "EST-404",
+      invoiceNumber: "INV-100",
+      total: 250,
+      amountPaid: 50,
+    }));
+  });
+
+  test("preserves a valid sourceEstimateId when the source estimate still exists", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          source_estimate_legacy_id: "est_1",
+          invoice_number: "INV-1",
+        }),
+      ]),
+      expect.any(Object),
+    );
+  });
+
+  test("backs up a standalone invoice without sourceEstimateId", async () => {
+    const mockClient = createMockClient({
+      estimateRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        estimates: [],
+        invoices: [{
+          id: "inv_1",
+          projectId: "proj_1",
+          customerId: "cust_1",
+          invoiceNumber: "INV-100",
+          invoiceTotal: 120,
+          total: 120,
+          amountPaid: 20,
+          balanceRemaining: 100,
+          payments: [{ id: "pay_1", amount: 20, method: "cash", status: "paid" }],
+        }],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({
+        localCounts: {
+          customers: 1,
+          projects: 1,
+          estimates: 0,
+          estimateLineItems: 0,
+          invoices: 1,
+          invoiceLineItems: 0,
+          invoicePayments: 1,
+        },
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          source_estimate_legacy_id: null,
+          estimate_id: null,
+          invoice_number: "INV-100",
+        }),
+      ]),
+      expect.any(Object),
+    );
+  });
+
   test("reuses existing cloud customers for a safe customers-only partial migration", async () => {
     const mockClient = createMockClient({
       counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
@@ -882,7 +1030,7 @@ describe("supabaseMigrationWriter", () => {
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/local validation issues/i);
     expect(result.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "invoice_number_missing:0" }),
+      expect.objectContaining({ code: "invoice_number_missing" }),
     ]));
     expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
     expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
@@ -920,7 +1068,7 @@ describe("supabaseMigrationWriter", () => {
 
     expect(result.ok).toBe(true);
     expect(result.notices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "estimate_numbers_repaired" }),
+      expect.objectContaining({ code: "safe_metadata_repaired" }),
     ]));
     expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalledWith(
       expect.arrayContaining([

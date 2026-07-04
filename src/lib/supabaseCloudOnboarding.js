@@ -124,6 +124,9 @@ export async function checkSupabaseCloudOnboardingStatus({
 
   try {
     const preview = await createSupabaseMigrationPreview(context);
+    if (preview?.integrity?.backupReadiness?.blocked) {
+      return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
+    }
     const localCoreCount = sumCoreDocCounts(preview?.localCounts);
     const cloudCountKnown = Boolean(preview?.cloudCountCheckAvailable);
     const cloudCoreCount = cloudCountKnown ? sumCoreDocCounts(preview?.cloudCounts) : 0;
@@ -182,6 +185,10 @@ export async function runSupabaseCloudOnboardingBackup({
 
     if (totalLocalRecords(preview?.localCounts) === 0) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA, { preview });
+    }
+
+    if (preview?.integrity?.backupReadiness?.blocked) {
+      return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
     }
 
     if (!isSupabaseMigrationPreviewReady(preview)) {

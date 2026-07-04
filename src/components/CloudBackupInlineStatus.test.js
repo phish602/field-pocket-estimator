@@ -3,7 +3,6 @@ import CloudBackupInlineStatus from "./CloudBackupInlineStatus";
 import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
-  recordCloudBackupAttemptFailure,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "../lib/supabaseCloudRestore";
@@ -18,8 +17,22 @@ jest.mock("../lib/useSupabaseAccount", () => ({
   default: jest.fn(),
 }));
 
+jest.mock("../lib/supabaseCloudOnboarding", () => ({
+  __esModule: true,
+  checkSupabaseCloudOnboardingStatus: jest.fn(),
+}));
+
+jest.mock("../lib/supabaseCloudRestore", () => ({
+  __esModule: true,
+  previewSupabaseCloudRestore: jest.fn(),
+  CLOUD_RESTORE_COMPLETE_EVENT: "estipaid:cloud-restore-complete",
+  getLastCloudRestoreCompleteAt: jest.fn(() => null),
+}));
+
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
+const { checkSupabaseCloudOnboardingStatus } = require("../lib/supabaseCloudOnboarding");
+const { previewSupabaseCloudRestore } = require("../lib/supabaseCloudRestore");
 
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
@@ -27,34 +40,48 @@ function signInWithCompany() {
     user: { id: "user_1" },
     userEmail: "owner@example.com",
   });
-  useSupabaseAccount.mockReturnValue({ hasCompany: true });
+  useSupabaseAccount.mockReturnValue({
+    company: { id: "company_1", name: "Field Pocket LLC" },
+    role: "owner",
+    hasCompany: true,
+  });
+}
+
+async function renderAndSettle() {
+  await act(async () => {
+    render(<CloudBackupInlineStatus />);
+  });
 }
 
 beforeEach(() => {
   localStorage.clear();
   signInWithCompany();
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
+  previewSupabaseCloudRestore.mockResolvedValue({ eligible: true, partial: false });
 });
 
-test("renders nothing when not signed in or no cloud workspace", () => {
+test("renders nothing when not signed in or no cloud workspace", async () => {
   useSupabaseAuth.mockReturnValue({ configured: false, user: null, userEmail: "" });
   useSupabaseAccount.mockReturnValue({ hasCompany: false });
   markCloudBackupDirty({ reason: "test", severity: "normal" });
 
-  render(<CloudBackupInlineStatus />);
+  await renderAndSettle();
 
   expect(screen.queryByTestId("cloud-backup-inline-status")).not.toBeInTheDocument();
 });
 
-test("renders nothing when there is no meaningful backup state", () => {
-  render(<CloudBackupInlineStatus />);
+test("renders current copy when cloud verification confirms this device is current", async () => {
+  await renderAndSettle();
 
-  expect(screen.queryByTestId("cloud-backup-inline-status")).not.toBeInTheDocument();
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Cloud up to date"
+  );
 });
 
-test("renders pending copy", () => {
+test("renders pending copy", async () => {
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
-  render(<CloudBackupInlineStatus />);
+  await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
     "Saved on this device · Backup pending"
@@ -62,10 +89,10 @@ test("renders pending copy", () => {
   expect(screen.queryByText(/sync/i)).not.toBeInTheDocument();
 });
 
-test("renders running copy", () => {
+test("renders running copy", async () => {
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
-  render(<CloudBackupInlineStatus />);
+  await renderAndSettle();
   act(() => {
     window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
   });
@@ -75,29 +102,28 @@ test("renders running copy", () => {
   );
 });
 
-test("renders current copy only once a successful backup is confirmed", () => {
+test("renders current copy only once a successful backup is confirmed", async () => {
   clearCloudBackupDirty("test_backup_success");
 
-  render(<CloudBackupInlineStatus />);
+  await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
     "Saved on this device · Cloud up to date"
   );
 });
 
-test("renders a calm failed/retry copy", () => {
-  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
-  recordCloudBackupAttemptFailure("network_error");
+test("renders a calm failed/retry copy", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "needs_attention" });
 
-  render(<CloudBackupInlineStatus />);
+  await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
     "Saved on this device · Backup will retry"
   );
 });
 
-test("renders restored copy after a cloud-restore-complete event", () => {
-  render(<CloudBackupInlineStatus />);
+test("renders restored copy after a cloud-restore-complete event", async () => {
+  await renderAndSettle();
   act(() => {
     window.dispatchEvent(new CustomEvent(CLOUD_RESTORE_COMPLETE_EVENT, { detail: { restored: true } }));
   });

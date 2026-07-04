@@ -1,6 +1,11 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import {
+  buildIntegrityNotices,
+  buildLocalSnapshotFromArtifact,
+  scanLocalDataIntegrity,
+} from "./localDataIntegrity";
 
 export const SUPABASE_MIGRATION_PREVIEW_VERSION = "supabase-migration-preview-v1";
 
@@ -34,20 +39,6 @@ function buildNotice(level, code, message) {
 
 function normalizeRole(role) {
   return String(role || "").trim().toLowerCase();
-}
-
-function buildLocalSnapshotFromArtifact(artifact) {
-  const migration = artifact?.parsedData?.migration || {};
-  return {
-    companyProfile: migration?.companyProfile?.parsed || null,
-    customers: Array.isArray(migration?.customers?.parsed) ? migration.customers.parsed : [],
-    projects: Array.isArray(migration?.projects?.parsed) ? migration.projects.parsed : [],
-    estimates: Array.isArray(migration?.estimates?.parsed) ? migration.estimates.parsed : [],
-    invoices: Array.isArray(migration?.invoices?.parsed) ? migration.invoices.parsed : [],
-    settings: migration?.settings?.parsed || null,
-    scopeTemplates: Array.isArray(migration?.scopeTemplates?.parsed) ? migration.scopeTemplates.parsed : [],
-    auditEvents: Array.isArray(migration?.auditEvents?.parsed) ? migration.auditEvents.parsed : [],
-  };
 }
 
 function countDraftLineItems(draft) {
@@ -132,6 +123,7 @@ export async function createSupabaseMigrationPreview({
   const migration = artifact?.parsedData?.migration || {};
   const invoices = migration?.invoices?.parsed;
   const localSnapshot = buildLocalSnapshotFromArtifact(artifact);
+  const integrity = scanLocalDataIntegrity(localSnapshot);
   const normalizedRole = normalizeRole(role);
   const companyId = String(company?.id || "").trim();
   const companyName = String(company?.name || "").trim();
@@ -176,6 +168,7 @@ export async function createSupabaseMigrationPreview({
   if (Array.isArray(artifact?.storageKeysMissing) && artifact.storageKeysMissing.length > 0) {
     notices.push(buildNotice("warning", "local_keys_missing", "Some migration keys are missing from localStorage."));
   }
+  notices.push(...buildIntegrityNotices(integrity));
   const cloudCounts = await readCloudCounts(companyId);
   if (!cloudCounts.available) {
     notices.push(buildNotice("info", "cloud_counts_unavailable", cloudCounts.statusMessage));
@@ -215,6 +208,7 @@ export async function createSupabaseMigrationPreview({
       localDataReadable: Number(artifact?.migrationReadiness?.parseErrorCount || 0) === 0,
     },
     localCounts,
+    integrity,
     localArtifact: {
       storageKeysMissing: Array.isArray(artifact?.storageKeysMissing) ? artifact.storageKeysMissing : [],
       parseWarnings: Array.isArray(artifact?.parseWarnings) ? artifact.parseWarnings : [],

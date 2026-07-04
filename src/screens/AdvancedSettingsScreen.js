@@ -32,6 +32,11 @@ import {
 import { markCloudBackupDirty, readCloudBackupQueueState, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "../lib/cloudBackupRunLock";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
+import {
+  getCloudDataDecision,
+  LOCAL_DATA_DECISION,
+  repairStoredLocalDataIntegrity,
+} from "../lib/localDataIntegrity";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
@@ -241,6 +246,8 @@ export default function AdvancedSettingsScreen({
   const [restorePreview, setRestorePreview] = useState(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState(null);
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairResult, setRepairResult] = useState(null);
   const [appBundleConfirmText, setAppBundleConfirmText] = useState("");
   const [appBundleBusy, setAppBundleBusy] = useState(false);
   const [appBundleResult, setAppBundleResult] = useState(null);
@@ -638,6 +645,22 @@ export default function AdvancedSettingsScreen({
       || onboardingStatus?.error
       || ""
   ).trim();
+  const localIntegrity = onboardingStatus?.preview?.integrity || migrationPreview?.integrity || null;
+  const cloudDecision = getCloudDataDecision({
+    localIntegrity,
+    cloudVerification: onboardingStatus?.verification || cloudVerification,
+    queueState: autoBackupQueueState,
+    onboardingStatus,
+    restorePreview,
+    workerRunning: autoBackupRunning,
+    restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
+  });
+  const cloudBackupDetail = String(
+    cloudDecision?.firstBlocker?.message
+      || cloudDecision?.firstSafeRepair?.message
+      || backupAttentionDetail
+      || ""
+  ).trim();
 
   // Read-only: once onboarding detects a fresh device with cloud data
   // available, check exactly what (if anything) is safely restorable. Never
@@ -703,14 +726,54 @@ export default function AdvancedSettingsScreen({
     }
   };
 
+  const runSafeMetadataRepair = async () => {
+    try {
+      setRepairBusy(true);
+      const result = repairStoredLocalDataIntegrity(localStorage);
+      setRepairResult(result);
+      if (result?.changed) {
+        markCloudBackupDirty({
+          reason: "safe_metadata_repaired",
+          domains: ["estimates", "invoices"],
+          severity: "normal",
+          source: "AdvancedSettingsScreen",
+        });
+        const auditEvent = createStoredAuditEvent("data_integrity.safe_metadata_repaired", {
+          meta: {
+            estimateNumbers: result?.repairs?.estimateNumbers?.length || 0,
+            staleInvoiceSourceEstimateIds: result?.repairs?.staleInvoiceSourceEstimateIds?.length || 0,
+          },
+        });
+        if (auditEvent) appendAuditEvent(auditEvent);
+      }
+      if (isSupabaseReady && user?.id && company?.id) {
+        try {
+          const nextStatus = await checkSupabaseCloudOnboardingStatus({
+            storageSnapshot: localStorage,
+            configured: isSupabaseReady,
+            user,
+            company,
+            role: accountRole,
+          });
+          setOnboardingStatus(nextStatus);
+        } catch {}
+      }
+    } finally {
+      setRepairBusy(false);
+    }
+  };
+
   const requestCloudBackupConfirmation = () => {
     setCloudConfirmDialog({
       action: "backup",
       title: "Back up this device to cloud?",
       lines: [
         "This will copy this device's saved work to your cloud backup.",
+        cloudDecision?.safeRepairsAvailable
+          ? "We'll repair safe metadata before backing up. Totals, payments, and documents will not be changed."
+          : null,
         "It will not delete local data on this device.",
-      ],
+      ].filter(Boolean),
       confirmLabel: "Back Up Now",
     });
   };
@@ -1355,6 +1418,61 @@ export default function AdvancedSettingsScreen({
                     <div className="pe-field-helper">This device has no saved work yet.</div>
                     <div className="pe-field-helper">Create your first project to start cloud backup.</div>
                   </>
+                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA
+                  || cloudDecision.screenState === LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP
+                  || cloudDecision.screenState === LOCAL_DATA_DECISION.BACKUP_FAILED
+                  || cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                      Cloud backup needs attention.
+                    </div>
+                    {cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE ? (
+                      <div className="pe-field-helper">Cloud data is not fully restorable yet.</div>
+                    ) : (
+                      <div className="pe-field-helper">
+                        {showDeveloperCloudTools
+                          ? "Review the concrete blocker below before backing up or restoring."
+                          : "Review this device and cloud backup before trying again."}
+                      </div>
+                    )}
+                    {cloudBackupDetail ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
+                        {cloudBackupDetail}
+                      </div>
+                    ) : null}
+                    {cloudDecision.safeRepairsAvailable ? (
+                      <div className="pe-field-helper">
+                        We&apos;ll repair safe metadata before backing up. Totals, payments, and documents will not be changed.
+                      </div>
+                    ) : null}
+                    {repairResult?.changed ? (
+                      <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                        Safe metadata repair completed.
+                      </div>
+                    ) : null}
+                    {cloudDecision.safeRepairsAvailable ? (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="pe-btn pe-btn-ghost"
+                          onClick={runSafeMetadataRepair}
+                          disabled={repairBusy}
+                        >
+                          {repairBusy ? "Repairing..." : "Repair Safe Metadata"}
+                        </button>
+                        {!cloudDecision.firstBlocker ? (
+                          <button
+                            type="button"
+                            className="pe-btn"
+                            onClick={requestCloudBackupConfirmation}
+                            disabled={onboardingBackupBusy}
+                          >
+                            Back Up This Device
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE ? (
                   <>
                     <div className="pe-field-helper">Cloud data found.</div>
@@ -1378,18 +1496,16 @@ export default function AdvancedSettingsScreen({
                     ) : restoreBusy ? (
                       <div className="pe-field-helper">Restoring cloud data to this device...</div>
                     ) : restoreResult && restoreResult.status !== CLOUD_RESTORE_STATUS.RESTORED ? (
-                      <>
-                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                          {restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
-                            ? "This device already has local data. Restore is blocked to prevent overwriting."
-                            : "Restore could not be completed on this device."}
-                        </div>
-                      </>
+                      <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                        {restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
+                          ? "This device already has local data. Restore is blocked to prevent overwriting."
+                          : "Restore could not be completed on this device."}
+                      </div>
                     ) : restorePreviewBusy && !restorePreview ? (
                       <div className="pe-field-helper">Checking restore eligibility...</div>
                     ) : restorePreview?.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY ? (
                       <div className="pe-field-helper">This device already has local data. Restore is blocked to prevent overwriting.</div>
-                    ) : restorePreview?.eligible ? (
+                    ) : (
                       <>
                         {restorePreview?.partial ? (
                           <div className="pe-field-helper">Estimates can&apos;t be restored yet; customers, projects, and invoices will be.</div>
@@ -1406,26 +1522,9 @@ export default function AdvancedSettingsScreen({
                           </button>
                         </div>
                       </>
-                    ) : (
-                      <div className="pe-field-helper">Restore to this device is coming next.</div>
                     )}
                   </>
-                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
-                  <>
-                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
-                      Cloud backup is up to date.
-                    </div>
-                    <div className="pe-field-helper">Cloud data matches this device.</div>
-                    <div className="pe-field-helper">No local data was deleted.</div>
-                  </>
-                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP ? (
-                  <>
-                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
-                      Cloud backup is up to date.
-                    </div>
-                    <div className="pe-field-helper">Cloud data matches this device.</div>
-                  </>
-                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH ? (
+                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
                       This device and cloud backup are different.
@@ -1442,24 +1541,22 @@ export default function AdvancedSettingsScreen({
                       </button>
                     </div>
                   </>
-                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
-                  || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ERROR ? (
+                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT ? (
                   <>
-                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                      We couldn&apos;t finish cloud backup automatically.
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                      Cloud backup is up to date.
                     </div>
-                    <div className="pe-field-helper">
-                      {showDeveloperCloudTools
-                        ? "Open developer migration tools for details."
-                        : "Review this device and cloud backup before trying again."}
-                    </div>
-                    {backupAttentionDetail ? (
-                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
-                        {backupAttentionDetail}
+                    <div className="pe-field-helper">Cloud data matches this device.</div>
+                    {onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED ? (
+                      <div className="pe-field-helper">No local data was deleted.</div>
+                    ) : null}
+                    {autoBackupQueueState.lastSuccessfulBackupAt ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.75 }}>
+                        Last backed up {new Date(autoBackupQueueState.lastSuccessfulBackupAt).toLocaleString()}
                       </div>
                     ) : null}
                   </>
-                ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP ? (
+                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.SAFE_TO_BACKUP ? (
                   <>
                     <div className="pe-field-helper">
                       This device has work that is not backed up yet.
@@ -1480,6 +1577,29 @@ export default function AdvancedSettingsScreen({
                     Your estimates, invoices, customers, and projects can be backed up to your cloud account.
                   </div>
                 )}
+                {localIntegrity?.summary ? (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 4,
+                      padding: 10,
+                      borderRadius: 12,
+                      border: "1px solid rgba(148,163,184,0.18)",
+                      background: "rgba(15,23,42,0.34)",
+                    }}
+                  >
+                    <div className="pe-field-label" style={{ marginBottom: 0 }}>Data check</div>
+                    <div className="pe-field-helper">
+                      Customers <strong>{Number(localIntegrity.summary.customers || 0)}</strong>, projects <strong>{Number(localIntegrity.summary.projects || 0)}</strong>, estimates <strong>{Number(localIntegrity.summary.estimates || 0)}</strong>, invoices <strong>{Number(localIntegrity.summary.invoices || 0)}</strong>.
+                    </div>
+                    <div className="pe-field-helper">
+                      Blockers <strong>{Number(localIntegrity.summary.blockersCount || 0)}</strong>, warnings <strong>{Number(localIntegrity.summary.warningsCount || 0)}</strong>, repairs available <strong>{Number(localIntegrity.summary.repairsAvailableCount || 0)}</strong>.
+                    </div>
+                    <div className="pe-field-helper">
+                      Invoice payments <strong>{Number(localIntegrity.summary.invoicePayments || 0)}</strong>, scope templates <strong>{Number(localIntegrity.summary.scopeTemplates || 0)}</strong>, audit events <strong>{Number(localIntegrity.summary.auditEvents || 0)}</strong>.
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {showDeveloperCloudTools ? (

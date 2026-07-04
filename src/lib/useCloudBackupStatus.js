@@ -1,20 +1,23 @@
 // @ts-nocheck
 /* eslint-disable */
 
-// Gate 13D: shared status-derivation for cloud backup indicators. Extracted
-// from CloudBackupStatusBadge (Gate 13C) so Project Detail's compact chip and
-// Home's full badge read the exact same signals -- queue state, the Gate 13B
-// worker's running event, and a recent restore -- without each maintaining
-// its own copy of the listener/timer wiring. Never renders anything itself;
-// callers own their own markup/copy.
-
 import { useEffect, useState } from "react";
-import { readCloudBackupQueueState, CLOUD_BACKUP_STATUS } from "./cloudBackupQueue";
+import { readCloudBackupQueueState } from "./cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "./useCloudAutoBackup";
-import { CLOUD_RESTORE_COMPLETE_EVENT, getLastCloudRestoreCompleteAt } from "./supabaseCloudRestore";
+import {
+  CLOUD_RESTORE_COMPLETE_EVENT,
+  getLastCloudRestoreCompleteAt,
+  previewSupabaseCloudRestore,
+} from "./supabaseCloudRestore";
+import { checkSupabaseCloudOnboardingStatus } from "./supabaseCloudOnboarding";
 import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import {
+  buildLocalSnapshotFromStorage,
+  getCloudDataDecision,
+  scanLocalDataIntegrity,
+} from "./localDataIntegrity";
 
 export const CLOUD_BACKUP_RESTORE_BANNER_DURATION_MS = 6000;
 
@@ -23,25 +26,43 @@ function isRestoreRecent() {
   return Boolean(at) && Date.now() - at < CLOUD_BACKUP_RESTORE_BANNER_DURATION_MS;
 }
 
-// displayState is one of: "running" | "failed" | "pending" | "current" | "none".
-// restoredRecently is a separate flag (a restore can complete while the queue
-// is already otherwise "current") so callers can prioritize a "just restored"
-// message without losing the underlying queue-derived state.
+function readLocalIntegrity() {
+  try {
+    return scanLocalDataIntegrity(buildLocalSnapshotFromStorage(localStorage).snapshot);
+  } catch {
+    return null;
+  }
+}
+
 export default function useCloudBackupStatus() {
   const { configured: isSupabaseReady, user, userEmail } = useSupabaseAuth();
-  const { hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
+  const { company, role, hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
   const [queueState, setQueueState] = useState(() => readCloudBackupQueueState());
   const [workerRunning, setWorkerRunning] = useState(false);
-  // Lazy-initialized so a consumer that mounts *after* a restore already
-  // completed elsewhere still shows the confirmation instead of missing it.
   const [restoredRecently, setRestoredRecently] = useState(isRestoreRecent);
+  const [localIntegrity, setLocalIntegrity] = useState(readLocalIntegrity);
+  const [onboardingStatus, setOnboardingStatus] = useState(null);
+  const [restorePreview, setRestorePreview] = useState(null);
 
   useEffect(() => {
-    const refresh = () => setQueueState(readCloudBackupQueueState());
+    const refresh = () => {
+      setQueueState(readCloudBackupQueueState());
+      setLocalIntegrity(readLocalIntegrity());
+    };
 
     const onStorageEvent = (event) => {
       const key = event?.detail?.key;
-      if (key && key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE) return;
+      if (
+        key
+        && key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE
+        && key !== STORAGE_KEYS.CUSTOMERS
+        && key !== STORAGE_KEYS.PROJECTS
+        && key !== STORAGE_KEYS.ESTIMATES
+        && key !== STORAGE_KEYS.INVOICES
+        && key !== STORAGE_KEYS.AUDIT_EVENTS
+      ) {
+        return;
+      }
       refresh();
     };
 
@@ -70,6 +91,10 @@ export default function useCloudBackupStatus() {
       window.addEventListener("pe-localstorage", onStorageEvent);
       window.addEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
       window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onRestoreComplete);
+      window.addEventListener("estipaid:customers-changed", refresh);
+      window.addEventListener("estipaid:projects-changed", refresh);
+      window.addEventListener("estipaid:estimates-changed", refresh);
+      window.addEventListener("estipaid:invoices-changed", refresh);
     } catch {}
 
     return () => {
@@ -78,22 +103,84 @@ export default function useCloudBackupStatus() {
         window.removeEventListener("pe-localstorage", onStorageEvent);
         window.removeEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
         window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onRestoreComplete);
+        window.removeEventListener("estipaid:customers-changed", refresh);
+        window.removeEventListener("estipaid:projects-changed", refresh);
+        window.removeEventListener("estipaid:estimates-changed", refresh);
+        window.removeEventListener("estipaid:invoices-changed", refresh);
       } catch {}
     };
   }, []);
 
-  // "Current" is only reported once a backup has actually been confirmed --
-  // a fresh queue that has never been dirty and never backed up has nothing
-  // to report yet.
-  const displayState = workerRunning
-    ? "running"
-    : queueState.status === CLOUD_BACKUP_STATUS.FAILED
-      ? "failed"
-      : queueState.pending
+  useEffect(() => {
+    let active = true;
+    const userId = String(user?.id || "").trim();
+    const companyId = String(company?.id || "").trim();
+
+    if (!isSupabaseReady || !userId || !companyId) {
+      setOnboardingStatus(null);
+      setRestorePreview(null);
+      return undefined;
+    }
+
+    checkSupabaseCloudOnboardingStatus({
+      storageSnapshot: localStorage,
+      configured: isSupabaseReady,
+      user,
+      company,
+      role,
+    })
+      .then(async (result) => {
+        if (!active) return;
+        setOnboardingStatus(result);
+        if (String(result?.status || "").trim() !== "cloud_available_empty_device") {
+          setRestorePreview(null);
+          return;
+        }
+        try {
+          const preview = await previewSupabaseCloudRestore({
+            storageSnapshot: localStorage,
+            configured: isSupabaseReady,
+            user,
+            company,
+          });
+          if (active) setRestorePreview(preview);
+        } catch {
+          if (active) setRestorePreview(null);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setOnboardingStatus(null);
+          setRestorePreview(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isSupabaseReady, user, company, role]);
+
+  const decision = getCloudDataDecision({
+    localIntegrity,
+    cloudVerification: onboardingStatus?.verification || null,
+    queueState,
+    onboardingStatus,
+    restorePreview,
+    workerRunning,
+    restoredRecently,
+  });
+
+  const displayState = decision.chipState === "restored"
+    ? "current"
+    : decision.chipState === "backup_running"
+      ? "running"
+      : decision.chipState === "backup_pending"
         ? "pending"
-        : queueState.lastSuccessfulBackupAt
+        : decision.chipState === "cloud_verified_current"
           ? "current"
-          : "none";
+          : decision.chipState === "backup_failed" || decision.chipState === "local_cloud_mismatch"
+            ? "failed"
+            : "none";
 
   return {
     isSupabaseReady,
@@ -101,6 +188,12 @@ export default function useCloudBackupStatus() {
     userEmail,
     queueState,
     displayState,
+    chipState: decision.chipState,
+    chipAction: decision.chipAction,
     restoredRecently,
+    onboardingStatus,
+    restorePreview,
+    localIntegrity,
+    decision,
   };
 }

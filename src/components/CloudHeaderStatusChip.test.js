@@ -3,7 +3,6 @@ import CloudHeaderStatusChip from "./CloudHeaderStatusChip";
 import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
-  recordCloudBackupAttemptFailure,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
@@ -36,9 +35,17 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
   },
 }));
 
+jest.mock("../lib/supabaseCloudRestore", () => ({
+  __esModule: true,
+  previewSupabaseCloudRestore: jest.fn(),
+  CLOUD_RESTORE_COMPLETE_EVENT: "estipaid:cloud-restore-complete",
+  getLastCloudRestoreCompleteAt: jest.fn(() => null),
+}));
+
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
+const { previewSupabaseCloudRestore } = require("../lib/supabaseCloudRestore");
 
 function setViewportWidth(width) {
   Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: width });
@@ -70,16 +77,17 @@ beforeEach(() => {
   setViewportWidth(1024);
   signInWithCompany();
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP });
+  previewSupabaseCloudRestore.mockResolvedValue({ eligible: true, partial: false });
 });
 
 afterEach(() => {
   setViewportWidth(1024);
 });
 
-test("renders nothing when there is no meaningful backup/restore state", async () => {
+test("shows Cloud OK when verification confirms cloud current", async () => {
   await renderAndSettle();
 
-  expect(screen.queryByTestId("cloud-header-status-chip")).not.toBeInTheDocument();
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
 });
 
 test("shows Backup pending when the queue is dirty", async () => {
@@ -101,29 +109,28 @@ test("shows Backing up... when the auto-backup worker reports it is running", as
   expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up...");
 });
 
-test("shows Cloud up to date only once a successful backup is confirmed", async () => {
+test("shows Cloud OK after a successful backup is confirmed", async () => {
   clearCloudBackupDirty("test_backup_success");
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud up to date");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
 });
 
-test("shows Backup needs attention for a failed state", async () => {
-  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
-  recordCloudBackupAttemptFailure("network_error");
+test("shows Backup issue for a failed state", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup needs attention");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
 });
 
-test("shows Restore available when the cloud restore prompt is available", async () => {
+test("shows Restore when cloud restore is safely available", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore available");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore");
 });
 
 test("backup pending takes priority over restore available", async () => {
@@ -133,7 +140,7 @@ test("backup pending takes priority over restore available", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup pending");
-  expect(screen.queryByText("Restore available")).not.toBeInTheDocument();
+  expect(screen.queryByText("Restore")).not.toBeInTheDocument();
 });
 
 test("tapping the chip dispatches the show-restore-prompt event", async () => {
@@ -144,6 +151,19 @@ test("tapping the chip dispatches the show-restore-prompt event", async () => {
   fireEvent.click(screen.getByTestId("cloud-header-status-chip"));
 
   const events = dispatchSpy.mock.calls.filter((call) => call[0]?.type === SHOW_CLOUD_RESTORE_PROMPT_EVENT);
+  expect(events.length).toBe(1);
+
+  dispatchSpy.mockRestore();
+});
+
+test("tapping a mismatch chip routes to cloud settings", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  const dispatchSpy = jest.spyOn(window, "dispatchEvent");
+
+  await renderAndSettle();
+  fireEvent.click(screen.getByTestId("cloud-header-status-chip"));
+
+  const events = dispatchSpy.mock.calls.filter((call) => call[0]?.type === "estipaid:navigate-cloud-settings");
   expect(events.length).toBe(1);
 
   dispatchSpy.mockRestore();
@@ -164,7 +184,7 @@ describe("compact mobile copy on narrow viewports", () => {
     setViewportWidth(375);
   });
 
-  test("shows Cloud OK instead of the full 'Cloud up to date' copy", async () => {
+  test("shows Cloud OK on narrow viewports", async () => {
     clearCloudBackupDirty("test_backup_success");
 
     await renderAndSettle();
@@ -191,9 +211,8 @@ describe("compact mobile copy on narrow viewports", () => {
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up");
   });
 
-  test("shows Backup issue instead of the full 'Backup needs attention' copy", async () => {
-    markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
-    recordCloudBackupAttemptFailure("network_error");
+  test("shows Backup issue on narrow viewports", async () => {
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
 
     await renderAndSettle();
 
@@ -206,6 +225,14 @@ describe("compact mobile copy on narrow viewports", () => {
     await renderAndSettle();
 
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore");
+  });
+
+  test("shows Data mismatch on narrow viewports", async () => {
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+
+    await renderAndSettle();
+
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Data mismatch");
   });
 
   test("still shows Restored (already short) after a completed restore", async () => {

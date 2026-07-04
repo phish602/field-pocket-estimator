@@ -761,7 +761,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
       preview: null,
-      verification: { ok: true, allMatched: false },
+      verification: null,
       writeResult: null,
       noWritesPerformed: true,
     });
@@ -1331,7 +1331,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
     });
 
-    expect(screen.getByText("We couldn't finish cloud backup automatically.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
     expect(screen.getByText("Review this device and cloud backup before trying again.")).toBeInTheDocument();
     expect(screen.getByText("Migration write blocked by local validation issues.")).toBeInTheDocument();
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();

@@ -17,8 +17,22 @@ jest.mock("../lib/useSupabaseAccount", () => ({
   default: jest.fn(),
 }));
 
+jest.mock("../lib/supabaseCloudOnboarding", () => ({
+  __esModule: true,
+  checkSupabaseCloudOnboardingStatus: jest.fn(),
+}));
+
+jest.mock("../lib/supabaseCloudRestore", () => ({
+  __esModule: true,
+  previewSupabaseCloudRestore: jest.fn(),
+  CLOUD_RESTORE_COMPLETE_EVENT: "estipaid:cloud-restore-complete",
+  getLastCloudRestoreCompleteAt: jest.fn(() => null),
+}));
+
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
+const { checkSupabaseCloudOnboardingStatus } = require("../lib/supabaseCloudOnboarding");
+const { previewSupabaseCloudRestore } = require("../lib/supabaseCloudRestore");
 
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
@@ -39,7 +53,13 @@ function signedInWithCompany() {
     user: { id: "user_1" },
     userEmail: "owner@example.com",
   });
-  useSupabaseAccount.mockReturnValue({ hasCompany: true });
+  useSupabaseAccount.mockReturnValue({
+    company: { id: "company_1", name: "Field Pocket LLC" },
+    role: "owner",
+    hasCompany: true,
+  });
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
+  previewSupabaseCloudRestore.mockResolvedValue({ eligible: true, partial: false });
 }
 
 function seedProject(project) {
@@ -60,6 +80,12 @@ function createProject(overrides = {}) {
     updatedAt: Date.now(),
     ...overrides,
   };
+}
+
+async function renderProjectDetail() {
+  await act(async () => {
+    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+  });
 }
 
 describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
@@ -140,55 +166,56 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
     expect(screen.getByText(/^Updated /i)).toBeInTheDocument();
   });
 
-  test("no large cloud backup card/badge appears on Project Detail", () => {
+  test("no large cloud backup card/badge appears on Project Detail", async () => {
     signedInWithCompany();
     markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
 
     expect(screen.queryByTestId("cloud-backup-status-badge")).not.toBeInTheDocument();
   });
 
-  test("compact backup chip does not render when there is no cloud workspace", () => {
+  test("compact backup chip does not render when there is no cloud workspace", async () => {
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
 
     expect(screen.queryByTestId("project-detail-backup-chip")).not.toBeInTheDocument();
   });
 
-  test("compact backup chip does not render when the queue has never been dirty and never backed up", () => {
+  test("compact backup chip does not render when the queue has never been dirty and never backed up", async () => {
     signedInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "ready_to_backup" });
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
 
     expect(screen.queryByTestId("project-detail-backup-chip")).not.toBeInTheDocument();
   });
 
-  test("compact backup chip shows 'Backup pending' when the queue is dirty", () => {
+  test("compact backup chip shows 'Backup pending' when the queue is dirty", async () => {
     signedInWithCompany();
     markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
 
     expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Backup pending");
     expect(screen.queryByText(/sync/i)).not.toBeInTheDocument();
   });
 
-  test("compact backup chip shows 'Backing up...' while the worker is running", () => {
+  test("compact backup chip shows 'Backing up...' while the worker is running", async () => {
     signedInWithCompany();
     markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
     act(() => {
       window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
     });
@@ -196,13 +223,13 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
     expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Backing up...");
   });
 
-  test("compact backup chip shows 'Cloud up to date' only once a successful backup is confirmed", () => {
+  test("compact backup chip shows 'Cloud up to date' only once a successful backup is confirmed", async () => {
     signedInWithCompany();
     clearCloudBackupDirty("test_backup_success");
     seedProject(createProject({ id: "proj_1" }));
     seedProjectDetailTarget("proj_1");
 
-    render(<ProjectDetailScreen onBack={() => {}} onOpenProjectDetail={() => {}} />);
+    await renderProjectDetail();
 
     expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Cloud up to date");
   });
