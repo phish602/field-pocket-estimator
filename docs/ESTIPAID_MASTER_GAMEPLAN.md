@@ -183,9 +183,9 @@ Desired future flow:
 4. Customer opens portal without needing an EstiPaid account.
 5. Customer can view the document online.
 6. Customer can download PDF.
-7. Customer can comment / request changes.
-8. Customer can approve or deny.
-9. Approval/denial automatically updates EstiPaid.
+7. Customer can comment or request changes before a terminal action.
+8. Customer can approve an estimate or acknowledge an invoice.
+9. Customer action automatically updates EstiPaid.
 10. Estimate/project/job status advances inside the app.
 11. Portal activity is logged.
 12. Portal events trigger automatic cloud backup dirty markers in the future (see Phase 6).
@@ -194,10 +194,14 @@ Product requirements:
 - Customer does not need an EstiPaid account.
 - Secure tokenized link.
 - Link tied to one document/version.
+- One active link per snapshot.
+- Raw token is never stored in backend rows or export artifacts.
 - Customer approves the exact sent version, not a moving live estimate.
 - PDF snapshot stored for the sent version.
+- Estimate approval captures signer name plus checkbox confirmation.
 - Approval updates estimate status and project/job status.
-- Denial/comment moves the job to a follow-up/change-request state.
+- Request changes keeps the core estimate status pending and moves the job to follow-up/change-request state through portal activity.
+- Sending a draft invoice moves its core status to sent.
 - PDF download link available from the portal.
 - Email/SMS send layer is provider-abstracted.
 - Later support resend, revoke, expire links, and backup/audit trail.
@@ -205,13 +209,14 @@ Product requirements:
 
 Sub-gates:
 - Gate 14A — Portal data model and sent document versions
-- Gate 14B — PDF snapshot storage
-- Gate 14C — Secure public customer portal page
-- Gate 14D — Customer approve / deny / comment actions
-- Gate 14E — Email/SMS send layer
-- Gate 14F — App-side portal activity center
-- Gate 14G — Link revoke / expire / resend
-- Gate 14H — Portal events integrated with automatic cloud backup queue
+- Gate 14B — Docs-only schema/RLS proposal
+- Gate 14C — Contractor-side link creation UI skeleton
+- Gate 14D — Public read-only customer portal page
+- Gate 14E — Customer approve / request changes / comment / acknowledge actions
+- Gate 14F — Status propagation and contractor activity timeline
+- Gate 14G — PDF snapshot and portal download behavior
+- Gate 14H — Email/text provider integration later
+- Gate 14I — Portal backup/restore coverage and live validation
 
 This phase is later product work. It is not part of the current execution priority below unless Adrian explicitly reprioritizes it.
 
