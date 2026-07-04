@@ -55,7 +55,12 @@ function defaultMatchingRows() {
   return {
     customers: [{ id: "db_cust_1", legacy_local_id: "cust_1" }],
     projects: [{ id: "db_proj_1", legacy_local_id: "proj_1" }],
-    estimates: [{ id: "db_est_1", legacy_local_id: "est_1" }],
+    estimates: [{
+      id: "db_est_1",
+      legacy_local_id: "est_1",
+      restore_payload: { schema: "estipaid.estimate.restore_payload", version: 1, estimate: { id: "est_1" } },
+      restore_payload_version: "1",
+    }],
     invoices: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
     invoice_payments: [{ id: "db_pay_1", legacy_local_id: "pay_1" }],
     estimate_line_items: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0" }],
@@ -196,9 +201,36 @@ describe("supabaseCloudVerification", () => {
     expect(mockClient.from).toHaveBeenCalledWith("invoice_payments");
     expect(mockClient.from).toHaveBeenCalledWith("estimate_line_items");
     expect(mockClient.from).toHaveBeenCalledWith("invoice_line_items");
-    Object.values(mockClient.selectMocks).forEach((select) => {
-      expect(select).toHaveBeenCalledWith("id, legacy_local_id");
+    expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith("id, legacy_local_id, restore_payload, restore_payload_version");
+    expect(mockClient.selectMocks.customers).toHaveBeenCalledWith("id, legacy_local_id");
+  });
+
+  test("treats estimates without restore_payload as a cloud mismatch even when ids and counts match", async () => {
+    const rows = defaultMatchingRows();
+    rows.estimates = [{ id: "db_est_1", legacy_local_id: "est_1", restore_payload: null, restore_payload_version: null }];
+    const mockClient = createMockClient(rows);
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseCloudVerification({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
     });
+
+    expect(result.allMatched).toBe(false);
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "estimates",
+        status: "mismatch",
+        missingLegacyIds: [],
+        extraLegacyIds: [],
+        missingRestorePayloadLegacyIds: ["est_1"],
+      }),
+    ]));
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimates_restore_payload_missing" }),
+    ]));
   });
 
   test("reports missing cloud rows when a local legacy id has no matching cloud row", async () => {

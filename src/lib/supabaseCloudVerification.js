@@ -63,17 +63,26 @@ function buildLegacyIdSet(rows) {
   );
 }
 
+function hasValidEstimateRestorePayload(row) {
+  return Boolean(
+    row?.restore_payload &&
+    typeof row.restore_payload === "object" &&
+    !Array.isArray(row.restore_payload) &&
+    asText(row?.restore_payload_version)
+  );
+}
+
 function diffIdSets(localIds, cloudIds) {
   const missing = [...localIds].filter((id) => !cloudIds.has(id)).sort();
   const extra = [...cloudIds].filter((id) => !localIds.has(id)).sort();
   return { missing, extra };
 }
 
-async function readCloudRows(client, table, companyId) {
+async function readCloudRows(client, table, companyId, columns = "id, legacy_local_id") {
   try {
     const response = await client
       .from(table)
-      .select("id, legacy_local_id")
+      .select(columns)
       .eq("company_id", companyId);
 
     if (response?.error) {
@@ -186,7 +195,10 @@ export async function runSupabaseCloudVerification({
   const tableResults = [];
 
   for (const [table, key] of ID_COMPARABLE_TABLES) {
-    const { rows, error } = await readCloudRows(client, table, companyId);
+    const columns = table === "estimates"
+      ? "id, legacy_local_id, restore_payload, restore_payload_version"
+      : "id, legacy_local_id";
+    const { rows, error } = await readCloudRows(client, table, companyId, columns);
     if (error) {
       tableResults.push(buildUnavailableTableResult(table, localCounts[key], error));
       notices.push(buildNotice("error", `${table}_read_failed`, `Unable to read ${table} from Supabase.`));
@@ -196,7 +208,17 @@ export async function runSupabaseCloudVerification({
     const localIds = buildLegacyIdSet(draft[key]);
     const cloudIds = buildLegacyIdSet(rows);
     const { missing, extra } = diffIdSets(localIds, cloudIds);
-    const matched = localCounts[key] === rows.length && missing.length === 0 && extra.length === 0;
+    const missingRestorePayloadLegacyIds = table === "estimates"
+      ? (Array.isArray(rows) ? rows : [])
+        .filter((row) => localIds.has(asText(row?.legacy_local_id)) && !hasValidEstimateRestorePayload(row))
+        .map((row) => asText(row?.legacy_local_id))
+        .filter(Boolean)
+        .sort()
+      : [];
+    const matched = localCounts[key] === rows.length
+      && missing.length === 0
+      && extra.length === 0
+      && missingRestorePayloadLegacyIds.length === 0;
 
     tableResults.push({
       table,
@@ -205,8 +227,18 @@ export async function runSupabaseCloudVerification({
       status: matched ? "matched" : "mismatch",
       missingLegacyIds: missing,
       extraLegacyIds: extra,
+      missingRestorePayloadLegacyIds,
       countOnly: false,
     });
+
+    if (table === "estimates" && missingRestorePayloadLegacyIds.length > 0) {
+      notices.push(buildNotice(
+        "warning",
+        "estimates_restore_payload_missing",
+        "Cloud estimates are present but missing restore payloads needed for safe cross-device restore.",
+        { missingLegacyIds: missingRestorePayloadLegacyIds }
+      ));
+    }
   }
 
   for (const [table, key] of COUNT_ONLY_TABLES) {

@@ -467,6 +467,59 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.writeChains.invoice_payments.upsert).toHaveBeenCalled();
   });
 
+  test("writes estimate restore payloads during cloud backup so estimates can be restored later", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const storageSnapshot = buildStorageSnapshot({
+      estimates: [{
+        id: "est_1",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        estimateNumber: "EST-1",
+        status: "approved",
+        scopeNotes: "Restore me exactly.",
+        job: { docNumber: "EST-1" },
+        labor: { lines: [{ id: "est_line_1", role: "Tech", hours: 6, rate: 100, trueRateInternal: 50 }] },
+        materials: { markupPct: 15, items: [] },
+        ui: { materialsMode: "itemized" },
+      }],
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "est_1",
+          estimate_number: "EST-1",
+          restore_payload: expect.objectContaining({
+            schema: "estipaid.estimate.restore_payload",
+            legacyLocalId: "est_1",
+            estimate: expect.objectContaining({
+              id: "est_1",
+              estimateNumber: "EST-1",
+              scopeNotes: "Restore me exactly.",
+              job: expect.objectContaining({ docNumber: "EST-1" }),
+            }),
+          }),
+          restore_payload_version: "1",
+          restore_payload_captured_at: expect.any(String),
+        }),
+      ]),
+      expect.any(Object),
+    );
+  });
+
   test("reuses existing cloud customers for a safe customers-only partial migration", async () => {
     const mockClient = createMockClient({
       counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },

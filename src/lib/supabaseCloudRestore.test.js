@@ -713,9 +713,23 @@ describe("supabaseCloudRestore", () => {
     });
 
     test("restores estimates from restore_payload (not display fields) when every cloud estimate has a valid payload", async () => {
+      const restoredEstimate = localEstimateFixture({
+        estimateNumber: "EST-RESTORE-1",
+        docNumber: "EST-RESTORE-1",
+        job: { docNumber: "EST-RESTORE-1", location: "Restored job" },
+        scopeNotes: "Restored scope notes",
+      });
       const mockClient = createMockClient({
         rowsByTable: fullCloudRows({
-          estimates: [cloudEstimateRow()],
+          estimates: [cloudEstimateRow({
+            restore_payload: {
+              schema: "estipaid.estimate.restore_payload",
+              version: 1,
+              capturedFrom: "localStorage",
+              legacyLocalId: "est_1",
+              estimate: restoredEstimate,
+            },
+          })],
         }),
       });
       mockGetSupabaseClient.mockReturnValue(mockClient);
@@ -734,11 +748,17 @@ describe("supabaseCloudRestore", () => {
       expect(restoredEstimates).toEqual([
         expect.objectContaining({
           id: "est_1",
+          estimateNumber: "EST-RESTORE-1",
+          docNumber: "EST-RESTORE-1",
           labor: expect.objectContaining({ hazardPct: 5, riskPct: 2, multiplier: 1.25 }),
           materials: expect.objectContaining({ markupPct: 18 }),
           ui: expect.objectContaining({ materialsMode: "itemized" }),
         }),
       ]);
+      expect(restoredEstimates[0].job).toEqual(expect.objectContaining({ docNumber: "EST-RESTORE-1", location: "Restored job" }));
+      expect(restoredEstimates[0].scopeNotes).toBe("Restored scope notes");
+      const restoredInvoices = JSON.parse(storage.__store["estipaid-invoices-v1"]);
+      expect(restoredInvoices[0]).toEqual(expect.objectContaining({ sourceEstimateId: "est_1" }));
       // The display-only field total_amount must not have been used to
       // synthesize labor/materials state -- it should only ever come from
       // the captured restore_payload.estimate object.

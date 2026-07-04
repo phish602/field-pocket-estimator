@@ -2,6 +2,7 @@ import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { collectBackendMappingWarnings, mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { repairStoredEstimateNumbers } from "../utils/estimateNumbers";
+import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -385,9 +386,35 @@ function mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, u
     notes: estimate?.notes || null,
     terms: estimate?.terms || null,
     converted_invoice_legacy_id: estimate?.converted_invoice_legacy_local_id || null,
+    restore_payload: estimate?.restore_payload || null,
+    restore_payload_version: estimate?.restore_payload ? ESTIMATE_RESTORE_PAYLOAD_VERSION : null,
+    restore_payload_captured_at: estimate?.restore_payload ? new Date().toISOString() : null,
     created_by: userId,
     updated_by: userId,
   }));
+}
+
+function attachEstimateRestorePayloads(draft, localSnapshot) {
+  const sourceEstimates = Array.isArray(localSnapshot?.estimates) ? localSnapshot.estimates : [];
+  const sourceByLegacyId = new Map(
+    sourceEstimates
+      .map((estimate) => [asText(estimate?.id), estimate])
+      .filter(([legacyLocalId]) => Boolean(legacyLocalId))
+  );
+
+  return {
+    ...(draft || {}),
+    estimates: (Array.isArray(draft?.estimates) ? draft.estimates : []).map((estimate) => {
+      const legacyLocalId = asText(estimate?.legacy_local_id);
+      const sourceEstimate = sourceByLegacyId.get(legacyLocalId);
+      if (!sourceEstimate) return { ...estimate };
+
+      return {
+        ...estimate,
+        restore_payload: buildEstimateRestorePayload(sourceEstimate),
+      };
+    }),
+  };
 }
 
 function mapInvoicePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, estimateIdByLegacyId, userId) {
@@ -802,10 +829,11 @@ export async function runSupabaseMigrationWrite({
       { repairs: estimateNumberRepair.repairs }
     ));
   }
-  const draft = mapLocalSnapshotToBackendDraft(localSnapshot, {
+  const mappedDraft = mapLocalSnapshotToBackendDraft(localSnapshot, {
     companyId,
     userId,
   });
+  const draft = attachEstimateRestorePayloads(mappedDraft, localSnapshot);
   const normalizedProjectStatuses = collectProjectStatusNormalization(localSnapshot);
   const localLineItemCounts = countDraftLineItems(draft);
 
