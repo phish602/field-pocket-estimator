@@ -1131,7 +1131,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
-  test("local_cloud_mismatch state asks for review and does not auto-offer one-click backup", async () => {
+  test("local_cloud_mismatch state asks for review and offers Back Up This Device", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -1162,12 +1162,68 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     expect(screen.getByText("This device and cloud backup are different.")).toBeInTheDocument();
     expect(screen.getByText("Review before backing up or restoring.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
     expect(previewSupabaseCloudRestore).not.toHaveBeenCalled();
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+  });
+
+  test("local_cloud_mismatch Back Up This Device uses the same explicit backup flow", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: null,
+      verification: { ok: true, allMatched: false },
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    runSupabaseCloudOnboardingBackup.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED,
+      preview: {},
+      writeResult: { ok: true },
+      verification: { ok: true, allMatched: true },
+      noLocalDeletes: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up This Device" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Back up this device to cloud?" })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
+    });
+
+    expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+      storageSnapshot: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+      role: "owner",
+    }));
+    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
   });
 
   test("clicking Back Up This Device runs the onboarding backup and shows success with no local deletion message", async () => {
@@ -1277,6 +1333,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     expect(screen.getByText("We couldn't finish cloud backup automatically.")).toBeInTheDocument();
     expect(screen.getByText("Review this device and cloud backup before trying again.")).toBeInTheDocument();
+    expect(screen.getByText("Migration write blocked by local validation issues.")).toBeInTheDocument();
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
   });
 

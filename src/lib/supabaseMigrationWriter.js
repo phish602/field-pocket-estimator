@@ -173,20 +173,22 @@ function collectDocumentIdentifierIssues(draft) {
 
   (Array.isArray(draft?.estimates) ? draft.estimates : []).forEach((estimate, index) => {
     if (!asText(estimate?.estimate_number)) {
+      const legacyId = asText(estimate?.legacy_local_id || estimate?.id) || `estimate_${index + 1}`;
       notices.push(buildNotice(
         "error",
         `estimate_number_missing:${index}`,
-        "Estimate is missing an estimate number required by the cloud schema.",
+        `Estimate ${legacyId} is missing an estimate number required by the cloud schema.`,
       ));
     }
   });
 
   (Array.isArray(draft?.invoices) ? draft.invoices : []).forEach((invoice, index) => {
     if (!asText(invoice?.invoice_number)) {
+      const legacyId = asText(invoice?.legacy_local_id || invoice?.id) || `invoice_${index + 1}`;
       notices.push(buildNotice(
         "error",
         `invoice_number_missing:${index}`,
-        "Invoice is missing an invoice number required by the cloud schema.",
+        `Invoice ${legacyId} is missing an invoice number required by the cloud schema.`,
       ));
     }
   });
@@ -568,6 +570,14 @@ function buildPayloadLegacyIdSet(rows) {
   return new Set((Array.isArray(rows) ? rows : []).map((row) => asText(row?.legacy_local_id)).filter(Boolean));
 }
 
+const SAFE_RESUME_TABLES = [
+  ["customers", "customers", "customer"],
+  ["projects", "projects", "project"],
+  ["estimates", "estimates", "estimate"],
+  ["invoices", "invoices", "invoice"],
+  ["invoice_payments", "invoicePayments", "invoice payment"],
+];
+
 function setsEqual(left, right) {
   if (left.size !== right.size) return false;
   for (const value of left) {
@@ -584,16 +594,6 @@ function summarizeNormalizedProjectStatuses(normalizedStatuses) {
   return buildNotice("warning", "project_statuses_normalized", `Project statuses normalized for migration: ${summary}`);
 }
 
-function isFullMigrationAlreadyPresent(localCounts, cloudCounts) {
-  return (
-    Number(cloudCounts?.customers || 0) === Number(localCounts?.customers || 0) &&
-    Number(cloudCounts?.projects || 0) === Number(localCounts?.projects || 0) &&
-    Number(cloudCounts?.estimates || 0) === Number(localCounts?.estimates || 0) &&
-    Number(cloudCounts?.invoices || 0) === Number(localCounts?.invoices || 0) &&
-    Number(cloudCounts?.invoicePayments || 0) === Number(localCounts?.invoicePayments || 0)
-  );
-}
-
 function isCustomersOnlyPartialState(localCounts, cloudCounts) {
   return (
     Number(cloudCounts?.customers || 0) === Number(localCounts?.customers || 0) &&
@@ -604,24 +604,36 @@ function isCustomersOnlyPartialState(localCounts, cloudCounts) {
   );
 }
 
-function markCoreTablesReused(tableResults, localCounts) {
-  const mappings = [
-    [0, Number(localCounts?.customers || 0)],
-    [1, Number(localCounts?.projects || 0)],
-    [2, Number(localCounts?.estimates || 0)],
-    [4, Number(localCounts?.invoices || 0)],
-    [6, Number(localCounts?.invoicePayments || 0)],
-  ];
+async function collectExistingCloudResumeIssues(client, companyId, draft) {
+  const notices = [];
 
-  mappings.forEach(([index, count]) => {
-    tableResults[index] = {
-      ...tableResults[index],
-      status: "reused",
-      written: 0,
-      reused: count,
-      skipped: count,
-    };
-  });
+  for (const [table, draftKey, label] of SAFE_RESUME_TABLES) {
+    const existingRows = await readExistingRows(client, table, companyId);
+    const rowsMissingLegacyId = existingRows.some((row) => !asText(row?.legacy_local_id));
+    if (rowsMissingLegacyId) {
+      notices.push(buildNotice(
+        "error",
+        `${table}_legacy_local_id_missing`,
+        `Cloud ${label} rows are missing legacy_local_id values, so safe backup resume is blocked.`
+      ));
+      continue;
+    }
+
+    const localIds = buildLegacyIdSet(draft?.[draftKey]);
+    const cloudIds = buildLegacyIdSet(existingRows);
+    const cloudOnlyIds = [...cloudIds].filter((legacyId) => !localIds.has(legacyId)).sort();
+
+    if (cloudOnlyIds.length > 0) {
+      notices.push(buildNotice(
+        "error",
+        `${table}_cloud_only_rows`,
+        `Cloud ${label} rows exist that are not present on this device, so backup is blocked without an override path.`,
+        { cloudOnlyLegacyIds: cloudOnlyIds }
+      ));
+    }
+  }
+
+  return notices;
 }
 
 function summarizeLineItemSync(payloads, existingRows) {
@@ -822,100 +834,6 @@ export async function runSupabaseMigrationWrite({
   const cloudCounts = await readCloudCounts(client, companyId);
   const localCounts = preview?.localCounts || {};
 
-  if (isFullMigrationAlreadyPresent(localCounts, cloudCounts)) {
-    markCoreTablesReused(tableResults, localCounts);
-
-    const estimateRows = await readExistingRows(client, "estimates", companyId);
-    const invoiceRows = await readExistingRows(client, "invoices", companyId);
-    const estimateIdByLegacyId = buildLegacyIdMap(estimateRows);
-    const invoiceIdByLegacyId = buildLegacyIdMap(invoiceRows);
-
-    const estimateLineItemPayloads = mapEstimateLineItemPayloads(draft, estimateIdByLegacyId);
-    const invoiceLineItemPayloads = mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId);
-    notices.push(...estimateLineItemPayloads.issues, ...invoiceLineItemPayloads.issues);
-
-    if (notices.some((notice) => notice.level === "error")) {
-      return {
-        ok: false,
-        blocked: true,
-        reason: "Line-item migration write blocked by local validation issues.",
-        notices,
-        cloudCountsBefore: cloudCounts,
-        tableResults,
-        noLocalDeletes: true,
-      };
-    }
-
-    const existingEstimateLineItems = await readExistingRows(client, "estimate_line_items", companyId);
-    const existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId);
-
-    const estimateLineItemSync = await migrateLineItemTable({
-      client,
-      table: "estimate_line_items",
-      baseResult: tableResults[3],
-      payloads: estimateLineItemPayloads.payloads,
-      existingRows: existingEstimateLineItems,
-    });
-    tableResults[3] = estimateLineItemSync.result;
-    if (estimateLineItemSync.response?.error) {
-      return {
-        ok: false,
-        blocked: false,
-        reason: asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.",
-        notices: [buildNotice("error", "estimate_line_items_write_failed", asText(estimateLineItemSync.response.error?.message) || "Estimate line-item migration failed.")],
-        cloudCountsBefore: cloudCounts,
-        tableResults,
-        noLocalDeletes: true,
-      };
-    }
-
-    const invoiceLineItemSync = await migrateLineItemTable({
-      client,
-      table: "invoice_line_items",
-      baseResult: tableResults[5],
-      payloads: invoiceLineItemPayloads.payloads,
-      existingRows: existingInvoiceLineItems,
-    });
-    tableResults[5] = invoiceLineItemSync.result;
-    if (invoiceLineItemSync.response?.error) {
-      return {
-        ok: false,
-        blocked: false,
-        reason: asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.",
-        notices: [buildNotice("error", "invoice_line_items_write_failed", asText(invoiceLineItemSync.response.error?.message) || "Invoice line-item migration failed.")],
-        cloudCountsBefore: cloudCounts,
-        tableResults,
-        noLocalDeletes: true,
-      };
-    }
-
-    const noDuplicateWriteNeeded =
-      tableResults[3].status === "reused" &&
-      tableResults[5].status === "reused";
-
-    return {
-      ok: true,
-      blocked: false,
-      writerVersion: SUPABASE_MIGRATION_WRITER_VERSION,
-      companyId,
-      noLocalDeletes: true,
-      cloudCountsBefore: cloudCounts,
-      notices: [
-        buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
-        buildNotice(
-          "info",
-          noDuplicateWriteNeeded ? "line_items_already_migrated" : "core_tables_already_migrated",
-          noDuplicateWriteNeeded
-            ? "Line items already match local data. No duplicate write was needed."
-            : "Core business tables were already migrated and were reused for line-item writes only.",
-          { cloudCounts }
-        ),
-        ...notices,
-      ],
-      tableResults,
-    };
-  }
-
   let customerIdByLegacyId = new Map();
   let shouldWriteCustomers = true;
 
@@ -964,22 +882,24 @@ export async function runSupabaseMigrationWrite({
   } else {
     const occupiedTables = Object.entries(cloudCounts).filter(([, count]) => Number(count) > 0);
     if (occupiedTables.length > 0) {
+      const resumeIssues = await collectExistingCloudResumeIssues(client, companyId, draft);
+      if (resumeIssues.length === 0) {
+        notices.push(buildNotice(
+          "info",
+          "core_tables_upsert_safe_resume",
+          "Cloud backup resumed safely against existing workspace rows."
+        ));
+      } else {
       return {
         ok: false,
         blocked: true,
-        reason: "Cloud business tables already contain records. Migration is blocked without an override path.",
-        notices: [
-          buildNotice(
-            "error",
-            "cloud_tables_not_empty",
-            "Cloud business tables already contain records. Migration is blocked without an override path.",
-            { cloudCounts }
-          ),
-        ],
+        reason: "Cloud business tables contain rows that are not present on this device. Backup is blocked without an override path.",
+        notices: resumeIssues,
         cloudCountsBefore: cloudCounts,
         tableResults,
         noLocalDeletes: true,
       };
+      }
     }
   }
 

@@ -631,6 +631,13 @@ export default function AdvancedSettingsScreen({
         : autoBackupQueueState.lastSuccessfulBackupAt
           ? "current"
           : "none";
+  const backupAttentionDetail = String(
+    onboardingStatus?.writeResult?.notices?.find((notice) => notice?.level !== "info")?.message
+      || onboardingStatus?.writeResult?.reason
+      || onboardingStatus?.verification?.notices?.find((notice) => notice?.level !== "info")?.message
+      || onboardingStatus?.error
+      || ""
+  ).trim();
 
   // Read-only: once onboarding detects a fresh device with cloud data
   // available, check exactly what (if anything) is safely restorable. Never
@@ -1424,6 +1431,16 @@ export default function AdvancedSettingsScreen({
                       This device and cloud backup are different.
                     </div>
                     <div className="pe-field-helper">Review before backing up or restoring.</div>
+                    <div>
+                      <button
+                        type="button"
+                        className="pe-btn"
+                        onClick={requestCloudBackupConfirmation}
+                        disabled={onboardingBackupBusy}
+                      >
+                        Back Up This Device
+                      </button>
+                    </div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
                   || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.ERROR ? (
@@ -1436,6 +1453,11 @@ export default function AdvancedSettingsScreen({
                         ? "Open developer migration tools for details."
                         : "Review this device and cloud backup before trying again."}
                     </div>
+                    {backupAttentionDetail ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
+                        {backupAttentionDetail}
+                      </div>
+                    ) : null}
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP ? (
                   <>
