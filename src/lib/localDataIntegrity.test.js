@@ -274,6 +274,64 @@ describe("localDataIntegrity", () => {
     expect(decision.replaceCloudAvailable).toBe(false);
   });
 
+  function buildGenericMismatchVerification() {
+    // No tableResults/extraLegacyIds at all -- mirrors the writer's own
+    // post-write verification notice ("Cloud verification found mismatches
+    // between local and Supabase data") with no specific rows called out.
+    return {
+      ok: true,
+      allMatched: false,
+      notices: [{
+        level: "warning",
+        code: "cloud_verification_mismatch",
+        message: "Cloud verification found mismatches between local and Supabase data.",
+      }],
+    };
+  }
+
+  test("generic cloud verification mismatch with clean local integrity sets restoreCloudAvailable and replaceCloudAvailable true", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      cloudVerification: buildGenericMismatchVerification(),
+      queueState: { pending: false, status: "current" },
+      onboardingStatus: { status: "needs_attention" },
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.restoreCloudAvailable).toBe(true);
+    expect(decision.replaceCloudAvailable).toBe(true);
+  });
+
+  test("generic cloud verification mismatch does not produce Cloud OK", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      cloudVerification: buildGenericMismatchVerification(),
+      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123 },
+      onboardingStatus: { status: "needs_attention" },
+    });
+
+    expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+    expect(decision.screenState).not.toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+  });
+
+  test("a true local blocker still beats replace availability even with a generic verification mismatch", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        invoices: [
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+          { id: "inv_2", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+        ],
+      })),
+      cloudVerification: buildGenericMismatchVerification(),
+      queueState: { pending: false, status: "current" },
+      onboardingStatus: { status: "needs_attention" },
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP);
+    expect(decision.replaceCloudAvailable).toBe(false);
+  });
+
   test("concrete blocker beats Cloud OK", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot({

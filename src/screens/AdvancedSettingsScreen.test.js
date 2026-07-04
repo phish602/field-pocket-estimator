@@ -1350,6 +1350,117 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
   });
 
+  test("generic cloud verification mismatch with clean local integrity shows the resolution card, not a dead-end Backup issue", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    // Mirrors the writer's own post-write verification path: writeResult.ok
+    // is true (the write itself succeeded) but the follow-up verification
+    // found a generic mismatch with no specific cloud-only rows called out --
+    // this is the exact live scenario, distinct from the read-only
+    // LOCAL_CLOUD_MISMATCH status check used in the other mismatch tests.
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: {
+        integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
+          invoices: [{ id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-1", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+        }),
+      },
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{
+          level: "warning",
+          code: "cloud_verification_mismatch",
+          message: "Cloud verification found mismatches between local and Supabase data.",
+        }],
+      },
+      writeResult: { ok: true },
+      noWritesPerformed: false,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud verification found mismatches between local and Supabase data.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
+    // The concrete mismatch detail can still appear, but it must not be the
+    // only thing shown -- there must be no generic "no actions" dead end.
+    expect(screen.getByText(/Data check/i)).toBeInTheDocument();
+  });
+
+  test("true local blocker state does not offer the replace-cloud action", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: {
+        integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
+          invoices: [
+            { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] },
+            { id: "inv_2", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] },
+          ],
+        }),
+      },
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{
+          level: "warning",
+          code: "cloud_verification_mismatch",
+          message: "Cloud verification found mismatches between local and Supabase data.",
+        }],
+      },
+      writeResult: { ok: true },
+      noWritesPerformed: false,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.queryByRole("button", { name: "Replace Cloud Backup With This Device" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Cloud and this device are different.")).not.toBeInTheDocument();
+  });
+
   test("clicking Back Up This Device runs the onboarding backup and shows success with no local deletion message", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,

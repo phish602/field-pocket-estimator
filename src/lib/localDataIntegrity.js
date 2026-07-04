@@ -773,11 +773,16 @@ export function getCloudDataDecision({
   // backup with this device's snapshot.
   const cloudOnlyRowsDetected = asArray(cloudVerification?.tableResults)
     .some((result) => asArray(result?.extraLegacyIds).length > 0);
-  // empty_estimates_with_invoices (the partial-local-data danger state) is
-  // itself one of the entries in localIntegrity.blockers, so !firstBlocker
-  // already rules it out -- no separate check is needed here.
-  const replaceCloudAvailable = mismatch && cloudOnlyRowsDetected && !firstBlocker;
-  const restoreCloudAvailable = mismatch && cloudOnlyRowsDetected;
+  // A resolvable mismatch isn't limited to detected cloud-only rows -- a
+  // generic verification mismatch (e.g. "Cloud verification found
+  // mismatches between local and Supabase data") is just as resolvable via
+  // restore or replace as long as local integrity itself is clean. Gating
+  // this on cloudOnlyRowsDetected specifically left the generic case with no
+  // actions at all. empty_estimates_with_invoices (the partial-local-data
+  // danger state) is itself one of the entries in localIntegrity.blockers,
+  // so !firstBlocker already rules it out -- no separate check is needed.
+  const replaceCloudAvailable = mismatch && !firstBlocker;
+  const restoreCloudAvailable = mismatch;
   const restoreAvailable = onboardingState === "cloud_available_empty_device"
     && restorePreview?.eligible !== false
     && !restorePreview?.partial;
@@ -797,10 +802,16 @@ export function getCloudDataDecision({
     screenState = LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP;
   } else if (cloudUnrestorable) {
     screenState = LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE;
+  } else if (mismatch) {
+    // A resolvable data mismatch (verification ran and reported a
+    // difference) must win over a generic "needs_attention"/"error"/
+    // queue-failed label -- otherwise a clean-local-integrity mismatch (e.g.
+    // the writer's own post-write verification came back not-matching)
+    // renders as a dead-end "Cloud backup needs attention" with no restore
+    // or replace action, instead of the resolvable mismatch choice card.
+    screenState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
   } else if (onboardingState === "error" || onboardingState === "needs_attention" || queueFailed) {
     screenState = LOCAL_DATA_DECISION.BACKUP_FAILED;
-  } else if (mismatch) {
-    screenState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
   } else if (workerRunning) {
     screenState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
   } else if (queuePending) {
@@ -816,13 +827,20 @@ export function getCloudDataDecision({
   let chipState = null;
   if (workerRunning) {
     chipState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
-  } else if (queueFailed || firstBlocker || firstSafeRepair || cloudUnrestorable || onboardingState === "error" || onboardingState === "needs_attention") {
-    // A concrete blocker or repairable issue must surface even if a backup
-    // is queued -- otherwise the chip stays stuck on "Pending" while
+  } else if (firstBlocker || firstSafeRepair || cloudUnrestorable) {
+    // A concrete local blocker or repairable issue must surface even if a
+    // backup is queued -- otherwise the chip stays stuck on "Pending" while
     // Advanced Settings shows a real blocker underneath it.
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
   } else if (mismatch) {
+    // A resolvable mismatch (verification ran fine, local integrity is
+    // clean) must win over a generic queue-failed/needs_attention/error
+    // label -- otherwise the chip says "Backup issue" with no path forward
+    // instead of "Data mismatch" pointing at the restore/replace choice in
+    // Advanced Settings.
     chipState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
+  } else if (queueFailed || onboardingState === "error" || onboardingState === "needs_attention") {
+    chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
   } else if (queuePending) {
     chipState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (restoreAvailable) {

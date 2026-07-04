@@ -1597,7 +1597,7 @@ export default function AdvancedSettingsScreen({
                       Cloud and this device are different.
                     </div>
                     <div className="pe-field-helper">
-                      Cloud has records that are not on this device. Choose whether to restore cloud data here or replace the cloud backup with this device.
+                      Cloud has records or verification details that do not match this device. Choose whether to restore cloud data here or replace the cloud backup with this device.
                     </div>
                     {repairResult?.changed ? (
                       <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
