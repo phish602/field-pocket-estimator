@@ -63,6 +63,84 @@ describe("localDataIntegrity", () => {
     expect(integrity.blockers).toHaveLength(0);
   });
 
+  test("detects invoice with stale projectId and classifies it as repairable, not a blocker", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot({
+      invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+    }));
+
+    expect(integrity.safeRepairs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "invoice_project_stale" }),
+    ]));
+    expect(integrity.blockers).toHaveLength(0);
+    expect(integrity.backupReadiness.blocked).toBe(false);
+    expect(integrity.backupReadiness.canProceedAfterSafeRepair).toBe(true);
+  });
+
+  test("standalone invoice without projectId is not a blocker", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot({
+      invoices: [{ id: "inv_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+    }));
+
+    expect(integrity.blockers).toHaveLength(0);
+    expect(integrity.safeRepairs).toEqual([]);
+  });
+
+  test("valid invoice projectId is preserved and not flagged", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot());
+
+    expect(integrity.blockers).toHaveLength(0);
+    expect(integrity.safeRepairs).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ code: "invoice_project_stale" })])
+    );
+  });
+
+  test("repair clears a stale invoice projectId without touching business values", () => {
+    const snapshot = buildSnapshot({
+      invoices: [{
+        id: "inv_1",
+        projectId: "missing_project",
+        customerId: "cust_1",
+        invoiceNumber: "INV-100",
+        status: "sent",
+        total: 250,
+        invoiceTotal: 250,
+        amountPaid: 100,
+        balanceRemaining: 150,
+        payments: [{ id: "pay_1", amount: 100 }],
+      }],
+    });
+
+    const repaired = applySafeLocalDataRepairs(snapshot);
+
+    expect(repaired.changed).toBe(true);
+    expect(repaired.repairs.staleInvoiceProjectIds).toEqual([
+      expect.objectContaining({ invoiceId: "inv_1", staleProjectId: "missing_project" }),
+    ]);
+    expect(repaired.snapshot.invoices[0]).toEqual(expect.objectContaining({
+      id: "inv_1",
+      projectId: "",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      total: 250,
+      invoiceTotal: 250,
+      amountPaid: 100,
+      balanceRemaining: 150,
+      payments: [{ id: "pay_1", amount: 100 }],
+    }));
+
+    const rescanned = scanLocalDataIntegrity(repaired.snapshot);
+    expect(rescanned.blockers).toHaveLength(0);
+    expect(rescanned.safeRepairs).toHaveLength(0);
+  });
+
+  test("repair preserves a valid invoice projectId untouched", () => {
+    const snapshot = buildSnapshot();
+
+    const repaired = applySafeLocalDataRepairs(snapshot);
+
+    expect(repaired.snapshot.invoices[0].projectId).toBe("proj_1");
+  });
+
   test("detects duplicate estimate numbers", () => {
     const integrity = scanLocalDataIntegrity(buildSnapshot({
       estimates: [
@@ -124,7 +202,7 @@ describe("localDataIntegrity", () => {
   test("does not mutate input data while scanning or repairing", () => {
     const snapshot = buildSnapshot({
       estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1" }],
-      invoices: [{ id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", sourceEstimateId: "missing_estimate", sourceEstimateSnapshot: { estimateId: "missing_estimate", estimateNumber: "EST-1" }, total: 100, amountPaid: 0, balanceRemaining: 100 }],
+      invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", sourceEstimateId: "missing_estimate", sourceEstimateSnapshot: { estimateId: "missing_estimate", estimateNumber: "EST-1" }, total: 100, amountPaid: 0, balanceRemaining: 100 }],
     });
     const before = JSON.parse(JSON.stringify(snapshot));
 
@@ -136,6 +214,7 @@ describe("localDataIntegrity", () => {
       sourceEstimateId: "",
       sourceEstimateSnapshot: null,
       estimateNumber: "EST-1",
+      projectId: "",
     }));
   });
 
@@ -161,6 +240,42 @@ describe("localDataIntegrity", () => {
 
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
     expect(decision.screenState).toBe(LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA);
+  });
+
+  test("does not show Pending when a blocker exists, even if the backup queue is pending", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        estimates: [],
+        invoices: [{ id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", sourceEstimateId: "est_1", total: 100, amountPaid: 0, balanceRemaining: 100 }],
+      })),
+      queueState: { pending: true, status: "current" },
+      onboardingStatus: { status: "already_backed_up" },
+    });
+
+    expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+  });
+
+  test("shows Backup issue when repairable metadata exists, even if the backup queue is pending", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+      })),
+      queueState: { pending: true, status: "current" },
+      onboardingStatus: { status: "already_backed_up" },
+    });
+
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+  });
+
+  test("Pending still shows when the backup queue is pending and no blockers or repairs exist", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "current" },
+      onboardingStatus: { status: "already_backed_up" },
+    });
+
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
   });
 
   test("restore available does not beat backup issue", () => {

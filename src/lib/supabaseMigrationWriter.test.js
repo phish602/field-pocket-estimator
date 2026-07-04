@@ -668,6 +668,94 @@ describe("supabaseMigrationWriter", () => {
     );
   });
 
+  test("repairs a stale invoice projectId before backup without blocking or changing invoice values", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const storageSnapshot = buildStorageSnapshot({
+      invoices: [{
+        id: "inv_1",
+        projectId: "missing_project",
+        customerId: "cust_1",
+        sourceEstimateId: "est_1",
+        invoiceNumber: "INV-100",
+        status: "sent",
+        invoiceTotal: 250,
+        total: 250,
+        amountPaid: 50,
+        balanceRemaining: 200,
+        payments: [{ id: "pay_1", amount: 50, method: "cash", status: "paid" }],
+      }],
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          project_id: null,
+          invoice_number: "INV-100",
+          total_amount: 250,
+          amount_paid: 50,
+          balance_remaining: 200,
+        }),
+      ]),
+      expect.any(Object),
+    );
+
+    const repairedInvoices = JSON.parse(storageSnapshot.getItem("estipaid-invoices-v1"));
+    expect(repairedInvoices[0]).toEqual(expect.objectContaining({
+      projectId: "",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      total: 250,
+      amountPaid: 50,
+      balanceRemaining: 200,
+    }));
+  });
+
+  test("preserves a valid invoice projectId when the project still exists", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          project_id: "db_proj_1",
+          customer_id: "db_cust_1",
+          invoice_number: "INV-1",
+          total_amount: 100,
+          amount_paid: 25,
+          balance_remaining: 75,
+        }),
+      ]),
+      expect.any(Object),
+    );
+  });
+
   test("reuses existing cloud customers for a safe customers-only partial migration", async () => {
     const mockClient = createMockClient({
       counts: { customers: 1, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },

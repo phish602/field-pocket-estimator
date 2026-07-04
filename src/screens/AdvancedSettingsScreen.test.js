@@ -32,6 +32,7 @@ import {
   recordCloudBackupAttemptFailure,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
+import { scanLocalDataIntegrity } from "../lib/localDataIntegrity";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -772,6 +773,100 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
 
     expect(screen.getByText("This device has work that is not backed up yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
+  });
+
+  test("stale invoice project link shows a repairable blocker, not a permanent one, and repair clears it", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+
+    const staleInvoice = {
+      id: "inv_1",
+      projectId: "missing_project",
+      customerId: "cust_1",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      invoiceTotal: 100,
+      total: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      payments: [{ id: "pay_1", amount: 25 }],
+    };
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([staleInvoice]));
+
+    const staleIntegrity = scanLocalDataIntegrity({
+      customers: [{ id: "cust_1", name: "Acme Co" }],
+      projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+      estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
+      invoices: [staleInvoice],
+    });
+    expect(staleIntegrity.blockers).toHaveLength(0);
+    expect(staleIntegrity.safeRepairs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "invoice_project_stale" }),
+    ]));
+
+    checkSupabaseCloudOnboardingStatus
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+        preview: { integrity: staleIntegrity },
+        verification: null,
+        writeResult: null,
+        noWritesPerformed: true,
+      })
+      .mockResolvedValue({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+        preview: { integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
+          invoices: [{ ...staleInvoice, projectId: "" }],
+        }) },
+        verification: null,
+        writeResult: null,
+        noWritesPerformed: true,
+      });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
+    expect(screen.getByText(/Safe repair can detach a stale project link/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Repair Safe Metadata" })).toBeInTheDocument();
+    // Not a permanent blocker -- backup remains available alongside the repair action.
+    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
+    });
+
+    expect(screen.getByText("Safe metadata repair completed.")).toBeInTheDocument();
+
+    const repairedInvoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+    expect(repairedInvoices[0]).toEqual(expect.objectContaining({
+      id: "inv_1",
+      projectId: "",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      total: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      payments: [{ id: "pay_1", amount: 25 }],
+    }));
   });
 
   test("cloud_available_empty_device state explains a fresh device, offers restore only after eligibility check, and never calls migration write", async () => {

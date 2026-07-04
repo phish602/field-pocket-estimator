@@ -313,12 +313,13 @@ export function scanLocalDataIntegrity(localSnapshot = {}, options = {}) {
     return projectId && !projectIds.has(projectId);
   });
   if (invoicesMissingProject.length > 0) {
-    blockers.push(buildIssue(
-      "blocker",
-      "invoice_project_missing",
-      "One or more invoices reference a project id that is not present locally.",
+    safeRepairs.push(buildIssue(
+      "repairable",
+      "invoice_project_stale",
+      `Safe repair can detach a stale project link on ${invoicesMissingProject.length} invoice${invoicesMissingProject.length === 1 ? "" : "s"} without changing totals, payments, or visible document values.`,
       {
         entityIds: invoicesMissingProject.map((entry) => asText(entry?.id)).filter(Boolean),
+        count: invoicesMissingProject.length,
       }
     ));
   }
@@ -556,6 +557,10 @@ export function scanLocalDataIntegrity(localSnapshot = {}, options = {}) {
         invoiceId: asText(entry?.id),
         sourceEstimateId: extractInvoiceSourceEstimateId(entry),
       })),
+      invoiceProjectIds: invoicesMissingProject.map((entry) => ({
+        invoiceId: asText(entry?.id),
+        projectId: asText(entry?.projectId || entry?.project?.id),
+      })),
     },
     blockers,
     warnings,
@@ -596,34 +601,55 @@ export function applySafeLocalDataRepairs(localSnapshot = {}) {
   const estimateNumberRepair = repairMissingEstimateNumbers(nextSnapshot.estimates);
   nextSnapshot.estimates = asArray(estimateNumberRepair.estimates);
   const estimateIds = buildLocalIds(nextSnapshot.estimates);
+  const projectIds = buildLocalIds(nextSnapshot.projects);
   const invoiceRepairs = [];
+  const invoiceProjectRepairs = [];
   let invoicesChanged = false;
 
   nextSnapshot.invoices = nextSnapshot.invoices.map((invoice) => {
     const sourceEstimateId = extractInvoiceSourceEstimateId(invoice);
-    if (!sourceEstimateId || !estimateIds.size || estimateIds.has(sourceEstimateId)) {
+    const staleSourceEstimate = Boolean(sourceEstimateId) && estimateIds.size > 0 && !estimateIds.has(sourceEstimateId);
+    const projectId = asText(invoice?.projectId || invoice?.project?.id);
+    const staleProject = Boolean(projectId) && projectIds.size > 0 && !projectIds.has(projectId);
+
+    if (!staleSourceEstimate && !staleProject) {
       return invoice;
     }
 
     invoicesChanged = true;
     const nextInvoice = clone(invoice);
-    const historicalEstimateNumber = asText(nextInvoice?.estimateNumber || nextInvoice?.sourceEstimateSnapshot?.estimateNumber);
-    if (historicalEstimateNumber) nextInvoice.estimateNumber = historicalEstimateNumber;
-    nextInvoice.sourceEstimateId = "";
-    nextInvoice.sourceEstimateLegacyId = "";
-    nextInvoice.convertedFromEstimateId = "";
-    if (nextInvoice.metadata && typeof nextInvoice.metadata === "object") {
-      nextInvoice.metadata = {
-        ...nextInvoice.metadata,
-        sourceEstimateId: "",
-      };
+
+    if (staleSourceEstimate) {
+      const historicalEstimateNumber = asText(nextInvoice?.estimateNumber || nextInvoice?.sourceEstimateSnapshot?.estimateNumber);
+      if (historicalEstimateNumber) nextInvoice.estimateNumber = historicalEstimateNumber;
+      nextInvoice.sourceEstimateId = "";
+      nextInvoice.sourceEstimateLegacyId = "";
+      nextInvoice.convertedFromEstimateId = "";
+      if (nextInvoice.metadata && typeof nextInvoice.metadata === "object") {
+        nextInvoice.metadata = {
+          ...nextInvoice.metadata,
+          sourceEstimateId: "",
+        };
+      }
+      nextInvoice.sourceEstimateSnapshot = null;
+      invoiceRepairs.push({
+        invoiceId: asText(nextInvoice?.id),
+        staleSourceEstimateId: sourceEstimateId,
+        preservedEstimateNumber: historicalEstimateNumber,
+      });
     }
-    nextInvoice.sourceEstimateSnapshot = null;
-    invoiceRepairs.push({
-      invoiceId: asText(nextInvoice?.id),
-      staleSourceEstimateId: sourceEstimateId,
-      preservedEstimateNumber: historicalEstimateNumber,
-    });
+
+    if (staleProject) {
+      nextInvoice.projectId = "";
+      if (nextInvoice.project && typeof nextInvoice.project === "object") {
+        nextInvoice.project = { ...nextInvoice.project, id: "" };
+      }
+      invoiceProjectRepairs.push({
+        invoiceId: asText(nextInvoice?.id),
+        staleProjectId: projectId,
+      });
+    }
+
     return nextInvoice;
   });
 
@@ -633,6 +659,7 @@ export function applySafeLocalDataRepairs(localSnapshot = {}) {
     repairs: {
       estimateNumbers: asArray(estimateNumberRepair.repairs),
       staleInvoiceSourceEstimateIds: invoiceRepairs,
+      staleInvoiceProjectIds: invoiceProjectRepairs,
     },
   };
 }
@@ -664,7 +691,10 @@ export function repairStoredLocalDataIntegrity(storageSnapshot) {
       if (repaired.repairs.estimateNumbers.length > 0) {
         window.dispatchEvent(new Event("estipaid:estimates-changed"));
       }
-      if (repaired.repairs.staleInvoiceSourceEstimateIds.length > 0) {
+      if (
+        repaired.repairs.staleInvoiceSourceEstimateIds.length > 0
+        || repaired.repairs.staleInvoiceProjectIds.length > 0
+      ) {
         window.dispatchEvent(new Event("estipaid:invoices-changed"));
       }
     } catch {}
@@ -774,12 +804,15 @@ export function getCloudDataDecision({
   let chipState = null;
   if (workerRunning) {
     chipState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
-  } else if (queuePending) {
-    chipState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (queueFailed || firstBlocker || firstSafeRepair || cloudUnrestorable || onboardingState === "error" || onboardingState === "needs_attention") {
+    // A concrete blocker or repairable issue must surface even if a backup
+    // is queued -- otherwise the chip stays stuck on "Pending" while
+    // Advanced Settings shows a real blocker underneath it.
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
   } else if (mismatch) {
     chipState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
+  } else if (queuePending) {
+    chipState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (restoreAvailable) {
     chipState = LOCAL_DATA_DECISION.SAFE_TO_RESTORE_EMPTY_DEVICE;
   } else if (restoredRecently) {

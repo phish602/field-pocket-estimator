@@ -6,6 +6,7 @@ import {
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -123,6 +124,51 @@ test("shows Backup issue for a failed state", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+});
+
+test("does not get stuck on Pending when a local blocker exists alongside a dirty backup queue", async () => {
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "cust_1", name: "Acme Co" }]));
+  localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]));
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([{
+    id: "inv_1",
+    projectId: "proj_1",
+    customerId: "cust_1",
+    invoiceNumber: "INV-100",
+    sourceEstimateId: "est_1",
+    invoiceTotal: 100,
+    total: 100,
+    amountPaid: 0,
+    balanceRemaining: 100,
+  }]));
+  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+  expect(screen.queryByText("Backup pending")).not.toBeInTheDocument();
+});
+
+test("does not get stuck on Pending when repairable stale metadata exists alongside a dirty backup queue", async () => {
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "cust_1", name: "Acme Co" }]));
+  localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]));
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }]));
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([{
+    id: "inv_1",
+    projectId: "missing_project",
+    customerId: "cust_1",
+    invoiceNumber: "INV-100",
+    invoiceTotal: 100,
+    total: 100,
+    amountPaid: 0,
+    balanceRemaining: 100,
+  }]));
+  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+  expect(screen.queryByText("Backup pending")).not.toBeInTheDocument();
 });
 
 test("shows Restore when cloud restore is safely available", async () => {

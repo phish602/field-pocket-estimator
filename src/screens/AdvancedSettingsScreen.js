@@ -742,6 +742,7 @@ export default function AdvancedSettingsScreen({
           meta: {
             estimateNumbers: result?.repairs?.estimateNumbers?.length || 0,
             staleInvoiceSourceEstimateIds: result?.repairs?.staleInvoiceSourceEstimateIds?.length || 0,
+            staleInvoiceProjectIds: result?.repairs?.staleInvoiceProjectIds?.length || 0,
           },
         });
         if (auditEvent) appendAuditEvent(auditEvent);
