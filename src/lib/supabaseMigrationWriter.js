@@ -682,8 +682,8 @@ async function collectExistingCloudResumeIssues(client, companyId, draft, { allo
   return { notices, replacements };
 }
 
-async function deleteCloudOnlyRows(client, table, companyId, legacyIds) {
-  if (!Array.isArray(legacyIds) || legacyIds.length === 0) {
+async function deleteCloudOnlyRows(client, table, companyId, cloudRowIds) {
+  if (!Array.isArray(cloudRowIds) || cloudRowIds.length === 0) {
     return { error: null };
   }
 
@@ -691,7 +691,7 @@ async function deleteCloudOnlyRows(client, table, companyId, legacyIds) {
     .from(table)
     .delete()
     .eq("company_id", companyId)
-    .in("legacy_local_id", legacyIds);
+    .in("id", cloudRowIds);
 
   return { error: response?.error || null };
 }
@@ -1028,7 +1028,7 @@ export async function runSupabaseMigrationWrite({
             }
           }
 
-          const { error } = await deleteCloudOnlyRows(client, replacement.table, companyId, replacement.legacyIds);
+          const { error } = await deleteCloudOnlyRows(client, replacement.table, companyId, replacement.cloudRowIds);
           if (error) {
             return {
               ok: false,

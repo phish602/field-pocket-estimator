@@ -77,6 +77,8 @@ function describeVerificationMismatchTables(verification) {
       let hint;
       if (extra > 0 && REPLACEABLE_MISMATCH_TABLES.has(table)) {
         hint = "Replace can remove the cloud-only rows.";
+      } else if (countOnly && table === "invoice_line_items") {
+        hint = "Replace will not remove protected invoice data. Export backups first, then restore cloud data here to review it.";
       } else if (extra > 0) {
         hint = "Replace will not remove these (invoices/payments are protected) -- restore cloud data here to review them instead.";
       } else if (missing > 0) {

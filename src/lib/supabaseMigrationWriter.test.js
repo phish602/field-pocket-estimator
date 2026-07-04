@@ -312,9 +312,9 @@ describe("supabaseMigrationWriter", () => {
     expect(result.blocked).toBe(false);
     expect(mockClient.deleteChains.estimates.delete).toHaveBeenCalled();
     expect(mockClient.deleteChains.estimates.eq).toHaveBeenCalledWith("company_id", "company_1");
-    expect(mockClient.deleteChains.estimates.in).toHaveBeenCalledWith("legacy_local_id", ["cloud_only_est"]);
+    expect(mockClient.deleteChains.estimates.in).toHaveBeenCalledWith("id", ["db_est_x"]);
     expect(result.replacedCloudOnlyRows).toEqual([
-      expect.objectContaining({ table: "estimates", legacyIds: ["cloud_only_est"] }),
+      expect.objectContaining({ table: "estimates", legacyIds: ["cloud_only_est"], cloudRowIds: ["db_est_x"] }),
     ]);
   });
 
@@ -370,6 +370,39 @@ describe("supabaseMigrationWriter", () => {
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/not present on this device/i);
     expect(mockClient.deleteChains.invoices.delete).not.toHaveBeenCalled();
+  });
+
+  test("replace-cloud option surfaces estimate delete errors instead of falsely reporting success", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+      deleteErrors: { estimates: { message: "delete blocked by policy" } },
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(false);
+    expect(result.reason).toMatch(/delete blocked by policy/i);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        level: "error",
+        code: "estimates_cloud_only_replace_failed",
+        message: "delete blocked by policy",
+      }),
+    ]));
   });
 
   test("replace-cloud option still blocks duplicate local invoice ids", async () => {

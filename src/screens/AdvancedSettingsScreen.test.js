@@ -1663,6 +1663,47 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/invoices\/payments are protected/)).toBeInTheDocument();
   });
 
+  test("protected invoice line-item mismatch does not claim replace will clear it", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_2", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_2", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: null,
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
+        tableResults: [
+          { table: "invoice_line_items", status: "mismatch", missingLegacyIds: [], extraLegacyIds: [], countOnly: true },
+        ],
+      },
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText(/invoice line items: row count does not match\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Replace will not remove protected invoice data\./i)).toBeInTheDocument();
+    expect(screen.queryByText(/Restore or replace should clear this once run\./i)).not.toBeInTheDocument();
+  });
+
   test("clicking Back Up This Device runs the onboarding backup and shows success with no local deletion message", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
