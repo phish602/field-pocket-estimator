@@ -621,8 +621,17 @@ function isCustomersOnlyPartialState(localCounts, cloudCounts) {
   );
 }
 
-async function collectExistingCloudResumeIssues(client, companyId, draft) {
+// Cloud-only rows in these tables can be deliberately replaced by the user
+// (the "Replace Cloud Backup With This Device" action) because losing a
+// stale/duplicate estimate, project, or customer that only exists in the
+// cloud is recoverable. Invoices and invoice payments are financial records
+// and are never removed by this path, override or not -- a cloud-only
+// invoice always blocks and must be resolved via restore instead.
+const CLOUD_ONLY_REPLACEABLE_TABLES = new Set(["customers", "projects", "estimates"]);
+
+async function collectExistingCloudResumeIssues(client, companyId, draft, { allowCloudOnlyReplacement = false } = {}) {
   const notices = [];
+  const replacements = [];
 
   for (const [table, draftKey, label] of SAFE_RESUME_TABLES) {
     const existingRows = await readExistingRows(client, table, companyId);
@@ -640,17 +649,36 @@ async function collectExistingCloudResumeIssues(client, companyId, draft) {
     const cloudIds = buildLegacyIdSet(existingRows);
     const cloudOnlyIds = [...cloudIds].filter((legacyId) => !localIds.has(legacyId)).sort();
 
-    if (cloudOnlyIds.length > 0) {
-      notices.push(buildNotice(
-        "error",
-        `${table}_cloud_only_rows`,
-        `Cloud ${label} rows exist that are not present on this device, so backup is blocked without an override path.`,
-        { cloudOnlyLegacyIds: cloudOnlyIds }
-      ));
+    if (cloudOnlyIds.length === 0) continue;
+
+    if (allowCloudOnlyReplacement && CLOUD_ONLY_REPLACEABLE_TABLES.has(table)) {
+      replacements.push({ table, label, legacyIds: cloudOnlyIds });
+      continue;
     }
+
+    notices.push(buildNotice(
+      "error",
+      `${table}_cloud_only_rows`,
+      `Cloud ${label} rows exist that are not present on this device, so backup is blocked without an override path.`,
+      { cloudOnlyLegacyIds: cloudOnlyIds }
+    ));
   }
 
-  return notices;
+  return { notices, replacements };
+}
+
+async function deleteCloudOnlyRows(client, table, companyId, legacyIds) {
+  if (!Array.isArray(legacyIds) || legacyIds.length === 0) {
+    return { error: null };
+  }
+
+  const response = await client
+    .from(table)
+    .delete()
+    .eq("company_id", companyId)
+    .in("legacy_local_id", legacyIds);
+
+  return { error: response?.error || null };
 }
 
 function summarizeLineItemSync(payloads, existingRows) {
@@ -744,6 +772,7 @@ export async function runSupabaseMigrationWrite({
   role = "",
   backupDownloadAvailable = false,
   preview = null,
+  allowCloudOnlyReplacement = false,
 } = {}) {
   const notices = [];
   const tableResults = [
@@ -878,6 +907,7 @@ export async function runSupabaseMigrationWrite({
 
   let customerIdByLegacyId = new Map();
   let shouldWriteCustomers = true;
+  let cloudOnlyRowsReplaced = [];
 
   if (isCustomersOnlyPartialState(localCounts, cloudCounts)) {
     const existingCustomers = await readExistingCustomers(client, companyId);
@@ -924,24 +954,52 @@ export async function runSupabaseMigrationWrite({
   } else {
     const occupiedTables = Object.entries(cloudCounts).filter(([, count]) => Number(count) > 0);
     if (occupiedTables.length > 0) {
-      const resumeIssues = await collectExistingCloudResumeIssues(client, companyId, draft);
-      if (resumeIssues.length === 0) {
-        notices.push(buildNotice(
-          "info",
-          "core_tables_upsert_safe_resume",
-          "Cloud backup resumed safely against existing workspace rows."
-        ));
-      } else {
-      return {
-        ok: false,
-        blocked: true,
-        reason: "Cloud business tables contain rows that are not present on this device. Backup is blocked without an override path.",
-        notices: resumeIssues,
-        cloudCountsBefore: cloudCounts,
-        tableResults,
-        noLocalDeletes: true,
-      };
+      const resumeIssues = await collectExistingCloudResumeIssues(client, companyId, draft, { allowCloudOnlyReplacement });
+      if (resumeIssues.notices.length > 0) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: "Cloud business tables contain rows that are not present on this device. Backup is blocked without an override path.",
+          notices: resumeIssues.notices,
+          cloudCountsBefore: cloudCounts,
+          tableResults,
+          noLocalDeletes: true,
+        };
       }
+
+      if (resumeIssues.replacements.length > 0) {
+        for (const replacement of resumeIssues.replacements) {
+          const { error } = await deleteCloudOnlyRows(client, replacement.table, companyId, replacement.legacyIds);
+          if (error) {
+            return {
+              ok: false,
+              blocked: false,
+              reason: asText(error?.message) || `Failed to replace cloud-only ${replacement.label} rows.`,
+              notices: [buildNotice(
+                "error",
+                `${replacement.table}_cloud_only_replace_failed`,
+                asText(error?.message) || `Failed to replace cloud-only ${replacement.label} rows.`
+              )],
+              cloudCountsBefore: cloudCounts,
+              tableResults,
+              noLocalDeletes: true,
+            };
+          }
+        }
+        cloudOnlyRowsReplaced = resumeIssues.replacements;
+        notices.push(buildNotice(
+          "warning",
+          "cloud_only_rows_replaced",
+          "Cloud-only rows not present on this device were removed from the cloud backup because this device's data was deliberately used to replace it.",
+          { replacements: resumeIssues.replacements.map((entry) => ({ table: entry.table, legacyIds: entry.legacyIds })) }
+        ));
+      }
+
+      notices.push(buildNotice(
+        "info",
+        "core_tables_upsert_safe_resume",
+        "Cloud backup resumed safely against existing workspace rows."
+      ));
     }
   }
 
@@ -1098,6 +1156,7 @@ export async function runSupabaseMigrationWrite({
     cloudCountsBefore: cloudCounts,
     integrity,
     repairSummary: repairedLocalData.repairs,
+    replacedCloudOnlyRows: cloudOnlyRowsReplaced,
     notices: [
       buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
       ...notices,

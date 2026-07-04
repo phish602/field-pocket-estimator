@@ -228,6 +228,52 @@ describe("localDataIntegrity", () => {
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
   });
 
+  function buildCloudOnlyEstimateVerification() {
+    return {
+      ok: true,
+      allMatched: false,
+      tableResults: [
+        { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est_1"] },
+        { table: "customers", status: "matched", missingLegacyIds: [], extraLegacyIds: [] },
+        { table: "invoices", status: "matched", missingLegacyIds: [], extraLegacyIds: [] },
+      ],
+    };
+  }
+
+  test("cloud-only estimate rows do not show Cloud OK or Pending, and enable both restore and replace", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      cloudVerification: buildCloudOnlyEstimateVerification(),
+      queueState: { pending: true, status: "current", lastSuccessfulBackupAt: 123 },
+      onboardingStatus: { status: "local_cloud_mismatch" },
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+    expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
+    expect(decision.cloudOnlyRowsDetected).toBe(true);
+    expect(decision.replaceCloudAvailable).toBe(true);
+    expect(decision.restoreCloudAvailable).toBe(true);
+  });
+
+  test("true local corruption still blocks the replace-cloud option even with cloud-only rows", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        invoices: [
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+          { id: "inv_2", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+        ],
+      })),
+      cloudVerification: buildCloudOnlyEstimateVerification(),
+      queueState: { pending: false, status: "current" },
+      onboardingStatus: { status: "local_cloud_mismatch" },
+    });
+
+    expect(decision.cloudOnlyRowsDetected).toBe(true);
+    expect(decision.replaceCloudAvailable).toBe(false);
+  });
+
   test("concrete blocker beats Cloud OK", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot({

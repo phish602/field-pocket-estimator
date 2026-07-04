@@ -106,6 +106,13 @@ function createUpsertChain(response) {
   return { upsert, select };
 }
 
+function createDeleteChain(response = { error: null }) {
+  const inFn = jest.fn(async () => response);
+  const eq = jest.fn(() => ({ in: inFn }));
+  const del = jest.fn(() => ({ eq }));
+  return { delete: del, eq, in: inFn };
+}
+
 function createMockClient({
   counts = {},
   existingCustomerRows,
@@ -129,6 +136,7 @@ function createMockClient({
   invoiceError = null,
   invoiceLineItemError = null,
   paymentError = null,
+  deleteErrors = {},
 } = {}) {
   const countChains = {
     customers: createCountChain({ count: counts.customers ?? 0, error: null }),
@@ -157,6 +165,13 @@ function createMockClient({
     invoice_line_items: existingInvoiceLineItemRows || [],
     invoice_payments: existingPaymentRows || paymentRows,
   };
+  const deleteChains = {
+    customers: createDeleteChain({ error: deleteErrors.customers || null }),
+    projects: createDeleteChain({ error: deleteErrors.projects || null }),
+    estimates: createDeleteChain({ error: deleteErrors.estimates || null }),
+    invoices: createDeleteChain({ error: deleteErrors.invoices || null }),
+    invoice_payments: createDeleteChain({ error: deleteErrors.invoice_payments || null }),
+  };
 
   const from = jest.fn((table) => {
     const countChain = countChains[table];
@@ -177,10 +192,11 @@ function createMockClient({
         };
       }),
       upsert: writeChain.upsert,
+      delete: deleteChains[table] ? deleteChains[table].delete : undefined,
     };
   });
 
-  return { from, countChains, writeChains };
+  return { from, countChains, writeChains, deleteChains };
 }
 
 describe("supabaseMigrationWriter", () => {
@@ -244,6 +260,226 @@ describe("supabaseMigrationWriter", () => {
       invoiceLineItems: 0,
       invoicePayments: 0,
     });
+  });
+
+  test("normal backup blocks cloud-only estimate rows", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/not present on this device/i);
+    expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
+  });
+
+  test("explicit replace-cloud option removes cloud-only estimate rows and completes the backup", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(mockClient.deleteChains.estimates.delete).toHaveBeenCalled();
+    expect(mockClient.deleteChains.estimates.eq).toHaveBeenCalledWith("company_id", "company_1");
+    expect(mockClient.deleteChains.estimates.in).toHaveBeenCalledWith("legacy_local_id", ["cloud_only_est"]);
+    expect(result.replacedCloudOnlyRows).toEqual([
+      expect.objectContaining({ table: "estimates", legacyIds: ["cloud_only_est"] }),
+    ]);
+  });
+
+  test("replace-cloud option never deletes cloud-only invoice rows -- it still blocks and requires restore instead", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 0 },
+      existingInvoiceRows: [{ id: "db_inv_x", legacy_local_id: "cloud_only_inv" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/not present on this device/i);
+    expect(mockClient.deleteChains.invoices.delete).not.toHaveBeenCalled();
+  });
+
+  test("replace-cloud option still blocks duplicate local invoice ids", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        invoices: [
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-1", invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100 },
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-2", invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100 },
+        ],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/local validation issues/i);
+    expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
+  });
+
+  test("replace-cloud option still blocks duplicate local invoice numbers", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        invoices: [
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100 },
+          { id: "inv_2", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100 },
+        ],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/local validation issues/i);
+    expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
+  });
+
+  test("replace-cloud option preserves local invoice totals and payments while removing cloud-only estimates", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 1 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockClient.writeChains.invoices.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          legacy_local_id: "inv_1",
+          invoice_number: "INV-1",
+          total_amount: 100,
+          amount_paid: 25,
+          balance_remaining: 75,
+        }),
+      ]),
+      expect.any(Object),
+    );
+    expect(mockClient.writeChains.invoice_payments.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ legacy_local_id: "pay_1", amount: 25 }),
+      ]),
+      expect.any(Object),
+    );
+  });
+
+  test("replace-cloud option still runs safe metadata repair before replacing cloud-only rows", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const storageSnapshot = buildStorageSnapshot({
+      invoices: [{
+        id: "inv_1",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        sourceEstimateId: "missing_estimate",
+        sourceEstimateSnapshot: { estimateId: "missing_estimate", estimateNumber: "EST-404" },
+        estimateNumber: "EST-404",
+        invoiceNumber: "INV-100",
+        invoiceTotal: 100,
+        total: 100,
+        amountPaid: 25,
+        balanceRemaining: 75,
+        payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
+      }],
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot,
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.repairSummary.staleInvoiceSourceEstimateIds).toEqual([
+      expect.objectContaining({ invoiceId: "inv_1", staleSourceEstimateId: "missing_estimate" }),
+    ]);
+    const repairedInvoices = JSON.parse(storageSnapshot.getItem("estipaid-invoices-v1"));
+    expect(repairedInvoices[0]).toEqual(expect.objectContaining({ sourceEstimateId: "" }));
+    expect(mockClient.deleteChains.estimates.delete).toHaveBeenCalled();
   });
 
   test("resumes safe incremental backup writes when cloud rows are a subset of this device", async () => {

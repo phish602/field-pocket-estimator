@@ -766,6 +766,18 @@ export function getCloudDataDecision({
   const queueFailed = asText(queueState?.status).toLowerCase() === "failed";
   const mismatch = onboardingState === "local_cloud_mismatch"
     || Boolean(cloudVerification?.ok && cloudVerification?.allMatched === false);
+  // Rows the cloud has that this device does not (e.g. a cloud-only
+  // estimate) are not fatal corruption -- they just mean the normal upsert
+  // backup can't silently proceed, so the user gets an explicit choice
+  // between restoring cloud data down or deliberately replacing the cloud
+  // backup with this device's snapshot.
+  const cloudOnlyRowsDetected = asArray(cloudVerification?.tableResults)
+    .some((result) => asArray(result?.extraLegacyIds).length > 0);
+  // empty_estimates_with_invoices (the partial-local-data danger state) is
+  // itself one of the entries in localIntegrity.blockers, so !firstBlocker
+  // already rules it out -- no separate check is needed here.
+  const replaceCloudAvailable = mismatch && cloudOnlyRowsDetected && !firstBlocker;
+  const restoreCloudAvailable = mismatch && cloudOnlyRowsDetected;
   const restoreAvailable = onboardingState === "cloud_available_empty_device"
     && restorePreview?.eligible !== false
     && !restorePreview?.partial;
@@ -835,6 +847,9 @@ export function getCloudDataDecision({
     firstBlocker,
     firstSafeRepair,
     mismatch,
+    cloudOnlyRowsDetected,
+    replaceCloudAvailable,
+    restoreCloudAvailable,
     restoreAvailable,
     cloudUnrestorable,
     partialLocalData,

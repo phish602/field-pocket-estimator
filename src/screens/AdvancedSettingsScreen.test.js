@@ -1226,7 +1226,19 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
-  test("local_cloud_mismatch state asks for review and offers Back Up This Device", async () => {
+  function buildCloudOnlyEstimateVerification() {
+    return {
+      ok: true,
+      allMatched: false,
+      tableResults: [
+        { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est"] },
+        { table: "customers", status: "matched", missingLegacyIds: [], extraLegacyIds: [] },
+        { table: "invoices", status: "matched", missingLegacyIds: [], extraLegacyIds: [] },
+      ],
+    };
+  }
+
+  test("local_cloud_mismatch state shows the cloud/local difference choice card with restore, replace, and download actions", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -1246,7 +1258,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
       preview: null,
-      verification: { ok: true, allMatched: false },
+      verification: buildCloudOnlyEstimateVerification(),
       writeResult: null,
       noWritesPerformed: true,
     });
@@ -1255,17 +1267,23 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("This device and cloud backup are different.")).toBeInTheDocument();
-    expect(screen.getByText("Review before backing up or restoring.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Restore Cloud Data to This Device" })).not.toBeInTheDocument();
+    expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(screen.getByText(/Choose whether to restore cloud data here or replace the cloud backup/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
+    // "Download Backup JSON" also appears in the always-present Developer
+    // Tools section, so this action must render at least once (not exactly
+    // once) inside the mismatch choice card.
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
     expect(previewSupabaseCloudRestore).not.toHaveBeenCalled();
     expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
-  test("local_cloud_mismatch Back Up This Device uses the same explicit backup flow", async () => {
+  test("Replace Cloud Backup With This Device requires confirmation and runs the deliberate replace-cloud flow", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -1285,7 +1303,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
       preview: null,
-      verification: { ok: true, allMatched: false },
+      verification: buildCloudOnlyEstimateVerification(),
       writeResult: null,
       noWritesPerformed: true,
     });
@@ -1293,7 +1311,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       onboardingVersion: "supabase-cloud-onboarding-v1",
       status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED,
       preview: {},
-      writeResult: { ok: true },
+      writeResult: { ok: true, replacedCloudOnlyRows: [{ table: "estimates", legacyIds: ["cloud_only_est"] }] },
       verification: { ok: true, allMatched: true },
       noLocalDeletes: true,
     });
@@ -1303,13 +1321,22 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back Up This Device" }));
+      fireEvent.click(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" }));
     });
 
-    expect(screen.getByRole("dialog", { name: "Back up this device to cloud?" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Replace cloud backup with this device?" })).toBeInTheDocument();
+    expect(screen.getByText(/Replacing the cloud backup will make cloud match this device/)).toBeInTheDocument();
+
+    const confirmButton = screen.getByRole("button", { name: "Replace Cloud Backup" });
+    expect(confirmButton).toBeDisabled();
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
+      fireEvent.click(screen.getByRole("checkbox"));
+    });
+    expect(confirmButton).toBeEnabled();
+
+    await act(async () => {
+      fireEvent.click(confirmButton);
     });
 
     expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
@@ -1317,8 +1344,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       configured: true,
       company: expect.objectContaining({ id: "company_1" }),
       role: "owner",
+      allowCloudOnlyReplacement: true,
     }));
     expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
   });
 
   test("clicking Back Up This Device runs the onboarding backup and shows success with no local deletion message", async () => {

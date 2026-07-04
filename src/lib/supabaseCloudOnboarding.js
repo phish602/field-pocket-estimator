@@ -174,6 +174,7 @@ export async function runSupabaseCloudOnboardingBackup({
   user = null,
   company = null,
   role = "",
+  allowCloudOnlyReplacement = false,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildBackupResult(gated);
@@ -195,7 +196,7 @@ export async function runSupabaseCloudOnboardingBackup({
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
     }
 
-    const writeResult = await runSupabaseMigrationWrite({ ...context, preview });
+    const writeResult = await runSupabaseMigrationWrite({ ...context, preview, allowCloudOnlyReplacement });
 
     if (!writeResult?.ok) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult });

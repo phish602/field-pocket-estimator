@@ -248,6 +248,8 @@ export default function AdvancedSettingsScreen({
   const [restoreResult, setRestoreResult] = useState(null);
   const [repairBusy, setRepairBusy] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
+  const [replaceCloudBusy, setReplaceCloudBusy] = useState(false);
+  const [replaceConfirmChecked, setReplaceConfirmChecked] = useState(false);
   const [appBundleConfirmText, setAppBundleConfirmText] = useState("");
   const [appBundleBusy, setAppBundleBusy] = useState(false);
   const [appBundleResult, setAppBundleResult] = useState(null);
@@ -593,6 +595,49 @@ export default function AdvancedSettingsScreen({
     }
   };
 
+  // Deliberate, user-confirmed replacement path for when the cloud has rows
+  // (e.g. estimates) that are not present on this device. Never runs
+  // automatically -- only from the explicit "Replace Cloud Backup With This
+  // Device" confirmation below. Shares the normal backup's run lock so it
+  // can never race the Gate 13B automatic background worker.
+  const runReplaceCloudBackup = async () => {
+    if (!acquireCloudBackupRunLock()) return;
+    try {
+      setReplaceCloudBusy(true);
+      const result = await runSupabaseCloudOnboardingBackup({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+        allowCloudOnlyReplacement: true,
+      });
+      setOnboardingStatus(result);
+      const replacedRows = result?.writeResult?.replacedCloudOnlyRows;
+      if (Array.isArray(replacedRows) && replacedRows.length > 0) {
+        const auditEvent = createStoredAuditEvent("data_integrity.cloud_only_rows_replaced", {
+          meta: {
+            tables: replacedRows.map((entry) => entry?.table).filter(Boolean),
+            totalRows: replacedRows.reduce((sum, entry) => sum + (Array.isArray(entry?.legacyIds) ? entry.legacyIds.length : 0), 0),
+          },
+        });
+        if (auditEvent) appendAuditEvent(auditEvent);
+      }
+    } catch {
+      setOnboardingStatus({
+        status: CLOUD_ONBOARDING_STATUS.ERROR,
+        preview: null,
+        verification: null,
+        writeResult: null,
+        error: "Unable to replace the cloud backup.",
+        noLocalDeletes: true,
+      });
+    } finally {
+      releaseCloudBackupRunLock();
+      setReplaceCloudBusy(false);
+    }
+  };
+
   // Read-only: mirrors the Gate 13A cloud-backup queue and the Gate 13B
   // worker's live running state so this screen can show a calm, separate
   // "automatic backup" status line without changing the onboarding flow
@@ -791,8 +836,25 @@ export default function AdvancedSettingsScreen({
     });
   };
 
+  const requestReplaceCloudConfirmation = () => {
+    setReplaceConfirmChecked(false);
+    setCloudConfirmDialog({
+      action: "replace_cloud",
+      title: "Replace cloud backup with this device?",
+      lines: [
+        "Cloud has records that are not on this device. Replacing the cloud backup will make cloud match this device.",
+        "Download a backup first if you want a copy.",
+        "This will not delete any local data or change invoice totals, payments, or status.",
+      ],
+      confirmLabel: "Replace Cloud Backup",
+      requireCheckbox: true,
+      checkboxLabel: "I understand cloud-only records not on this device will be removed from the cloud backup.",
+    });
+  };
+
   const confirmCloudAction = async () => {
     const action = String(cloudConfirmDialog?.action || "").trim();
+    if (cloudConfirmDialog?.requireCheckbox && !replaceConfirmChecked) return;
     setCloudConfirmDialog(null);
     if (action === "backup") {
       await runCloudBackup();
@@ -800,6 +862,10 @@ export default function AdvancedSettingsScreen({
     }
     if (action === "restore") {
       await runCloudRestore();
+      return;
+    }
+    if (action === "replace_cloud") {
+      await runReplaceCloudBackup();
     }
   };
 
@@ -1528,17 +1594,60 @@ export default function AdvancedSettingsScreen({
                 ) : cloudDecision.screenState === LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                      This device and cloud backup are different.
+                      Cloud and this device are different.
                     </div>
-                    <div className="pe-field-helper">Review before backing up or restoring.</div>
-                    <div>
+                    <div className="pe-field-helper">
+                      Cloud has records that are not on this device. Choose whether to restore cloud data here or replace the cloud backup with this device.
+                    </div>
+                    {repairResult?.changed ? (
+                      <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
+                        Safe metadata repair completed.
+                      </div>
+                    ) : null}
+                    {cloudBackupDetail ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
+                        {cloudBackupDetail}
+                      </div>
+                    ) : null}
+                    {restoreResult ? (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        className="pe-field-helper"
+                        style={{ color: restoreResult.status === CLOUD_RESTORE_STATUS.RESTORED ? "rgba(187,247,208,0.95)" : "rgba(253,224,71,0.95)" }}
+                      >
+                        {restoreResult.status === CLOUD_RESTORE_STATUS.RESTORED
+                          ? "Cloud data restored to this device."
+                          : restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
+                            ? "This device already has local data. Restore is blocked to prevent overwriting."
+                            : "Restore could not be completed on this device."}
+                      </div>
+                    ) : null}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
                         type="button"
-                        className="pe-btn"
-                        onClick={requestCloudBackupConfirmation}
-                        disabled={onboardingBackupBusy}
+                        className="pe-btn pe-btn-ghost"
+                        onClick={requestCloudRestoreConfirmation}
+                        disabled={restoreBusy}
                       >
-                        Back Up This Device
+                        Restore Cloud to This Device
+                      </button>
+                      {cloudDecision.replaceCloudAvailable ? (
+                        <button
+                          type="button"
+                          className="pe-btn pe-btn-ghost"
+                          onClick={requestReplaceCloudConfirmation}
+                          disabled={replaceCloudBusy}
+                        >
+                          {replaceCloudBusy ? "Replacing..." : "Replace Cloud Backup With This Device"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={downloadBackupJson}
+                      >
+                        Download Backup JSON
                       </button>
                     </div>
                   </>
@@ -2254,6 +2363,17 @@ export default function AdvancedSettingsScreen({
                 <div key={line} className="pe-field-helper">{line}</div>
               ))}
             </div>
+            {cloudConfirmDialog.requireCheckbox ? (
+              <label className="pe-field-helper" style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={replaceConfirmChecked}
+                  onChange={(e) => setReplaceConfirmChecked(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>{cloudConfirmDialog.checkboxLabel}</span>
+              </label>
+            ) : null}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button
                 type="button"
@@ -2266,6 +2386,7 @@ export default function AdvancedSettingsScreen({
                 type="button"
                 className="pe-btn"
                 onClick={confirmCloudAction}
+                disabled={Boolean(cloudConfirmDialog.requireCheckbox && !replaceConfirmChecked)}
               >
                 {cloudConfirmDialog.confirmLabel}
               </button>

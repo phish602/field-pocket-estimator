@@ -38,11 +38,17 @@ export default function CloudHeaderStatusChip({ style } = {}) {
     background = "rgba(148,177,209,0.1)";
     border = "1px solid rgba(148,177,209,0.32)";
   } else if (chipState === "backup_failed") {
+    // Cloud status language is important enough to never abbreviate. The
+    // center Home mark is already hidden on narrow phones (see App.js
+    // showCenterMark), which freed up plenty of room in the header for a
+    // wider chip instead of shorter words.
     label = "Backup issue";
     color = "rgba(253,224,71,0.95)";
+    narrowMaxWidth = 128;
   } else if (chipState === "local_cloud_mismatch") {
     label = "Data mismatch";
     color = "rgba(253,224,71,0.95)";
+    narrowMaxWidth = 128;
   } else if (chipState === "safe_to_restore_empty_device") {
     label = "Restore";
     color = "rgba(99,179,237,0.95)";

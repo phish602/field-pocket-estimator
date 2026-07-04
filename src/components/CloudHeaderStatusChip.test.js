@@ -215,6 +215,18 @@ test("tapping a mismatch chip routes to cloud settings", async () => {
   dispatchSpy.mockRestore();
 });
 
+test("does not show Pending or Cloud OK when a cloud/local mismatch exists, even with a dirty queue", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+  await renderAndSettle();
+
+  const chip = screen.getByTestId("cloud-header-status-chip");
+  expect(chip).toHaveTextContent("Data mismatch");
+  expect(chip).not.toHaveTextContent("Backup pending");
+  expect(chip).not.toHaveTextContent("Cloud OK");
+});
+
 test("does not render when there is no cloud workspace", async () => {
   useSupabaseAuth.mockReturnValue({ configured: false, user: null, userEmail: "" });
   useSupabaseAccount.mockReturnValue({ hasCompany: false });
@@ -257,12 +269,14 @@ describe("compact mobile copy on narrow viewports", () => {
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up");
   });
 
-  test("shows Backup issue on narrow viewports", async () => {
+  test("shows the full 'Backup issue' copy on narrow viewports -- never abbreviated to 'Issue'", async () => {
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
 
     await renderAndSettle();
 
-    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+    const chip = screen.getByTestId("cloud-header-status-chip");
+    expect(chip).toHaveTextContent("Backup issue");
+    expect(chip.textContent.trim()).not.toBe("Issue");
   });
 
   test("shows Restore instead of the full 'Restore available' copy", async () => {
@@ -273,12 +287,14 @@ describe("compact mobile copy on narrow viewports", () => {
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore");
   });
 
-  test("shows Data mismatch on narrow viewports", async () => {
+  test("shows the full 'Data mismatch' copy on narrow viewports -- never abbreviated to 'Mismatch'", async () => {
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
 
     await renderAndSettle();
 
-    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Data mismatch");
+    const chip = screen.getByTestId("cloud-header-status-chip");
+    expect(chip).toHaveTextContent("Data mismatch");
+    expect(chip.textContent.trim()).not.toBe("Mismatch");
   });
 
   test("still shows Restored (already short) after a completed restore", async () => {
