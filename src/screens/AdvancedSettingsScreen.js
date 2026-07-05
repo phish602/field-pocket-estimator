@@ -307,6 +307,7 @@ export default function AdvancedSettingsScreen({
   const [repairResult, setRepairResult] = useState(null);
   const [replaceCloudBusy, setReplaceCloudBusy] = useState(false);
   const [replaceConfirmChecked, setReplaceConfirmChecked] = useState(false);
+  const [cloudStatusMessage, setCloudStatusMessage] = useState("");
   const [appBundleConfirmText, setAppBundleConfirmText] = useState("");
   const [appBundleBusy, setAppBundleBusy] = useState(false);
   const [appBundleResult, setAppBundleResult] = useState(null);
@@ -758,6 +759,9 @@ export default function AdvancedSettingsScreen({
     workerRunning: autoBackupRunning,
     restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
   });
+  const partialLocalSnapshotState = cloudDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA;
+  const shouldCheckRestorePreview = onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE || partialLocalSnapshotState;
+  const restoreActionAvailable = Boolean(restorePreview?.eligible) && !restorePreview?.partial;
   const cloudBackupDetail = String(
     (replaceEstimateLineItemsPermissionBlocked
       ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
@@ -770,12 +774,12 @@ export default function AdvancedSettingsScreen({
   const mismatchTableDetails = describeVerificationMismatchTables(onboardingStatus?.verification || cloudVerification);
 
   // Read-only: once onboarding detects a fresh device with cloud data
-  // available, check exactly what (if anything) is safely restorable. Never
-  // writes. Only runs when this device is confirmed empty.
+  // available, or this device is confirmed to be a partial local snapshot,
+  // check exactly what (if anything) is safely restorable. Never writes.
   useEffect(() => {
     let active = true;
 
-    if (onboardingStatus?.status !== CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE) {
+    if (!shouldCheckRestorePreview) {
       setRestorePreview(null);
       return undefined;
     }
@@ -786,6 +790,7 @@ export default function AdvancedSettingsScreen({
       configured: isSupabaseReady,
       user,
       company,
+      allowPartialLocalSnapshot: partialLocalSnapshotState,
     })
       .then((result) => {
         if (active) setRestorePreview(result);
@@ -807,16 +812,18 @@ export default function AdvancedSettingsScreen({
     return () => {
       active = false;
     };
-  }, [onboardingStatus?.status, isSupabaseReady, user, company]);
+  }, [shouldCheckRestorePreview, partialLocalSnapshotState, isSupabaseReady, user, company]);
 
   const runCloudRestore = async () => {
     try {
       setRestoreBusy(true);
+      setCloudStatusMessage("");
       const result = await executeSupabaseCloudRestore({
         storage: localStorage,
         configured: isSupabaseReady,
         user,
         company,
+        allowPartialLocalSnapshot: partialLocalSnapshotState,
       });
       setRestoreResult(result);
       // executeSupabaseCloudRestore never re-verifies on its own, so without
@@ -891,6 +898,7 @@ export default function AdvancedSettingsScreen({
   const runCloudStatusRecheck = async () => {
     try {
       setOnboardingStatusBusy(true);
+      setCloudStatusMessage("");
       const result = await checkSupabaseCloudOnboardingStatus({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
@@ -899,6 +907,20 @@ export default function AdvancedSettingsScreen({
         role: accountRole,
       });
       setOnboardingStatus(result);
+      const nextDecision = getCloudDataDecision({
+        localIntegrity: result?.preview?.integrity || null,
+        cloudVerification: result?.verification || null,
+        queueState: autoBackupQueueState,
+        onboardingStatus: result,
+        restorePreview,
+        workerRunning: autoBackupRunning,
+        restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
+      });
+      if (nextDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA) {
+        setCloudStatusMessage(
+          "Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records."
+        );
+      }
     } catch {
       setOnboardingStatus({
         status: CLOUD_ONBOARDING_STATUS.ERROR,
@@ -908,6 +930,7 @@ export default function AdvancedSettingsScreen({
         error: "Unable to recheck cloud backup status.",
         noWritesPerformed: true,
       });
+      setCloudStatusMessage("");
     } finally {
       setOnboardingStatusBusy(false);
     }
@@ -932,10 +955,16 @@ export default function AdvancedSettingsScreen({
     setCloudConfirmDialog({
       action: "restore",
       title: "Restore cloud data to this device?",
-      lines: [
-        "This will copy your cloud backup onto this device.",
-        "It will not delete your cloud backup.",
-      ],
+      lines: partialLocalSnapshotState
+        ? [
+            "This device has incomplete local data: invoices are present, but local estimates are missing.",
+            "Restoring cloud data is the safe recovery path and will overwrite this incomplete local snapshot on this device.",
+            "It will not delete your cloud backup.",
+          ]
+        : [
+            "This will copy your cloud backup onto this device.",
+            "It will not delete your cloud backup.",
+          ],
       confirmLabel: "Restore Data",
     });
   };
@@ -1589,8 +1618,61 @@ export default function AdvancedSettingsScreen({
                     <div className="pe-field-helper">This device has no saved work yet.</div>
                     <div className="pe-field-helper">Create your first project to start cloud backup.</div>
                   </>
-                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA
-                  || cloudDecision.screenState === LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP
+                ) : partialLocalSnapshotState ? (
+                  <>
+                    <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)", fontWeight: 700 }}>
+                      This device has a partial local snapshot.
+                    </div>
+                    <div className="pe-field-helper">
+                      This device has invoices but missing estimates. Backing up this device is blocked so the cloud backup is not overwritten with incomplete local data.
+                    </div>
+                    {cloudBackupDetail ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
+                        {cloudBackupDetail}
+                      </div>
+                    ) : null}
+                    {restorePreviewBusy && !restorePreview ? (
+                      <div className="pe-field-helper">Checking restore availability...</div>
+                    ) : null}
+                    {!restorePreviewBusy && restorePreview && !restoreActionAvailable ? (
+                      <div className="pe-field-helper" style={{ opacity: 0.82 }}>
+                        {restorePreview.status === CLOUD_RESTORE_STATUS.NO_CLOUD_DATA
+                          ? "No valid cloud backup is available to restore to this device."
+                          : "Restore is not available yet because the current cloud backup cannot safely rebuild the missing local records."}
+                      </div>
+                    ) : null}
+                    {cloudStatusMessage ? (
+                      <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                        {cloudStatusMessage}
+                      </div>
+                    ) : null}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="pe-btn"
+                        onClick={requestCloudRestoreConfirmation}
+                        disabled={restoreBusy || restorePreviewBusy || !restoreActionAvailable}
+                      >
+                        {restoreBusy ? "Restoring..." : "Restore Cloud to This Device"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={downloadBackupJson}
+                      >
+                        Download Backup JSON
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={runCloudStatusRecheck}
+                        disabled={onboardingStatusBusy}
+                      >
+                        {onboardingStatusBusy ? "Rechecking..." : "Recheck Cloud Status"}
+                      </button>
+                    </div>
+                  </>
+                ) : cloudDecision.screenState === LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP
                   || cloudDecision.screenState === LOCAL_DATA_DECISION.BACKUP_FAILED
                   || cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE ? (
                   <>

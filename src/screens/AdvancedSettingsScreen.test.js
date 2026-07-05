@@ -1043,6 +1043,25 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
   }
 
+  function buildPartialLocalSnapshotIntegrity() {
+    return scanLocalDataIntegrity({
+      customers: [{ id: "cust_1", name: "Acme Co" }],
+      projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+      estimates: [],
+      invoices: [{
+        id: "inv_1",
+        projectId: "proj_1",
+        customerId: "cust_1",
+        invoiceNumber: "INV-1",
+        sourceEstimateId: "est_1",
+        total: 100,
+        amountPaid: 0,
+        balanceRemaining: 100,
+        payments: [],
+      }],
+    });
+  }
+
   test("shows the calm automatic backup pending status when the Gate 13A queue is dirty", async () => {
     mockSignedInWithCompany();
     markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
@@ -1055,6 +1074,145 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(
       screen.getByText("Your latest changes are saved on this device and will back up automatically.")
     ).toBeInTheDocument();
+  });
+
+  test("partial local snapshot state renders restore, download, and recheck actions instead of backup", async () => {
+    mockSignedInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+      preview: { integrity: buildPartialLocalSnapshotIntegrity() },
+      verification: { ok: true, allMatched: true },
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("This device has a partial local snapshot.")).toBeInTheDocument();
+    expect(screen.getByText(/Backing up this device is blocked so the cloud backup is not overwritten with incomplete local data\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
+  });
+
+  test("partial local snapshot restore uses the existing confirmation flow and guarded restore handler", async () => {
+    mockSignedInWithCompany();
+    checkSupabaseCloudOnboardingStatus
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+        preview: { integrity: buildPartialLocalSnapshotIntegrity() },
+        verification: { ok: true, allMatched: true },
+        writeResult: null,
+        noWritesPerformed: true,
+      })
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+        preview: null,
+        verification: { ok: true, allMatched: true },
+        writeResult: null,
+        noWritesPerformed: true,
+      });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+    executeSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.RESTORED,
+      restored: true,
+      partial: false,
+      restoredCounts: { customers: 7, projects: 10, estimates: 8, invoices: 9 },
+      blockers: [],
+      notices: [],
+      noWritesPerformed: false,
+      noCloudDataDeleted: true,
+      noExistingLocalDataOverwritten: false,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Restore cloud data to this device?" })).toBeInTheDocument();
+    expect(screen.getByText("This device has incomplete local data: invoices are present, but local estimates are missing.")).toBeInTheDocument();
+    expect(screen.getByText("Restoring cloud data is the safe recovery path and will overwrite this incomplete local snapshot on this device.")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
+    });
+
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
+      storage: localStorage,
+      configured: true,
+      company: expect.objectContaining({ id: "company_1" }),
+      allowPartialLocalSnapshot: true,
+    }));
+  });
+
+  test("partial local snapshot recheck keeps the blocker visible and explains that restore is still required", async () => {
+    mockSignedInWithCompany();
+    checkSupabaseCloudOnboardingStatus
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+        preview: { integrity: buildPartialLocalSnapshotIntegrity() },
+        verification: { ok: true, allMatched: true },
+        writeResult: null,
+        noWritesPerformed: true,
+      })
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP,
+        preview: { integrity: buildPartialLocalSnapshotIntegrity() },
+        verification: { ok: true, allMatched: true },
+        writeResult: null,
+        noWritesPerformed: true,
+      });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
+    });
+
+    expect(screen.getByText("Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records.")).toBeInTheDocument();
+    expect(screen.getByText("This device has a partial local snapshot.")).toBeInTheDocument();
   });
 
   test("shows the calm automatic backup running status while the background worker is backing up", async () => {

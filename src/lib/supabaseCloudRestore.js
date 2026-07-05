@@ -3,6 +3,7 @@ import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
+import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
@@ -40,6 +41,7 @@ const ALL_CLOUD_TABLES = ["customers", "projects", "estimates", "invoices", "inv
 const COMPANY_PROFILE_RESTORE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 const SETTINGS_RESTORE_KEY = STORAGE_KEYS.SETTINGS;
 const SCOPE_TEMPLATES_RESTORE_KEY = STORAGE_KEYS.SCOPE_TEMPLATES;
+const PARTIAL_LOCAL_SNAPSHOT_BLOCKER_CODE = "empty_estimates_with_invoices";
 
 function asText(value) {
   return String(value || "").trim();
@@ -135,6 +137,32 @@ function isLocalCoreEmpty(counts) {
   ) === 0;
 }
 
+function hasPartialLocalSnapshotBlocker(integrity) {
+  return Boolean(
+    Array.isArray(integrity?.blockers)
+    && integrity.blockers.some((issue) => asText(issue?.code) === PARTIAL_LOCAL_SNAPSHOT_BLOCKER_CODE)
+  );
+}
+
+function readLocalRestoreState(storageSnapshot) {
+  const localCounts = readLocalCoreCounts(storageSnapshot);
+  let localIntegrity = null;
+  try {
+    localIntegrity = scanLocalDataIntegrity(buildLocalSnapshotFromStorage(storageSnapshot).snapshot);
+  } catch {
+    localIntegrity = null;
+  }
+  return {
+    localCounts,
+    localIntegrity,
+    partialLocalSnapshot: hasPartialLocalSnapshotBlocker(localIntegrity),
+  };
+}
+
+function canRestoreOverExistingLocalData(localRestoreState, allowPartialLocalSnapshot = false) {
+  return Boolean(allowPartialLocalSnapshot && localRestoreState?.partialLocalSnapshot);
+}
+
 async function readCloudCount(client, table, companyId) {
   try {
     const response = await client.from(table).select("id", { count: "exact", head: true }).eq("company_id", companyId);
@@ -202,6 +230,7 @@ export async function previewSupabaseCloudRestore({
   configured = false,
   user = null,
   company = null,
+  allowPartialLocalSnapshot = false,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildPreviewResult(gated);
@@ -213,8 +242,9 @@ export async function previewSupabaseCloudRestore({
     });
   }
 
-  const localCounts = readLocalCoreCounts(storageSnapshot);
-  if (!isLocalCoreEmpty(localCounts)) {
+  const localRestoreState = readLocalRestoreState(storageSnapshot);
+  const localCounts = localRestoreState.localCounts;
+  if (!isLocalCoreEmpty(localCounts) && !canRestoreOverExistingLocalData(localRestoreState, allowPartialLocalSnapshot)) {
     return buildPreviewResult(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, { localCounts });
   }
 
@@ -507,6 +537,7 @@ export async function executeSupabaseCloudRestore({
   configured = false,
   user = null,
   company = null,
+  allowPartialLocalSnapshot = false,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildExecuteResult(gated);
@@ -518,8 +549,10 @@ export async function executeSupabaseCloudRestore({
     });
   }
 
-  const initialLocalCounts = readLocalCoreCounts(storage);
-  if (!isLocalCoreEmpty(initialLocalCounts)) {
+  const initialLocalRestoreState = readLocalRestoreState(storage);
+  const initialLocalCounts = initialLocalRestoreState.localCounts;
+  const overwritingExistingLocalData = !isLocalCoreEmpty(initialLocalCounts);
+  if (overwritingExistingLocalData && !canRestoreOverExistingLocalData(initialLocalRestoreState, allowPartialLocalSnapshot)) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, { localCounts: initialLocalCounts });
   }
 
@@ -579,8 +612,9 @@ export async function executeSupabaseCloudRestore({
 
   // Recheck immediately before writing -- nothing should have changed
   // locally between the first check and now, but never trust a stale read.
-  const finalLocalCounts = readLocalCoreCounts(storage);
-  if (!isLocalCoreEmpty(finalLocalCounts)) {
+  const finalLocalRestoreState = readLocalRestoreState(storage);
+  const finalLocalCounts = finalLocalRestoreState.localCounts;
+  if (!isLocalCoreEmpty(finalLocalCounts) && !canRestoreOverExistingLocalData(finalLocalRestoreState, allowPartialLocalSnapshot)) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, { localCounts: finalLocalCounts });
   }
 
@@ -608,6 +642,7 @@ export async function executeSupabaseCloudRestore({
         : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
       appBundleSummary: appBundle.captureSummary,
       noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
     });
   }
 
@@ -640,6 +675,7 @@ export async function executeSupabaseCloudRestore({
     appBundleRestored: appBundle.status === "available",
     appBundleSummary: appBundle.captureSummary,
     noWritesPerformed: false,
+    noExistingLocalDataOverwritten: !overwritingExistingLocalData,
     restoredCounts: {
       customers: payload.customers.length,
       projects: payload.projects.length,
