@@ -16,7 +16,9 @@ import { useEffect, useState } from "react";
 import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
 import useCloudBackupStatus from "./useCloudBackupStatus";
-import { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
+import { CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
+import { LOCAL_DATA_DECISION } from "./localDataIntegrity";
+import { getCloudRestoreAvailability } from "./cloudRestoreUi";
 
 // Gate 13G: dispatched by the header's compact restore chip (and anything
 // else that wants to bring the Home restore card back after "Not now"
@@ -49,48 +51,21 @@ export const CLOUD_RESTORE_PROMPT_STATE = {
 export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}) {
   const { configured: isSupabaseReady, user, userEmail } = useSupabaseAuth();
   const { company, role, hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
-  const { queueState } = useCloudBackupStatus();
-  const [onboardingStatus, setOnboardingStatus] = useState(null);
-  const [checking, setChecking] = useState(false);
-
-  const userId = String(user?.id || "").trim();
-  const companyId = String(company?.id || "").trim();
-
-  useEffect(() => {
-    let active = true;
-
-    if (!isSupabaseReady || !userId || !companyId) {
-      setOnboardingStatus(null);
-      setChecking(false);
-      return undefined;
-    }
-
-    setChecking(true);
-    checkSupabaseCloudOnboardingStatus({
-      storageSnapshot: localStorage,
-      configured: isSupabaseReady,
-      user,
-      company,
-      role,
-    })
-      .then((result) => {
-        if (active) setOnboardingStatus(result);
-      })
-      .catch(() => {
-        if (active) setOnboardingStatus(null);
-      })
-      .finally(() => {
-        if (active) setChecking(false);
-      });
-
-    return () => {
-      active = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSupabaseReady, userId, companyId, role]);
+  const {
+    queueState,
+    onboardingStatus,
+    restorePreview,
+    restorePreviewLoading,
+    decision,
+  } = useCloudBackupStatus();
 
   let state = CLOUD_RESTORE_PROMPT_STATE.HIDDEN;
   const status = onboardingStatus?.status;
+  const partialLocalSnapshot = decision?.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA;
+  const restoreAvailability = getCloudRestoreAvailability({
+    restorePreview,
+    partialLocalSnapshot,
+  });
 
   if (isSupabaseReady && userEmail && hasCompany && status) {
     if (queueState.pending) {
@@ -114,7 +89,7 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
 
   return {
     state,
-    checking,
+    checking: restorePreviewLoading,
     isSupabaseReady,
     hasCompany,
     userEmail,
@@ -122,5 +97,9 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
     company,
     role,
     onboardingStatus,
+    restorePreview,
+    restoreAvailable: restoreAvailability.available,
+    restoreBlockedReason: restoreAvailability.blockedReason,
+    partialLocalSnapshot,
   };
 }

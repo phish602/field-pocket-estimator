@@ -21,6 +21,8 @@ import { useEffect, useState } from "react";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import { executeSupabaseCloudRestore, CLOUD_RESTORE_STATUS } from "../lib/supabaseCloudRestore";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
+import CloudConfirmDialog from "./CloudConfirmDialog";
+import { buildCloudRestoreConfirmationDialog } from "../lib/cloudRestoreUi";
 
 const DISMISS_KEY = "estipaid-home-restore-prompt-dismissed-v1";
 
@@ -59,12 +61,23 @@ function navigateToCloudSettings() {
 }
 
 export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, style } = {}) {
-  const { state, company, user, role, isSupabaseReady } = useCloudRestorePrompt({ hasChamberedDraft });
+  const {
+    state,
+    company,
+    user,
+    role,
+    isSupabaseReady,
+    checking,
+    restoreAvailable,
+    restoreBlockedReason,
+    partialLocalSnapshot,
+  } = useCloudRestorePrompt({ hasChamberedDraft });
   const [dismissed, setDismissed] = useState(readDismissed);
   const [restoring, setRestoring] = useState(false);
   const [restoreResult, setRestoreResult] = useState(null);
   const [backingUp, setBackingUp] = useState(false);
   const [backupResult, setBackupResult] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   // A fresh sign-in / device state change should get a fresh chance to show
   // the prompt rather than staying dismissed forever.
@@ -102,6 +115,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     setDismissed(true);
   };
 
+  const requestRestoreConfirmation = () => {
+    setConfirmDialog(buildCloudRestoreConfirmationDialog({ partialLocalSnapshot }));
+  };
+
   const runRestore = async () => {
     setRestoring(true);
     try {
@@ -117,6 +134,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     } finally {
       setRestoring(false);
     }
+  };
+
+  const confirmRestore = async () => {
+    setConfirmDialog(null);
+    await runRestore();
   };
 
   const runBackup = async () => {
@@ -169,6 +191,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {restoreErrorMessage(restoreResult)}
         </div>
       ) : null}
+      {isEmptyDevice && !restoreResult && !checking && !restoreAvailable ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {restoreBlockedReason}
+        </div>
+      ) : null}
 
       {backupResult ? (
         <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
@@ -183,8 +210,13 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
       {isEmptyDevice ? (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="pe-btn" disabled={restoring} onClick={runRestore}>
-            {restoring ? "Restoring..." : "Restore This Device"}
+          <button
+            type="button"
+            className="pe-btn"
+            disabled={restoring || checking || !restoreAvailable}
+            onClick={requestRestoreConfirmation}
+          >
+            {restoring ? "Restoring..." : checking ? "Checking restore..." : "Restore This Device"}
           </button>
           <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss} disabled={restoring}>
             Not now
@@ -203,6 +235,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           </button>
         </div>
       )}
+      <CloudConfirmDialog
+        dialog={confirmDialog}
+        onCancel={() => setConfirmDialog(null)}
+        onConfirm={confirmRestore}
+      />
     </div>
   );
 }

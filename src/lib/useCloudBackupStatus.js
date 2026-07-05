@@ -34,6 +34,13 @@ function readLocalIntegrity() {
   }
 }
 
+function hasPartialLocalSnapshotBlocker(integrity) {
+  return Boolean(
+    Array.isArray(integrity?.blockers)
+    && integrity.blockers.some((issue) => String(issue?.code || "").trim() === "empty_estimates_with_invoices")
+  );
+}
+
 export default function useCloudBackupStatus() {
   const { configured: isSupabaseReady, user, userEmail } = useSupabaseAuth();
   const { company, role, hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
@@ -43,6 +50,7 @@ export default function useCloudBackupStatus() {
   const [localIntegrity, setLocalIntegrity] = useState(readLocalIntegrity);
   const [onboardingStatus, setOnboardingStatus] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null);
+  const [restorePreviewLoading, setRestorePreviewLoading] = useState(false);
 
   useEffect(() => {
     const refresh = () => {
@@ -119,6 +127,7 @@ export default function useCloudBackupStatus() {
     if (!isSupabaseReady || !userId || !companyId) {
       setOnboardingStatus(null);
       setRestorePreview(null);
+      setRestorePreviewLoading(false);
       return undefined;
     }
 
@@ -132,26 +141,34 @@ export default function useCloudBackupStatus() {
       .then(async (result) => {
         if (!active) return;
         setOnboardingStatus(result);
-        if (String(result?.status || "").trim() !== "cloud_available_empty_device") {
+        const currentLocalIntegrity = readLocalIntegrity();
+        const partialLocalSnapshot = hasPartialLocalSnapshotBlocker(currentLocalIntegrity);
+        if (String(result?.status || "").trim() !== "cloud_available_empty_device" && !partialLocalSnapshot) {
           setRestorePreview(null);
+          setRestorePreviewLoading(false);
           return;
         }
         try {
+          if (active) setRestorePreviewLoading(true);
           const preview = await previewSupabaseCloudRestore({
             storageSnapshot: localStorage,
             configured: isSupabaseReady,
             user,
             company,
+            allowPartialLocalSnapshot: partialLocalSnapshot,
           });
           if (active) setRestorePreview(preview);
         } catch {
           if (active) setRestorePreview(null);
+        } finally {
+          if (active) setRestorePreviewLoading(false);
         }
       })
       .catch(() => {
         if (active) {
           setOnboardingStatus(null);
           setRestorePreview(null);
+          setRestorePreviewLoading(false);
         }
       });
 
@@ -193,6 +210,7 @@ export default function useCloudBackupStatus() {
     restoredRecently,
     onboardingStatus,
     restorePreview,
+    restorePreviewLoading,
     localIntegrity,
     decision,
   };

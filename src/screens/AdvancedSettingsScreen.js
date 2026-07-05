@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from "../utils/settings";
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
@@ -37,6 +37,12 @@ import {
   LOCAL_DATA_DECISION,
   repairStoredLocalDataIntegrity,
 } from "../lib/localDataIntegrity";
+import CloudConfirmDialog from "../components/CloudConfirmDialog";
+import {
+  buildCloudRestoreConfirmationDialog,
+  buildPartialSnapshotRecheckMessage,
+  getCloudRestoreAvailability,
+} from "../lib/cloudRestoreUi";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
@@ -761,7 +767,11 @@ export default function AdvancedSettingsScreen({
   });
   const partialLocalSnapshotState = cloudDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA;
   const shouldCheckRestorePreview = onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE || partialLocalSnapshotState;
-  const restoreActionAvailable = Boolean(restorePreview?.eligible) && !restorePreview?.partial;
+  const restoreAvailability = getCloudRestoreAvailability({
+    restorePreview,
+    partialLocalSnapshot: partialLocalSnapshotState,
+  });
+  const restoreActionAvailable = restoreAvailability.available;
   const cloudBackupDetail = String(
     (replaceEstimateLineItemsPermissionBlocked
       ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
@@ -772,6 +782,16 @@ export default function AdvancedSettingsScreen({
       || ""
   ).trim();
   const mismatchTableDetails = describeVerificationMismatchTables(onboardingStatus?.verification || cloudVerification);
+
+  const loadRestorePreview = useCallback(async ({ allowPartialLocalSnapshot }) => {
+    return previewSupabaseCloudRestore({
+      storageSnapshot: localStorage,
+      configured: isSupabaseReady,
+      user,
+      company,
+      allowPartialLocalSnapshot,
+    });
+  }, [isSupabaseReady, user, company]);
 
   // Read-only: once onboarding detects a fresh device with cloud data
   // available, or this device is confirmed to be a partial local snapshot,
@@ -785,13 +805,7 @@ export default function AdvancedSettingsScreen({
     }
 
     setRestorePreviewBusy(true);
-    previewSupabaseCloudRestore({
-      storageSnapshot: localStorage,
-      configured: isSupabaseReady,
-      user,
-      company,
-      allowPartialLocalSnapshot: partialLocalSnapshotState,
-    })
+    loadRestorePreview({ allowPartialLocalSnapshot: partialLocalSnapshotState })
       .then((result) => {
         if (active) setRestorePreview(result);
       })
@@ -812,7 +826,7 @@ export default function AdvancedSettingsScreen({
     return () => {
       active = false;
     };
-  }, [shouldCheckRestorePreview, partialLocalSnapshotState, isSupabaseReady, user, company]);
+  }, [shouldCheckRestorePreview, partialLocalSnapshotState, loadRestorePreview]);
 
   const runCloudRestore = async () => {
     try {
@@ -912,14 +926,34 @@ export default function AdvancedSettingsScreen({
         cloudVerification: result?.verification || null,
         queueState: autoBackupQueueState,
         onboardingStatus: result,
-        restorePreview,
+        restorePreview: null,
         workerRunning: autoBackupRunning,
         restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
       });
       if (nextDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA) {
-        setCloudStatusMessage(
-          "Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records."
-        );
+        try {
+          const nextRestorePreview = await loadRestorePreview({ allowPartialLocalSnapshot: true });
+          setRestorePreview(nextRestorePreview);
+          const nextRestoreAvailability = getCloudRestoreAvailability({
+            restorePreview: nextRestorePreview,
+            partialLocalSnapshot: true,
+          });
+          setCloudStatusMessage(buildPartialSnapshotRecheckMessage({
+            restoreAvailable: nextRestoreAvailability.available,
+            blockedReason: nextRestoreAvailability.blockedReason,
+          }));
+        } catch {
+          setRestorePreview({
+            status: CLOUD_RESTORE_STATUS.ERROR,
+            eligible: false,
+            error: "Unable to check restore eligibility.",
+            noWritesPerformed: true,
+          });
+          setCloudStatusMessage(buildPartialSnapshotRecheckMessage({
+            restoreAvailable: false,
+            blockedReason: "Unable to check whether cloud backup can rebuild the missing local estimates.",
+          }));
+        }
       }
     } catch {
       setOnboardingStatus({
@@ -954,18 +988,7 @@ export default function AdvancedSettingsScreen({
   const requestCloudRestoreConfirmation = () => {
     setCloudConfirmDialog({
       action: "restore",
-      title: "Restore cloud data to this device?",
-      lines: partialLocalSnapshotState
-        ? [
-            "This device has incomplete local data: invoices are present, but local estimates are missing.",
-            "Restoring cloud data is the safe recovery path and will overwrite this incomplete local snapshot on this device.",
-            "It will not delete your cloud backup.",
-          ]
-        : [
-            "This will copy your cloud backup onto this device.",
-            "It will not delete your cloud backup.",
-          ],
-      confirmLabel: "Restore Data",
+      ...buildCloudRestoreConfirmationDialog({ partialLocalSnapshot: partialLocalSnapshotState }),
     });
   };
 
@@ -1636,9 +1659,7 @@ export default function AdvancedSettingsScreen({
                     ) : null}
                     {!restorePreviewBusy && restorePreview && !restoreActionAvailable ? (
                       <div className="pe-field-helper" style={{ opacity: 0.82 }}>
-                        {restorePreview.status === CLOUD_RESTORE_STATUS.NO_CLOUD_DATA
-                          ? "No valid cloud backup is available to restore to this device."
-                          : "Restore is not available yet because the current cloud backup cannot safely rebuild the missing local records."}
+                        {restoreAvailability.blockedReason}
                       </div>
                     ) : null}
                     {cloudStatusMessage ? (
@@ -2549,72 +2570,13 @@ export default function AdvancedSettingsScreen({
           </div>
         </div>
       </div>
-      {cloudConfirmDialog ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="cloud-confirm-dialog-title"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(2,6,23,0.66)",
-            display: "grid",
-            placeItems: "center",
-            padding: 20,
-            zIndex: 60,
-          }}
-        >
-          <div
-            className="pe-card pe-card-content"
-            style={{
-              width: "min(100%, 460px)",
-              display: "grid",
-              gap: 12,
-              borderRadius: 18,
-              border: "1px solid rgba(148,163,184,0.24)",
-              background: "linear-gradient(180deg, rgba(30,41,59,0.96), rgba(15,23,42,0.98))",
-              boxShadow: "0 24px 60px rgba(0,0,0,0.38)",
-            }}
-          >
-            <div id="cloud-confirm-dialog-title" className="pe-field-label" style={{ marginBottom: 0 }}>
-              {cloudConfirmDialog.title}
-            </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {cloudConfirmDialog.lines.map((line) => (
-                <div key={line} className="pe-field-helper">{line}</div>
-              ))}
-            </div>
-            {cloudConfirmDialog.requireCheckbox ? (
-              <label className="pe-field-helper" style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={replaceConfirmChecked}
-                  onChange={(e) => setReplaceConfirmChecked(e.target.checked)}
-                  style={{ marginTop: 2 }}
-                />
-                <span>{cloudConfirmDialog.checkboxLabel}</span>
-              </label>
-            ) : null}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <button
-                type="button"
-                className="pe-btn pe-btn-ghost"
-                onClick={() => setCloudConfirmDialog(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="pe-btn"
-                onClick={confirmCloudAction}
-                disabled={Boolean(cloudConfirmDialog.requireCheckbox && !replaceConfirmChecked)}
-              >
-                {cloudConfirmDialog.confirmLabel}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <CloudConfirmDialog
+        dialog={cloudConfirmDialog}
+        checkboxChecked={replaceConfirmChecked}
+        onCheckboxChange={setReplaceConfirmChecked}
+        onCancel={() => setCloudConfirmDialog(null)}
+        onConfirm={confirmCloudAction}
+      />
     </section>
   );
 }

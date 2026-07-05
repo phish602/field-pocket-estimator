@@ -34,6 +34,7 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
 jest.mock("../lib/supabaseCloudRestore", () => ({
   __esModule: true,
   executeSupabaseCloudRestore: jest.fn(),
+  previewSupabaseCloudRestore: jest.fn(),
   CLOUD_RESTORE_STATUS: {
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
@@ -51,7 +52,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
-const { executeSupabaseCloudRestore, CLOUD_RESTORE_STATUS } = require("../lib/supabaseCloudRestore");
+const { executeSupabaseCloudRestore, previewSupabaseCloudRestore, CLOUD_RESTORE_STATUS } = require("../lib/supabaseCloudRestore");
 
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
@@ -78,6 +79,15 @@ beforeEach(() => {
   localStorage.clear();
   try { sessionStorage.clear(); } catch {}
   signInWithCompany();
+  previewSupabaseCloudRestore.mockReset();
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+    eligible: true,
+    partial: false,
+    blockers: [],
+    notices: [],
+  });
+  executeSupabaseCloudRestore.mockReset();
 });
 
 test("does not show a restore prompt when no cloud backup exists (already matches)", async () => {
@@ -99,13 +109,22 @@ test("empty device shows Restore This Device", async () => {
   expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
 });
 
-test("empty device restore calls executeSupabaseCloudRestore directly, with no dead-end confirmation step", async () => {
+test("empty device restore opens confirmation and does not execute until confirmed", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
   executeSupabaseCloudRestore.mockResolvedValue({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
 
   await renderAndSettle();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore This Device" }));
+  });
+
+  expect(screen.getByRole("dialog", { name: "Restore cloud data to this device?" })).toBeInTheDocument();
+  expect(screen.getByText("This will copy your cloud backup onto this device.")).toBeInTheDocument();
+  expect(screen.getByText("It will overwrite this device's current local data with cloud data.")).toBeInTheDocument();
+  expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
   });
 
   expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
@@ -125,9 +144,29 @@ test("empty-device restore failure shows a readable error and stays on Home", as
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore This Device" }));
   });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
+  });
 
   expect(screen.getByTestId("cloud-home-restore-prompt")).toBeInTheDocument();
   expect(screen.getByText("Something went wrong.")).toBeInTheDocument();
+});
+
+test("empty-device restore stays blocked when preview says cloud data cannot be safely restored", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+    eligible: true,
+    partial: true,
+    blockers: [{ code: "estimates_not_reconstructable", message: "Estimates cannot be safely restored yet." }],
+    notices: [],
+  });
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Estimates cannot be safely restored yet.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
+  expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
 });
 
 test("local-data-exists state does not offer a restore action and never calls executeSupabaseCloudRestore", async () => {

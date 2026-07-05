@@ -356,6 +356,49 @@ describe("supabaseCloudRestore", () => {
       expect(result.partial).toBe(false);
     });
 
+    test("partial-local-snapshot preview stays eligible when the linked estimate is restorable even if another cloud estimate is not", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [
+            cloudEstimateRow(),
+            cloudEstimateRow({ id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null }),
+          ],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildPartialLocalStorageSnapshot(),
+        allowPartialLocalSnapshot: true,
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ELIGIBLE);
+      expect(result.eligible).toBe(true);
+      expect(result.recoveryEligibleForPartialLocalSnapshot).toBe(true);
+    });
+
+    test("partial-local-snapshot preview blocks when the linked estimate is missing valid restore data", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow({ restore_payload: null, restore_payload_version: null })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await previewSupabaseCloudRestore({
+        storageSnapshot: buildPartialLocalStorageSnapshot(),
+        allowPartialLocalSnapshot: true,
+        ...baseContext,
+      });
+
+      expect(result.eligible).toBe(true);
+      expect(result.recoveryEligibleForPartialLocalSnapshot).toBe(false);
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "partial_snapshot_estimates_unrestorable" }),
+      ]));
+    });
+
     test("reports eligible and cloud counts when local is empty and cloud has restorable data", async () => {
       const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
       mockGetSupabaseClient.mockReturnValue(mockClient);
@@ -569,6 +612,50 @@ describe("supabaseCloudRestore", () => {
       expect(storage.setItem).toHaveBeenCalledWith(STORAGE_KEYS.ESTIMATES, expect.any(String));
       const restoredEstimates = JSON.parse(storage.__store[STORAGE_KEYS.ESTIMATES]);
       expect(restoredEstimates[0]).toEqual(expect.objectContaining({ id: "est_1", estimateNumber: "EST-1" }));
+    });
+
+    test("partial-local-snapshot restore stays blocked when the linked estimate is missing valid restore data", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows({
+          estimates: [cloudEstimateRow({ restore_payload: null, restore_payload_version: null })],
+        }),
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage({
+        [STORAGE_KEYS.CUSTOMERS]: JSON.stringify([{ id: "cust_1", type: "commercial", companyName: "Old Acme Co" }]),
+        [STORAGE_KEYS.PROJECTS]: JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Old Roof Repair" }]),
+        [STORAGE_KEYS.ESTIMATES]: JSON.stringify([]),
+        [STORAGE_KEYS.INVOICES]: JSON.stringify([
+          {
+            id: "inv_1",
+            customerId: "cust_1",
+            projectId: "proj_1",
+            invoiceNumber: "INV-1",
+            sourceEstimateId: "est_1",
+            total: 1000,
+            amountPaid: 250,
+            balanceRemaining: 750,
+            payments: [],
+          },
+        ]),
+        [STORAGE_KEYS.COMPANY_PROFILE]: JSON.stringify({ companyName: "AAS Property Care" }),
+        [STORAGE_KEYS.SETTINGS]: JSON.stringify({}),
+        [STORAGE_KEYS.SCOPE_TEMPLATES]: JSON.stringify([]),
+        [STORAGE_KEYS.AUDIT_EVENTS]: JSON.stringify([]),
+      });
+
+      const result = await executeSupabaseCloudRestore({
+        storage,
+        allowPartialLocalSnapshot: true,
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE);
+      expect(result.blockers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "partial_snapshot_estimates_unrestorable" }),
+      ]));
+      expect(storage.setItem).not.toHaveBeenCalledWith(STORAGE_KEYS.ESTIMATES, expect.any(String));
     });
 
     test("performs only SELECT reads against Supabase, never any write call", async () => {

@@ -47,6 +47,10 @@ function asText(value) {
   return String(value || "").trim();
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function buildNotice(level, code, message, details = {}) {
   return { level, code, message, details };
 }
@@ -137,6 +141,24 @@ function isLocalCoreEmpty(counts) {
   ) === 0;
 }
 
+function extractLocalInvoiceSourceEstimateId(invoice) {
+  return asText(
+    invoice?.sourceEstimateId
+    || invoice?.sourceEstimateLegacyId
+    || invoice?.convertedFromEstimateId
+    || invoice?.metadata?.sourceEstimateId
+    || invoice?.sourceEstimateSnapshot?.estimateId
+  );
+}
+
+function collectRequiredEstimateIdsForPartialSnapshot(localSnapshot) {
+  return [...new Set(
+    asArray(localSnapshot?.invoices)
+      .map((invoice) => extractLocalInvoiceSourceEstimateId(invoice))
+      .filter(Boolean)
+  )].sort();
+}
+
 function hasPartialLocalSnapshotBlocker(integrity) {
   return Boolean(
     Array.isArray(integrity?.blockers)
@@ -145,22 +167,103 @@ function hasPartialLocalSnapshotBlocker(integrity) {
 }
 
 function readLocalRestoreState(storageSnapshot) {
+  const { snapshot } = buildLocalSnapshotFromStorage(storageSnapshot);
   const localCounts = readLocalCoreCounts(storageSnapshot);
   let localIntegrity = null;
   try {
-    localIntegrity = scanLocalDataIntegrity(buildLocalSnapshotFromStorage(storageSnapshot).snapshot);
+    localIntegrity = scanLocalDataIntegrity(snapshot);
   } catch {
     localIntegrity = null;
   }
   return {
+    snapshot,
     localCounts,
     localIntegrity,
     partialLocalSnapshot: hasPartialLocalSnapshotBlocker(localIntegrity),
+    requiredEstimateIdsForPartialSnapshot: collectRequiredEstimateIdsForPartialSnapshot(snapshot),
   };
 }
 
 function canRestoreOverExistingLocalData(localRestoreState, allowPartialLocalSnapshot = false) {
   return Boolean(allowPartialLocalSnapshot && localRestoreState?.partialLocalSnapshot);
+}
+
+function buildPartialSnapshotEstimateBlocker(requiredEstimateIds, availableEstimateIds, invalidEstimateIds) {
+  const requiredCount = asArray(requiredEstimateIds).length;
+  const missingCloudIds = asArray(requiredEstimateIds).filter((id) => !availableEstimateIds.has(id));
+  const missingPayloadIds = asArray(requiredEstimateIds).filter((id) => invalidEstimateIds.has(id));
+  return buildNotice(
+    "warning",
+    "partial_snapshot_estimates_unrestorable",
+    "Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.",
+    {
+      requiredEstimateCount: requiredCount,
+      missingCloudEstimateIds: missingCloudIds,
+      missingRestorePayloadEstimateIds: missingPayloadIds,
+    }
+  );
+}
+
+function analyzeEstimateRestoreState({
+  estimateRows,
+  estimateCount,
+  estimateLineItemCount,
+  localRestoreState = null,
+  allowPartialLocalSnapshot = false,
+} = {}) {
+  const rows = asArray(estimateRows);
+  const restorableRows = rows.filter((row) => hasValidRestorePayload(row));
+  const allEstimatesRestorable = estimateCount === 0 || restorableRows.length === estimateCount;
+  const partialSnapshotMode = canRestoreOverExistingLocalData(localRestoreState, allowPartialLocalSnapshot);
+  const requiredEstimateIds = partialSnapshotMode
+    ? asArray(localRestoreState?.requiredEstimateIdsForPartialSnapshot)
+    : [];
+  const availableEstimateIds = new Set(rows.map((row) => asText(row?.legacy_local_id)).filter(Boolean));
+  const restorableEstimateIds = new Set(restorableRows.map((row) => asText(row?.legacy_local_id)).filter(Boolean));
+  const invalidEstimateIds = new Set(
+    rows
+      .filter((row) => !hasValidRestorePayload(row))
+      .map((row) => asText(row?.legacy_local_id))
+      .filter(Boolean)
+  );
+  const missingRequiredEstimateIds = requiredEstimateIds.filter((id) => !restorableEstimateIds.has(id));
+  const recoveryEligibleForPartialLocalSnapshot = partialSnapshotMode
+    && requiredEstimateIds.length > 0
+    && missingRequiredEstimateIds.length === 0;
+
+  if (estimateCount === 0) {
+    return {
+      blockers: [],
+      restorableEstimateRows: [],
+      recoveryEligibleForPartialLocalSnapshot,
+    };
+  }
+
+  if (allEstimatesRestorable) {
+    return {
+      blockers: [],
+      restorableEstimateRows: rows,
+      recoveryEligibleForPartialLocalSnapshot,
+    };
+  }
+
+  if (recoveryEligibleForPartialLocalSnapshot) {
+    return {
+      blockers: [],
+      restorableEstimateRows: restorableRows,
+      recoveryEligibleForPartialLocalSnapshot,
+    };
+  }
+
+  const blocker = partialSnapshotMode && requiredEstimateIds.length > 0
+    ? buildPartialSnapshotEstimateBlocker(requiredEstimateIds, availableEstimateIds, invalidEstimateIds)
+    : buildEstimateBlockerNotice(estimateCount, estimateLineItemCount);
+
+  return {
+    blockers: [blocker],
+    restorableEstimateRows: [],
+    recoveryEligibleForPartialLocalSnapshot: false,
+  };
 }
 
 async function readCloudCount(client, table, companyId) {
@@ -217,6 +320,7 @@ function buildPreviewResult(status, extra = {}) {
       settingsCaptured: false,
       scopeTemplatesCaptured: false,
     },
+    recoveryEligibleForPartialLocalSnapshot: false,
     noWritesPerformed: true,
     ...extra,
   };
@@ -267,14 +371,23 @@ export async function previewSupabaseCloudRestore({
   const coreCloudTotal = Number(cloudCounts.customers || 0) + Number(cloudCounts.projects || 0) + Number(cloudCounts.invoices || 0) + estimateCount;
   const appBundle = await readAppRestoreBundleResult(client, companyId);
 
-  const blockers = [];
+  let blockers = [];
+  let recoveryEligibleForPartialLocalSnapshot = false;
   if (estimateCount > 0) {
     const { rows: estimateRows, error: estimateRowsError } = await readCloudRows(client, "estimates", companyId);
     if (estimateRowsError) {
       notices.push(buildNotice("error", "estimates_read_failed", "Unable to read estimates from Supabase."));
-      blockers.push(buildEstimateBlockerNotice(estimateCount, estimateLineItemCount));
-    } else if (!estimateRows.every(hasValidRestorePayload)) {
-      blockers.push(buildEstimateBlockerNotice(estimateCount, estimateLineItemCount));
+      blockers = [buildEstimateBlockerNotice(estimateCount, estimateLineItemCount)];
+    } else {
+      const estimateRestoreState = analyzeEstimateRestoreState({
+        estimateRows,
+        estimateCount,
+        estimateLineItemCount,
+        localRestoreState,
+        allowPartialLocalSnapshot,
+      });
+      blockers = estimateRestoreState.blockers;
+      recoveryEligibleForPartialLocalSnapshot = estimateRestoreState.recoveryEligibleForPartialLocalSnapshot;
     }
   }
 
@@ -286,6 +399,7 @@ export async function previewSupabaseCloudRestore({
       notices: [...notices, ...appBundle.notices],
       appBundleAvailable: appBundle.status === "available",
       appBundleSummary: appBundle.captureSummary,
+      recoveryEligibleForPartialLocalSnapshot,
     });
   }
 
@@ -300,6 +414,7 @@ export async function previewSupabaseCloudRestore({
       : [...notices, ...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
     appBundleAvailable: appBundle.status === "available",
     appBundleSummary: appBundle.captureSummary,
+    recoveryEligibleForPartialLocalSnapshot,
   });
 }
 
@@ -570,14 +685,23 @@ export async function executeSupabaseCloudRestore({
 
   const estimateCount = fetched.estimates.length;
   const estimateLineItemCount = fetched.estimate_line_items.length;
-  const estimatesFullyRestorable = estimateCount > 0 && fetched.estimates.every(hasValidRestorePayload);
+  const estimateRestoreState = analyzeEstimateRestoreState({
+    estimateRows: fetched.estimates,
+    estimateCount,
+    estimateLineItemCount,
+    localRestoreState: initialLocalRestoreState,
+    allowPartialLocalSnapshot,
+  });
   const appBundle = await readAppRestoreBundleResult(client, companyId);
-  const blockers = (estimateCount > 0 && !estimatesFullyRestorable)
-    ? [buildEstimateBlockerNotice(estimateCount, estimateLineItemCount)]
-    : [];
+  const blockers = estimateRestoreState.blockers;
+  const partialSnapshotRecoveryMode = canRestoreOverExistingLocalData(initialLocalRestoreState, allowPartialLocalSnapshot);
+
+  if (partialSnapshotRecoveryMode && blockers.length > 0) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE, { blockers });
+  }
 
   const coreRestorableTotal = fetched.customers.length + fetched.projects.length + fetched.invoices.length
-    + (estimatesFullyRestorable ? estimateCount : 0);
+    + estimateRestoreState.restorableEstimateRows.length;
   if (coreRestorableTotal === 0) {
     return buildExecuteResult(
       blockers.length > 0 ? CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE : CLOUD_RESTORE_STATUS.NO_CLOUD_DATA,
@@ -597,7 +721,7 @@ export async function executeSupabaseCloudRestore({
       // estimates are restorable, restore_payload.estimate already carries
       // the original labor/materials line structure faithfully, so the
       // flattened estimate_line_items rows are redundant for restore.
-      estimates: estimatesFullyRestorable ? fetched.estimates : [],
+      estimates: estimateRestoreState.restorableEstimateRows,
       appRestoreBundle: appBundle.status === "available" ? appBundle.bundle : null,
     });
   } catch (error) {
