@@ -240,17 +240,10 @@ with check (
   )
 );
 
-create policy estimate_line_items_delete_owner_admin
+create policy estimate_line_items_delete_operational
 on estimate_line_items
 for delete
-using (
-  exists (
-    select 1
-    from estimates e
-    where e.id = estimate_line_items.estimate_id
-      and can_manage_company(e.company_id)
-  )
-);
+using (can_write_company_records(company_id));
 
 -- Invoices
 alter table invoices enable row level security;
@@ -547,7 +540,7 @@ grant select, insert, update, delete on table public.company_users to authentica
 grant select, insert, update on table public.customers to authenticated;
 grant select, insert, update on table public.projects to authenticated;
 grant select, insert, update on table public.estimates to authenticated;
-grant select, insert, update on table public.estimate_line_items to authenticated;
+grant select, insert, update, delete on table public.estimate_line_items to authenticated;
 grant select, insert, update on table public.invoices to authenticated;
 grant select, insert, update on table public.invoice_line_items to authenticated;
 grant select, insert, update on table public.invoice_payments to authenticated;

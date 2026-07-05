@@ -568,6 +568,11 @@ for update
 using (public.can_write_company_records(company_id))
 with check (public.can_write_company_records(company_id));
 
+create policy estimate_line_items_delete_operational
+on public.estimate_line_items
+for delete
+using (public.can_write_company_records(company_id));
+
 -- invoices
 create policy invoices_select_members
 on public.invoices
@@ -763,7 +768,7 @@ grant select, insert, update, delete on table public.company_users to authentica
 grant select, insert, update on table public.customers to authenticated;
 grant select, insert, update on table public.projects to authenticated;
 grant select, insert, update on table public.estimates to authenticated;
-grant select, insert, update on table public.estimate_line_items to authenticated;
+grant select, insert, update, delete on table public.estimate_line_items to authenticated;
 grant select, insert, update on table public.invoices to authenticated;
 grant select, insert, update on table public.invoice_line_items to authenticated;
 grant select, insert, update on table public.invoice_payments to authenticated;
