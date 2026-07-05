@@ -348,6 +348,39 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.deleteChains.estimate_line_items.in).toHaveBeenCalledWith("estimate_id", ["db_est_x"]);
   });
 
+  test("replace-cloud option surfaces estimate_line_items delete permission errors before attempting the parent estimate delete", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [{ id: "db_est_x", legacy_local_id: "cloud_only_est" }],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+      deleteErrors: { estimate_line_items: { message: "permission denied for table estimate_line_items" } },
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/permission denied for table estimate_line_items/i);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        level: "error",
+        code: "estimate_line_items_cloud_only_replace_failed",
+        message: "permission denied for table estimate_line_items",
+      }),
+    ]));
+    expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
+  });
+
   test("replace-cloud option never deletes cloud-only invoice rows -- it still blocks and requires restore instead", async () => {
     const mockClient = createMockClient({
       counts: { customers: 1, projects: 1, estimates: 1, invoices: 1, invoicePayments: 0 },

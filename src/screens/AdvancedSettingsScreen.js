@@ -90,6 +90,18 @@ function describeVerificationMismatchTables(verification) {
     });
 }
 
+function hasEstimateLineItemsReplacePermissionError(status) {
+  const notices = [
+    ...(Array.isArray(status?.writeResult?.notices) ? status.writeResult.notices : []),
+    ...(Array.isArray(status?.verification?.notices) ? status.verification.notices : []),
+  ];
+  return notices.some((notice) => {
+    const code = String(notice?.code || "").trim();
+    const message = String(notice?.message || "").trim();
+    return code === "estimate_line_items_cloud_only_replace_failed" && /permission denied/i.test(message);
+  });
+}
+
 function safeJsonParse(raw) {
   try {
     return JSON.parse(raw);
@@ -735,6 +747,7 @@ export default function AdvancedSettingsScreen({
       || onboardingStatus?.error
       || ""
   ).trim();
+  const replaceEstimateLineItemsPermissionBlocked = hasEstimateLineItemsReplacePermissionError(onboardingStatus);
   const localIntegrity = onboardingStatus?.preview?.integrity || migrationPreview?.integrity || null;
   const cloudDecision = getCloudDataDecision({
     localIntegrity,
@@ -746,7 +759,10 @@ export default function AdvancedSettingsScreen({
     restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
   });
   const cloudBackupDetail = String(
-    cloudDecision?.firstBlocker?.message
+    (replaceEstimateLineItemsPermissionBlocked
+      ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
+      : "")
+      || cloudDecision?.firstBlocker?.message
       || cloudDecision?.firstSafeRepair?.message
       || backupAttentionDetail
       || ""
@@ -869,6 +885,31 @@ export default function AdvancedSettingsScreen({
       }
     } finally {
       setRepairBusy(false);
+    }
+  };
+
+  const runCloudStatusRecheck = async () => {
+    try {
+      setOnboardingStatusBusy(true);
+      const result = await checkSupabaseCloudOnboardingStatus({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role: accountRole,
+      });
+      setOnboardingStatus(result);
+    } catch {
+      setOnboardingStatus({
+        status: CLOUD_ONBOARDING_STATUS.ERROR,
+        preview: null,
+        verification: null,
+        writeResult: null,
+        error: "Unable to recheck cloud backup status.",
+        noWritesPerformed: true,
+      });
+    } finally {
+      setOnboardingStatusBusy(false);
     }
   };
 
@@ -1580,8 +1621,8 @@ export default function AdvancedSettingsScreen({
                         Safe metadata repair completed.
                       </div>
                     ) : null}
-                    {cloudDecision.safeRepairsAvailable ? (
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {cloudDecision.safeRepairsAvailable ? (
                         <button
                           type="button"
                           className="pe-btn pe-btn-ghost"
@@ -1590,18 +1631,33 @@ export default function AdvancedSettingsScreen({
                         >
                           {repairBusy ? "Repairing..." : "Repair Safe Metadata"}
                         </button>
-                        {!cloudDecision.firstBlocker ? (
-                          <button
-                            type="button"
-                            className="pe-btn"
-                            onClick={requestCloudBackupConfirmation}
-                            disabled={onboardingBackupBusy}
-                          >
-                            Back Up This Device
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
+                      ) : null}
+                      {(cloudDecision.safeRepairsAvailable || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP) && !cloudDecision.firstBlocker ? (
+                        <button
+                          type="button"
+                          className="pe-btn"
+                          onClick={requestCloudBackupConfirmation}
+                          disabled={onboardingBackupBusy}
+                        >
+                          Back Up This Device
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={runCloudStatusRecheck}
+                        disabled={onboardingStatusBusy}
+                      >
+                        {onboardingStatusBusy ? "Rechecking..." : "Recheck Cloud Status"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={downloadBackupJson}
+                      >
+                        Download Backup JSON
+                      </button>
+                    </div>
                   </>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE ? (
                   <>
@@ -1692,15 +1748,18 @@ export default function AdvancedSettingsScreen({
                           ? "Cloud data restored to this device."
                           : restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
                             ? "This device already has local data. Restore is blocked to prevent overwriting."
-                            : "Restore could not be completed on this device."}
+                          : "Restore could not be completed on this device."}
                       </div>
                     ) : null}
+                    <div className="pe-field-helper">
+                      Restore is blocked here because this device already has local data. Use Replace only if you want cloud to match this device instead.
+                    </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"
                         onClick={requestCloudRestoreConfirmation}
-                        disabled={restoreBusy}
+                        disabled={true}
                       >
                         Restore Cloud to This Device
                       </button>
@@ -1714,6 +1773,14 @@ export default function AdvancedSettingsScreen({
                           {replaceCloudBusy ? "Replacing..." : "Replace Cloud Backup With This Device"}
                         </button>
                       ) : null}
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        onClick={runCloudStatusRecheck}
+                        disabled={onboardingStatusBusy}
+                      >
+                        {onboardingStatusBusy ? "Rechecking..." : "Recheck Cloud Status"}
+                      </button>
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"

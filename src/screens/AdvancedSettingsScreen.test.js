@@ -1270,7 +1270,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
     expect(screen.getByText(/Choose whether to restore cloud data here or replace the cloud backup/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
+    expect(screen.getByText(/Restore is blocked here because this device already has local data/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
     // "Download Backup JSON" also appears in the always-present Developer
     // Tools section, so this action must render at least once (not exactly
     // once) inside the mismatch choice card.
@@ -1402,7 +1405,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
     expect(screen.getByText("Cloud verification found mismatches between local and Supabase data.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
     // The concrete mismatch detail can still appear, but it must not be the
@@ -1511,18 +1516,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
-    });
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
-    });
-
-    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
-    expect(checkSupabaseCloudOnboardingStatus).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
-    expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
+    expect(screen.getByText(/Restore is blocked here because this device already has local data/)).toBeInTheDocument();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
   });
 
   test("Restore Cloud to This Device shows the exact remaining reason if a mismatch persists after a successful restore", async () => {
@@ -1541,57 +1537,28 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       role: "owner",
       hasCompany: true,
     }));
-    checkSupabaseCloudOnboardingStatus
-      .mockResolvedValueOnce({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
-        preview: null,
-        verification: { ok: true, allMatched: false, notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }] },
-        writeResult: null,
-        noWritesPerformed: true,
-      })
-      .mockResolvedValue({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
-        preview: null,
-        verification: {
-          ok: true,
-          allMatched: false,
-          notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
-          tableResults: [
-            { table: "invoices", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_inv"], countOnly: false },
-          ],
-        },
-        writeResult: null,
-        noWritesPerformed: true,
-      });
-    executeSupabaseCloudRestore.mockResolvedValue({
-      restoreVersion: "supabase-cloud-restore-v1",
-      status: CLOUD_RESTORE_STATUS.RESTORED,
-      restored: true,
-      partial: false,
-      restoredCounts: { customers: 7, projects: 10, estimates: 8 },
-      blockers: [],
-      notices: [],
-      noWritesPerformed: false,
-      noCloudDataDeleted: true,
-      noExistingLocalDataOverwritten: true,
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: null,
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
+        tableResults: [
+          { table: "invoices", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_inv"], countOnly: false },
+        ],
+      },
+      writeResult: null,
+      noWritesPerformed: true,
     });
 
     await act(async () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud to This Device" }));
-    });
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
-    });
-
-    expect(checkSupabaseCloudOnboardingStatus).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
+    expect(screen.getByText(/Restore is blocked here because this device already has local data/)).toBeInTheDocument();
     expect(screen.getByText(/invoices:.*only in the cloud/)).toBeInTheDocument();
   });
 
@@ -1661,6 +1628,182 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
     expect(screen.getByText(/invoice payments:.*only in the cloud/)).toBeInTheDocument();
     expect(screen.getByText(/invoices\/payments are protected/)).toBeInTheDocument();
+  });
+
+  test("estimate_line_items permission denied produces clear blocked copy and recovery actions", async () => {
+    mockSignedInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: {
+        integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
+          invoices: [],
+        }),
+      },
+      verification: null,
+      writeResult: {
+        ok: false,
+        blocked: false,
+        reason: "permission denied for table estimate_line_items",
+        notices: [
+          {
+            level: "error",
+            code: "estimate_line_items_cloud_only_replace_failed",
+            message: "permission denied for table estimate_line_items",
+          },
+        ],
+      },
+      noLocalDeletes: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
+    expect(screen.getByText(/Replace reached estimate line item cleanup, but this account does not have permission/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
+  });
+
+  test("metadata repair followed by remaining mismatch re-renders actionable mismatch UI", async () => {
+    mockSignedInWithCompany();
+
+    const staleInvoice = {
+      id: "inv_1",
+      projectId: "missing_project",
+      customerId: "cust_1",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      invoiceTotal: 100,
+      total: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      payments: [{ id: "pay_1", amount: 25 }],
+    };
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([staleInvoice]));
+
+    const staleIntegrity = scanLocalDataIntegrity({
+      customers: [{ id: "cust_1", name: "Acme Co" }],
+      projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+      estimates: [{ id: "est_1", projectId: "proj_1", status: "approved", estimateNumber: "EST-1" }],
+      invoices: [staleInvoice],
+    });
+
+    checkSupabaseCloudOnboardingStatus
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+        preview: { integrity: staleIntegrity },
+        verification: null,
+        writeResult: null,
+        noWritesPerformed: true,
+      })
+      .mockResolvedValue({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+        preview: {
+          integrity: scanLocalDataIntegrity({
+            customers: [{ id: "cust_1", name: "Acme Co" }],
+            projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+            estimates: [{ id: "est_1", projectId: "proj_1", status: "approved", estimateNumber: "EST-1" }],
+            invoices: [{ ...staleInvoice, projectId: "" }],
+          }),
+        },
+        verification: {
+          ok: true,
+          allMatched: false,
+          notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
+          tableResults: [
+            { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est"], countOnly: false },
+          ],
+        },
+        writeResult: null,
+        noWritesPerformed: true,
+      });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
+    });
+
+    expect(await screen.findByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(screen.getByText(/estimates: 1 only in the cloud\. Replace can remove the cloud-only rows\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("metadata repair dead-end branch keeps recovery actions visible after a failed queue state", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+    recordCloudBackupAttemptFailure("Unable to reach Supabase.");
+
+    const staleInvoice = {
+      id: "inv_1",
+      projectId: "missing_project",
+      customerId: "cust_1",
+      invoiceNumber: "INV-100",
+      status: "sent",
+      invoiceTotal: 100,
+      total: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      payments: [{ id: "pay_1", amount: 25 }],
+    };
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([staleInvoice]));
+
+    const staleIntegrity = scanLocalDataIntegrity({
+      customers: [{ id: "cust_1", name: "Acme Co" }],
+      projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+      estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
+      invoices: [staleInvoice],
+    });
+
+    checkSupabaseCloudOnboardingStatus
+      .mockResolvedValueOnce({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+        preview: { integrity: staleIntegrity },
+        verification: null,
+        writeResult: null,
+        noWritesPerformed: true,
+      })
+      .mockResolvedValue({
+        onboardingVersion: "supabase-cloud-onboarding-v1",
+        status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+        preview: {
+          integrity: scanLocalDataIntegrity({
+            customers: [{ id: "cust_1", name: "Acme Co" }],
+            projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+            estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
+            invoices: [{ ...staleInvoice, projectId: "" }],
+          }),
+        },
+        verification: null,
+        writeResult: null,
+        noWritesPerformed: true,
+      });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
+    });
+
+    expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
   });
 
   test("protected invoice line-item mismatch does not claim replace will clear it", async () => {
