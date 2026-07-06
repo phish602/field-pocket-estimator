@@ -345,7 +345,7 @@ describe("supabaseCloudOnboarding", () => {
       });
 
       expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
-        preservedSkippedEstimateLegacyIds: ["est_9", "est_10"],
+        preservedSkippedEstimateLegacyIds: ["est_10", "est_9"],
       }));
     });
 

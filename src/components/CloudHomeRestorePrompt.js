@@ -250,13 +250,18 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const backupCompletedWithPreservedSkippedEstimates = backupResult?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
     && olderEstimatesKeptInCloud
     && skippedEstimatesCount > 0;
+  const storedCompletedRecoveryWithPreservedSkippedEstimates = Boolean(
+    completedRecoveryStatus?.olderEstimatesKeptInCloud
+    && skippedEstimatesCount > 0
+  );
   const cloudVerifiedWithPreservedSkippedEstimates = (
     onboardingStatusCode === CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP
     || onboardingStatusCode === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
   ) && olderEstimatesKeptInCloud
     && skippedEstimatesCount > 0;
   const showRecoveryFinishedState = Boolean(
-    continuationSucceededWithOlderEstimates
+    storedCompletedRecoveryWithPreservedSkippedEstimates
+    || continuationSucceededWithOlderEstimates
     || backupCompletedWithPreservedSkippedEstimates
     || cloudVerifiedWithPreservedSkippedEstimates
   );
