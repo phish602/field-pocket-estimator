@@ -5,6 +5,8 @@ const mockRunSupabaseCloudVerification = jest.fn();
 const mockCheckEstimateRestorePayloadProtection = jest.fn();
 const mockUpdateEstimateRestorePayloads = jest.fn();
 const mockRepairStoredLocalDataIntegrity = jest.fn();
+const mockBuildLocalSnapshotFromStorage = jest.fn();
+const mockGetSupabaseClient = jest.fn();
 
 jest.mock("./supabaseMigrationPreview", () => ({
   __esModule: true,
@@ -20,6 +22,11 @@ jest.mock("./supabaseMigrationWriter", () => ({
 jest.mock("./supabaseCloudVerification", () => ({
   __esModule: true,
   runSupabaseCloudVerification: (...args) => mockRunSupabaseCloudVerification(...args),
+}));
+
+jest.mock("./supabaseClient", () => ({
+  __esModule: true,
+  getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
 }));
 
 jest.mock("./supabaseEstimateRestorePayload", () => ({
@@ -41,15 +48,22 @@ jest.mock("./supabaseEstimateRestorePayload", () => ({
   },
 }));
 
-jest.mock("./localDataIntegrity", () => ({
-  __esModule: true,
-  repairStoredLocalDataIntegrity: (...args) => mockRepairStoredLocalDataIntegrity(...args),
-}));
+jest.mock("./localDataIntegrity", () => {
+  const actual = jest.requireActual("./localDataIntegrity");
+  return {
+    __esModule: true,
+    ...actual,
+    repairStoredLocalDataIntegrity: (...args) => mockRepairStoredLocalDataIntegrity(...args),
+    buildLocalSnapshotFromStorage: (...args) => mockBuildLocalSnapshotFromStorage(...args),
+  };
+});
 
 const {
   checkSupabaseCloudOnboardingStatus,
   runSupabaseCloudOnboardingBackup,
   CLOUD_ONBOARDING_STATUS,
+  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS,
+  removePreservedOlderCloudEstimates,
 } = require("./supabaseCloudOnboarding");
 const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
@@ -180,6 +194,75 @@ function buildPartialRecoveryStorage(skippedEstimateIds = ["est_2", "est_3"]) {
   };
 }
 
+function buildMutablePartialRecoveryStorage({
+  skippedEstimateIds = ["est_2", "est_3", "est_4"],
+  estimates = [],
+  invoices = [],
+} = {}) {
+  const values = new Map();
+  values.set(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, JSON.stringify({
+    recoveryMode: "partial_cloud_recovery",
+    status: "finished_with_older_estimates_kept",
+    skippedEstimateCount: skippedEstimateIds.length,
+    skippedEstimateIds,
+    skippedReason: "missing_full_estimate_details",
+    recoveredAt: "2026-07-06T01:00:00.000Z",
+    olderEstimatesKeptInCloud: true,
+  }));
+  values.set(STORAGE_KEYS.ESTIMATES, JSON.stringify(estimates));
+  values.set(STORAGE_KEYS.INVOICES, JSON.stringify(invoices));
+
+  return {
+    getItem: jest.fn((key) => (values.has(key) ? values.get(key) : null)),
+    setItem: jest.fn((key, value) => values.set(key, value)),
+    removeItem: jest.fn((key) => values.delete(key)),
+  };
+}
+
+function createCleanupClient(rowsByTable = {}, errorsByTable = {}) {
+  const calls = [];
+  const from = jest.fn((table) => {
+    const chain = {
+      _mode: "select",
+      _columns: "*",
+      _eqColumn: "",
+      _eqValue: "",
+      select: jest.fn((columns) => {
+        chain._mode = "select";
+        chain._columns = columns;
+        return chain;
+      }),
+      delete: jest.fn(() => {
+        chain._mode = "delete";
+        return chain;
+      }),
+      eq: jest.fn((column, value) => {
+        chain._eqColumn = column;
+        chain._eqValue = value;
+        return chain;
+      }),
+      in: jest.fn(async (column, values) => {
+        calls.push({
+          table,
+          mode: chain._mode,
+          columns: chain._columns,
+          eqColumn: chain._eqColumn,
+          eqValue: chain._eqValue,
+          inColumn: column,
+          inValues: values,
+        });
+        const tableError = errorsByTable[table];
+        if (tableError) return { data: null, error: tableError };
+        if (chain._mode === "delete") return { error: null };
+        return { data: rowsByTable[table] || [], error: null };
+      }),
+    };
+    return chain;
+  });
+
+  return { from, calls };
+}
+
 describe("supabaseCloudOnboarding", () => {
   beforeEach(() => {
     mockCreateSupabaseMigrationPreview.mockReset();
@@ -189,6 +272,8 @@ describe("supabaseCloudOnboarding", () => {
     mockCheckEstimateRestorePayloadProtection.mockReset();
     mockUpdateEstimateRestorePayloads.mockReset();
     mockRepairStoredLocalDataIntegrity.mockReset();
+    mockBuildLocalSnapshotFromStorage.mockReset();
+    mockGetSupabaseClient.mockReset();
     mockCheckEstimateRestorePayloadProtection.mockResolvedValue(buildPayloadProtection());
     mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
     mockRepairStoredLocalDataIntegrity.mockReturnValue({
@@ -196,6 +281,16 @@ describe("supabaseCloudOnboarding", () => {
       repairs: {},
       integrity: buildIntegrity(),
     });
+    mockBuildLocalSnapshotFromStorage.mockReturnValue({
+      artifact: null,
+      snapshot: {
+        customers: [],
+        projects: [],
+        estimates: [],
+        invoices: [],
+      },
+    });
+    mockGetSupabaseClient.mockReturnValue(null);
   });
 
   describe("checkSupabaseCloudOnboardingStatus", () => {
@@ -634,6 +729,153 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
       expect(result.writeResult.ok).toBe(true);
       expect(result.verification.allMatched).toBe(false);
+    });
+  });
+
+  describe("removePreservedOlderCloudEstimates", () => {
+    test("refuses cleanup when stored preserved estimate ids are not exactly 3", async () => {
+      const storageSnapshot = buildMutablePartialRecoveryStorage({
+        skippedEstimateIds: ["est_2", "est_3"],
+      });
+
+      const result = await removePreservedOlderCloudEstimates({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(result.status).toBe(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED);
+      expect(result.preservedEstimateLegacyIds).toEqual(["est_2", "est_3"]);
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
+    });
+
+    test("refuses cleanup when any preserved estimate is already present locally", async () => {
+      const storageSnapshot = buildMutablePartialRecoveryStorage();
+      mockBuildLocalSnapshotFromStorage.mockReturnValue({
+        artifact: null,
+        snapshot: {
+          customers: [],
+          projects: [],
+          estimates: [{ id: "est_3" }],
+          invoices: [],
+        },
+      });
+      mockGetSupabaseClient.mockReturnValue(createCleanupClient());
+
+      const result = await removePreservedOlderCloudEstimates({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(result.status).toBe(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED);
+      expect(result.localEstimateLegacyIds).toEqual(["est_3"]);
+    });
+
+    test("refuses cleanup when a cloud invoice still references one of the preserved estimates", async () => {
+      const storageSnapshot = buildMutablePartialRecoveryStorage();
+      const client = createCleanupClient({
+        estimates: [
+          { id: "db_est_2", legacy_local_id: "est_2" },
+          { id: "db_est_3", legacy_local_id: "est_3" },
+          { id: "db_est_4", legacy_local_id: "est_4" },
+        ],
+        invoices: [
+          { id: "db_inv_1", legacy_local_id: "inv_1", source_estimate_legacy_local_id: "est_3" },
+        ],
+      });
+      mockGetSupabaseClient.mockReturnValue(client);
+
+      const result = await removePreservedOlderCloudEstimates({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(result.status).toBe(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED);
+      expect(result.cloudInvoicesReferencingPreservedEstimates).toEqual([
+        { id: "db_inv_1", legacyLocalId: "inv_1", sourceEstimateLegacyId: "est_3" },
+      ]);
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+    });
+
+    test("deletes only the preserved estimate line items and estimates, then clears partial recovery status after clean verification", async () => {
+      const storageSnapshot = buildMutablePartialRecoveryStorage();
+      const client = createCleanupClient({
+        estimates: [
+          { id: "db_est_2", legacy_local_id: "est_2" },
+          { id: "db_est_3", legacy_local_id: "est_3" },
+          { id: "db_est_4", legacy_local_id: "est_4" },
+        ],
+        invoices: [],
+        estimate_line_items: [
+          { id: "db_line_1", estimate_id: "db_est_2" },
+          { id: "db_line_2", estimate_id: "db_est_3" },
+          { id: "db_line_3", estimate_id: "db_est_4" },
+        ],
+      });
+      mockGetSupabaseClient.mockReturnValue(client);
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      const result = await removePreservedOlderCloudEstimates({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(result.status).toBe(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED);
+      expect(result.deletedEstimateCount).toBe(3);
+      expect(result.deletedEstimateLineItemCount).toBe(3);
+      expect(result.clearedPartialRecoveryStatus).toBe(true);
+      expect(storageSnapshot.getItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS)).toBeNull();
+      expect(client.calls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          table: "estimate_line_items",
+          mode: "delete",
+          eqColumn: "company_id",
+          eqValue: "company_1",
+          inColumn: "estimate_id",
+          inValues: ["db_est_2", "db_est_3", "db_est_4"],
+        }),
+        expect.objectContaining({
+          table: "estimates",
+          mode: "delete",
+          eqColumn: "company_id",
+          eqValue: "company_1",
+          inColumn: "id",
+          inValues: ["db_est_2", "db_est_3", "db_est_4"],
+        }),
+      ]));
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
+        storageSnapshot,
+        configured: true,
+        user: baseContext.user,
+        company: baseContext.company,
+        role: "owner",
+      }));
+    });
+
+    test("keeps partial recovery status when post-delete verification does not pass", async () => {
+      const storageSnapshot = buildMutablePartialRecoveryStorage();
+      const client = createCleanupClient({
+        estimates: [
+          { id: "db_est_2", legacy_local_id: "est_2" },
+          { id: "db_est_3", legacy_local_id: "est_3" },
+          { id: "db_est_4", legacy_local_id: "est_4" },
+        ],
+        invoices: [],
+        estimate_line_items: [],
+      });
+      mockGetSupabaseClient.mockReturnValue(client);
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: false }));
+
+      const result = await removePreservedOlderCloudEstimates({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(result.status).toBe(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR);
+      expect(result.clearedPartialRecoveryStatus).toBe(false);
+      expect(JSON.parse(storageSnapshot.getItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS))).toEqual(expect.objectContaining({
+        skippedEstimateCount: 3,
+        skippedEstimateIds: ["est_2", "est_3", "est_4"],
+      }));
     });
   });
 });

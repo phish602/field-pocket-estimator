@@ -17,6 +17,7 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
   __esModule: true,
   checkSupabaseCloudOnboardingStatus: jest.fn(),
   runSupabaseCloudOnboardingBackup: jest.fn(),
+  removePreservedOlderCloudEstimates: jest.fn(),
   CLOUD_ONBOARDING_STATUS: {
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
@@ -27,6 +28,14 @@ jest.mock("../lib/supabaseCloudOnboarding", () => ({
     LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
     BACKUP_COMPLETED: "backup_completed",
     NEEDS_ATTENTION: "needs_attention",
+    ERROR: "error",
+  },
+  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NOTHING_TO_CLEAN: "nothing_to_clean",
+    REFUSED: "refused",
+    COMPLETED: "completed",
     ERROR: "error",
   },
 }));
@@ -104,7 +113,13 @@ jest.mock("../lib/cloudPartialRecoveryStatus", () => {
 
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
-const { checkSupabaseCloudOnboardingStatus, runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
+const {
+  checkSupabaseCloudOnboardingStatus,
+  runSupabaseCloudOnboardingBackup,
+  removePreservedOlderCloudEstimates,
+  CLOUD_ONBOARDING_STATUS,
+  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS,
+} = require("../lib/supabaseCloudOnboarding");
 const {
   executeSupabaseCloudRestore,
   previewSupabaseCloudRestore,
@@ -274,6 +289,11 @@ beforeEach(() => {
     },
   });
   runSupabaseCloudOnboardingBackup.mockReset();
+  removePreservedOlderCloudEstimates.mockReset();
+  removePreservedOlderCloudEstimates.mockResolvedValue({
+    status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED,
+    clearedPartialRecoveryStatus: true,
+  });
   updateEstimateRestorePayloads.mockReset();
   readCloudPartialRecoveryStatus.mockReset();
   readCloudPartialRecoveryStatus.mockImplementation((...args) => actualCloudPartialRecoveryStatus.readCloudPartialRecoveryStatus(...args));
@@ -806,6 +826,91 @@ test("hydrates completed recovery status from localStorage on mount", async () =
   expect(screen.getByText("Your data is back on this device.")).toBeInTheDocument();
   expect(screen.getByText("3 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
   expect(screen.queryByText("Backup Available")).not.toBeInTheDocument();
+});
+
+test("completed recovery state offers Remove Older Estimates with a required confirmation checkbox", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  writePartialRecoveryStatus();
+
+  await renderAndSettle();
+
+  expect(screen.getByRole("button", { name: "Remove Older Estimates" })).toBeInTheDocument();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
+  });
+
+  expect(screen.getByRole("dialog", { name: "Remove 3 older estimates from cloud backup?" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove 3 Older Estimates" })).toBeDisabled();
+
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
+  });
+  expect(screen.getByRole("button", { name: "Remove 3 Older Estimates" })).toBeEnabled();
+});
+
+test("Remove Older Estimates calls the scoped cleanup helper and clears the finished recovery card", async () => {
+  checkSupabaseCloudOnboardingStatus
+    .mockResolvedValueOnce({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH })
+    .mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP });
+  writePartialRecoveryStatus();
+  removePreservedOlderCloudEstimates.mockImplementation(async ({ storageSnapshot }) => {
+    localStorage.removeItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS);
+    return {
+      status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED,
+      clearedPartialRecoveryStatus: true,
+      verification: { allMatched: true },
+    };
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Remove 3 Older Estimates" }));
+  });
+
+  expect(removePreservedOlderCloudEstimates).toHaveBeenCalledWith(expect.objectContaining({
+    storageSnapshot: localStorage,
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "BVW Contracting Solutions" },
+    role: "owner",
+  }));
+  await waitFor(() => {
+    expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+  });
+});
+
+test("cleanup refusal shows contractor-safe copy, Try Again, and technical detail", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  writePartialRecoveryStatus();
+  removePreservedOlderCloudEstimates.mockResolvedValue({
+    status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED,
+    error: "We could not safely remove those older estimates automatically.",
+    technicalDetail: "One or more cloud invoices still reference those preserved older estimates.",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Remove Older Estimates" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("I understand these 3 older estimates will be removed from cloud backup."));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Remove 3 Older Estimates" }));
+  });
+
+  await waitFor(() => {
+    expect(screen.getByRole("alert")).toHaveTextContent("We could not safely remove those older estimates automatically.");
+  });
+  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Technical details"));
+  expect(screen.getByText("One or more cloud invoices still reference those preserved older estimates.")).toBeInTheDocument();
 });
 
 test("does not show a restore prompt while local has unbacked pending changes", async () => {

@@ -2,8 +2,9 @@ import { createSupabaseMigrationPreview } from "./supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "./supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
-import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
-import { repairStoredLocalDataIntegrity } from "./localDataIntegrity";
+import { getSupabaseClient } from "./supabaseClient";
+import { clearCloudPartialRecoveryStatus, readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
+import { buildLocalSnapshotFromStorage, repairStoredLocalDataIntegrity } from "./localDataIntegrity";
 import {
   checkEstimateRestorePayloadProtection,
   updateEstimateRestorePayloads,
@@ -32,6 +33,15 @@ export const CLOUD_ONBOARDING_STATUS = {
   LOCAL_CLOUD_MISMATCH: "local_cloud_mismatch",
   BACKUP_COMPLETED: "backup_completed",
   NEEDS_ATTENTION: "needs_attention",
+  ERROR: "error",
+};
+
+export const PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS = {
+  SIGNED_OUT: CLOUD_ONBOARDING_STATUS.SIGNED_OUT,
+  NO_WORKSPACE: CLOUD_ONBOARDING_STATUS.NO_WORKSPACE,
+  NOTHING_TO_CLEAN: "nothing_to_clean",
+  REFUSED: "refused",
+  COMPLETED: "completed",
   ERROR: "error",
 };
 
@@ -124,10 +134,90 @@ function buildBackupResult(status, extra = {}) {
   };
 }
 
+function buildPreservedEstimateCleanupResult(status, extra = {}) {
+  return {
+    onboardingVersion: SUPABASE_CLOUD_ONBOARDING_VERSION,
+    status,
+    deletedEstimateCount: 0,
+    deletedEstimateLineItemCount: 0,
+    verification: null,
+    noLocalDeletes: true,
+    clearedPartialRecoveryStatus: false,
+    ...extra,
+  };
+}
+
 function getRepairableMissingEstimatePayloadIds(protectionCheck) {
   return Array.isArray(protectionCheck?.repairableMissingLegacyIds)
     ? protectionCheck.repairableMissingLegacyIds
     : [];
+}
+
+function extractLocalInvoiceSourceEstimateId(invoice) {
+  return asText(
+    invoice?.sourceEstimateId
+    || invoice?.sourceEstimateLegacyId
+    || invoice?.convertedFromEstimateId
+    || invoice?.metadata?.sourceEstimateId
+    || invoice?.sourceEstimateSnapshot?.estimateId
+  );
+}
+
+function buildLocalIdSet(records) {
+  return new Set(
+    (Array.isArray(records) ? records : [])
+      .map((record) => asText(record?.id))
+      .filter(Boolean)
+  );
+}
+
+async function readCompanyRowsByColumnIn(client, table, companyId, column, values, columns = "id") {
+  const normalizedValues = normalizeLegacyIds(values);
+  if (normalizedValues.length === 0) {
+    return { rows: [], error: null };
+  }
+
+  try {
+    const response = await client
+      .from(table)
+      .select(columns)
+      .eq("company_id", companyId)
+      .in(column, normalizedValues);
+
+    if (response?.error) {
+      return { rows: null, error: response.error };
+    }
+    return { rows: Array.isArray(response?.data) ? response.data : [], error: null };
+  } catch (error) {
+    return { rows: null, error };
+  }
+}
+
+async function deleteCompanyRowsByColumnIn(client, table, companyId, column, values) {
+  const normalizedValues = normalizeLegacyIds(values);
+  if (normalizedValues.length === 0) {
+    return { error: null };
+  }
+
+  try {
+    const response = await client
+      .from(table)
+      .delete()
+      .eq("company_id", companyId)
+      .in(column, normalizedValues);
+
+    return { error: response?.error || null };
+  } catch (error) {
+    return { error };
+  }
+}
+
+function buildPreservedEstimateCleanupRefusal(message, details = {}) {
+  return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED, {
+    error: "We could not safely remove those older estimates automatically.",
+    technicalDetail: asText(message) || "Cleanup safety checks did not pass.",
+    ...details,
+  });
 }
 
 function hasAutomaticSafeRepairCandidate(preview) {
@@ -235,6 +325,236 @@ async function runAutomaticSafeRepairAndBackup({
       repairChanged: Boolean(repaired?.changed),
     }),
   };
+}
+
+export async function removePreservedOlderCloudEstimates({
+  storageSnapshot,
+  configured = false,
+  user = null,
+  company = null,
+  role = "",
+} = {}) {
+  const gated = gateBasicPrerequisites({ configured, user, company });
+  if (gated) return buildPreservedEstimateCleanupResult(gated);
+
+  const storedRecoveryStatus = readCloudPartialRecoveryStatus(storageSnapshot);
+  const preservedEstimateLegacyIds = normalizeLegacyIds(storedRecoveryStatus?.skippedEstimateIds);
+  const skippedEstimateCount = Number(storedRecoveryStatus?.skippedEstimateCount || 0);
+
+  if (!storedRecoveryStatus?.olderEstimatesKeptInCloud) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.NOTHING_TO_CLEAN, {
+      technicalDetail: "No preserved older-estimate recovery state is stored on this device.",
+    });
+  }
+
+  if (skippedEstimateCount !== 3 || preservedEstimateLegacyIds.length !== 3) {
+    return buildPreservedEstimateCleanupRefusal(
+      "Stored partial recovery status does not contain the exact 3 preserved estimate ids required for cleanup.",
+      {
+        skippedEstimateCount,
+        preservedEstimateLegacyIds,
+      }
+    );
+  }
+
+  const { snapshot: localSnapshot } = buildLocalSnapshotFromStorage(storageSnapshot);
+  const localEstimateIds = buildLocalIdSet(localSnapshot?.estimates);
+  const preservedEstimateIdSet = new Set(preservedEstimateLegacyIds);
+  const localMatches = preservedEstimateLegacyIds.filter((legacyId) => localEstimateIds.has(legacyId));
+  if (localMatches.length > 0) {
+    return buildPreservedEstimateCleanupRefusal(
+      "One or more preserved older estimates are already present on this device.",
+      {
+        localEstimateLegacyIds: localMatches,
+        preservedEstimateLegacyIds,
+      }
+    );
+  }
+
+  const localInvoiceIdsReferencingPreservedEstimates = (Array.isArray(localSnapshot?.invoices) ? localSnapshot.invoices : [])
+    .filter((invoice) => preservedEstimateIdSet.has(extractLocalInvoiceSourceEstimateId(invoice)))
+    .map((invoice) => asText(invoice?.id))
+    .filter(Boolean)
+    .sort();
+  if (localInvoiceIdsReferencingPreservedEstimates.length > 0) {
+    return buildPreservedEstimateCleanupRefusal(
+      "One or more local invoices still reference those preserved older estimates.",
+      {
+        localInvoiceIds: localInvoiceIdsReferencingPreservedEstimates,
+        preservedEstimateLegacyIds,
+      }
+    );
+  }
+
+  const client = getSupabaseClient();
+  if (!client?.from) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: "Supabase is not configured.",
+    });
+  }
+
+  const companyId = asText(company?.id);
+  const context = buildHelperContext({ storageSnapshot, configured, user, company, role });
+  const cloudEstimateRead = await readCompanyRowsByColumnIn(
+    client,
+    "estimates",
+    companyId,
+    "legacy_local_id",
+    preservedEstimateLegacyIds,
+    "id, legacy_local_id"
+  );
+  if (cloudEstimateRead.error) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: asText(cloudEstimateRead.error?.message) || "Unable to read the preserved cloud estimates.",
+      preservedEstimateLegacyIds,
+    });
+  }
+
+  const cloudEstimateRows = Array.isArray(cloudEstimateRead.rows) ? cloudEstimateRead.rows : [];
+  const matchedCloudEstimateLegacyIds = normalizeLegacyIds(
+    cloudEstimateRows.map((row) => asText(row?.legacy_local_id))
+  );
+  const missingCloudEstimateLegacyIds = preservedEstimateLegacyIds.filter(
+    (legacyId) => !matchedCloudEstimateLegacyIds.includes(legacyId)
+  );
+  if (
+    cloudEstimateRows.length !== 3
+    || matchedCloudEstimateLegacyIds.length !== 3
+    || missingCloudEstimateLegacyIds.length > 0
+  ) {
+    return buildPreservedEstimateCleanupRefusal(
+      "The exact 3 preserved older cloud estimates could not be confirmed for cleanup.",
+      {
+        preservedEstimateLegacyIds,
+        matchedCloudEstimateLegacyIds,
+        missingCloudEstimateLegacyIds,
+      }
+    );
+  }
+
+  const cloudEstimateRowIds = cloudEstimateRows
+    .map((row) => asText(row?.id))
+    .filter(Boolean)
+    .sort();
+  if (cloudEstimateRowIds.length !== 3) {
+    return buildPreservedEstimateCleanupRefusal(
+      "One or more preserved cloud estimate rows are missing stable cloud ids.",
+      {
+        preservedEstimateLegacyIds,
+        cloudEstimateRowIds,
+      }
+    );
+  }
+
+  const cloudInvoiceRead = await readCompanyRowsByColumnIn(
+    client,
+    "invoices",
+    companyId,
+    "source_estimate_legacy_local_id",
+    preservedEstimateLegacyIds,
+    "id, legacy_local_id, source_estimate_legacy_local_id"
+  );
+  if (cloudInvoiceRead.error) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: asText(cloudInvoiceRead.error?.message) || "Unable to inspect cloud invoices linked to those estimates.",
+      preservedEstimateLegacyIds,
+    });
+  }
+
+  const cloudInvoicesReferencingPreservedEstimates = Array.isArray(cloudInvoiceRead.rows)
+    ? cloudInvoiceRead.rows.map((row) => ({
+      id: asText(row?.id),
+      legacyLocalId: asText(row?.legacy_local_id),
+      sourceEstimateLegacyId: asText(row?.source_estimate_legacy_local_id),
+    }))
+    : [];
+  if (cloudInvoicesReferencingPreservedEstimates.length > 0) {
+    return buildPreservedEstimateCleanupRefusal(
+      "One or more cloud invoices still reference those preserved older estimates.",
+      {
+        preservedEstimateLegacyIds,
+        cloudInvoicesReferencingPreservedEstimates,
+      }
+    );
+  }
+
+  const lineItemRead = await readCompanyRowsByColumnIn(
+    client,
+    "estimate_line_items",
+    companyId,
+    "estimate_id",
+    cloudEstimateRowIds,
+    "id, estimate_id"
+  );
+  if (lineItemRead.error) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: asText(lineItemRead.error?.message) || "Unable to inspect estimate line items for those older estimates.",
+      preservedEstimateLegacyIds,
+      cloudEstimateRowIds,
+    });
+  }
+
+  const estimateLineItemRows = Array.isArray(lineItemRead.rows) ? lineItemRead.rows : [];
+  const deleteLineItems = await deleteCompanyRowsByColumnIn(
+    client,
+    "estimate_line_items",
+    companyId,
+    "estimate_id",
+    cloudEstimateRowIds
+  );
+  if (deleteLineItems.error) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: asText(deleteLineItems.error?.message) || "Unable to delete the preserved estimate line items.",
+      preservedEstimateLegacyIds,
+      cloudEstimateRowIds,
+    });
+  }
+
+  const deleteEstimates = await deleteCompanyRowsByColumnIn(
+    client,
+    "estimates",
+    companyId,
+    "id",
+    cloudEstimateRowIds
+  );
+  if (deleteEstimates.error) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: asText(deleteEstimates.error?.message) || "Unable to delete the preserved cloud estimates.",
+      preservedEstimateLegacyIds,
+      cloudEstimateRowIds,
+      deletedEstimateLineItemCount: estimateLineItemRows.length,
+    });
+  }
+
+  const verification = await runSupabaseCloudVerification(context);
+  if (!verification?.ok || !verification?.allMatched) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: "We could not safely remove those older estimates automatically.",
+      technicalDetail: "Cloud verification did not pass after removing the preserved older estimates.",
+      verification,
+      preservedEstimateLegacyIds,
+      cloudEstimateRowIds,
+      deletedEstimateCount: cloudEstimateRowIds.length,
+      deletedEstimateLineItemCount: estimateLineItemRows.length,
+    });
+  }
+
+  clearCloudPartialRecoveryStatus(storageSnapshot);
+
+  return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED, {
+    verification,
+    preservedEstimateLegacyIds,
+    cloudEstimateRowIds,
+    deletedEstimateCount: cloudEstimateRowIds.length,
+    deletedEstimateLineItemCount: estimateLineItemRows.length,
+    clearedPartialRecoveryStatus: !readCloudPartialRecoveryStatus(storageSnapshot),
+  });
 }
 
 // Phase A: status check. Runs migration preview and, when the only problem

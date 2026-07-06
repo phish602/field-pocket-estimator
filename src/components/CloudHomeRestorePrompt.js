@@ -25,7 +25,12 @@ import {
   CLOUD_RESTORE_STATUS,
   CLOUD_BACKUP_EXPORT_STATUS,
 } from "../lib/supabaseCloudRestore";
-import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
+import {
+  runSupabaseCloudOnboardingBackup,
+  removePreservedOlderCloudEstimates,
+  CLOUD_ONBOARDING_STATUS,
+  PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS,
+} from "../lib/supabaseCloudOnboarding";
 import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
 import {
   previewSafeCloudRecovery,
@@ -159,6 +164,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [backingUp, setBackingUp] = useState(false);
   const [backupResult, setBackupResult] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
+  const [confirmCheckboxChecked, setConfirmCheckboxChecked] = useState(false);
   const [downloadMessage, setDownloadMessage] = useState("");
   const [downloadingCloudBackup, setDownloadingCloudBackup] = useState(false);
   const [recheckState, setRecheckState] = useState("idle");
@@ -168,6 +174,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [safeRecoveryResult, setSafeRecoveryResult] = useState(null);
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
+  const [removingOlderEstimates, setRemovingOlderEstimates] = useState(false);
+  const [olderEstimateCleanupResult, setOlderEstimateCleanupResult] = useState(null);
   const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(() => readCloudPartialRecoveryStatus(localStorage));
   const confirmActionRunningRef = useRef(false);
   // Gate 13O-2L recovery-assistant pipeline:
@@ -241,7 +249,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // State C vs D: the payload repair can only run where the original local
   // estimates still exist. On a truly empty device it cannot.
   const repairAvailable = missingPayloadsBlocked && countLocalEstimates() > 0;
-  const busy = restoring || checking || safeRecovering || repairing;
+  const busy = restoring || checking || safeRecovering || repairing || removingOlderEstimates;
   const currentVerification = backupResult?.verification || onboardingStatus?.verification || null;
   const automaticSafeRepair = onboardingStatus?.automaticSafeRepair || null;
   const skippedEstimatesCount = Number(
@@ -470,6 +478,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // repair writes restore metadata to cloud estimate rows (never totals) and
   // never changes local data, but it is still a cloud write, so it confirms.
   const requestRepairConfirmation = () => {
+    setConfirmCheckboxChecked(false);
     setConfirmDialog({
       kind: "repair",
       title: "Repair missing estimate details?",
@@ -482,8 +491,26 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     });
   };
 
+  const requestOlderEstimateCleanupConfirmation = () => {
+    setConfirmCheckboxChecked(false);
+    setOlderEstimateCleanupResult(null);
+    setConfirmDialog({
+      kind: "remove_older_estimates",
+      title: `Remove ${skippedEstimatesCount} older estimates from cloud backup?`,
+      lines: [
+        `These ${skippedEstimatesCount} older estimates were kept safe during recovery, but they cannot be fully rebuilt on this device.`,
+        "Removing them gives this account a clean cloud backup from the data on this device.",
+        "This will not delete customers, projects, invoices, payments, or the estimates already restored on this device.",
+      ],
+      requireCheckbox: true,
+      checkboxLabel: `I understand these ${skippedEstimatesCount} older estimates will be removed from cloud backup.`,
+      confirmLabel: `Remove ${skippedEstimatesCount} Older Estimates`,
+    });
+  };
+
   const confirmRepair = async () => {
     setConfirmDialog(null);
+    setConfirmCheckboxChecked(false);
     setRepairing(true);
     setRepairResult(null);
     try {
@@ -507,6 +534,36 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       });
     } finally {
       setRepairing(false);
+    }
+  };
+
+  const confirmOlderEstimateCleanup = async () => {
+    setConfirmDialog(null);
+    setConfirmCheckboxChecked(false);
+    setRemovingOlderEstimates(true);
+    setOlderEstimateCleanupResult(null);
+    try {
+      const result = await removePreservedOlderCloudEstimates({
+        storageSnapshot: localStorage,
+        configured: isSupabaseReady,
+        user,
+        company,
+        role,
+      });
+      setOlderEstimateCleanupResult(result);
+      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
+      refreshCloudStatus();
+      if (result?.status === PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.COMPLETED) {
+        dismiss();
+      }
+    } catch (error) {
+      setOlderEstimateCleanupResult({
+        status: PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR,
+        error: "We could not safely remove those older estimates automatically.",
+        technicalDetail: String(error?.message || ""),
+      });
+    } finally {
+      setRemovingOlderEstimates(false);
     }
   };
 
@@ -579,6 +636,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         await confirmRepair();
         return;
       }
+      if (kind === "remove_older_estimates") {
+        await confirmOlderEstimateCleanup();
+        return;
+      }
       await confirmRestore();
     } finally {
       confirmActionRunningRef.current = false;
@@ -587,6 +648,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const handleDialogCancel = () => {
     setConfirmDialog(null);
+    setConfirmCheckboxChecked(false);
     setSafeRecoveryPreview(null);
   };
 
@@ -664,7 +726,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     || continuationResult?.pausedReasonCode
     || repairResult?.error
     || safeRecoveryResult?.error
+    || olderEstimateCleanupResult?.technicalDetail
+    || olderEstimateCleanupResult?.error
   );
+  const olderEstimateCleanupFailed = olderEstimateCleanupResult?.status === PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.REFUSED
+    || olderEstimateCleanupResult?.status === PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR;
 
   let primaryAction = {
     id: "dismiss",
@@ -718,6 +784,19 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   };
 
   addAction(primaryAction, "pe-btn");
+
+  if (showRecoveryFinishedState && skippedEstimatesCount > 0) {
+    addAction({
+      id: olderEstimateCleanupFailed ? "retry_remove_older_estimates" : "remove_older_estimates",
+      label: removingOlderEstimates
+        ? "Removing..."
+        : olderEstimateCleanupFailed
+          ? "Try Again"
+          : "Remove Older Estimates",
+      onClick: requestOlderEstimateCleanupConfirmation,
+      disabled: busy || removingOlderEstimates,
+    }, "pe-btn pe-btn-ghost");
+  }
 
   const showRetryAction = !showRecoveryFinishedState && (
     automaticSafeRepairFailed
@@ -841,6 +920,14 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
             : "Estimate details could not be repaired right now."}
         </div>
       ) : null}
+      {olderEstimateCleanupFailed ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {String(
+            olderEstimateCleanupResult?.error
+            || "We could not safely remove those older estimates automatically."
+          )}
+        </div>
+      ) : null}
       {safeRecoveryResult?.status === SAFE_CLOUD_RECOVERY_STATUS.NOTHING_TO_RECOVER ? (
         <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
           No recoverable records were found in cloud backup.
@@ -881,6 +968,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           <div className="pe-field-helper" style={{ marginTop: 6 }}>
             {String(
               continuationResult?.technicalDetail
+              || olderEstimateCleanupResult?.technicalDetail
               || repairResult?.error
               || safeRecoveryResult?.error
               || ""
@@ -890,6 +978,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       ) : null}
       <CloudConfirmDialog
         dialog={confirmDialog}
+        checkboxChecked={confirmCheckboxChecked}
+        onCheckboxChange={setConfirmCheckboxChecked}
         onCancel={handleDialogCancel}
         onConfirm={handleDialogConfirm}
       />
