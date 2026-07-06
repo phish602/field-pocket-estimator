@@ -17,7 +17,7 @@
 // (back up this device) plus a route to Advanced Settings for anyone who
 // still wants the full manual restore/backup review.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import {
   executeSupabaseCloudRestore,
@@ -155,6 +155,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
   const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(() => readCloudPartialRecoveryStatus(localStorage));
+  const confirmActionRunningRef = useRef(false);
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done
   const [recoveryPhase, setRecoveryPhase] = useState("idle");
@@ -396,26 +397,48 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     setConfirmDialog(null);
     const preview = safeRecoveryPreview;
     setSafeRecoveryPreview(null);
+    if (!preview) return;
     setRecoveryPhase("recovering");
-    const result = applySafeCloudRecovery({ preview, storage: localStorage });
-    setSafeRecoveryResult(result);
-    refreshCloudStatus();
-    if (result?.status === SAFE_CLOUD_RECOVERY_STATUS.RECOVERED) {
-      const continuation = await runRecoveryContinuation({
-        configured: isSupabaseReady,
-        user,
-        company,
-        role,
-        storage: localStorage,
-        skippedEstimates: Number(result?.skippedEstimates || 0),
-        skippedEstimateLegacyIds: Array.isArray(result?.skippedEstimateLegacyIds)
-          ? result.skippedEstimateLegacyIds
-          : [],
-        onPhase: (phase) => setRecoveryPhase(phase),
+    try {
+      const result = applySafeCloudRecovery({ preview, storage: localStorage });
+      setSafeRecoveryResult(result);
+      refreshCloudStatus();
+      if (result?.status === SAFE_CLOUD_RECOVERY_STATUS.RECOVERED) {
+        try {
+          const continuation = await runRecoveryContinuation({
+            configured: isSupabaseReady,
+            user,
+            company,
+            role,
+            storage: localStorage,
+            skippedEstimates: Number(result?.skippedEstimates || 0),
+            skippedEstimateLegacyIds: Array.isArray(result?.skippedEstimateLegacyIds)
+              ? result.skippedEstimateLegacyIds
+              : [],
+            onPhase: (phase) => setRecoveryPhase(phase),
+          });
+          setContinuationResult(continuation);
+          setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
+          setRecoveryPhase("done");
+          refreshCloudStatus();
+          return;
+        } catch (error) {
+          setContinuationResult({
+            status: RECOVERY_CONTINUATION_STATUS.ERROR,
+            error: "Recovery could not continue right now.",
+            technicalDetail: String(error?.message || ""),
+          });
+          setRecoveryPhase("idle");
+          return;
+        }
+      }
+      setRecoveryPhase("idle");
+    } catch (error) {
+      setSafeRecoveryResult({
+        status: SAFE_CLOUD_RECOVERY_STATUS.ERROR,
+        error: String(error?.message || "Safe recovery could not finish right now."),
       });
-      setContinuationResult(continuation);
-      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
-      setRecoveryPhase("done");
+      setRecoveryPhase("idle");
       refreshCloudStatus();
       return;
     }
@@ -523,11 +546,23 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     await runRestore();
   };
 
-  const handleDialogConfirm = () => {
+  const handleDialogConfirm = async () => {
+    if (confirmActionRunningRef.current) return;
+    confirmActionRunningRef.current = true;
     const kind = confirmDialog?.kind;
-    if (kind === "safe_recovery") return confirmSafeRecovery();
-    if (kind === "repair") return confirmRepair();
-    return confirmRestore();
+    try {
+      if (kind === "safe_recovery") {
+        await confirmSafeRecovery();
+        return;
+      }
+      if (kind === "repair") {
+        await confirmRepair();
+        return;
+      }
+      await confirmRestore();
+    } finally {
+      confirmActionRunningRef.current = false;
+    }
   };
 
   const handleDialogCancel = () => {

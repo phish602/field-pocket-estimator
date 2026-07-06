@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 
 export default function CloudConfirmDialog({
   dialog = null,
@@ -7,9 +8,9 @@ export default function CloudConfirmDialog({
   onCancel = null,
   onConfirm = null,
 } = {}) {
-  if (!dialog) return null;
+  if (!dialog || typeof document === "undefined") return null;
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -21,11 +22,12 @@ export default function CloudConfirmDialog({
         display: "grid",
         placeItems: "center",
         padding: 20,
-        zIndex: 60,
+        zIndex: 10000,
       }}
     >
       <div
         className="pe-card pe-card-content"
+        onClick={(event) => event.stopPropagation()}
         style={{
           width: "min(100%, 460px)",
           display: "grid",
@@ -73,6 +75,7 @@ export default function CloudConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

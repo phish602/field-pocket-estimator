@@ -210,6 +210,16 @@ async function renderAndSettle(props = {}) {
   return utils;
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   localStorage.clear();
   try { sessionStorage.clear(); } catch {}
@@ -368,6 +378,88 @@ test("Finish Recovery runs safe recovery and continuation, then shows the kept-i
   ].forEach((word) => {
     expect(screen.queryByText(new RegExp(word, "i"))).not.toBeInTheDocument();
   });
+});
+
+test("Finish Recovery confirmation renders through a portal into document.body and Cancel closes it", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+
+  const { container } = await renderAndSettle();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Finish recovery on this device?" })).toBeInTheDocument();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  });
+
+  expect(screen.queryByRole("dialog", { name: "Finish recovery on this device?" })).not.toBeInTheDocument();
+});
+
+test("Finish Recovery cannot double-submit on a rapid double click", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+  const deferred = createDeferred();
+  runRecoveryContinuation.mockReturnValue(deferred.promise);
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+
+  const confirmButton = screen.getAllByRole("button", { name: "Finish Recovery" })[1];
+  await act(async () => {
+    fireEvent.click(confirmButton);
+    fireEvent.click(confirmButton);
+  });
+
+  expect(applySafeCloudRecovery).toHaveBeenCalledTimes(1);
+  expect(runRecoveryContinuation).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    deferred.resolve({
+      status: RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED,
+      backupRan: true,
+      repairChanged: true,
+      repairs: {},
+      skippedEstimates: 3,
+      olderEstimatesKeptInCloud: true,
+      recoveryStatus: {
+        recoveryMode: "partial_cloud_recovery",
+        status: "finished_with_older_estimates_kept",
+        skippedEstimateCount: 3,
+        skippedEstimateIds: ["est_2", "est_3", "est_4"],
+        skippedReason: "missing_full_estimate_details",
+        recoveredAt: "2026-07-06T01:00:00.000Z",
+        olderEstimatesKeptInCloud: true,
+      },
+    });
+    await deferred.promise;
+  });
+});
+
+test("rejected recovery continuation shows a clear error and does not leave the modal stuck", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+  runRecoveryContinuation.mockRejectedValue(new Error("network timeout"));
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
+  });
+
+  await waitFor(() => {
+    expect(screen.getByRole("alert")).toHaveTextContent("Recovery could not continue right now.");
+  });
+  expect(screen.queryByRole("dialog", { name: "Finish recovery on this device?" })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("Technical details"));
+  expect(screen.getByText("network timeout")).toBeInTheDocument();
 });
 
 test("full safe recovery with no skipped estimates still shows the normal backed-up success state", async () => {
