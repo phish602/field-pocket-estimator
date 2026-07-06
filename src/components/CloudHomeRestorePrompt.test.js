@@ -57,10 +57,65 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
   getLastCloudRestoreCompleteAt: jest.fn(() => 0),
 }));
 
+jest.mock("../lib/cloudSafeRecovery", () => ({
+  __esModule: true,
+  previewSafeCloudRecovery: jest.fn(),
+  applySafeCloudRecovery: jest.fn(),
+  SAFE_CLOUD_RECOVERY_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NOTHING_TO_RECOVER: "nothing_to_recover",
+    PREVIEWED: "previewed",
+    RECOVERED: "recovered",
+    ERROR: "error",
+  },
+}));
+
+jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
+  __esModule: true,
+  updateEstimateRestorePayloads: jest.fn(),
+  ESTIMATE_PAYLOAD_UPDATE_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NO_LOCAL_ESTIMATES: "no_local_estimates",
+    COMPLETED: "completed",
+    ERROR: "error",
+  },
+}));
+
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
 const { executeSupabaseCloudRestore, previewSupabaseCloudRestore, exportSupabaseCloudBackupArtifact, CLOUD_RESTORE_STATUS, CLOUD_BACKUP_EXPORT_STATUS } = require("../lib/supabaseCloudRestore");
+const { previewSafeCloudRecovery, applySafeCloudRecovery, SAFE_CLOUD_RECOVERY_STATUS } = require("../lib/cloudSafeRecovery");
+const { updateEstimateRestorePayloads, ESTIMATE_PAYLOAD_UPDATE_STATUS } = require("../lib/supabaseEstimateRestorePayload");
+
+function blockedMissingPayloadPreview(missingCount = 3) {
+  return {
+    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+    eligible: true,
+    partial: true,
+    blockers: [{
+      code: "estimates_not_reconstructable",
+      message: "Estimates cannot be safely restored yet.",
+      details: { missingRestorePayloadCount: missingCount },
+    }],
+    notices: [],
+  };
+}
+
+function safeRecoveryPreviewFixture(overrides = {}) {
+  return {
+    status: SAFE_CLOUD_RECOVERY_STATUS.PREVIEWED,
+    error: "",
+    counts: { customers: 4, projects: 2, estimates: 1, invoices: 2, invoicePayments: 1 },
+    skippedEstimates: 3,
+    warnings: [],
+    plan: { ok: true },
+    settings: null,
+    ...overrides,
+  };
+}
 
 function buildCloudExportArtifact(overrides = {}) {
   return {
@@ -133,6 +188,18 @@ beforeEach(() => {
     artifact: buildCloudExportArtifact(),
     error: "",
   });
+  previewSafeCloudRecovery.mockReset();
+  previewSafeCloudRecovery.mockResolvedValue(safeRecoveryPreviewFixture());
+  applySafeCloudRecovery.mockReset();
+  applySafeCloudRecovery.mockReturnValue({
+    status: SAFE_CLOUD_RECOVERY_STATUS.RECOVERED,
+    error: "",
+    recoveredCounts: { customers: 4, projects: 2, estimates: 1, invoices: 2, invoicePayments: 1 },
+    skippedEstimates: 3,
+    writeCount: 4,
+    settingsWritten: false,
+  });
+  updateEstimateRestorePayloads.mockReset();
 });
 
 test("does not show a restore prompt when no cloud backup exists (already matches)", async () => {
@@ -197,50 +264,149 @@ test("empty-device restore failure shows a readable error and stays on Home", as
   expect(screen.getByText("Something went wrong.")).toBeInTheDocument();
 });
 
-test("empty-device restore stays blocked when preview says cloud data cannot be safely restored", async () => {
+test("blocked empty-device recovery is Home-first: safe recovery primary, no Settings routing", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
-  previewSupabaseCloudRestore.mockResolvedValue({
-    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
-    eligible: true,
-    partial: true,
-    blockers: [{
-      code: "estimates_not_reconstructable",
-      message: "Estimates cannot be safely restored yet.",
-      details: { missingRestorePayloadCount: 2 },
-    }],
-    notices: [],
-  });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(2));
 
   await renderAndSettle();
 
   expect(screen.getByText("Estimates cannot be safely restored yet. 2 cloud estimates are missing restore payload data needed for a faithful restore.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Update Payloads in Settings" })).toBeInTheDocument();
+  // Gate 13O-2K: one primary recovery action, owned by Home.
+  expect(screen.getByRole("button", { name: "Recover What Can Be Safely Recovered" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Restore This Device" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Update Payloads in Settings" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Manage Restore in Settings" })).not.toBeInTheDocument();
+  // State D copy: this empty device cannot run the payload repair itself.
+  expect(screen.getByText(/This device cannot rebuild missing estimate restore data because the original local estimates are not on this device/)).toBeInTheDocument();
+  // Secondary actions stay available without becoming the main path.
   expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Download Cloud Backup JSON" })).toBeInTheDocument();
+  expect(screen.getByText(/downloads an emergency cloud backup file\. It does not automatically restore this device\./)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
   // Gate 13O-2J: the cloud recovery prompt must never offer a generic or
   // device-sourced backup download -- an empty device would export an empty
   // "backup" that imports as 0 records.
   expect(screen.queryByRole("button", { name: "Download Backup JSON" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Download This Device Backup JSON" })).not.toBeInTheDocument();
-  expect(screen.getByText(/can only run on the original device that still has the local estimate data/i)).toBeInTheDocument();
   expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+});
+
+test("Recover What Can Be Safely Recovered previews counts, confirms before writing, and reports the result", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recover What Can Be Safely Recovered" }));
+  });
+
+  // Preview only -- nothing written until the user confirms.
+  expect(previewSafeCloudRecovery).toHaveBeenCalledWith({
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "BVW Contracting Solutions" },
+  });
+  expect(applySafeCloudRecovery).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog", { name: "Recover safe cloud records to this device?" })).toBeInTheDocument();
+  expect(screen.getByText(/cannot safely rebuild editable estimates without risking wrong totals/)).toBeInTheDocument();
+  expect(screen.getByText("This will write 4 customers, 2 projects, 1 estimates, and 2 invoices to this device.")).toBeInTheDocument();
+  expect(screen.getByText(/3 estimates missing restore payload will be skipped, not guessed\./)).toBeInTheDocument();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recover Safe Records" }));
+  });
+
+  expect(applySafeCloudRecovery).toHaveBeenCalledWith(expect.objectContaining({
+    preview: expect.objectContaining({ status: SAFE_CLOUD_RECOVERY_STATUS.PREVIEWED }),
+    storage: localStorage,
+  }));
+  expect(screen.getByText(/Recovered 4 customers, 2 projects, 1 estimates, 2 invoices\. Skipped 3 estimates missing restore payload\./)).toBeInTheDocument();
+  expect(screen.getByText(/use a device that still has the original estimates to repair estimate restore data/)).toBeInTheDocument();
+});
+
+test("cancelling the safe recovery confirmation writes nothing", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recover What Can Be Safely Recovered" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  });
+
+  expect(applySafeCloudRecovery).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("safe recovery surfaces the cloud read failure instead of silently recovering nothing", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+  previewSafeCloudRecovery.mockResolvedValue({
+    status: SAFE_CLOUD_RECOVERY_STATUS.ERROR,
+    error: "Unable to read customers from Supabase. Cloud backup JSON was not created.",
+    counts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 },
+    skippedEstimates: 0,
+    plan: null,
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recover What Can Be Safely Recovered" }));
+  });
+
+  expect(screen.getByText("Unable to read customers from Supabase. Cloud backup JSON was not created.")).toBeInTheDocument();
+  expect(applySafeCloudRecovery).not.toHaveBeenCalled();
+});
+
+test("Repair Cloud Restore Data is the primary action when this device still has the original estimates", async () => {
+  localStorage.setItem("estipaid-estimates-v1", JSON.stringify([{ id: "est_1" }, { id: "est_2" }]));
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(2));
+  updateEstimateRestorePayloads.mockResolvedValue({
+    status: ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED,
+    estimatesChecked: 2,
+    estimatesUpdated: 2,
+    noLocalDataChanged: true,
+  });
+
+  await renderAndSettle();
+
+  expect(screen.getByRole("button", { name: "Repair Cloud Restore Data" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Recover What Can Be Safely Recovered" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Update Payloads in Settings" })).not.toBeInTheDocument();
+  expect(screen.getByText(/This device still has the original estimates, so it can repair the missing cloud restore data directly from here\./)).toBeInTheDocument();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Repair Cloud Restore Data" }));
+  });
+
+  // Cloud-writing repair confirms first.
+  expect(screen.getByRole("dialog", { name: "Repair cloud restore data?" })).toBeInTheDocument();
+  expect(updateEstimateRestorePayloads).not.toHaveBeenCalled();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Repair Restore Data" }));
+  });
+
+  expect(updateEstimateRestorePayloads).toHaveBeenCalledWith(expect.objectContaining({
+    storageSnapshot: localStorage,
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "BVW Contracting Solutions" },
+  }));
+  expect(screen.getByText(/Repair complete\. Restore data captured for 2 estimates\. Rechecking cloud status\.\.\./)).toBeInTheDocument();
+  // Automatic recheck after repair -- no Settings round trip.
+  await waitFor(() => {
+    expect(previewSupabaseCloudRestore.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 test("Recheck Cloud Status refreshes the restore preview and can enable restore", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
   previewSupabaseCloudRestore
-    .mockResolvedValueOnce({
-      status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
-      eligible: true,
-      partial: true,
-      blockers: [{
-        code: "estimates_not_reconstructable",
-        message: "Estimates cannot be safely restored yet.",
-        details: { missingRestorePayloadCount: 1 },
-      }],
-      notices: [],
-    })
+    .mockResolvedValueOnce(blockedMissingPayloadPreview(1))
     .mockResolvedValueOnce({
       status: CLOUD_RESTORE_STATUS.ELIGIBLE,
       eligible: true,
@@ -250,7 +416,8 @@ test("Recheck Cloud Status refreshes the restore preview and can enable restore"
     });
 
   await renderAndSettle();
-  expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Restore This Device" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Recover What Can Be Safely Recovered" })).toBeInTheDocument();
 
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
@@ -262,7 +429,21 @@ test("Recheck Cloud Status refreshes the restore preview and can enable restore"
   await waitFor(() => {
     expect(screen.getByRole("button", { name: "Restore This Device" })).toBeEnabled();
   });
-  expect(screen.getByText("Recheck complete. Restore is now available on this device.")).toBeInTheDocument();
+  expect(screen.getByText("Recheck complete. Restore is now available.")).toBeInTheDocument();
+});
+
+test("recheck that stays blocked reports the missing restore metadata count inline", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
+  });
+
+  await waitFor(() => {
+    expect(screen.getByText("Recheck complete. 3 estimates are still missing restore metadata.")).toBeInTheDocument();
+  });
 });
 
 test("Download Cloud Backup JSON downloads the cloud artifact with record counts from the blocked empty-device prompt", async () => {

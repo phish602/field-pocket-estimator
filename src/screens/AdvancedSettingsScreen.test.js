@@ -2599,6 +2599,18 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(localStorage.getItem(STORAGE_KEYS.SETTINGS)).toBe(beforeSettings);
   });
 
+  // Gate 13O-2K: the screen used to render "Settings" twice -- once in the
+  // header h1 and again as an inline section title.
+  test("renders exactly one Settings page title", () => {
+    const { container } = render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    const titleNodes = [...container.querySelectorAll(".pe-title")]
+      .filter((node) => node.textContent.trim() === "Settings");
+    expect(titleNodes).toHaveLength(1);
+    expect(screen.getByText(/Configure business defaults, document behavior, internal visibility, and local tools/)).toBeInTheDocument();
+  });
+
   test("shows clarified real settings and hides misleading pricing controls", () => {
     render(<AdvancedSettingsScreen />);
 

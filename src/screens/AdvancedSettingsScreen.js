@@ -1341,8 +1341,9 @@ export default function AdvancedSettingsScreen({
         </div>
 
         <div className="pe-company-form-inner ep-section-gap-sm" style={{ gap: 12, paddingBottom: 8 }}>
+          {/* Gate 13O-2K: the header h1 above is the page title -- do not
+              repeat "Settings" here. */}
           <div style={{ display: "grid", gap: 6 }}>
-            <div className="pe-title screenTitle" style={{ margin: 0 }}>Settings</div>
             <div className="pe-muted" style={{ maxWidth: 760 }}>
               Configure business defaults, document behavior, internal visibility, and local tools.
             </div>
