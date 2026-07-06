@@ -132,7 +132,6 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     isSupabaseReady,
     checking,
     restoreAvailable,
-    restoreBlockedReason,
     missingEstimatePayloadCount,
     partialLocalSnapshot,
     localFirstBlocker,
@@ -788,7 +787,6 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
               continuationResult?.technicalDetail
               || repairResult?.error
               || safeRecoveryResult?.error
-              || restoreBlockedReason
               || ""
             )}
           </div>

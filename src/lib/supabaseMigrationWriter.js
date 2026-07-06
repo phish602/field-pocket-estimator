@@ -639,9 +639,22 @@ const CLOUD_ONLY_CHILD_TABLES = {
   estimates: { table: "estimate_line_items", parentColumn: "estimate_id" },
 };
 
-async function collectExistingCloudResumeIssues(client, companyId, draft, { allowCloudOnlyReplacement = false } = {}) {
+async function collectExistingCloudResumeIssues(
+  client,
+  companyId,
+  draft,
+  {
+    allowCloudOnlyReplacement = false,
+    preservedSkippedEstimateLegacyIds = null,
+  } = {}
+) {
   const notices = [];
   const replacements = [];
+  const preservedCloudOnlyRows = [];
+  const preservedSkippedEstimateIds = (Array.isArray(preservedSkippedEstimateLegacyIds) ? preservedSkippedEstimateLegacyIds : [])
+    .map((legacyId) => asText(legacyId))
+    .filter(Boolean);
+  const preservedSkippedEstimateIdSet = new Set(preservedSkippedEstimateIds);
 
   for (const [table, draftKey, label] of SAFE_RESUME_TABLES) {
     const existingRows = await readExistingRows(client, table, companyId);
@@ -657,8 +670,23 @@ async function collectExistingCloudResumeIssues(client, companyId, draft, { allo
 
     const localIds = buildLegacyIdSet(draft?.[draftKey]);
     const cloudIds = buildLegacyIdSet(existingRows);
-    const cloudOnlyIds = [...cloudIds].filter((legacyId) => !localIds.has(legacyId)).sort();
+    const allCloudOnlyIds = [...cloudIds].filter((legacyId) => !localIds.has(legacyId)).sort();
+    if (allCloudOnlyIds.length === 0) continue;
 
+    const preservedEstimateIds = table === "estimates"
+      ? allCloudOnlyIds.filter((legacyId) => preservedSkippedEstimateIdSet.has(legacyId))
+      : [];
+    const cloudOnlyIds = table === "estimates"
+      ? allCloudOnlyIds.filter((legacyId) => !preservedSkippedEstimateIdSet.has(legacyId))
+      : allCloudOnlyIds;
+
+    if (preservedEstimateIds.length > 0) {
+      const preservedEstimateIdSet = new Set(preservedEstimateIds);
+      preservedCloudOnlyRows.push({
+        table,
+        legacyIds: preservedSkippedEstimateIds.filter((legacyId) => preservedEstimateIdSet.has(legacyId)),
+      });
+    }
     if (cloudOnlyIds.length === 0) continue;
 
     if (allowCloudOnlyReplacement && CLOUD_ONLY_REPLACEABLE_TABLES.has(table)) {
@@ -679,7 +707,7 @@ async function collectExistingCloudResumeIssues(client, companyId, draft, { allo
     ));
   }
 
-  return { notices, replacements };
+  return { notices, replacements, preservedCloudOnlyRows };
 }
 
 async function deleteCloudOnlyRows(client, table, companyId, cloudRowIds) {
@@ -802,6 +830,7 @@ export async function runSupabaseMigrationWrite({
   backupDownloadAvailable = false,
   preview = null,
   allowCloudOnlyReplacement = false,
+  preservedSkippedEstimateLegacyIds = null,
 } = {}) {
   const notices = [];
   const tableResults = [
@@ -937,6 +966,7 @@ export async function runSupabaseMigrationWrite({
   let customerIdByLegacyId = new Map();
   let shouldWriteCustomers = true;
   let cloudOnlyRowsReplaced = [];
+  let preservedSkippedCloudRows = [];
 
   if (isCustomersOnlyPartialState(localCounts, cloudCounts)) {
     const existingCustomers = await readExistingCustomers(client, companyId);
@@ -983,7 +1013,10 @@ export async function runSupabaseMigrationWrite({
   } else {
     const occupiedTables = Object.entries(cloudCounts).filter(([, count]) => Number(count) > 0);
     if (occupiedTables.length > 0) {
-      const resumeIssues = await collectExistingCloudResumeIssues(client, companyId, draft, { allowCloudOnlyReplacement });
+      const resumeIssues = await collectExistingCloudResumeIssues(client, companyId, draft, {
+        allowCloudOnlyReplacement,
+        preservedSkippedEstimateLegacyIds,
+      });
       if (resumeIssues.notices.length > 0) {
         return {
           ok: false,
@@ -995,6 +1028,8 @@ export async function runSupabaseMigrationWrite({
           noLocalDeletes: true,
         };
       }
+
+      preservedSkippedCloudRows = resumeIssues.preservedCloudOnlyRows;
 
       if (resumeIssues.replacements.length > 0) {
         for (const replacement of resumeIssues.replacements) {
@@ -1216,6 +1251,7 @@ export async function runSupabaseMigrationWrite({
     integrity,
     repairSummary: repairedLocalData.repairs,
     replacedCloudOnlyRows: cloudOnlyRowsReplaced,
+    preservedSkippedCloudRows,
     notices: [
       buildNotice("info", "prevalidation_complete", "Prevalidation completed before any migration writes started."),
       ...notices,

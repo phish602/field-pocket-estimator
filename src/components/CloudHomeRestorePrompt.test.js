@@ -463,6 +463,35 @@ test("real backup failure after recovery still shows Try Again", async () => {
   expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
 });
 
+test("technical details after recovery do not fall back to the restore blocked reason", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(1));
+  runRecoveryContinuation.mockResolvedValue({
+    status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+    backupRan: true,
+    repairChanged: false,
+    repairs: null,
+    skippedEstimates: 0,
+    pausedReason: "Backup could not finish yet. Your recovered data is saved on this device.",
+    pausedReasonCode: "needs_attention",
+    technicalDetail: "Cloud verification still needs attention.",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
+  });
+
+  await waitFor(() => {
+    expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByText("Technical details"));
+  expect(screen.getByText("Cloud verification still needs attention.")).toBeInTheDocument();
+  expect(screen.queryByText("Restore is not available on this device yet.")).not.toBeInTheDocument();
+});
+
 test("repairable missing estimate details can be repaired from Home", async () => {
   localStorage.setItem("estipaid-estimates-v1", JSON.stringify([{ id: "est_1" }, { id: "est_2" }]));
   previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(2));

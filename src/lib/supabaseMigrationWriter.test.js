@@ -288,6 +288,117 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
   });
 
+  test("recovery-merge backup preserves known skipped cloud-only estimates without deleting them", async () => {
+    const localEstimates = Array.from({ length: 8 }, (_, index) => ({
+      id: `est_${index + 1}`,
+      projectId: "proj_1",
+      customerId: "cust_1",
+      estimateNumber: `EST-${index + 1}`,
+      total: 100 + index,
+      labor: { lines: [{ id: `est_line_${index + 1}`, description: "Labor", quantity: 1, rate: 100 + index }] },
+    }));
+    const skippedIds = ["est_9", "est_10", "est_11"];
+    const mockClient = createMockClient({
+      counts: {
+        customers: 1,
+        projects: 1,
+        estimates: 11,
+        estimateLineItems: 11,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+      },
+      existingEstimateRows: [
+        ...localEstimates.map((estimate, index) => ({ id: `db_est_${index + 1}`, legacy_local_id: estimate.id })),
+        ...skippedIds.map((legacyId, index) => ({ id: `db_skipped_${index + 1}`, legacy_local_id: legacyId })),
+      ],
+      existingEstimateLineItemRows: [
+        ...localEstimates.map((estimate, index) => ({ id: `db_est_line_${index + 1}`, legacy_local_id: `estimate:${estimate.id}:line:0` })),
+        ...skippedIds.map((legacyId, index) => ({ id: `db_skipped_line_${index + 1}`, legacy_local_id: `estimate:${legacyId}:line:0` })),
+      ],
+      existingInvoiceRows: [],
+      existingInvoiceLineItemRows: [],
+      existingPaymentRows: [],
+      estimateRows: localEstimates.map((estimate, index) => ({ id: `db_est_${index + 1}`, legacy_local_id: estimate.id })),
+      estimateLineItemRows: localEstimates.map((estimate, index) => ({ id: `db_est_line_${index + 1}`, legacy_local_id: `estimate:${estimate.id}:line:0` })),
+      invoiceRows: [],
+      invoiceLineItemRows: [],
+      paymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const preview = buildPreview({
+      localCounts: {
+        customers: 1,
+        projects: 1,
+        estimates: 8,
+        estimateLineItems: 8,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+      },
+      cloudCounts: {
+        customers: 1,
+        projects: 1,
+        estimates: 11,
+        estimateLineItems: 11,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+      },
+    });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ estimates: localEstimates, invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview,
+      preservedSkippedEstimateLegacyIds: skippedIds,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(result.preservedSkippedCloudRows).toEqual([
+      { table: "estimates", legacyIds: skippedIds },
+    ]);
+    expect(mockClient.deleteChains.estimates.delete).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.estimates.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining(localEstimates.map((estimate) => expect.objectContaining({ legacy_local_id: estimate.id }))),
+      expect.any(Object),
+    );
+  });
+
+  test("recovery-merge backup still blocks unknown cloud-only estimate rows", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 2, invoices: 0, invoicePayments: 0 },
+      existingEstimateRows: [
+        { id: "db_est_1", legacy_local_id: "est_1" },
+        { id: "db_est_2", legacy_local_id: "unknown_cloud_only_est" },
+      ],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+      preservedSkippedEstimateLegacyIds: ["est_9", "est_10", "est_11"],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/not present on this device/i);
+  });
+
   test("explicit replace-cloud option removes cloud-only estimate rows and completes the backup", async () => {
     const mockClient = createMockClient({
       counts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 },

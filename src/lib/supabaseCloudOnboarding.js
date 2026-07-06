@@ -197,7 +197,12 @@ export async function runSupabaseCloudOnboardingBackup({
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
     }
 
-    const writeResult = await runSupabaseMigrationWrite({ ...context, preview, allowCloudOnlyReplacement });
+    const writeResult = await runSupabaseMigrationWrite({
+      ...context,
+      preview,
+      allowCloudOnlyReplacement,
+      preservedSkippedEstimateLegacyIds,
+    });
 
     if (!writeResult?.ok) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult });
