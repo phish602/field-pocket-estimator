@@ -33,6 +33,10 @@ import {
   CLOUD_ONBOARDING_STATUS,
 } from "./supabaseCloudOnboarding";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
+import {
+  clearCloudPartialRecoveryStatus,
+  writeCloudPartialRecoveryStatus,
+} from "./cloudPartialRecoveryStatus";
 
 export const SAFE_CLOUD_RECOVERY_STATUS = {
   SIGNED_OUT: "signed_out",
@@ -45,6 +49,15 @@ export const SAFE_CLOUD_RECOVERY_STATUS = {
 
 function emptyCounts() {
   return { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 };
+}
+
+function extractSkippedEstimateLegacyIds(artifact) {
+  const notices = Array.isArray(artifact?.notices) ? artifact.notices : [];
+  const skippedNotice = notices.find((notice) => String(notice?.code || "").trim() === "estimates_missing_restore_payload_excluded");
+  const missingLegacyIds = Array.isArray(skippedNotice?.details?.missingLegacyIds)
+    ? skippedNotice.details.missingLegacyIds
+    : [];
+  return [...new Set(missingLegacyIds.map((value) => String(value || "").trim()).filter(Boolean))].sort();
 }
 
 /**
@@ -100,6 +113,7 @@ export async function previewSafeCloudRecovery({ configured = false, user = null
     error: "",
     counts: plan.counts,
     skippedEstimates,
+    skippedEstimateLegacyIds: extractSkippedEstimateLegacyIds(artifact),
     warnings: plan.warnings,
     plan,
     settings: plan.settings,
@@ -152,6 +166,9 @@ export function applySafeCloudRecovery({ preview, storage } = {}) {
     error: "",
     recoveredCounts: applied.importedCounts,
     skippedEstimates: preview.skippedEstimates,
+    skippedEstimateLegacyIds: Array.isArray(preview?.skippedEstimateLegacyIds)
+      ? preview.skippedEstimateLegacyIds
+      : [],
     writeCount: applied.writeCount,
     settingsWritten,
   };
@@ -244,6 +261,7 @@ export async function runRecoveryContinuation({
   role = "",
   storage = null,
   skippedEstimates = 0,
+  skippedEstimateLegacyIds = [],
   onPhase = null,
 } = {}) {
   const notifyPhase = (phase) => {
@@ -303,6 +321,7 @@ export async function runRecoveryContinuation({
       user,
       company,
       role,
+      preservedSkippedEstimateLegacyIds: skippedEstimateLegacyIds,
     });
   } catch (error) {
     return {
@@ -317,6 +336,13 @@ export async function runRecoveryContinuation({
   }
 
   if (backup?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
+    const recoveryStatus = Number(skippedEstimates) > 0
+      ? writeCloudPartialRecoveryStatus(storage, {
+        skippedEstimateCount: skippedEstimates,
+        skippedEstimateIds: skippedEstimateLegacyIds,
+      })
+      : null;
+    if (Number(skippedEstimates) <= 0) clearCloudPartialRecoveryStatus(storage);
     return {
       status: Number(skippedEstimates) > 0
         ? RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED
@@ -325,6 +351,8 @@ export async function runRecoveryContinuation({
       repairChanged,
       repairs,
       skippedEstimates,
+      olderEstimatesKeptInCloud: Boolean(recoveryStatus),
+      recoveryStatus,
     };
   }
 
@@ -333,12 +361,18 @@ export async function runRecoveryContinuation({
     // skipped estimates the cloud is intentionally keeping. Local changes
     // are backed up, so the queue is current.
     clearCloudBackupDirty("safe_recovery_backup_success");
+    const recoveryStatus = writeCloudPartialRecoveryStatus(storage, {
+      skippedEstimateCount: skippedEstimates,
+      skippedEstimateIds: skippedEstimateLegacyIds,
+    });
     return {
       status: RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED,
       backupRan: true,
       repairChanged,
       repairs,
       skippedEstimates,
+      olderEstimatesKeptInCloud: Boolean(recoveryStatus),
+      recoveryStatus,
     };
   }
 

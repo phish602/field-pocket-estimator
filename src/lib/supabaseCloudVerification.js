@@ -1,6 +1,7 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 
 export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v1";
 
@@ -61,6 +62,14 @@ function buildLegacyIdSet(rows) {
       .map((row) => asText(row?.legacy_local_id))
       .filter(Boolean)
   );
+}
+
+function normalizeLegacyIds(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => asText(value))
+      .filter(Boolean)
+  )].sort();
 }
 
 function hasValidEstimateRestorePayload(row) {
@@ -139,6 +148,7 @@ export async function runSupabaseCloudVerification({
   configured = false,
   user = null,
   company = null,
+  preservedSkippedEstimateLegacyIds = null,
 } = {}) {
   const notices = [];
   const userId = asText(user?.id);
@@ -181,6 +191,13 @@ export async function runSupabaseCloudVerification({
   const localSnapshot = buildLocalSnapshotFromArtifact(artifact);
   const draft = mapLocalSnapshotToBackendDraft(localSnapshot, { companyId, userId });
   const lineItemCounts = countLineItems(draft);
+  const storedRecoveryStatus = readCloudPartialRecoveryStatus(storageSnapshot);
+  const preservedSkippedIds = normalizeLegacyIds(
+    Array.isArray(preservedSkippedEstimateLegacyIds) && preservedSkippedEstimateLegacyIds.length > 0
+      ? preservedSkippedEstimateLegacyIds
+      : storedRecoveryStatus?.skippedEstimateIds
+  );
+  const preservedSkippedIdSet = new Set(preservedSkippedIds);
 
   const localCounts = {
     customers: draft.customers.length,
@@ -193,6 +210,8 @@ export async function runSupabaseCloudVerification({
   };
 
   const tableResults = [];
+  let preservedSkippedCloudEstimateRowIds = new Set();
+  let preservedOlderEstimatesMatched = false;
 
   for (const [table, key] of ID_COMPARABLE_TABLES) {
     const columns = table === "estimates"
@@ -215,10 +234,27 @@ export async function runSupabaseCloudVerification({
         .filter(Boolean)
         .sort()
       : [];
-    const matched = localCounts[key] === rows.length
+    const preservedOlderEstimateSetMatched = table === "estimates"
+      && preservedSkippedIdSet.size > 0
+      && missing.length === 0
+      && missingRestorePayloadLegacyIds.length === 0
+      && extra.length === preservedSkippedIdSet.size
+      && extra.every((legacyId) => preservedSkippedIdSet.has(legacyId));
+    if (preservedOlderEstimateSetMatched) {
+      preservedOlderEstimatesMatched = true;
+      preservedSkippedCloudEstimateRowIds = new Set(
+        rows
+          .filter((row) => preservedSkippedIdSet.has(asText(row?.legacy_local_id)))
+          .map((row) => asText(row?.id))
+          .filter(Boolean)
+      );
+    }
+    const matched = (
+      localCounts[key] === rows.length
       && missing.length === 0
       && extra.length === 0
-      && missingRestorePayloadLegacyIds.length === 0;
+      && missingRestorePayloadLegacyIds.length === 0
+    ) || preservedOlderEstimateSetMatched;
 
     tableResults.push({
       table,
@@ -229,6 +265,7 @@ export async function runSupabaseCloudVerification({
       extraLegacyIds: extra,
       missingRestorePayloadLegacyIds,
       countOnly: false,
+      preservedExtraLegacyIds: preservedOlderEstimateSetMatched ? extra : [],
     });
 
     if (table === "estimates" && missingRestorePayloadLegacyIds.length > 0) {
@@ -242,14 +279,23 @@ export async function runSupabaseCloudVerification({
   }
 
   for (const [table, key] of COUNT_ONLY_TABLES) {
-    const { rows, error } = await readCloudRows(client, table, companyId);
+    const columns = table === "estimate_line_items"
+      ? "id, legacy_local_id, estimate_id"
+      : "id, legacy_local_id";
+    const { rows, error } = await readCloudRows(client, table, companyId, columns);
     if (error) {
       tableResults.push(buildUnavailableTableResult(table, localCounts[key], error));
       notices.push(buildNotice("error", `${table}_read_failed`, `Unable to read ${table} from Supabase.`));
       continue;
     }
 
-    const matched = localCounts[key] === rows.length;
+    const preservedEstimateLineItemsMatched = table === "estimate_line_items"
+      && preservedOlderEstimatesMatched
+      && preservedSkippedCloudEstimateRowIds.size > 0
+      && Number(rows.length) >= Number(localCounts[key])
+      && (Array.isArray(rows) ? rows : []).filter((row) => preservedSkippedCloudEstimateRowIds.has(asText(row?.estimate_id))).length
+        === Number(rows.length) - Number(localCounts[key]);
+    const matched = localCounts[key] === rows.length || preservedEstimateLineItemsMatched;
     tableResults.push({
       table,
       localCount: localCounts[key],
@@ -258,12 +304,25 @@ export async function runSupabaseCloudVerification({
       missingLegacyIds: [],
       extraLegacyIds: [],
       countOnly: true,
+      preservedExtraLegacyIds: preservedEstimateLineItemsMatched ? preservedSkippedIds : [],
     });
   }
 
   notices.push(...collectRelationshipNotices(tableResults));
 
   const allMatched = tableResults.length > 0 && tableResults.every((result) => result.status === "matched");
+
+  if (preservedOlderEstimatesMatched) {
+    notices.push(buildNotice(
+      "info",
+      "older_estimates_kept_in_cloud",
+      "Older cloud estimates were intentionally kept in cloud because they could not be fully rebuilt on this device.",
+      {
+        skippedEstimateCount: preservedSkippedIds.length,
+        skippedEstimateLegacyIds: preservedSkippedIds,
+      }
+    ));
+  }
 
   if (allMatched) {
     notices.push(buildNotice(

@@ -35,6 +35,7 @@ import {
   SAFE_CLOUD_RECOVERY_STATUS,
   RECOVERY_CONTINUATION_STATUS,
 } from "../lib/cloudSafeRecovery";
+import { readCloudPartialRecoveryStatus } from "../lib/cloudPartialRecoveryStatus";
 import {
   updateEstimateRestorePayloads,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
@@ -113,7 +114,13 @@ function isGenericBackupPauseStatus(code) {
 function buildSkippedEstimateCopy(count) {
   const total = Number(count || 0);
   if (total <= 0) return "";
-  return `Most data was recovered. ${total} ${plural(total, "estimate", "estimates")} could not be fully rebuilt for editing because their full estimate details were not saved in cloud backup. Use the old device to repair ${total === 1 ? "that estimate" : "those estimates"} if needed.`;
+  return `${total} older ${plural(total, "estimate is", "estimates are")} still kept safely in cloud. ${total === 1 ? "It could" : "They could"} not be fully rebuilt on this device.`;
+}
+
+function buildSkippedEstimateRepairNote(count) {
+  const total = Number(count || 0);
+  if (total <= 0) return "";
+  return `Use the old device to repair ${total === 1 ? "that estimate" : "those estimates"} if needed.`;
 }
 
 export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, style } = {}) {
@@ -147,6 +154,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [safeRecoveryResult, setSafeRecoveryResult] = useState(null);
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
+  const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(null);
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done
   const [recoveryPhase, setRecoveryPhase] = useState("idle");
@@ -155,13 +163,13 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // A fresh sign-in / device state change should get a fresh chance to show
   // the prompt rather than staying dismissed forever.
   useEffect(() => {
-    if (recoveryPhase !== "idle" || continuationResult || safeRecoveryResult) return;
+    if (recoveryPhase !== "idle" || continuationResult || safeRecoveryResult || completedRecoveryStatus) return;
     setRestoreResult(null);
     setBackupResult(null);
     setDownloadMessage("");
     setRecheckState("idle");
     setRecheckMessage("");
-  }, [state, recoveryPhase, continuationResult, safeRecoveryResult]);
+  }, [state, recoveryPhase, continuationResult, safeRecoveryResult, completedRecoveryStatus]);
 
   // Gate 13G: "Not now" only hides the large card for the session -- it
   // never removes the header's compact restore chip. Tapping that chip
@@ -196,6 +204,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const keepVisibleForRecoveryFlow = Boolean(
     safeRecoveryResult
     || continuationResult
+    || completedRecoveryStatus
     || recoveryPhase !== "idle"
   );
 
@@ -220,14 +229,24 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const busy = restoring || checking || safeRecovering || repairing;
   const skippedEstimatesCount = Number(
     (
-      continuationResult?.skippedEstimates
+      completedRecoveryStatus?.skippedEstimateCount
+      ?? continuationResult?.recoveryStatus?.skippedEstimateCount
+      ?? continuationResult?.skippedEstimates
       ?? safeRecoveryResult?.skippedEstimates
       ?? missingEstimatePayloadCount
     ) || 0
   );
+  const olderEstimatesKeptInCloud = Boolean(
+    completedRecoveryStatus?.olderEstimatesKeptInCloud
+    || continuationResult?.olderEstimatesKeptInCloud
+    || continuationResult?.recoveryStatus?.olderEstimatesKeptInCloud
+  );
   const continuationPaused = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.PAUSED;
   const continuationSucceeded = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP
     || continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED;
+  const continuationSucceededWithOlderEstimates = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED
+    && skippedEstimatesCount > 0;
+  const showRecoveryFinishedState = Boolean(olderEstimatesKeptInCloud && skippedEstimatesCount > 0);
   const recoveryBusy = recoveryPhase === "recovering" || recoveryPhase === "checking" || recoveryPhase === "repairing";
   const backupBusy = recoveryPhase === "backing_up";
   const localBackupBlocked = !isEmptyDevice && Number(localBlockersCount || 0) > 0;
@@ -248,6 +267,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const backupPausedForJobLinks = isJobLinkIssue(pausedReasonCode);
 
   const dismiss = () => {
+    setContinuationResult(null);
+    setSafeRecoveryResult(null);
+    setCompletedRecoveryStatus(null);
     writeDismissed();
     setDismissed(true);
   };
@@ -368,9 +390,13 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         role,
         storage: localStorage,
         skippedEstimates: Number(result?.skippedEstimates || 0),
+        skippedEstimateLegacyIds: Array.isArray(result?.skippedEstimateLegacyIds)
+          ? result.skippedEstimateLegacyIds
+          : [],
         onPhase: (phase) => setRecoveryPhase(phase),
       });
       setContinuationResult(continuation);
+      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
       setRecoveryPhase("done");
       refreshCloudStatus();
       return;
@@ -436,9 +462,15 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         role,
         storage: localStorage,
         skippedEstimates: skippedEstimatesCount,
+        skippedEstimateLegacyIds: Array.isArray(completedRecoveryStatus?.skippedEstimateIds)
+          ? completedRecoveryStatus.skippedEstimateIds
+          : Array.isArray(continuationResult?.recoveryStatus?.skippedEstimateIds)
+            ? continuationResult.recoveryStatus.skippedEstimateIds
+            : [],
         onPhase: (phase) => setRecoveryPhase(phase),
       });
       setContinuationResult(continuation);
+      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
       setRecoveryPhase("done");
       refreshCloudStatus();
     } catch (error) {
@@ -504,8 +536,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }
   };
 
-  const heading = continuationSucceeded || continuationPaused || recoveryBusy || backupBusy
-    ? "Recovery Assistant"
+  const heading = showRecoveryFinishedState
+    ? "Recovery finished."
+    : continuationSucceeded || continuationPaused || recoveryBusy || backupBusy
+      ? "Recovery Assistant"
     : isEmptyDevice
       ? "Recovery Available"
       : "Backup Available";
@@ -518,6 +552,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     bodyCopy = "Recovering customers, jobs, estimates, and invoices.";
   } else if (backupBusy) {
     bodyCopy = "Recovery finished. Backing up recovered data to cloud.";
+  } else if (showRecoveryFinishedState) {
+    bodyCopy = "Your data is back on this device.";
   } else if (continuationSucceeded) {
     bodyCopy = "Recovery finished. Your data is backed up.";
   } else if (continuationPaused) {
@@ -528,7 +564,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     bodyCopy = "Backup is paused until recovered records are fixed.";
   }
 
-  const secondaryStatus = continuationSucceeded && skippedEstimatesCount > 0
+  const secondaryStatus = showRecoveryFinishedState
+      ? buildSkippedEstimateCopy(skippedEstimatesCount)
+      : continuationSucceeded && skippedEstimatesCount > 0
       ? buildSkippedEstimateCopy(skippedEstimatesCount)
       : missingPayloadsBlocked
         ? buildSkippedEstimateCopy(missingEstimatePayloadCount)
@@ -552,6 +590,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     primaryAction = { id: "recovering", label: "Recovering your data...", onClick: null, disabled: true };
   } else if (backupBusy) {
     primaryAction = { id: "backing_up", label: "Backing up...", onClick: null, disabled: true };
+  } else if (showRecoveryFinishedState) {
+    primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
   } else if (continuationSucceeded) {
     primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
   } else if (continuationPaused && backupPausedForJobLinks) {
@@ -588,7 +628,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   addAction(primaryAction, "pe-btn");
 
-  const showRetryAction = (
+  const showRetryAction = !showRecoveryFinishedState && (
     missingPayloadsBlocked
     || (isEmptyDevice && !restoreAvailable)
     || continuationPaused
@@ -606,7 +646,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }, "pe-btn pe-btn-ghost");
   }
 
-  if (continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) {
+  if (showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) {
     addAction({
       id: "download_emergency_backup_file",
       label: downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File",
@@ -615,7 +655,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }, "pe-btn pe-btn-ghost");
   }
 
-  if (!continuationSucceeded) {
+  if (!continuationSucceeded && !showRecoveryFinishedState) {
     addAction({
       id: "dismiss",
       label: "Not now",
@@ -651,6 +691,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       {secondaryStatus ? (
         <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
           {secondaryStatus}
+        </div>
+      ) : null}
+      {showRecoveryFinishedState ? (
+        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
+          {buildSkippedEstimateRepairNote(skippedEstimatesCount)}
         </div>
       ) : null}
       {missingPayloadsBlocked && repairAvailable && !continuationPaused && !continuationSucceeded ? (
@@ -730,7 +775,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           </button>
         ))}
       </div>
-      {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+      {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
         <div className="pe-field-helper" style={{ opacity: 0.8 }}>
           Downloads an emergency backup file. It does not automatically restore or back up your account.
         </div>

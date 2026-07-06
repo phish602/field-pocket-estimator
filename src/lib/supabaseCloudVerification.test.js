@@ -15,6 +15,7 @@ function buildStorageSnapshot({
   settings,
   scopeTemplates,
   auditEvents,
+  cloudPartialRecoveryStatus,
 } = {}) {
   return {
     getItem(key) {
@@ -45,6 +46,9 @@ function buildStorageSnapshot({
         "estipaid-settings-v1": JSON.stringify(settings || {}),
         "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates || []),
         "estipaid-audit-events-v1": JSON.stringify(auditEvents || []),
+        "estipaid-cloud-partial-recovery-status-v1": cloudPartialRecoveryStatus
+          ? JSON.stringify(cloudPartialRecoveryStatus)
+          : null,
       };
       return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
     },
@@ -287,6 +291,95 @@ describe("supabaseCloudVerification", () => {
         cloudCount: 2,
         missingLegacyIds: [],
         extraLegacyIds: ["cust_stale"],
+      }),
+    ]));
+  });
+
+  test("treats the exact preserved older-estimate set as matched after partial recovery", async () => {
+    const rows = defaultMatchingRows();
+    rows.estimates = [
+      rows.estimates[0],
+      { id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null },
+    ];
+    rows.estimate_line_items = [
+      { id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1" },
+      { id: "db_est_line_2", legacy_local_id: "estimate:est_2:line:0", estimate_id: "db_est_2" },
+    ];
+    const mockClient = createMockClient(rows);
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseCloudVerification({
+      storageSnapshot: buildStorageSnapshot({
+        cloudPartialRecoveryStatus: {
+          recoveryMode: "partial_cloud_recovery",
+          status: "finished_with_older_estimates_kept",
+          skippedEstimateCount: 1,
+          skippedEstimateIds: ["est_2"],
+          skippedReason: "missing_full_estimate_details",
+          recoveredAt: "2026-07-06T02:00:00.000Z",
+          olderEstimatesKeptInCloud: true,
+        },
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+    });
+
+    expect(result.allMatched).toBe(true);
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "estimates",
+        status: "matched",
+        extraLegacyIds: ["est_2"],
+        preservedExtraLegacyIds: ["est_2"],
+      }),
+      expect.objectContaining({
+        table: "estimate_line_items",
+        status: "matched",
+        preservedExtraLegacyIds: ["est_2"],
+      }),
+    ]));
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "older_estimates_kept_in_cloud" }),
+    ]));
+  });
+
+  test("unknown extra estimates still mismatch when they do not match the preserved recovery set", async () => {
+    const rows = defaultMatchingRows();
+    rows.estimates = [
+      rows.estimates[0],
+      { id: "db_est_2", legacy_local_id: "est_unknown", restore_payload: null, restore_payload_version: null },
+    ];
+    rows.estimate_line_items = [
+      { id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1" },
+      { id: "db_est_line_2", legacy_local_id: "estimate:est_unknown:line:0", estimate_id: "db_est_2" },
+    ];
+    const mockClient = createMockClient(rows);
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseCloudVerification({
+      storageSnapshot: buildStorageSnapshot({
+        cloudPartialRecoveryStatus: {
+          recoveryMode: "partial_cloud_recovery",
+          status: "finished_with_older_estimates_kept",
+          skippedEstimateCount: 1,
+          skippedEstimateIds: ["est_2"],
+          skippedReason: "missing_full_estimate_details",
+          recoveredAt: "2026-07-06T02:00:00.000Z",
+          olderEstimatesKeptInCloud: true,
+        },
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+    });
+
+    expect(result.allMatched).toBe(false);
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "estimates",
+        status: "mismatch",
+        extraLegacyIds: ["est_unknown"],
       }),
     ]));
   });

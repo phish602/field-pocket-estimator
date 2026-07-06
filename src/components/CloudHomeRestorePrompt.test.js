@@ -227,6 +227,16 @@ beforeEach(() => {
     repairChanged: true,
     repairs: {},
     skippedEstimates: 3,
+    olderEstimatesKeptInCloud: true,
+    recoveryStatus: {
+      recoveryMode: "partial_cloud_recovery",
+      status: "finished_with_older_estimates_kept",
+      skippedEstimateCount: 3,
+      skippedEstimateIds: ["est_2", "est_3", "est_4"],
+      skippedReason: "missing_full_estimate_details",
+      recoveredAt: "2026-07-06T01:00:00.000Z",
+      olderEstimatesKeptInCloud: true,
+    },
   });
   runSupabaseCloudOnboardingBackup.mockReset();
   updateEstimateRestorePayloads.mockReset();
@@ -265,7 +275,7 @@ test("blocked empty-device recovery uses contractor language and Home-owned acti
   await renderAndSettle();
 
   expect(screen.getByText("Most of your data can still be recovered safely on this device.")).toBeInTheDocument();
-  expect(screen.getByText(/2 estimates could not be fully rebuilt for editing because their full estimate details were not saved in cloud backup/i)).toBeInTheDocument();
+  expect(screen.getByText("2 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
@@ -274,7 +284,7 @@ test("blocked empty-device recovery uses contractor language and Home-owned acti
   expect(screen.queryByText(/metadata/i)).not.toBeInTheDocument();
 });
 
-test("Finish Recovery runs safe recovery and continuation, then shows backed-up success with skipped-estimate guidance", async () => {
+test("Finish Recovery runs safe recovery and continuation, then shows the kept-in-cloud completion state", async () => {
   previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
 
   await renderAndSettle();
@@ -305,13 +315,66 @@ test("Finish Recovery runs safe recovery and continuation, then shows backed-up 
     role: "owner",
     storage: localStorage,
     skippedEstimates: 3,
+    skippedEstimateLegacyIds: [],
     onPhase: expect.any(Function),
   }));
 
   await waitFor(() => {
+    expect(screen.getByText("Recovery finished.")).toBeInTheDocument();
+  });
+  expect(screen.getByText("Your data is back on this device.")).toBeInTheDocument();
+  expect(screen.getByText("3 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
+  expect(screen.getByText("Use the old device to repair those estimates if needed.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Try Again" })).not.toBeInTheDocument();
+  [
+    "metadata",
+    "payload",
+    "project id",
+    "blockers",
+    "warnings",
+    "mismatch",
+    "cloud-only",
+    "local-only",
+    "JSON",
+  ].forEach((word) => {
+    expect(screen.queryByText(new RegExp(word, "i"))).not.toBeInTheDocument();
+  });
+});
+
+test("full safe recovery with no skipped estimates still shows the normal backed-up success state", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(1));
+  previewSafeCloudRecovery.mockResolvedValue(safeRecoveryPreviewFixture({ skippedEstimates: 0 }));
+  applySafeCloudRecovery.mockReturnValue({
+    status: SAFE_CLOUD_RECOVERY_STATUS.RECOVERED,
+    error: "",
+    recoveredCounts: { customers: 4, projects: 2, estimates: 1, invoices: 2, invoicePayments: 1 },
+    skippedEstimates: 0,
+    skippedEstimateLegacyIds: [],
+    writeCount: 4,
+    settingsWritten: false,
+  });
+  runRecoveryContinuation.mockResolvedValue({
+    status: RECOVERY_CONTINUATION_STATUS.BACKED_UP,
+    backupRan: true,
+    repairChanged: false,
+    repairs: {},
+    skippedEstimates: 0,
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
+  });
+
+  await waitFor(() => {
     expect(screen.getByText("Recovery finished. Your data is backed up.")).toBeInTheDocument();
   });
-  expect(screen.getByText(/Most data was recovered\. 3 estimates could not be fully rebuilt for editing/i)).toBeInTheDocument();
+  expect(screen.queryByText(/older estimates are still kept safely in cloud/i)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
 });
 
@@ -376,6 +439,28 @@ test("generic paused continuation shows the paused reason once and only one Try 
   });
   expect(screen.getAllByText("Backup could not finish yet. Your recovered data is saved on this device.")).toHaveLength(1);
   expect(screen.getAllByRole("button", { name: "Try Again" })).toHaveLength(1);
+});
+
+test("real backup failure after recovery still shows Try Again", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+  runRecoveryContinuation.mockResolvedValue({
+    status: RECOVERY_CONTINUATION_STATUS.ERROR,
+    error: "Backup could not finish. Your recovered data is saved on this device.",
+    technicalDetail: "network timeout",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
+  });
+
+  await waitFor(() => {
+    expect(screen.getByText("Backup could not finish. Your recovered data is saved on this device.")).toBeInTheDocument();
+  });
+  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
 });
 
 test("repairable missing estimate details can be repaired from Home", async () => {

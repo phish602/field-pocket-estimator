@@ -83,7 +83,15 @@ function cloudArtifact(overrides = {}) {
       settings: { pdf: { includeLogo: true } },
       scopeTemplates: null,
     },
-    notices: [],
+    notices: [{
+      level: "warning",
+      code: "estimates_missing_restore_payload_excluded",
+      message: "3 cloud estimate(s) have no restore payload and are not included as importable estimates.",
+      details: {
+        missingRestorePayloadCount: 3,
+        missingLegacyIds: ["est_2", "est_3", "est_4"],
+      },
+    }],
     ...overrides,
   };
 }
@@ -122,6 +130,7 @@ describe("previewSafeCloudRecovery", () => {
     expect(preview.status).toBe(SAFE_CLOUD_RECOVERY_STATUS.PREVIEWED);
     expect(preview.counts).toEqual({ customers: 2, projects: 1, estimates: 1, invoices: 1, invoicePayments: 1 });
     expect(preview.skippedEstimates).toBe(3);
+    expect(preview.skippedEstimateLegacyIds).toEqual(["est_2", "est_3", "est_4"]);
     expect(preview.plan.ok).toBe(true);
   });
 
@@ -193,6 +202,7 @@ describe("applySafeCloudRecovery", () => {
     expect(result.status).toBe(SAFE_CLOUD_RECOVERY_STATUS.RECOVERED);
     expect(result.recoveredCounts).toEqual({ customers: 2, projects: 1, estimates: 1, invoices: 1, invoicePayments: 1 });
     expect(result.skippedEstimates).toBe(3);
+    expect(result.skippedEstimateLegacyIds).toEqual(["est_2", "est_3", "est_4"]);
     expect(JSON.parse(storage.__store[STORAGE_KEYS.CUSTOMERS])).toHaveLength(2);
     expect(JSON.parse(storage.__store[STORAGE_KEYS.PROJECTS])).toHaveLength(1);
     // Only payload-backed estimates are written -- skipped ones are never guessed.
@@ -320,6 +330,7 @@ describe("recovery continuation", () => {
       blockers: [],
       safeRepairs: [],
     });
+    const storage = buildWritableStorage();
     mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
       status: "needs_attention",
       writeResult: { ok: true },
@@ -338,12 +349,46 @@ describe("recovery continuation", () => {
       user: { id: "user_1" },
       company: { id: "company_1" },
       role: "owner",
-      storage: { __snapshot: {} },
+      storage,
       skippedEstimates: 1,
+      skippedEstimateLegacyIds: ["cloud_only_est_1"],
     });
 
     expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED);
     expect(mockClearCloudBackupDirty).toHaveBeenCalledWith("safe_recovery_backup_success");
+    expect(result.olderEstimatesKeptInCloud).toBe(true);
+    expect(JSON.parse(storage.__store[STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS])).toEqual(expect.objectContaining({
+      recoveryMode: "partial_cloud_recovery",
+      status: "finished_with_older_estimates_kept",
+      skippedEstimateCount: 1,
+      skippedEstimateIds: ["cloud_only_est_1"],
+      skippedReason: "missing_full_estimate_details",
+      olderEstimatesKeptInCloud: true,
+    }));
+  });
+
+  test("passes the known skipped estimate ids into the backup verification step", async () => {
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [],
+      safeRepairs: [],
+    });
+    mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
+      status: "backup_completed",
+    });
+
+    await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage: buildWritableStorage(),
+      skippedEstimates: 2,
+      skippedEstimateLegacyIds: ["est_7", "est_8"],
+    });
+
+    expect(mockRunSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+      preservedSkippedEstimateLegacyIds: ["est_7", "est_8"],
+    }));
   });
 
   test("keeps the concrete blocker when backup returns needs_attention after recovery", async () => {

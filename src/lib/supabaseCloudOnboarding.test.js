@@ -254,6 +254,22 @@ describe("supabaseCloudOnboarding", () => {
       }));
     });
 
+    test("passes preserved skipped estimate ids through to verification when provided", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification());
+
+      await runSupabaseCloudOnboardingBackup({
+        ...baseContext,
+        preservedSkippedEstimateLegacyIds: ["est_2", "est_3"],
+      });
+
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
+        preservedSkippedEstimateLegacyIds: ["est_2", "est_3"],
+      }));
+    });
+
     test("reports backup_completed with no local deletion when write and verification both succeed", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
       mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);

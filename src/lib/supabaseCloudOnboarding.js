@@ -175,6 +175,7 @@ export async function runSupabaseCloudOnboardingBackup({
   company = null,
   role = "",
   allowCloudOnlyReplacement = false,
+  preservedSkippedEstimateLegacyIds = null,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildBackupResult(gated);
@@ -202,7 +203,10 @@ export async function runSupabaseCloudOnboardingBackup({
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult });
     }
 
-    const verification = await runSupabaseCloudVerification(context);
+    const verification = await runSupabaseCloudVerification({
+      ...context,
+      preservedSkippedEstimateLegacyIds,
+    });
 
     if (!verification?.ok || !verification?.allMatched) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult, verification });
