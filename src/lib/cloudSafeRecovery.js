@@ -270,6 +270,20 @@ export async function runRecoveryContinuation({
     } catch {}
   };
 
+  const shouldPersistPartialRecoveryStatus = (
+    Number(skippedEstimates) > 0
+    && Array.isArray(skippedEstimateLegacyIds)
+    && skippedEstimateLegacyIds.length > 0
+    && Boolean(storage?.setItem)
+  );
+  const recoveryStatus = shouldPersistPartialRecoveryStatus
+    ? writeCloudPartialRecoveryStatus(storage, {
+      skippedEstimateCount: skippedEstimates,
+      skippedEstimateIds: skippedEstimateLegacyIds,
+    })
+    : null;
+  if (Number(skippedEstimates) <= 0) clearCloudPartialRecoveryStatus(storage);
+
   notifyPhase("checking");
   let integrity = scanStoredIntegrity(storage);
   if (!integrity) {
@@ -336,13 +350,6 @@ export async function runRecoveryContinuation({
   }
 
   if (backup?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
-    const recoveryStatus = Number(skippedEstimates) > 0
-      ? writeCloudPartialRecoveryStatus(storage, {
-        skippedEstimateCount: skippedEstimates,
-        skippedEstimateIds: skippedEstimateLegacyIds,
-      })
-      : null;
-    if (Number(skippedEstimates) <= 0) clearCloudPartialRecoveryStatus(storage);
     return {
       status: Number(skippedEstimates) > 0
         ? RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED
@@ -361,10 +368,6 @@ export async function runRecoveryContinuation({
     // skipped estimates the cloud is intentionally keeping. Local changes
     // are backed up, so the queue is current.
     clearCloudBackupDirty("safe_recovery_backup_success");
-    const recoveryStatus = writeCloudPartialRecoveryStatus(storage, {
-      skippedEstimateCount: skippedEstimates,
-      skippedEstimateIds: skippedEstimateLegacyIds,
-    });
     return {
       status: RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED,
       backupRan: true,

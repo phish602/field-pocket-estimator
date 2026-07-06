@@ -2,6 +2,7 @@ import { createSupabaseMigrationPreview } from "./supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "./supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
+import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 
 export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 
@@ -29,6 +30,14 @@ export const CLOUD_ONBOARDING_STATUS = {
 
 function asText(value) {
   return String(value || "").trim();
+}
+
+function normalizeLegacyIds(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => asText(value))
+      .filter(Boolean)
+  )].sort();
 }
 
 // Mirrors isSupabaseMigrationPreviewReady's own "is there anything to back
@@ -181,6 +190,13 @@ export async function runSupabaseCloudOnboardingBackup({
   if (gated) return buildBackupResult(gated);
 
   const context = buildHelperContext({ storageSnapshot, configured, user, company, role });
+  const explicitPreservedSkippedEstimateLegacyIds = normalizeLegacyIds(preservedSkippedEstimateLegacyIds);
+  const storedRecoveryStatus = explicitPreservedSkippedEstimateLegacyIds.length === 0
+    ? readCloudPartialRecoveryStatus(storageSnapshot)
+    : null;
+  const effectivePreservedSkippedEstimateLegacyIds = explicitPreservedSkippedEstimateLegacyIds.length > 0
+    ? explicitPreservedSkippedEstimateLegacyIds
+    : normalizeLegacyIds(storedRecoveryStatus?.skippedEstimateIds);
 
   try {
     const preview = await createSupabaseMigrationPreview(context);
@@ -201,7 +217,7 @@ export async function runSupabaseCloudOnboardingBackup({
       ...context,
       preview,
       allowCloudOnlyReplacement,
-      preservedSkippedEstimateLegacyIds,
+      preservedSkippedEstimateLegacyIds: effectivePreservedSkippedEstimateLegacyIds,
     });
 
     if (!writeResult?.ok) {
@@ -210,7 +226,7 @@ export async function runSupabaseCloudOnboardingBackup({
 
     const verification = await runSupabaseCloudVerification({
       ...context,
-      preservedSkippedEstimateLegacyIds,
+      preservedSkippedEstimateLegacyIds: effectivePreservedSkippedEstimateLegacyIds,
     });
 
     if (!verification?.ok || !verification?.allMatched) {

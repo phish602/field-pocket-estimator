@@ -24,6 +24,19 @@ function normalizeSkippedEstimateIds(values) {
   )].sort();
 }
 
+function emitCloudPartialRecoveryStatusChange(value = null) {
+  try {
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("pe-localstorage", {
+        detail: {
+          key: STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS,
+          value,
+        },
+      }));
+    }
+  } catch {}
+}
+
 export function readCloudPartialRecoveryStatus(storage = null) {
   const source = storage || (typeof localStorage !== "undefined" ? localStorage : null);
   if (!source?.getItem) return null;
@@ -81,7 +94,9 @@ export function writeCloudPartialRecoveryStatus(storage = null, options = {}) {
   if (skippedEstimateIds.length > 0) payload.skippedEstimateIds = skippedEstimateIds;
 
   try {
-    target.setItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, JSON.stringify(payload));
+    const serialized = JSON.stringify(payload);
+    target.setItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, serialized);
+    emitCloudPartialRecoveryStatusChange(serialized);
     return payload;
   } catch {
     return null;
@@ -94,10 +109,12 @@ export function clearCloudPartialRecoveryStatus(storage = null) {
   try {
     if (typeof target.removeItem === "function") {
       target.removeItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS);
+      emitCloudPartialRecoveryStatusChange(null);
       return;
     }
     if (typeof target.setItem === "function") {
       target.setItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, "");
+      emitCloudPartialRecoveryStatusChange("");
     }
   } catch {}
 }

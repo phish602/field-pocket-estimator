@@ -25,6 +25,7 @@ const {
   CLOUD_ONBOARDING_STATUS,
 } = require("./supabaseCloudOnboarding");
 const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
+const { STORAGE_KEYS } = require("../constants/storageKeys");
 
 function buildPreview(overrides = {}) {
   return {
@@ -92,6 +93,21 @@ const baseContext = {
   company: { id: "company_1", name: "Field Pocket LLC" },
   role: "owner",
 };
+
+function buildPartialRecoveryStorage(skippedEstimateIds = ["est_2", "est_3"]) {
+  const recoveryStatus = JSON.stringify({
+    recoveryMode: "partial_cloud_recovery",
+    status: "finished_with_older_estimates_kept",
+    skippedEstimateCount: skippedEstimateIds.length,
+    skippedEstimateIds,
+    skippedReason: "missing_full_estimate_details",
+    recoveredAt: "2026-07-06T01:00:00.000Z",
+    olderEstimatesKeptInCloud: true,
+  });
+  return {
+    getItem: jest.fn((key) => (key === STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS ? recoveryStatus : null)),
+  };
+}
 
 describe("supabaseCloudOnboarding", () => {
   beforeEach(() => {
@@ -270,6 +286,21 @@ describe("supabaseCloudOnboarding", () => {
       }));
     });
 
+    test("reads preserved skipped estimate ids from stored partial recovery status when callers omit them", async () => {
+      const storageSnapshot = buildPartialRecoveryStorage(["est_2", "est_3", "est_4"]);
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification());
+
+      await runSupabaseCloudOnboardingBackup({
+        ...baseContext,
+        storageSnapshot,
+      });
+
+      expect(storageSnapshot.getItem).toHaveBeenCalledWith(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS);
+    });
+
     test("passes preserved skipped estimate ids through to the writer when provided", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
       mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
@@ -283,6 +314,38 @@ describe("supabaseCloudOnboarding", () => {
 
       expect(mockRunSupabaseMigrationWrite).toHaveBeenCalledWith(expect.objectContaining({
         preservedSkippedEstimateLegacyIds: ["est_2", "est_3"],
+      }));
+    });
+
+    test("passes fallback preserved skipped estimate ids from stored recovery status into the writer", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification());
+
+      await runSupabaseCloudOnboardingBackup({
+        ...baseContext,
+        storageSnapshot: buildPartialRecoveryStorage(["est_7", "est_8"]),
+      });
+
+      expect(mockRunSupabaseMigrationWrite).toHaveBeenCalledWith(expect.objectContaining({
+        preservedSkippedEstimateLegacyIds: ["est_7", "est_8"],
+      }));
+    });
+
+    test("passes fallback preserved skipped estimate ids from stored recovery status into verification", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification());
+
+      await runSupabaseCloudOnboardingBackup({
+        ...baseContext,
+        storageSnapshot: buildPartialRecoveryStorage(["est_9", "est_10"]),
+      });
+
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
+        preservedSkippedEstimateLegacyIds: ["est_9", "est_10"],
       }));
     });
 

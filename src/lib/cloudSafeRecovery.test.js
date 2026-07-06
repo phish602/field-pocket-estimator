@@ -304,6 +304,37 @@ describe("recovery continuation", () => {
     expect(phases).toEqual(["checking", "repairing", "backing_up"]);
   });
 
+  test("writes partial recovery status before attempting backup for preserved skipped estimates", async () => {
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [],
+      safeRepairs: [],
+    });
+    const storage = buildWritableStorage();
+    mockRunSupabaseCloudOnboardingBackup.mockImplementation(async () => {
+      expect(JSON.parse(storage.__store[STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS] || "null")).toEqual(expect.objectContaining({
+        recoveryMode: "partial_cloud_recovery",
+        status: "finished_with_older_estimates_kept",
+        skippedEstimateCount: 3,
+        skippedEstimateIds: ["est_2", "est_3", "est_4"],
+        skippedReason: "missing_full_estimate_details",
+        olderEstimatesKeptInCloud: true,
+      }));
+      return { status: "backup_completed" };
+    });
+
+    const result = await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage,
+      skippedEstimates: 3,
+      skippedEstimateLegacyIds: ["est_2", "est_3", "est_4"],
+    });
+
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED);
+  });
+
   test("pauses with job-language when a blocker remains after the recheck", async () => {
     mockScanLocalDataIntegrity.mockReturnValue({
       blockers: [{ code: "estimate_project_missing", message: "One or more estimates reference a project id that is not present locally." }],

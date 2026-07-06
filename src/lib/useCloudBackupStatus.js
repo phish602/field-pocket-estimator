@@ -64,6 +64,7 @@ export default function useCloudBackupStatus() {
       if (
         key
         && key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE
+        && key !== STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS
         && key !== STORAGE_KEYS.CUSTOMERS
         && key !== STORAGE_KEYS.PROJECTS
         && key !== STORAGE_KEYS.ESTIMATES
@@ -73,6 +74,9 @@ export default function useCloudBackupStatus() {
         return;
       }
       refresh();
+      if (key === STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS) {
+        setRefreshToken((value) => value + 1);
+      }
     };
 
     const onWorkerRunningEvent = (event) => {

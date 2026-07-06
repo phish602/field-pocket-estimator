@@ -130,6 +130,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     user,
     role,
     isSupabaseReady,
+    onboardingStatus,
     checking,
     restoreAvailable,
     missingEstimatePayloadCount,
@@ -153,7 +154,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [safeRecoveryResult, setSafeRecoveryResult] = useState(null);
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
-  const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(null);
+  const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(() => readCloudPartialRecoveryStatus(localStorage));
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done
   const [recoveryPhase, setRecoveryPhase] = useState("idle");
@@ -245,7 +246,20 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     || continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED;
   const continuationSucceededWithOlderEstimates = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED
     && skippedEstimatesCount > 0;
-  const showRecoveryFinishedState = Boolean(olderEstimatesKeptInCloud && skippedEstimatesCount > 0);
+  const onboardingStatusCode = String(onboardingStatus?.status || "").trim();
+  const backupCompletedWithPreservedSkippedEstimates = backupResult?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
+    && olderEstimatesKeptInCloud
+    && skippedEstimatesCount > 0;
+  const cloudVerifiedWithPreservedSkippedEstimates = (
+    onboardingStatusCode === CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP
+    || onboardingStatusCode === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
+  ) && olderEstimatesKeptInCloud
+    && skippedEstimatesCount > 0;
+  const showRecoveryFinishedState = Boolean(
+    continuationSucceededWithOlderEstimates
+    || backupCompletedWithPreservedSkippedEstimates
+    || cloudVerifiedWithPreservedSkippedEstimates
+  );
   const recoveryBusy = recoveryPhase === "recovering" || recoveryPhase === "checking" || recoveryPhase === "repairing";
   const backupBusy = recoveryPhase === "backing_up";
   const localBackupBlocked = !isEmptyDevice && Number(localBlockersCount || 0) > 0;
@@ -520,14 +534,20 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     setBackingUp(true);
     setContinuationResult(null);
     try {
+      const storedRecoveryStatus = readCloudPartialRecoveryStatus(localStorage);
       const result = await runSupabaseCloudOnboardingBackup({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
         user,
         company,
         role,
+        preservedSkippedEstimateLegacyIds: Array.isArray(storedRecoveryStatus?.skippedEstimateIds)
+          ? storedRecoveryStatus.skippedEstimateIds
+          : [],
       });
       setBackupResult(result);
+      setCompletedRecoveryStatus(readCloudPartialRecoveryStatus(localStorage));
+      refreshCloudStatus();
     } catch (error) {
       setBackupResult({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: error?.message });
     } finally {
@@ -713,7 +733,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {restoreErrorMessage(restoreResult)}
         </div>
       ) : null}
-      {backupResult ? (
+      {backupResult && !showRecoveryFinishedState ? (
         <div role="status" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
           ? "rgba(187,247,208,0.92)"
           : "rgba(253,224,71,0.92)" }}

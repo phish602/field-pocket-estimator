@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import CloudHomeRestorePrompt from "./CloudHomeRestorePrompt";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -92,6 +93,15 @@ jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
   },
 }));
 
+jest.mock("../lib/cloudPartialRecoveryStatus", () => {
+  const actual = jest.requireActual("../lib/cloudPartialRecoveryStatus");
+  return {
+    __esModule: true,
+    ...actual,
+    readCloudPartialRecoveryStatus: jest.fn((...args) => actual.readCloudPartialRecoveryStatus(...args)),
+  };
+});
+
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
@@ -110,6 +120,8 @@ const {
   RECOVERY_CONTINUATION_STATUS,
 } = require("../lib/cloudSafeRecovery");
 const { updateEstimateRestorePayloads, ESTIMATE_PAYLOAD_UPDATE_STATUS } = require("../lib/supabaseEstimateRestorePayload");
+const { readCloudPartialRecoveryStatus } = require("../lib/cloudPartialRecoveryStatus");
+const actualCloudPartialRecoveryStatus = jest.requireActual("../lib/cloudPartialRecoveryStatus");
 
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
@@ -177,6 +189,19 @@ function buildCloudExportArtifact(overrides = {}) {
   };
 }
 
+function writePartialRecoveryStatus(overrides = {}) {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS, JSON.stringify({
+    recoveryMode: "partial_cloud_recovery",
+    status: "finished_with_older_estimates_kept",
+    skippedEstimateCount: 3,
+    skippedEstimateIds: ["est_2", "est_3", "est_4"],
+    skippedReason: "missing_full_estimate_details",
+    recoveredAt: "2026-07-06T01:00:00.000Z",
+    olderEstimatesKeptInCloud: true,
+    ...overrides,
+  }));
+}
+
 async function renderAndSettle(props = {}) {
   let utils;
   await act(async () => {
@@ -240,6 +265,8 @@ beforeEach(() => {
   });
   runSupabaseCloudOnboardingBackup.mockReset();
   updateEstimateRestorePayloads.mockReset();
+  readCloudPartialRecoveryStatus.mockReset();
+  readCloudPartialRecoveryStatus.mockImplementation((...args) => actualCloudPartialRecoveryStatus.readCloudPartialRecoveryStatus(...args));
 });
 
 test("empty device shows a simple Finish Recovery path when full recovery is available", async () => {
@@ -591,6 +618,36 @@ test("Back Up Now runs the existing onboarding backup path and reports success p
     role: "owner",
   }));
   expect(screen.getByText("Backup finished. Your data is backed up.")).toBeInTheDocument();
+});
+
+test("Back Up Now uses stored partial recovery status when retrying a preserved-skipped backup", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  writePartialRecoveryStatus();
+  readCloudPartialRecoveryStatus
+    .mockImplementationOnce(() => null)
+    .mockImplementation((...args) => actualCloudPartialRecoveryStatus.readCloudPartialRecoveryStatus(...args));
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
+  });
+
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+    preservedSkippedEstimateLegacyIds: ["est_2", "est_3", "est_4"],
+  }));
+});
+
+test("hydrates completed recovery status from localStorage on mount", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  writePartialRecoveryStatus();
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Recovery finished.")).toBeInTheDocument();
+  expect(screen.getByText("Your data is back on this device.")).toBeInTheDocument();
+  expect(screen.getByText("3 older estimates are still kept safely in cloud. They could not be fully rebuilt on this device.")).toBeInTheDocument();
+  expect(screen.queryByText("Backup Available")).not.toBeInTheDocument();
 });
 
 test("does not show a restore prompt while local has unbacked pending changes", async () => {
