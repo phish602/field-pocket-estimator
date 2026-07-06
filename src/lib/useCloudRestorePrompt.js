@@ -103,6 +103,10 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
     restoreBlockedReason: restoreAvailability.blockedReason,
     missingEstimatePayloadCount: restoreAvailability.missingEstimatePayloadCount,
     partialLocalSnapshot,
+    // Gate 13O-2L: lets Home gate "Back Up Now" on local integrity without
+    // re-scanning -- backup must never run while a blocker remains.
+    localFirstBlocker: decision?.firstBlocker || null,
+    localBlockersCount: Number(decision?.blockersCount || 0),
     refreshCloudStatus,
   };
 }

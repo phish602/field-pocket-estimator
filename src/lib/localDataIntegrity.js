@@ -283,14 +283,33 @@ export function scanLocalDataIntegrity(localSnapshot = {}, options = {}) {
     return projectId && !projectIds.has(projectId);
   });
   if (estimatesMissingProject.length > 0) {
-    blockers.push(buildIssue(
-      "blocker",
-      "estimate_project_missing",
-      "One or more estimates reference a project id that is not present locally.",
-      {
-        entityIds: estimatesMissingProject.map((entry) => asText(entry?.id)).filter(Boolean),
-      }
-    ));
+    // Gate 13O-2L: when other projects exist locally, a dangling estimate
+    // project link is stale metadata, not corruption -- the same situation
+    // invoice_project_stale already treats as safely repairable by detaching
+    // the link (never guessing a replacement, never touching estimate math).
+    // This happens after safe cloud recovery when an estimate's original job
+    // was deleted or never backed up. If the local project list is entirely
+    // empty, that's a suspicious partial snapshot instead -- keep blocking.
+    if (projects.length > 0) {
+      safeRepairs.push(buildIssue(
+        "repairable",
+        "estimate_project_stale",
+        `Safe repair can detach a stale project link on ${estimatesMissingProject.length} estimate${estimatesMissingProject.length === 1 ? "" : "s"} without changing totals, line items, or estimate math.`,
+        {
+          entityIds: estimatesMissingProject.map((entry) => asText(entry?.id)).filter(Boolean),
+          count: estimatesMissingProject.length,
+        }
+      ));
+    } else {
+      blockers.push(buildIssue(
+        "blocker",
+        "estimate_project_missing",
+        "One or more estimates reference a project id that is not present locally.",
+        {
+          entityIds: estimatesMissingProject.map((entry) => asText(entry?.id)).filter(Boolean),
+        }
+      ));
+    }
   }
 
   const estimatesMissingCustomer = estimates.filter((estimate) => {
@@ -606,6 +625,28 @@ export function applySafeLocalDataRepairs(localSnapshot = {}) {
   const invoiceProjectRepairs = [];
   let invoicesChanged = false;
 
+  // Gate 13O-2L: detach stale estimate->project links (the estimate-side
+  // twin of the invoice_project_stale repair below). Metadata-only: totals,
+  // line items, and all estimate math are untouched, and no replacement link
+  // is ever guessed. Only runs when other projects exist locally -- an
+  // entirely-empty project list is a partial snapshot, not a stale link.
+  const estimateProjectRepairs = [];
+  let estimatesProjectChanged = false;
+  if (projectIds.size > 0) {
+    nextSnapshot.estimates = nextSnapshot.estimates.map((estimate) => {
+      const projectId = asText(estimate?.projectId);
+      if (!projectId || projectIds.has(projectId)) return estimate;
+      estimatesProjectChanged = true;
+      const nextEstimate = clone(estimate);
+      nextEstimate.projectId = "";
+      estimateProjectRepairs.push({
+        estimateId: asText(nextEstimate?.id),
+        staleProjectId: projectId,
+      });
+      return nextEstimate;
+    });
+  }
+
   nextSnapshot.invoices = nextSnapshot.invoices.map((invoice) => {
     const sourceEstimateId = extractInvoiceSourceEstimateId(invoice);
     const staleSourceEstimate = Boolean(sourceEstimateId) && estimateIds.size > 0 && !estimateIds.has(sourceEstimateId);
@@ -654,10 +695,11 @@ export function applySafeLocalDataRepairs(localSnapshot = {}) {
   });
 
   return {
-    changed: Boolean(estimateNumberRepair.changed || invoicesChanged),
+    changed: Boolean(estimateNumberRepair.changed || invoicesChanged || estimatesProjectChanged),
     snapshot: nextSnapshot,
     repairs: {
       estimateNumbers: asArray(estimateNumberRepair.repairs),
+      staleEstimateProjectIds: estimateProjectRepairs,
       staleInvoiceSourceEstimateIds: invoiceRepairs,
       staleInvoiceProjectIds: invoiceProjectRepairs,
     },
@@ -688,7 +730,10 @@ export function repairStoredLocalDataIntegrity(storageSnapshot) {
     emitStorageChangeEvent(STORAGE_KEYS.ESTIMATES, estimateValue);
     emitStorageChangeEvent(STORAGE_KEYS.INVOICES, invoiceValue);
     try {
-      if (repaired.repairs.estimateNumbers.length > 0) {
+      if (
+        repaired.repairs.estimateNumbers.length > 0
+        || repaired.repairs.staleEstimateProjectIds.length > 0
+      ) {
         window.dispatchEvent(new Event("estipaid:estimates-changed"));
       }
       if (

@@ -30,7 +30,10 @@ import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownlo
 import {
   previewSafeCloudRecovery,
   applySafeCloudRecovery,
+  runRecoveryContinuation,
+  describeBackupPauseReason,
   SAFE_CLOUD_RECOVERY_STATUS,
+  RECOVERY_CONTINUATION_STATUS,
 } from "../lib/cloudSafeRecovery";
 import {
   updateEstimateRestorePayloads,
@@ -70,9 +73,9 @@ function restoreErrorMessage(result) {
   return String(result?.error || "Restore could not be completed on this device.");
 }
 
-function navigateToCloudSettings() {
+function navigateToEstimates() {
   try {
-    window.dispatchEvent(new CustomEvent("estipaid:navigate-cloud-settings"));
+    window.dispatchEvent(new Event("estipaid:navigate-estimates"));
   } catch {}
 }
 
@@ -92,6 +95,17 @@ function plural(count, singular, pluralWord) {
   return Number(count) === 1 ? singular : pluralWord;
 }
 
+function isJobLinkIssue(code) {
+  const normalized = String(code || "").trim();
+  return normalized === "estimate_project_missing" || normalized === "estimate_project_stale";
+}
+
+function buildSkippedEstimateCopy(count) {
+  const total = Number(count || 0);
+  if (total <= 0) return "";
+  return `Most data was recovered. ${total} ${plural(total, "estimate", "estimates")} could not be fully rebuilt for editing because their full estimate details were not saved in cloud backup. Use the old device to repair ${total === 1 ? "that estimate" : "those estimates"} if needed.`;
+}
+
 export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, style } = {}) {
   const {
     state,
@@ -104,6 +118,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     restoreBlockedReason,
     missingEstimatePayloadCount,
     partialLocalSnapshot,
+    localFirstBlocker,
+    localBlockersCount,
     refreshCloudStatus,
   } = useCloudRestorePrompt({ hasChamberedDraft });
   const [dismissed, setDismissed] = useState(readDismissed);
@@ -121,16 +137,21 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [safeRecoveryResult, setSafeRecoveryResult] = useState(null);
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState(null);
+  // Gate 13O-2L recovery-assistant pipeline:
+  // idle -> recovering -> checking -> repairing -> backing_up -> done
+  const [recoveryPhase, setRecoveryPhase] = useState("idle");
+  const [continuationResult, setContinuationResult] = useState(null);
 
   // A fresh sign-in / device state change should get a fresh chance to show
   // the prompt rather than staying dismissed forever.
   useEffect(() => {
+    if (recoveryPhase !== "idle" || continuationResult || safeRecoveryResult) return;
     setRestoreResult(null);
     setBackupResult(null);
     setDownloadMessage("");
     setRecheckState("idle");
     setRecheckMessage("");
-  }, [state]);
+  }, [state, recoveryPhase, continuationResult, safeRecoveryResult]);
 
   // Gate 13G: "Not now" only hides the large card for the session -- it
   // never removes the header's compact restore chip. Tapping that chip
@@ -154,22 +175,31 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       const missingCount = Number(missingEstimatePayloadCount || 0);
       setRecheckMessage(
         restoreAvailable
-          ? "Recheck complete. Restore is now available."
+          ? "Check complete. Recovery is ready on this device."
           : missingCount > 0
-            ? `Recheck complete. ${missingCount} ${plural(missingCount, "estimate is", "estimates are")} still missing restore metadata.`
-            : "Recheck complete. Cloud data is still not fully restorable."
+            ? `Check complete. ${buildSkippedEstimateCopy(missingCount)}`
+            : "Check complete. Recovery still needs attention."
       );
     }
   }, [checking, recheckState, restoreAvailable, missingEstimatePayloadCount]);
 
-  if (dismissed) return null;
-  if (state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
-    && state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS) {
+  const keepVisibleForRecoveryFlow = Boolean(
+    safeRecoveryResult
+    || continuationResult
+    || recoveryPhase !== "idle"
+  );
+
+  if (dismissed && !keepVisibleForRecoveryFlow) return null;
+  if (
+    state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
+    && state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS
+    && !keepVisibleForRecoveryFlow
+  ) {
     return null;
   }
   // Once restored, the badge's own "Cloud backup restored." message covers
   // the confirmation -- this card has nothing further to say.
-  if (restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED) return null;
+  if (restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED && !keepVisibleForRecoveryFlow) return null;
 
   const isEmptyDevice = state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE;
   const companyName = String(company?.name || "").trim();
@@ -178,6 +208,23 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // estimates still exist. On a truly empty device it cannot.
   const repairAvailable = missingPayloadsBlocked && countLocalEstimates() > 0;
   const busy = restoring || checking || safeRecovering || repairing;
+  const skippedEstimatesCount = Number(
+    (
+      continuationResult?.skippedEstimates
+      ?? safeRecoveryResult?.skippedEstimates
+      ?? missingEstimatePayloadCount
+    ) || 0
+  );
+  const continuationPaused = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.PAUSED;
+  const continuationSucceeded = continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP
+    || continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED;
+  const recoveryBusy = recoveryPhase === "recovering" || recoveryPhase === "checking" || recoveryPhase === "repairing";
+  const backupBusy = recoveryPhase === "backing_up";
+  const pausedReasonCode = String(continuationResult?.pausedReasonCode || localFirstBlocker?.code || "");
+  const pausedReason = continuationResult?.pausedReason
+    || (localFirstBlocker ? describeBackupPauseReason(localFirstBlocker) : "");
+  const backupPausedForJobLinks = isJobLinkIssue(pausedReasonCode);
+  const localBackupBlocked = !isEmptyDevice && Number(localBlockersCount || 0) > 0;
 
   const dismiss = () => {
     writeDismissed();
@@ -224,8 +271,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       const coreTotal = counts.customers + counts.projects + counts.estimates + counts.invoices;
       setDownloadMessage(
         coreTotal === 0
-          ? `Cloud backup JSON downloaded: ${filename}. Warning: the cloud has no customer, project, estimate, or invoice records.`
-          : `Cloud backup JSON downloaded: ${filename} (${counts.customers} customers, ${counts.projects} projects, ${counts.estimates} estimates, ${counts.invoices} invoices).`
+          ? `Emergency backup file downloaded: ${filename}. Warning: no customer, job, estimate, or invoice records were found in cloud backup.`
+          : `Emergency backup file downloaded: ${filename}.`
       );
     } catch (error) {
       setDownloadMessage(String(error?.message || "Unable to download cloud backup JSON."));
@@ -241,6 +288,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const requestSafeRecovery = async () => {
     setSafeRecovering(true);
     setSafeRecoveryResult(null);
+    setContinuationResult(null);
     setDownloadMessage("");
     setRecheckMessage("");
     try {
@@ -254,18 +302,16 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         setSafeRecoveryPreview(preview);
         setConfirmDialog({
           kind: "safe_recovery",
-          title: "Recover safe cloud records to this device?",
+          title: "Finish recovery on this device?",
           lines: [
-            "Some estimates are missing restore metadata, so EstiPaid cannot safely rebuild editable estimates without risking wrong totals.",
-            "EstiPaid can still import safe cloud records that are recoverable.",
-            `This will write ${counts.customers} customers, ${counts.projects} projects, ${counts.estimates} estimates, and ${counts.invoices} invoices to this device.`,
+            "EstiPaid can finish recovering the records that are safe to bring back on this device.",
+            `This will recover ${counts.customers} customers, ${counts.projects} jobs, ${counts.estimates} estimates, and ${counts.invoices} invoices.`,
             preview.skippedEstimates > 0
-              ? `${preview.skippedEstimates} ${plural(preview.skippedEstimates, "estimate", "estimates")} missing restore payload will be skipped, not guessed.`
+              ? `${preview.skippedEstimates} ${plural(preview.skippedEstimates, "estimate", "estimates")} cannot be fully rebuilt for editing and will be left out for now.`
               : null,
-            "Cloud collections with no records are skipped, so they never blank out local data.",
-            "Your cloud backup is not changed or deleted.",
+            "Nothing will be guessed or overwritten in cloud backup.",
           ].filter(Boolean),
-          confirmLabel: "Recover Safe Records",
+          confirmLabel: "Finish Recovery",
         });
       } else if (preview.status === SAFE_CLOUD_RECOVERY_STATUS.NOTHING_TO_RECOVER) {
         setSafeRecoveryResult(preview);
@@ -285,12 +331,30 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }
   };
 
-  const confirmSafeRecovery = () => {
+  const confirmSafeRecovery = async () => {
     setConfirmDialog(null);
     const preview = safeRecoveryPreview;
     setSafeRecoveryPreview(null);
+    setRecoveryPhase("recovering");
     const result = applySafeCloudRecovery({ preview, storage: localStorage });
     setSafeRecoveryResult(result);
+    refreshCloudStatus();
+    if (result?.status === SAFE_CLOUD_RECOVERY_STATUS.RECOVERED) {
+      const continuation = await runRecoveryContinuation({
+        configured: isSupabaseReady,
+        user,
+        company,
+        role,
+        storage: localStorage,
+        skippedEstimates: Number(result?.skippedEstimates || 0),
+        onPhase: (phase) => setRecoveryPhase(phase),
+      });
+      setContinuationResult(continuation);
+      setRecoveryPhase("done");
+      refreshCloudStatus();
+      return;
+    }
+    setRecoveryPhase("idle");
   };
 
   // Gate 13O-2K State C: run the existing safe payload repair from Home and
@@ -300,13 +364,13 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const requestRepairConfirmation = () => {
     setConfirmDialog({
       kind: "repair",
-      title: "Repair cloud restore data?",
+      title: "Repair missing estimate details?",
       lines: [
-        "This captures this device's original estimates into your cloud backup so they can be restored faithfully on any device.",
-        "It writes restore metadata to your cloud estimate records. Estimate totals and cloud records are not changed or deleted.",
-        "Nothing on this device is modified.",
+        "This uses the original estimate details on this device to repair missing estimate details in cloud backup.",
+        "Estimate totals are not changed.",
+        "Nothing on this device will be deleted.",
       ],
-      confirmLabel: "Repair Restore Data",
+      confirmLabel: "Repair Estimate Details",
     });
   };
 
@@ -335,6 +399,34 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       });
     } finally {
       setRepairing(false);
+    }
+  };
+
+  const retryRecoveryContinuation = async () => {
+    setContinuationResult(null);
+    setBackupResult(null);
+    setRecheckMessage("");
+    setRecoveryPhase("checking");
+    try {
+      const continuation = await runRecoveryContinuation({
+        configured: isSupabaseReady,
+        user,
+        company,
+        role,
+        storage: localStorage,
+        skippedEstimates: skippedEstimatesCount,
+        onPhase: (phase) => setRecoveryPhase(phase),
+      });
+      setContinuationResult(continuation);
+      setRecoveryPhase("done");
+      refreshCloudStatus();
+    } catch (error) {
+      setContinuationResult({
+        status: RECOVERY_CONTINUATION_STATUS.ERROR,
+        error: "Recovery could not continue right now.",
+        technicalDetail: String(error?.message || ""),
+      });
+      setRecoveryPhase("idle");
     }
   };
 
@@ -374,6 +466,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const runBackup = async () => {
     setBackingUp(true);
+    setContinuationResult(null);
     try {
       const result = await runSupabaseCloudOnboardingBackup({
         storageSnapshot: localStorage,
@@ -390,6 +483,77 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }
   };
 
+  const heading = continuationSucceeded || continuationPaused || recoveryBusy || backupBusy
+    ? "Recovery Assistant"
+    : isEmptyDevice
+      ? "Recovery Available"
+      : "Backup Available";
+
+  let bodyCopy = isEmptyDevice
+    ? `Recover your ${companyName || "cloud"} records on this device.`
+    : "This device has recovered work that may need to be backed up.";
+
+  if (recoveryBusy) {
+    bodyCopy = "Recovering customers, jobs, estimates, and invoices.";
+  } else if (backupBusy) {
+    bodyCopy = "Recovery finished. Backing up recovered data to cloud.";
+  } else if (continuationSucceeded) {
+    bodyCopy = "Recovery finished. Your data is backed up.";
+  } else if (continuationPaused) {
+    bodyCopy = "Recovery finished, but backup is paused.";
+  } else if (missingPayloadsBlocked) {
+    bodyCopy = "Most of your data can still be recovered safely on this device.";
+  } else if (localBackupBlocked) {
+    bodyCopy = "Backup is paused until recovered records are fixed.";
+  }
+
+  const secondaryStatus = continuationPaused
+    ? pausedReason
+    : continuationSucceeded && skippedEstimatesCount > 0
+      ? buildSkippedEstimateCopy(skippedEstimatesCount)
+      : missingPayloadsBlocked
+        ? buildSkippedEstimateCopy(missingEstimatePayloadCount)
+        : "";
+
+  const showTechnicalDetails = Boolean(
+    continuationResult?.technicalDetail
+    || continuationResult?.pausedReasonCode
+    || repairResult?.error
+    || safeRecoveryResult?.error
+  );
+
+  let primaryAction = {
+    label: "Not now",
+    onClick: dismiss,
+    disabled: false,
+  };
+
+  if (recoveryBusy) {
+    primaryAction = { label: "Recovering your data...", onClick: null, disabled: true };
+  } else if (backupBusy) {
+    primaryAction = { label: "Backing up...", onClick: null, disabled: true };
+  } else if (continuationSucceeded) {
+    primaryAction = { label: "Done", onClick: dismiss, disabled: false };
+  } else if (continuationPaused && backupPausedForJobLinks) {
+    primaryAction = { label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
+  } else if (continuationPaused) {
+    primaryAction = { label: "Try Again", onClick: retryRecoveryContinuation, disabled: false };
+  } else if (isEmptyDevice && restoreAvailable) {
+    primaryAction = { label: "Finish Recovery", onClick: requestRestoreConfirmation, disabled: busy };
+  } else if (missingPayloadsBlocked && repairAvailable) {
+    primaryAction = { label: "Repair Missing Estimate Details", onClick: requestRepairConfirmation, disabled: busy };
+  } else if (missingPayloadsBlocked) {
+    primaryAction = { label: "Finish Recovery", onClick: requestSafeRecovery, disabled: busy };
+  } else if (!isEmptyDevice && !localBackupBlocked) {
+    primaryAction = { label: backingUp ? "Backing up..." : "Back Up Now", onClick: runBackup, disabled: backingUp };
+  } else if (!isEmptyDevice && backupPausedForJobLinks) {
+    primaryAction = { label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
+  } else if (!isEmptyDevice) {
+    primaryAction = { label: "Try Again", onClick: recheckRestorePreview, disabled: busy };
+  } else {
+    primaryAction = { label: recheckState === "running" || checking ? "Checking..." : "Check Again", onClick: recheckRestorePreview, disabled: busy };
+  }
+
   return (
     <div
       className="pe-card"
@@ -403,53 +567,50 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       }}
     >
       <div style={{ fontSize: 14, fontWeight: 800, color: "rgba(230,241,248,0.96)" }}>
-        {isEmptyDevice ? "Cloud backup found" : "Cloud backup available"}
+        {heading}
       </div>
       <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(220,229,238,0.72)" }}>
-        {isEmptyDevice ? (
-          <>
-            Restore your {companyName || "cloud"} workspace to this device.
-            <br />
-            Includes customers, projects, estimates, invoices, templates, settings, and company profile.
-          </>
-        ) : (
-          "This device has local work. Back up this device before restoring, or manage restore from Settings."
-        )}
+        {bodyCopy}
       </div>
+
+      {continuationPaused || localBackupBlocked ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {pausedReason || "Backup is paused because some records need attention."}
+        </div>
+      ) : null}
+      {secondaryStatus ? (
+        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
+          {secondaryStatus}
+        </div>
+      ) : null}
+      {missingPayloadsBlocked && repairAvailable && !continuationPaused && !continuationSucceeded ? (
+        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
+          This device still has the original estimate details, so it can repair the missing cloud estimate details directly from here.
+        </div>
+      ) : null}
+      {missingPayloadsBlocked && !repairAvailable && !continuationPaused && !continuationSucceeded ? (
+        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
+          If you still have the old device, you can use it later to repair the missing estimate details for editing.
+        </div>
+      ) : null}
 
       {isEmptyDevice && restoreResult && restoreResult.status !== CLOUD_RESTORE_STATUS.RESTORED ? (
         <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
           {restoreErrorMessage(restoreResult)}
         </div>
       ) : null}
-      {isEmptyDevice && !restoreResult && !checking && !restoreAvailable ? (
-        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
-          {restoreBlockedReason}
-        </div>
-      ) : null}
-      {missingPayloadsBlocked && repairAvailable ? (
-        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
-          This device still has the original estimates, so it can repair the missing cloud restore data directly from here.
-        </div>
-      ) : null}
-      {missingPayloadsBlocked && !repairAvailable ? (
-        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
-          This device cannot rebuild missing estimate restore data because the original local estimates are not on this device. You can still recover safe cloud records here, or use another device that still has the original estimates to repair full estimate restore data.
-        </div>
-      ) : null}
-
       {backupResult ? (
-        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
+        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
           ? "rgba(187,247,208,0.92)"
           : "rgba(253,224,71,0.92)" }}
         >
           {backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
-            ? "This device has been backed up to the cloud."
-            : "Backup couldn't complete. Try again from Advanced Settings."}
+            ? "Backup finished. Your data is backed up."
+            : "Backup is paused because some records need attention."}
         </div>
       ) : null}
       {recheckMessage ? (
-        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: restoreAvailable ? "rgba(187,247,208,0.92)" : "rgba(191,219,254,0.92)" }}>
+        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(191,219,254,0.92)" }}>
           {recheckMessage}
         </div>
       ) : null}
@@ -458,133 +619,88 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {downloadMessage}
         </div>
       ) : null}
-
-      {repairResult ? (
-        repairResult.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED ? (
-          <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(187,247,208,0.92)" }}>
-            {`Repair complete. Restore data captured for ${Number(repairResult.estimatesUpdated || 0)} ${plural(repairResult.estimatesUpdated, "estimate", "estimates")}. Rechecking cloud status...`}
-          </div>
-        ) : (
-          <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
-            {repairResult.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.NO_LOCAL_ESTIMATES
-              ? "This device has no local estimates to repair from. Use a device that still has the original estimates."
-              : String(repairResult.error || "Unable to repair cloud restore data.")}
-          </div>
-        )
+      {repairResult?.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED ? (
+        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(187,247,208,0.92)" }}>
+          {`Estimate details repaired for ${Number(repairResult.estimatesUpdated || 0)} ${plural(repairResult.estimatesUpdated, "estimate", "estimates")}. Checking again...`}
+        </div>
+      ) : null}
+      {repairResult && repairResult.status !== ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {repairResult.status === ESTIMATE_PAYLOAD_UPDATE_STATUS.NO_LOCAL_ESTIMATES
+            ? "This device does not have the original estimate details needed for that repair."
+            : "Estimate details could not be repaired right now."}
+        </div>
+      ) : null}
+      {safeRecoveryResult?.status === SAFE_CLOUD_RECOVERY_STATUS.NOTHING_TO_RECOVER ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          No recoverable records were found in cloud backup.
+        </div>
+      ) : null}
+      {safeRecoveryResult?.status === SAFE_CLOUD_RECOVERY_STATUS.ERROR ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {String(safeRecoveryResult.error || "Recovery could not be completed.")}
+        </div>
+      ) : null}
+      {continuationResult?.status === RECOVERY_CONTINUATION_STATUS.ERROR ? (
+        <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
+          {String(continuationResult.error || "Recovery could not continue right now.")}
+        </div>
       ) : null}
 
-      {safeRecoveryResult ? (
-        safeRecoveryResult.status === SAFE_CLOUD_RECOVERY_STATUS.RECOVERED ? (
-          <>
-            <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(187,247,208,0.92)" }}>
-              {`Recovered ${safeRecoveryResult.recoveredCounts.customers} customers, ${safeRecoveryResult.recoveredCounts.projects} projects, ${safeRecoveryResult.recoveredCounts.estimates} estimates, ${safeRecoveryResult.recoveredCounts.invoices} invoices.`}
-              {Number(safeRecoveryResult.skippedEstimates || 0) > 0
-                ? ` Skipped ${safeRecoveryResult.skippedEstimates} ${plural(safeRecoveryResult.skippedEstimates, "estimate", "estimates")} missing restore payload.`
-                : ""}
-            </div>
-            {Number(safeRecoveryResult.skippedEstimates || 0) > 0 ? (
-              <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
-                To recover the skipped estimates, use a device that still has the original estimates to repair estimate restore data, then restore again.
-              </div>
-            ) : null}
-          </>
-        ) : safeRecoveryResult.status === SAFE_CLOUD_RECOVERY_STATUS.NOTHING_TO_RECOVER ? (
-          <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
-            No recoverable cloud records were found. Nothing was written to this device.
-          </div>
-        ) : (
-          <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
-            {String(safeRecoveryResult.error || "Safe recovery could not be completed.")}
-          </div>
-        )
-      ) : null}
-
-      {isEmptyDevice ? (
-        <>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {/* Gate 13O-2K: exactly one state-driven primary recovery action. */}
-            {restoreAvailable ? (
-              <button
-                type="button"
-                className="pe-btn"
-                disabled={busy}
-                onClick={requestRestoreConfirmation}
-              >
-                {restoring ? "Restoring..." : checking ? "Checking restore..." : "Restore This Device"}
-              </button>
-            ) : missingPayloadsBlocked && repairAvailable ? (
-              <button
-                type="button"
-                className="pe-btn"
-                disabled={busy}
-                onClick={requestRepairConfirmation}
-              >
-                {repairing ? "Repairing..." : "Repair Cloud Restore Data"}
-              </button>
-            ) : missingPayloadsBlocked ? (
-              <button
-                type="button"
-                className="pe-btn"
-                disabled={busy}
-                onClick={requestSafeRecovery}
-              >
-                {safeRecovering ? "Checking recoverable records..." : "Recover What Can Be Safely Recovered"}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="pe-btn"
-                disabled={busy}
-                onClick={recheckRestorePreview}
-              >
-                {recheckState === "running" || checking ? "Rechecking..." : "Recheck Cloud Status"}
-              </button>
-            )}
-            {!restoreAvailable ? (
-              <>
-                {missingPayloadsBlocked ? (
-                  <button
-                    type="button"
-                    className="pe-btn pe-btn-ghost"
-                    onClick={recheckRestorePreview}
-                    disabled={busy}
-                  >
-                    {recheckState === "running" || checking ? "Rechecking..." : "Recheck Cloud Status"}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="pe-btn pe-btn-ghost"
-                  onClick={downloadCloudBackupJson}
-                  disabled={busy || downloadingCloudBackup}
-                >
-                  {downloadingCloudBackup ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
-                </button>
-              </>
-            ) : null}
-            <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss} disabled={restoring}>
-              Not now
-            </button>
-          </div>
-          {!restoreAvailable ? (
-            <div className="pe-field-helper" style={{ opacity: 0.8 }}>
-              Download Cloud Backup JSON downloads an emergency cloud backup file. It does not automatically restore this device.
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="pe-btn" disabled={backingUp} onClick={runBackup}>
-            {backingUp ? "Backing up..." : "Back Up This Device"}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="pe-btn"
+          disabled={primaryAction.disabled}
+          onClick={primaryAction.onClick || undefined}
+        >
+          {primaryAction.label}
+        </button>
+        {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+          <button
+            type="button"
+            className="pe-btn pe-btn-ghost"
+            onClick={continuationPaused ? retryRecoveryContinuation : recheckRestorePreview}
+            disabled={busy || backupBusy || recoveryBusy || checking}
+          >
+            {backupBusy || recoveryBusy || recheckState === "running" || checking ? "Checking..." : "Try Again"}
           </button>
-          <button type="button" className="pe-btn pe-btn-ghost" onClick={navigateToCloudSettings}>
-            Manage Restore in Settings
+        ) : null}
+        {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+          <button
+            type="button"
+            className="pe-btn pe-btn-ghost"
+            onClick={downloadCloudBackupJson}
+            disabled={busy || downloadingCloudBackup}
+          >
+            {downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File"}
           </button>
-          <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss}>
+        ) : null}
+        {!continuationSucceeded ? (
+          <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss} disabled={busy}>
             Not now
           </button>
+        ) : null}
+      </div>
+      {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+        <div className="pe-field-helper" style={{ opacity: 0.8 }}>
+          Downloads an emergency backup file. It does not automatically restore or back up your account.
         </div>
-      )}
+      ) : null}
+      {showTechnicalDetails ? (
+        <details style={{ opacity: 0.86 }}>
+          <summary className="pe-field-helper" style={{ cursor: "pointer" }}>Technical details</summary>
+          <div className="pe-field-helper" style={{ marginTop: 6 }}>
+            {String(
+              continuationResult?.technicalDetail
+              || repairResult?.error
+              || safeRecoveryResult?.error
+              || restoreBlockedReason
+              || ""
+            )}
+          </div>
+        </details>
+      ) : null}
       <CloudConfirmDialog
         dialog={confirmDialog}
         onCancel={handleDialogCancel}

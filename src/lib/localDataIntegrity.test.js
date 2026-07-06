@@ -76,6 +76,17 @@ describe("localDataIntegrity", () => {
     expect(integrity.backupReadiness.canProceedAfterSafeRepair).toBe(true);
   });
 
+  test("detects estimate with a stale project link as repairable when other jobs still exist", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot({
+      estimates: [{ id: "est_1", projectId: "missing_project", customerId: "cust_1", estimateNumber: "EST-100", total: 100 }],
+    }));
+
+    expect(integrity.safeRepairs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "estimate_project_stale" }),
+    ]));
+    expect(integrity.blockers).toHaveLength(0);
+  });
+
   test("standalone invoice without projectId is not a blocker", () => {
     const integrity = scanLocalDataIntegrity(buildSnapshot({
       invoices: [{ id: "inv_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
@@ -131,6 +142,32 @@ describe("localDataIntegrity", () => {
     const rescanned = scanLocalDataIntegrity(repaired.snapshot);
     expect(rescanned.blockers).toHaveLength(0);
     expect(rescanned.safeRepairs).toHaveLength(0);
+  });
+
+  test("repair clears a stale estimate projectId without changing estimate totals or identifiers", () => {
+    const snapshot = buildSnapshot({
+      estimates: [{
+        id: "est_1",
+        projectId: "missing_project",
+        customerId: "cust_1",
+        estimateNumber: "EST-100",
+        total: 250,
+      }],
+    });
+
+    const repaired = applySafeLocalDataRepairs(snapshot);
+
+    expect(repaired.changed).toBe(true);
+    expect(repaired.repairs.staleEstimateProjectIds).toEqual([
+      expect.objectContaining({ estimateId: "est_1", staleProjectId: "missing_project" }),
+    ]);
+    expect(repaired.snapshot.estimates[0]).toEqual(expect.objectContaining({
+      id: "est_1",
+      projectId: "",
+      customerId: "cust_1",
+      estimateNumber: "EST-100",
+      total: 250,
+    }));
   });
 
   test("repair preserves a valid invoice projectId untouched", () => {

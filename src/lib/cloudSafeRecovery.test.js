@@ -1,4 +1,9 @@
 const mockExportSupabaseCloudBackupArtifact = jest.fn();
+const mockBuildLocalSnapshotFromStorage = jest.fn();
+const mockScanLocalDataIntegrity = jest.fn();
+const mockRepairStoredLocalDataIntegrity = jest.fn();
+const mockRunSupabaseCloudOnboardingBackup = jest.fn();
+const mockClearCloudBackupDirty = jest.fn();
 
 jest.mock("./supabaseCloudRestore", () => ({
   __esModule: true,
@@ -12,10 +17,34 @@ jest.mock("./supabaseCloudRestore", () => ({
   CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION: "cloud-backup-export-artifact-v1",
 }));
 
+jest.mock("./localDataIntegrity", () => ({
+  __esModule: true,
+  buildLocalSnapshotFromStorage: (...args) => mockBuildLocalSnapshotFromStorage(...args),
+  scanLocalDataIntegrity: (...args) => mockScanLocalDataIntegrity(...args),
+  repairStoredLocalDataIntegrity: (...args) => mockRepairStoredLocalDataIntegrity(...args),
+}));
+
+jest.mock("./supabaseCloudOnboarding", () => ({
+  __esModule: true,
+  runSupabaseCloudOnboardingBackup: (...args) => mockRunSupabaseCloudOnboardingBackup(...args),
+  CLOUD_ONBOARDING_STATUS: {
+    BACKUP_COMPLETED: "backup_completed",
+    NEEDS_ATTENTION: "needs_attention",
+  },
+}));
+
+jest.mock("./cloudBackupQueue", () => ({
+  __esModule: true,
+  clearCloudBackupDirty: (...args) => mockClearCloudBackupDirty(...args),
+}));
+
 const {
   previewSafeCloudRecovery,
   applySafeCloudRecovery,
+  runRecoveryContinuation,
+  describeBackupPauseReason,
   SAFE_CLOUD_RECOVERY_STATUS,
+  RECOVERY_CONTINUATION_STATUS,
 } = require("./cloudSafeRecovery");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
 
@@ -72,6 +101,12 @@ function buildWritableStorage() {
 
 beforeEach(() => {
   mockExportSupabaseCloudBackupArtifact.mockReset();
+  mockBuildLocalSnapshotFromStorage.mockReset();
+  mockBuildLocalSnapshotFromStorage.mockImplementation((storage) => ({ snapshot: storage?.__snapshot || {} }));
+  mockScanLocalDataIntegrity.mockReset();
+  mockRepairStoredLocalDataIntegrity.mockReset();
+  mockRunSupabaseCloudOnboardingBackup.mockReset();
+  mockClearCloudBackupDirty.mockReset();
 });
 
 describe("previewSafeCloudRecovery", () => {
@@ -213,5 +248,101 @@ describe("applySafeCloudRecovery", () => {
 
     expect(result.status).toBe(SAFE_CLOUD_RECOVERY_STATUS.ERROR);
     expect(storage.setItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("recovery continuation", () => {
+  test("maps estimate job-link blockers to contractor-safe language", () => {
+    expect(describeBackupPauseReason({ code: "estimate_project_missing" })).toBe(
+      "Some recovered estimates are not linked to a job."
+    );
+  });
+
+  test("repairs once and then backs up automatically when recovered data is safe", async () => {
+    const phases = [];
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [],
+      safeRepairs: [{ code: "estimate_project_stale" }],
+    });
+    mockRepairStoredLocalDataIntegrity.mockReturnValue({
+      changed: true,
+      repairs: { staleEstimateProjectIds: [{ estimateId: "est_1", staleProjectId: "missing_project" }] },
+      integrity: { blockers: [], safeRepairs: [] },
+    });
+    mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
+      status: "backup_completed",
+    });
+
+    const result = await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage: { __snapshot: {} },
+      skippedEstimates: 0,
+      onPhase: (phase) => phases.push(phase),
+    });
+
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP);
+    expect(result.repairChanged).toBe(true);
+    expect(mockRunSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+    }));
+    expect(phases).toEqual(["checking", "repairing", "backing_up"]);
+  });
+
+  test("pauses with job-language when a blocker remains after the recheck", async () => {
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [{ code: "estimate_project_missing", message: "One or more estimates reference a project id that is not present locally." }],
+      safeRepairs: [],
+    });
+
+    const result = await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage: { __snapshot: {} },
+      skippedEstimates: 3,
+    });
+
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.PAUSED);
+    expect(result.pausedReason).toBe("Some recovered estimates are not linked to a job.");
+    expect(result.pausedReasonCode).toBe("estimate_project_missing");
+    expect(mockRunSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  });
+
+  test("treats skipped-estimate-only mismatch as a successful backup and clears the queue", async () => {
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [],
+      safeRepairs: [],
+    });
+    mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
+      status: "needs_attention",
+      writeResult: { ok: true },
+      verification: {
+        ok: true,
+        tableResults: [
+          { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est_1"] },
+          { table: "estimate_line_items", status: "mismatch", countOnly: true, localCount: 0, cloudCount: 2 },
+          { table: "customers", status: "matched" },
+        ],
+      },
+    });
+
+    const result = await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage: { __snapshot: {} },
+      skippedEstimates: 1,
+    });
+
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED);
+    expect(mockClearCloudBackupDirty).toHaveBeenCalledWith("safe_recovery_backup_success");
   });
 });
