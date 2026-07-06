@@ -79,6 +79,11 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
       state = CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS;
     } else if (
       status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
+      && onboardingStatus?.automaticSafeRepair?.attempted
+    ) {
+      state = CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS;
+    } else if (
+      status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
       || status === CLOUD_ONBOARDING_STATUS.ERROR
     ) {
       state = CLOUD_RESTORE_PROMPT_STATE.NEEDS_ATTENTION;

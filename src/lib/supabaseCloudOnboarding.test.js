@@ -4,6 +4,7 @@ const mockRunSupabaseMigrationWrite = jest.fn();
 const mockRunSupabaseCloudVerification = jest.fn();
 const mockCheckEstimateRestorePayloadProtection = jest.fn();
 const mockUpdateEstimateRestorePayloads = jest.fn();
+const mockRepairStoredLocalDataIntegrity = jest.fn();
 
 jest.mock("./supabaseMigrationPreview", () => ({
   __esModule: true,
@@ -38,6 +39,11 @@ jest.mock("./supabaseEstimateRestorePayload", () => ({
     COMPLETED: "completed",
     ERROR: "error",
   },
+}));
+
+jest.mock("./localDataIntegrity", () => ({
+  __esModule: true,
+  repairStoredLocalDataIntegrity: (...args) => mockRepairStoredLocalDataIntegrity(...args),
 }));
 
 const {
@@ -131,6 +137,26 @@ function buildPayloadRepairResult(overrides = {}) {
   };
 }
 
+function buildIntegrity(overrides = {}) {
+  return {
+    blockers: [],
+    warnings: [],
+    safeRepairs: [],
+    summary: {
+      blockersCount: 0,
+      warningsCount: 0,
+      repairsAvailableCount: 0,
+    },
+    backupReadiness: {
+      blocked: false,
+      safe: true,
+      canProceedAfterSafeRepair: false,
+      firstBlocker: null,
+    },
+    ...overrides,
+  };
+}
+
 const baseContext = {
   storageSnapshot: { getItem: () => null },
   configured: true,
@@ -162,8 +188,14 @@ describe("supabaseCloudOnboarding", () => {
     mockRunSupabaseCloudVerification.mockReset();
     mockCheckEstimateRestorePayloadProtection.mockReset();
     mockUpdateEstimateRestorePayloads.mockReset();
+    mockRepairStoredLocalDataIntegrity.mockReset();
     mockCheckEstimateRestorePayloadProtection.mockResolvedValue(buildPayloadProtection());
     mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
+    mockRepairStoredLocalDataIntegrity.mockReturnValue({
+      changed: false,
+      repairs: {},
+      integrity: buildIntegrity(),
+    });
   });
 
   describe("checkSupabaseCloudOnboardingStatus", () => {
@@ -251,6 +283,83 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH);
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
       expect(result.noWritesPerformed).toBe(true);
+    });
+
+    test("auto-runs one safe metadata repair and then backs up before reporting status", async () => {
+      mockCreateSupabaseMigrationPreview
+        .mockResolvedValueOnce(buildPreview({
+          integrity: buildIntegrity({
+            safeRepairs: [{ code: "estimate_project_stale", details: { count: 2, entityIds: ["est_1", "est_2"] } }],
+            backupReadiness: {
+              blocked: false,
+              safe: false,
+              canProceedAfterSafeRepair: true,
+              firstBlocker: null,
+            },
+          }),
+        }))
+        .mockResolvedValueOnce(buildPreview({
+          integrity: buildIntegrity(),
+        }));
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRepairStoredLocalDataIntegrity.mockReturnValue({
+        changed: true,
+        repairs: { staleEstimateProjectIds: [{ estimateId: "est_1", staleProjectId: "proj_missing" }] },
+        integrity: buildIntegrity(),
+      });
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+
+      expect(mockRepairStoredLocalDataIntegrity).toHaveBeenCalledWith(baseContext.storageSnapshot);
+      expect(mockRunSupabaseMigrationWrite).toHaveBeenCalledTimes(1);
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
+      expect(result.automaticSafeRepair).toEqual(expect.objectContaining({
+        attempted: true,
+        succeeded: true,
+        failed: false,
+        repairChanged: true,
+      }));
+    });
+
+    test("safe metadata repair failure reports contractor-safe needs_attention without writing cloud data", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        integrity: buildIntegrity({
+          safeRepairs: [{ code: "estimate_project_stale", message: "Safe repair can detach a stale project link on 2 estimates." }],
+          backupReadiness: {
+            blocked: false,
+            safe: false,
+            canProceedAfterSafeRepair: true,
+            firstBlocker: null,
+          },
+        }),
+      }));
+      mockRepairStoredLocalDataIntegrity.mockReturnValue({
+        changed: false,
+        repairs: {},
+        integrity: buildIntegrity({
+          safeRepairs: [{ code: "estimate_project_stale", message: "Safe repair can detach a stale project link on 2 estimates." }],
+          backupReadiness: {
+            blocked: false,
+            safe: false,
+            canProceedAfterSafeRepair: true,
+            firstBlocker: null,
+          },
+        }),
+      });
+
+      const result = await checkSupabaseCloudOnboardingStatus(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(result.error).toBe("We could not finish protecting this device automatically.");
+      expect(result.automaticSafeRepair).toEqual(expect.objectContaining({
+        attempted: true,
+        failed: true,
+      }));
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
     });
 
     test("falls back to verification when the cloud count check itself is unavailable", async () => {

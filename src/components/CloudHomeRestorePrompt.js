@@ -243,6 +243,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const repairAvailable = missingPayloadsBlocked && countLocalEstimates() > 0;
   const busy = restoring || checking || safeRecovering || repairing;
   const currentVerification = backupResult?.verification || onboardingStatus?.verification || null;
+  const automaticSafeRepair = onboardingStatus?.automaticSafeRepair || null;
   const skippedEstimatesCount = Number(
     (
       completedRecoveryStatus?.skippedEstimateCount
@@ -302,6 +303,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const oldDeviceBackupProtectionNeeded = !isEmptyDevice
     && !olderEstimatesKeptInCloud
     && needsOldDeviceForBackupProtection(currentVerification);
+  const automaticSafeRepairFailed = Boolean(automaticSafeRepair?.failed);
 
   const dismiss = () => {
     setContinuationResult(null);
@@ -615,6 +617,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const heading = showRecoveryFinishedState
     ? "Recovery finished."
+    : automaticSafeRepairFailed
+      ? "Backup needs attention."
     : oldDeviceBackupProtectionNeeded
       ? "Backup needs old device."
     : continuationSucceeded || continuationPaused || recoveryBusy || backupBusy
@@ -633,6 +637,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     bodyCopy = "Recovery finished. Backing up recovered data to cloud.";
   } else if (showRecoveryFinishedState) {
     bodyCopy = "Your data is back on this device.";
+  } else if (automaticSafeRepairFailed) {
+    bodyCopy = "We could not finish protecting this device automatically.";
   } else if (oldDeviceBackupProtectionNeeded) {
     bodyCopy = "Some older estimates need the original device to finish backup protection.";
   } else if (continuationSucceeded) {
@@ -673,6 +679,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     primaryAction = { id: "backing_up", label: "Backing up...", onClick: null, disabled: true };
   } else if (showRecoveryFinishedState) {
     primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
+  } else if (automaticSafeRepairFailed) {
+    primaryAction = { id: "recheck_restore_preview", label: "Try Again", onClick: recheckRestorePreview, disabled: busy };
   } else if (oldDeviceBackupProtectionNeeded) {
     primaryAction = { id: "dismiss", label: "Not now", onClick: dismiss, disabled: false };
   } else if (continuationSucceeded) {
@@ -712,6 +720,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   addAction(primaryAction, "pe-btn");
 
   const showRetryAction = !showRecoveryFinishedState && (
+    automaticSafeRepairFailed
+    ||
     missingPayloadsBlocked
     || (isEmptyDevice && !restoreAvailable)
     || continuationPaused
@@ -729,7 +739,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }, "pe-btn pe-btn-ghost");
   }
 
-  if (showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || (isEmptyDevice && !restoreAvailable)) {
+  if (showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || automaticSafeRepairFailed || (isEmptyDevice && !restoreAvailable)) {
     addAction({
       id: "download_emergency_backup_file",
       label: downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File",
@@ -860,7 +870,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           </button>
         ))}
       </div>
-      {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || (isEmptyDevice && !restoreAvailable)) ? (
+      {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || automaticSafeRepairFailed || (isEmptyDevice && !restoreAvailable)) ? (
         <div className="pe-field-helper" style={{ opacity: 0.8 }}>
           Downloads an emergency backup file. It does not automatically restore or back up your account.
         </div>

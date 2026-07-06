@@ -786,7 +786,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
   });
 
-  test("stale invoice project link shows a repairable blocker, not a permanent one, and repair clears it", async () => {
+  test("automatic safe repair failure hides repair jargon and shows contractor-safe retry copy", async () => {
     useSupabaseAuth.mockReturnValue(buildAuthState({
       configured: true,
       user: { id: "user_2", email: "owner@example.com" },
@@ -828,56 +828,29 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       expect.objectContaining({ code: "invoice_project_stale" }),
     ]));
 
-    checkSupabaseCloudOnboardingStatus
-      .mockResolvedValueOnce({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
-        preview: { integrity: staleIntegrity },
-        verification: null,
-        writeResult: null,
-        noWritesPerformed: true,
-      })
-      .mockResolvedValue({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
-        preview: { integrity: scanLocalDataIntegrity({
-          customers: [{ id: "cust_1", name: "Acme Co" }],
-          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
-          estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
-          invoices: [{ ...staleInvoice, projectId: "" }],
-        }) },
-        verification: null,
-        writeResult: null,
-        noWritesPerformed: true,
-      });
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: { integrity: staleIntegrity },
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: false,
+      automaticSafeRepair: {
+        attempted: true,
+        failed: true,
+        technicalDetail: "Safe repair can detach a stale project link on 1 invoice.",
+      },
+    });
 
     await act(async () => {
       render(<AdvancedSettingsScreen />);
     });
 
     expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
-    expect(screen.getByText(/Safe repair can detach a stale project link/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Repair Safe Metadata" })).toBeInTheDocument();
-    // Not a permanent blocker -- backup remains available alongside the repair action.
-    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
-    });
-
-    expect(screen.getByText("Safe metadata repair completed.")).toBeInTheDocument();
-
-    const repairedInvoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
-    expect(repairedInvoices[0]).toEqual(expect.objectContaining({
-      id: "inv_1",
-      projectId: "",
-      invoiceNumber: "INV-100",
-      status: "sent",
-      total: 100,
-      amountPaid: 25,
-      balanceRemaining: 75,
-      payments: [{ id: "pay_1", amount: 25 }],
-    }));
+    expect(screen.getByText("We could not finish protecting this device automatically.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Repair Safe Metadata" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale project link/i)).not.toBeInTheDocument();
   });
 
   test("cloud_available_empty_device state explains a fresh device, offers restore only after eligibility check, and never calls migration write", async () => {
@@ -1912,44 +1885,36 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       invoices: [staleInvoice],
     });
 
-    checkSupabaseCloudOnboardingStatus
-      .mockResolvedValueOnce({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
-        preview: { integrity: staleIntegrity },
-        verification: null,
-        writeResult: null,
-        noWritesPerformed: true,
-      })
-      .mockResolvedValue({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
-        preview: {
-          integrity: scanLocalDataIntegrity({
-            customers: [{ id: "cust_1", name: "Acme Co" }],
-            projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
-            estimates: [{ id: "est_1", projectId: "proj_1", status: "approved", estimateNumber: "EST-1" }],
-            invoices: [{ ...staleInvoice, projectId: "" }],
-          }),
-        },
-        verification: {
-          ok: true,
-          allMatched: false,
-          notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
-          tableResults: [
-            { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est"], countOnly: false },
-          ],
-        },
-        writeResult: null,
-        noWritesPerformed: true,
-      });
-
-    await act(async () => {
-      render(<AdvancedSettingsScreen />);
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: {
+        integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", status: "approved", estimateNumber: "EST-1" }],
+          invoices: [{ ...staleInvoice, projectId: "" }],
+        }),
+      },
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
+        tableResults: [
+          { table: "estimates", status: "mismatch", missingLegacyIds: [], extraLegacyIds: ["cloud_only_est"], countOnly: false },
+        ],
+      },
+      writeResult: null,
+      noWritesPerformed: false,
+      automaticSafeRepair: {
+        attempted: true,
+        succeeded: true,
+        repairChanged: true,
+      },
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
+      render(<AdvancedSettingsScreen />);
     });
 
     expect(await screen.findByText("Cloud and this device are different.")).toBeInTheDocument();
@@ -1985,42 +1950,28 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       invoices: [staleInvoice],
     });
 
-    checkSupabaseCloudOnboardingStatus
-      .mockResolvedValueOnce({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
-        preview: { integrity: staleIntegrity },
-        verification: null,
-        writeResult: null,
-        noWritesPerformed: true,
-      })
-      .mockResolvedValue({
-        onboardingVersion: "supabase-cloud-onboarding-v1",
-        status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
-        preview: {
-          integrity: scanLocalDataIntegrity({
-            customers: [{ id: "cust_1", name: "Acme Co" }],
-            projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
-            estimates: [{ id: "est_1", projectId: "proj_1", status: "approved" }],
-            invoices: [{ ...staleInvoice, projectId: "" }],
-          }),
-        },
-        verification: null,
-        writeResult: null,
-        noWritesPerformed: true,
-      });
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: { integrity: staleIntegrity },
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: false,
+      automaticSafeRepair: {
+        attempted: true,
+        failed: true,
+        technicalDetail: "Safe repair can detach a stale project link on 1 invoice.",
+      },
+    });
 
     await act(async () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Repair Safe Metadata" }));
-    });
-
     expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+    expect(screen.getByText("We could not finish protecting this device automatically.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Repair Safe Metadata" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
   });
 

@@ -87,3 +87,33 @@ test("refreshes cloud status when partial recovery status changes", async () => 
   await waitFor(() => expect(checkSupabaseCloudOnboardingStatus).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(result.current.onboardingStatus?.status).toBe("already_backed_up"));
 });
+
+test("surfaces automatic safe repair failure state from onboarding checks", async () => {
+  checkSupabaseCloudOnboardingStatus.mockReset();
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+    status: "needs_attention",
+    automaticSafeRepair: {
+      attempted: true,
+      failed: true,
+      technicalDetail: "Safe repair can detach a stale project link on 2 estimates.",
+    },
+    preview: {
+      integrity: {
+        blockers: [],
+        safeRepairs: [{ code: "estimate_project_stale" }],
+        summary: { blockersCount: 0, warningsCount: 0, repairsAvailableCount: 1 },
+        backupReadiness: {
+          blocked: false,
+          safe: false,
+          canProceedAfterSafeRepair: true,
+          firstBlocker: null,
+        },
+      },
+    },
+  });
+
+  const { result } = renderHook(() => useCloudBackupStatus());
+
+  await waitFor(() => expect(result.current.onboardingStatus?.automaticSafeRepair?.failed).toBe(true));
+  expect(result.current.chipState).toBe("backup_failed");
+});

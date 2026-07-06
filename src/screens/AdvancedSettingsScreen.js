@@ -619,9 +619,10 @@ export default function AdvancedSettingsScreen({
     }
   };
 
-  // Read-only: checks whether the cloud already matches local data so the
-  // contractor-facing Cloud Backup section can show a simple state without
-  // requiring any click. This never writes.
+  // Checks whether the cloud already matches local data so the contractor-
+  // facing Cloud Backup section can show a simple state without requiring
+  // any click. If the only issue is an already-classified safe metadata
+  // repair, the onboarding helper will fix it and continue automatically.
   useEffect(() => {
     let active = true;
     const userId = String(user?.id || "").trim();
@@ -790,6 +791,12 @@ export default function AdvancedSettingsScreen({
   ).trim();
   const replaceEstimateLineItemsPermissionBlocked = hasEstimateLineItemsReplacePermissionError(onboardingStatus);
   const localIntegrity = onboardingStatus?.preview?.integrity || migrationPreview?.integrity || null;
+  const automaticSafeRepair = onboardingStatus?.automaticSafeRepair || null;
+  const automaticSafeRepairFailed = Boolean(automaticSafeRepair?.failed);
+  const automaticSafeRepairRunning = Boolean(
+    onboardingStatusBusy
+    && localIntegrity?.backupReadiness?.canProceedAfterSafeRepair
+  );
   const cloudDecision = getCloudDataDecision({
     localIntegrity,
     cloudVerification: onboardingStatus?.verification || cloudVerification,
@@ -811,7 +818,7 @@ export default function AdvancedSettingsScreen({
       ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
       : "")
       || cloudDecision?.firstBlocker?.message
-      || cloudDecision?.firstSafeRepair?.message
+      || (showDeveloperCloudTools ? cloudDecision?.firstSafeRepair?.message : "")
       || backupAttentionDetail
       || ""
   ).trim();
@@ -1692,7 +1699,11 @@ export default function AdvancedSettingsScreen({
                 ) : onboardingBackupBusy ? (
                   <div className="pe-field-helper">Backing up your data...</div>
                 ) : onboardingStatusBusy && !onboardingStatus ? (
-                  <div className="pe-field-helper">Checking cloud backup status...</div>
+                  <div className="pe-field-helper">
+                    {localIntegrity?.backupReadiness?.canProceedAfterSafeRepair
+                      ? "Finishing backup protection."
+                      : "Checking cloud backup status..."}
+                  </div>
                 ) : onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.NO_LOCAL_DATA ? (
                   <>
                     <div className="pe-field-helper">This device has no saved work yet.</div>
@@ -1763,10 +1774,18 @@ export default function AdvancedSettingsScreen({
                   || cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                      Cloud backup needs attention.
+                      {automaticSafeRepairRunning ? "Finishing backup protection." : "Cloud backup needs attention."}
                     </div>
                     {cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE ? (
                       <div className="pe-field-helper">Cloud data is not fully restorable yet.</div>
+                    ) : automaticSafeRepairRunning ? (
+                      <div className="pe-field-helper">
+                        We found a small backup cleanup this device can fix safely. Finishing that now.
+                      </div>
+                    ) : automaticSafeRepairFailed ? (
+                      <div className="pe-field-helper">
+                        We could not finish protecting this device automatically.
+                      </div>
                     ) : (
                       <div className="pe-field-helper">
                         {showDeveloperCloudTools
@@ -1779,18 +1798,18 @@ export default function AdvancedSettingsScreen({
                         {cloudBackupDetail}
                       </div>
                     ) : null}
-                    {cloudDecision.safeRepairsAvailable ? (
+                    {showDeveloperCloudTools && cloudDecision.safeRepairsAvailable && !automaticSafeRepairRunning && !automaticSafeRepairFailed ? (
                       <div className="pe-field-helper">
                         We&apos;ll repair safe metadata before backing up. Totals, payments, and documents will not be changed.
                       </div>
                     ) : null}
-                    {repairResult?.changed ? (
+                    {showDeveloperCloudTools && repairResult?.changed ? (
                       <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>
                         Safe metadata repair completed.
                       </div>
                     ) : null}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {cloudDecision.safeRepairsAvailable ? (
+                      {showDeveloperCloudTools && cloudDecision.safeRepairsAvailable && !automaticSafeRepairRunning && !automaticSafeRepairFailed ? (
                         <button
                           type="button"
                           className="pe-btn pe-btn-ghost"
@@ -1800,7 +1819,17 @@ export default function AdvancedSettingsScreen({
                           {repairBusy ? "Repairing..." : "Repair Safe Metadata"}
                         </button>
                       ) : null}
-                      {(cloudDecision.safeRepairsAvailable || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP) && !cloudDecision.firstBlocker ? (
+                      {automaticSafeRepairFailed ? (
+                        <button
+                          type="button"
+                          className="pe-btn"
+                          onClick={runCloudStatusRecheck}
+                          disabled={onboardingStatusBusy}
+                        >
+                          {onboardingStatusBusy ? "Checking..." : "Try Again"}
+                        </button>
+                      ) : null}
+                      {!automaticSafeRepairRunning && !automaticSafeRepairFailed && (cloudDecision.safeRepairsAvailable || onboardingStatus?.status === CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP) && !cloudDecision.firstBlocker ? (
                         <button
                           type="button"
                           className="pe-btn"

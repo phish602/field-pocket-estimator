@@ -723,6 +723,43 @@ test("unknown incomplete cloud estimates show the old-device backup protection s
   expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
 });
 
+test("automatic safe backup repair failure shows contractor-safe retry copy without repair jargon", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+    preview: {
+      integrity: {
+        blockers: [],
+        safeRepairs: [{
+          code: "estimate_project_stale",
+          message: "Safe repair can detach a stale project link on 2 estimates.",
+        }],
+        summary: { blockersCount: 0, warningsCount: 0, repairsAvailableCount: 1 },
+        backupReadiness: {
+          blocked: false,
+          safe: false,
+          canProceedAfterSafeRepair: true,
+          firstBlocker: null,
+        },
+      },
+    },
+    automaticSafeRepair: {
+      attempted: true,
+      failed: true,
+      technicalDetail: "Safe repair can detach a stale project link on 2 estimates.",
+    },
+    noWritesPerformed: false,
+  });
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Backup needs attention.")).toBeInTheDocument();
+  expect(screen.getByText("We could not finish protecting this device automatically.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
+  expect(screen.queryByText("Repair Safe Metadata")).not.toBeInTheDocument();
+  expect(screen.queryByText(/stale project link/i)).not.toBeInTheDocument();
+});
+
 test("Back Up Now runs the existing onboarding backup path and reports success plainly", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });

@@ -3,6 +3,7 @@ import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "./su
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
+import { repairStoredLocalDataIntegrity } from "./localDataIntegrity";
 import {
   checkEstimateRestorePayloadProtection,
   updateEstimateRestorePayloads,
@@ -33,6 +34,8 @@ export const CLOUD_ONBOARDING_STATUS = {
   NEEDS_ATTENTION: "needs_attention",
   ERROR: "error",
 };
+
+const automaticSafeRepairRuns = new Map();
 
 function asText(value) {
   return String(value || "").trim();
@@ -104,6 +107,7 @@ function buildStatusResult(status, extra = {}) {
     verification: null,
     writeResult: null,
     noWritesPerformed: true,
+    automaticSafeRepair: null,
     ...extra,
   };
 }
@@ -126,11 +130,117 @@ function getRepairableMissingEstimatePayloadIds(protectionCheck) {
     : [];
 }
 
-// Phase A: read-only status check. Runs migration preview, and cloud
-// verification only when both sides might have data, to classify this
-// device/workspace pair (signed out, no workspace, no data anywhere, cloud
-// data on an empty device, ready to back up, already matched, or a
-// local/cloud mismatch needing review). Never writes, never restores.
+function hasAutomaticSafeRepairCandidate(preview) {
+  return Boolean(preview?.integrity?.backupReadiness?.canProceedAfterSafeRepair);
+}
+
+function buildAutomaticSafeRepairState(extra = {}) {
+  return {
+    attempted: false,
+    succeeded: false,
+    failed: false,
+    repairChanged: false,
+    technicalDetail: "",
+    ...extra,
+  };
+}
+
+function buildAutomaticSafeRepairFailureResult({
+  preview = null,
+  repairedIntegrity = null,
+  technicalDetail = "",
+  writeResult = null,
+  verification = null,
+} = {}) {
+  return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+    preview: preview ? { ...preview, integrity: repairedIntegrity || preview.integrity || null } : null,
+    verification,
+    writeResult,
+    error: "We could not finish protecting this device automatically.",
+    noWritesPerformed: false,
+    automaticSafeRepair: buildAutomaticSafeRepairState({
+      attempted: true,
+      failed: true,
+      technicalDetail: asText(technicalDetail),
+    }),
+  });
+}
+
+async function runAutomaticSafeRepairAndBackup({
+  preview,
+  storageSnapshot,
+  configured,
+  user,
+  company,
+  role,
+} = {}) {
+  let repaired;
+  try {
+    repaired = repairStoredLocalDataIntegrity(storageSnapshot);
+  } catch (error) {
+    return buildAutomaticSafeRepairFailureResult({
+      preview,
+      technicalDetail: asText(error?.message) || "Automatic safe repair could not run.",
+    });
+  }
+
+  const repairedIntegrity = repaired?.integrity || preview?.integrity || null;
+  const remainingSafeRepairs = Array.isArray(repairedIntegrity?.safeRepairs) ? repairedIntegrity.safeRepairs : [];
+  const firstRemainingIssue = repairedIntegrity?.backupReadiness?.firstBlocker || remainingSafeRepairs[0] || null;
+
+  if (!repaired?.changed || repairedIntegrity?.backupReadiness?.blocked || remainingSafeRepairs.length > 0) {
+    return buildAutomaticSafeRepairFailureResult({
+      preview,
+      repairedIntegrity,
+      technicalDetail: asText(firstRemainingIssue?.message) || "Automatic safe repair could not clear the remaining backup issue.",
+    });
+  }
+
+  let backupResult;
+  try {
+    backupResult = await runSupabaseCloudOnboardingBackup({
+      storageSnapshot,
+      configured,
+      user,
+      company,
+      role,
+    });
+  } catch (error) {
+    return buildAutomaticSafeRepairFailureResult({
+      preview,
+      repairedIntegrity,
+      technicalDetail: asText(error?.message) || "Automatic backup protection did not finish cleanly.",
+    });
+  }
+
+  if (backupResult?.status !== CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
+    return buildAutomaticSafeRepairFailureResult({
+      preview: backupResult?.preview || preview,
+      repairedIntegrity: backupResult?.preview?.integrity || repairedIntegrity,
+      technicalDetail: asText(
+        backupResult?.writeResult?.notices?.find((notice) => notice?.level !== "info")?.message
+        || backupResult?.verification?.notices?.find((notice) => notice?.level !== "info")?.message
+        || backupResult?.error
+      ) || "Automatic backup protection did not finish cleanly.",
+      writeResult: backupResult?.writeResult || null,
+      verification: backupResult?.verification || null,
+    });
+  }
+
+  return {
+    ...backupResult,
+    automaticSafeRepair: buildAutomaticSafeRepairState({
+      attempted: true,
+      succeeded: true,
+      repairChanged: Boolean(repaired?.changed),
+    }),
+  };
+}
+
+// Phase A: status check. Runs migration preview and, when the only problem
+// is an already-classified safe local metadata repair, finishes that repair
+// plus one guarded backup attempt automatically before returning a user-
+// facing status. Otherwise it remains read-only.
 export async function checkSupabaseCloudOnboardingStatus({
   storageSnapshot,
   configured = false,
@@ -147,6 +257,28 @@ export async function checkSupabaseCloudOnboardingStatus({
     const preview = await createSupabaseMigrationPreview(context);
     if (preview?.integrity?.backupReadiness?.blocked) {
       return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
+    }
+    if (hasAutomaticSafeRepairCandidate(preview)) {
+      const runKey = `${asText(company?.id)}:${asText(user?.id)}:${JSON.stringify(
+        (Array.isArray(preview?.integrity?.safeRepairs) ? preview.integrity.safeRepairs : []).map((issue) => ({
+          code: asText(issue?.code),
+          count: Number(issue?.details?.count || 0),
+          entityIds: Array.isArray(issue?.details?.entityIds) ? issue.details.entityIds : [],
+        }))
+      )}`;
+      if (!automaticSafeRepairRuns.has(runKey)) {
+        automaticSafeRepairRuns.set(runKey, runAutomaticSafeRepairAndBackup({
+          preview,
+          storageSnapshot,
+          configured,
+          user,
+          company,
+          role,
+        }).finally(() => {
+          automaticSafeRepairRuns.delete(runKey);
+        }));
+      }
+      return automaticSafeRepairRuns.get(runKey);
     }
     const localCoreCount = sumCoreDocCounts(preview?.localCounts);
     const cloudCountKnown = Boolean(preview?.cloudCountCheckAvailable);
