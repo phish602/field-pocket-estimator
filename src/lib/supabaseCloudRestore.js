@@ -893,6 +893,11 @@ export async function exportSupabaseCloudBackupArtifact({
   const estimateRows = fetched.estimates;
   const payloadBackedEstimates = estimateRows.filter((row) => hasValidRestorePayload(row));
   const missingPayloadCount = estimateRows.length - payloadBackedEstimates.length;
+  const missingPayloadLegacyIds = estimateRows
+    .filter((row) => !hasValidRestorePayload(row))
+    .map((row) => asText(row?.legacy_local_id))
+    .filter(Boolean)
+    .sort();
 
   let records;
   try {
@@ -917,7 +922,10 @@ export async function exportSupabaseCloudBackupArtifact({
       "warning",
       "estimates_missing_restore_payload_excluded",
       `${missingPayloadCount} cloud estimate(s) have no restore payload and are not included as importable estimates. Run Settings -> Update Estimate Restore Payloads on a device that still has the original estimates, then export again.`,
-      { missingRestorePayloadCount: missingPayloadCount }
+      {
+        missingRestorePayloadCount: missingPayloadCount,
+        missingLegacyIds: missingPayloadLegacyIds,
+      }
     ));
   }
   if (appBundle.status !== "available") {
