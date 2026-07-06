@@ -100,6 +100,16 @@ function isJobLinkIssue(code) {
   return normalized === "estimate_project_missing" || normalized === "estimate_project_stale";
 }
 
+function isGenericBackupPauseStatus(code) {
+  const normalized = String(code || "").trim();
+  return (
+    normalized === ""
+    || normalized === "backup_incomplete"
+    || normalized === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
+    || normalized === CLOUD_ONBOARDING_STATUS.ERROR
+  );
+}
+
 function buildSkippedEstimateCopy(count) {
   const total = Number(count || 0);
   if (total <= 0) return "";
@@ -220,11 +230,22 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     || continuationResult?.status === RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED;
   const recoveryBusy = recoveryPhase === "recovering" || recoveryPhase === "checking" || recoveryPhase === "repairing";
   const backupBusy = recoveryPhase === "backing_up";
-  const pausedReasonCode = String(continuationResult?.pausedReasonCode || localFirstBlocker?.code || "");
-  const pausedReason = continuationResult?.pausedReason
-    || (localFirstBlocker ? describeBackupPauseReason(localFirstBlocker) : "");
-  const backupPausedForJobLinks = isJobLinkIssue(pausedReasonCode);
   const localBackupBlocked = !isEmptyDevice && Number(localBlockersCount || 0) > 0;
+  const localPausedReasonCode = String(localFirstBlocker?.code || "");
+  const localPausedReason = localFirstBlocker ? describeBackupPauseReason(localFirstBlocker) : "";
+  const preferLocalPausedReason = continuationPaused
+    && localBackupBlocked
+    && isGenericBackupPauseStatus(continuationResult?.pausedReasonCode);
+  const pausedReasonCode = String(
+    (preferLocalPausedReason ? localPausedReasonCode : continuationResult?.pausedReasonCode)
+    || localPausedReasonCode
+    || ""
+  );
+  const pausedReason = (
+    preferLocalPausedReason ? localPausedReason : continuationResult?.pausedReason
+  ) || localPausedReason;
+  const pausedMessage = pausedReason || "Backup is paused because some records need attention.";
+  const backupPausedForJobLinks = isJobLinkIssue(pausedReasonCode);
 
   const dismiss = () => {
     writeDismissed();
@@ -507,9 +528,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     bodyCopy = "Backup is paused until recovered records are fixed.";
   }
 
-  const secondaryStatus = continuationPaused
-    ? pausedReason
-    : continuationSucceeded && skippedEstimatesCount > 0
+  const secondaryStatus = continuationSucceeded && skippedEstimatesCount > 0
       ? buildSkippedEstimateCopy(skippedEstimatesCount)
       : missingPayloadsBlocked
         ? buildSkippedEstimateCopy(missingEstimatePayloadCount)
@@ -523,35 +542,86 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   );
 
   let primaryAction = {
+    id: "dismiss",
     label: "Not now",
     onClick: dismiss,
     disabled: false,
   };
 
   if (recoveryBusy) {
-    primaryAction = { label: "Recovering your data...", onClick: null, disabled: true };
+    primaryAction = { id: "recovering", label: "Recovering your data...", onClick: null, disabled: true };
   } else if (backupBusy) {
-    primaryAction = { label: "Backing up...", onClick: null, disabled: true };
+    primaryAction = { id: "backing_up", label: "Backing up...", onClick: null, disabled: true };
   } else if (continuationSucceeded) {
-    primaryAction = { label: "Done", onClick: dismiss, disabled: false };
+    primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
   } else if (continuationPaused && backupPausedForJobLinks) {
-    primaryAction = { label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
+    primaryAction = { id: "fix_job_links", label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
   } else if (continuationPaused) {
-    primaryAction = { label: "Try Again", onClick: retryRecoveryContinuation, disabled: false };
+    primaryAction = { id: "retry_continuation", label: "Try Again", onClick: retryRecoveryContinuation, disabled: false };
   } else if (isEmptyDevice && restoreAvailable) {
-    primaryAction = { label: "Finish Recovery", onClick: requestRestoreConfirmation, disabled: busy };
+    primaryAction = { id: "finish_recovery", label: "Finish Recovery", onClick: requestRestoreConfirmation, disabled: busy };
   } else if (missingPayloadsBlocked && repairAvailable) {
-    primaryAction = { label: "Repair Missing Estimate Details", onClick: requestRepairConfirmation, disabled: busy };
+    primaryAction = { id: "repair_missing_estimate_details", label: "Repair Missing Estimate Details", onClick: requestRepairConfirmation, disabled: busy };
   } else if (missingPayloadsBlocked) {
-    primaryAction = { label: "Finish Recovery", onClick: requestSafeRecovery, disabled: busy };
+    primaryAction = { id: "finish_safe_recovery", label: "Finish Recovery", onClick: requestSafeRecovery, disabled: busy };
   } else if (!isEmptyDevice && !localBackupBlocked) {
-    primaryAction = { label: backingUp ? "Backing up..." : "Back Up Now", onClick: runBackup, disabled: backingUp };
+    primaryAction = { id: "back_up_now", label: backingUp ? "Backing up..." : "Back Up Now", onClick: runBackup, disabled: backingUp };
   } else if (!isEmptyDevice && backupPausedForJobLinks) {
-    primaryAction = { label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
+    primaryAction = { id: "fix_job_links", label: "Fix Estimate Job Links", onClick: navigateToEstimates, disabled: false };
   } else if (!isEmptyDevice) {
-    primaryAction = { label: "Try Again", onClick: recheckRestorePreview, disabled: busy };
+    primaryAction = { id: "recheck_restore_preview", label: "Try Again", onClick: recheckRestorePreview, disabled: busy };
   } else {
-    primaryAction = { label: recheckState === "running" || checking ? "Checking..." : "Check Again", onClick: recheckRestorePreview, disabled: busy };
+    primaryAction = {
+      id: "recheck_restore_preview",
+      label: recheckState === "running" || checking ? "Checking..." : "Check Again",
+      onClick: recheckRestorePreview,
+      disabled: busy,
+    };
+  }
+
+  const actions = [];
+  const addAction = (action, className) => {
+    if (!action?.id) return;
+    if (actions.some((entry) => entry.id === action.id)) return;
+    actions.push({ ...action, className });
+  };
+
+  addAction(primaryAction, "pe-btn");
+
+  const showRetryAction = (
+    missingPayloadsBlocked
+    || (isEmptyDevice && !restoreAvailable)
+    || continuationPaused
+    || localBackupBlocked
+  ) && primaryAction.id !== "retry_continuation"
+    && primaryAction.id !== "recheck_restore_preview"
+    && primaryAction.id !== "fix_job_links";
+
+  if (showRetryAction) {
+    addAction({
+      id: continuationPaused ? "retry_continuation" : "recheck_restore_preview",
+      label: backupBusy || recoveryBusy || recheckState === "running" || checking ? "Checking..." : "Try Again",
+      onClick: continuationPaused ? retryRecoveryContinuation : recheckRestorePreview,
+      disabled: busy || backupBusy || recoveryBusy || checking,
+    }, "pe-btn pe-btn-ghost");
+  }
+
+  if (continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) {
+    addAction({
+      id: "download_emergency_backup_file",
+      label: downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File",
+      onClick: downloadCloudBackupJson,
+      disabled: busy || downloadingCloudBackup,
+    }, "pe-btn pe-btn-ghost");
+  }
+
+  if (!continuationSucceeded) {
+    addAction({
+      id: "dismiss",
+      label: "Not now",
+      onClick: dismiss,
+      disabled: busy,
+    }, "pe-btn pe-btn-ghost");
   }
 
   return (
@@ -575,7 +645,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
       {continuationPaused || localBackupBlocked ? (
         <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: "rgba(253,224,71,0.92)" }}>
-          {pausedReason || "Backup is paused because some records need attention."}
+          {pausedMessage}
         </div>
       ) : null}
       {secondaryStatus ? (
@@ -648,39 +718,17 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       ) : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button
-          type="button"
-          className="pe-btn"
-          disabled={primaryAction.disabled}
-          onClick={primaryAction.onClick || undefined}
-        >
-          {primaryAction.label}
-        </button>
-        {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+        {actions.map((action) => (
           <button
+            key={action.id}
             type="button"
-            className="pe-btn pe-btn-ghost"
-            onClick={continuationPaused ? retryRecoveryContinuation : recheckRestorePreview}
-            disabled={busy || backupBusy || recoveryBusy || checking}
+            className={action.className}
+            disabled={action.disabled}
+            onClick={action.onClick || undefined}
           >
-            {backupBusy || recoveryBusy || recheckState === "running" || checking ? "Checking..." : "Try Again"}
+            {action.label}
           </button>
-        ) : null}
-        {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
-          <button
-            type="button"
-            className="pe-btn pe-btn-ghost"
-            onClick={downloadCloudBackupJson}
-            disabled={busy || downloadingCloudBackup}
-          >
-            {downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File"}
-          </button>
-        ) : null}
-        {!continuationSucceeded ? (
-          <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss} disabled={busy}>
-            Not now
-          </button>
-        ) : null}
+        ))}
       </div>
       {(continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
         <div className="pe-field-helper" style={{ opacity: 0.8 }}>

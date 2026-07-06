@@ -340,13 +340,42 @@ test("paused continuation due to estimate-job links shows Fix Estimate Job Links
   await waitFor(() => {
     expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
   });
-  expect(screen.getAllByText("Some recovered estimates are not linked to a job.").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Some recovered estimates are not linked to a job.")).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Fix Estimate Job Links" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Try Again" })).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Fix Estimate Job Links" }));
   expect(dispatchSpy.mock.calls.some((call) => call[0]?.type === "estipaid:navigate-estimates")).toBe(true);
 
   dispatchSpy.mockRestore();
+});
+
+test("generic paused continuation shows the paused reason once and only one Try Again action", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue(blockedMissingPayloadPreview(3));
+  runRecoveryContinuation.mockResolvedValue({
+    status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+    backupRan: true,
+    repairChanged: false,
+    repairs: null,
+    skippedEstimates: 0,
+    pausedReason: "Backup could not finish yet. Your recovered data is saved on this device.",
+    pausedReasonCode: "needs_attention",
+    technicalDetail: "Cloud verification still needs attention.",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Finish Recovery" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: "Finish Recovery" })[1]);
+  });
+
+  await waitFor(() => {
+    expect(screen.getByText("Recovery finished, but backup is paused.")).toBeInTheDocument();
+  });
+  expect(screen.getAllByText("Backup could not finish yet. Your recovered data is saved on this device.")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Try Again" })).toHaveLength(1);
 });
 
 test("repairable missing estimate details can be repaired from Home", async () => {

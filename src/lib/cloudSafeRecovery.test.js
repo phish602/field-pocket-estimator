@@ -345,4 +345,40 @@ describe("recovery continuation", () => {
     expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP_WITH_SKIPPED);
     expect(mockClearCloudBackupDirty).toHaveBeenCalledWith("safe_recovery_backup_success");
   });
+
+  test("keeps the concrete blocker when backup returns needs_attention after recovery", async () => {
+    mockScanLocalDataIntegrity.mockReturnValue({
+      blockers: [],
+      safeRepairs: [],
+    });
+    mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
+      status: "needs_attention",
+      preview: {
+        integrity: {
+          backupReadiness: {
+            firstBlocker: {
+              code: "estimate_project_missing",
+              message: "One or more estimates reference a project id that is not present locally.",
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runRecoveryContinuation({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+      storage: { __snapshot: {} },
+      skippedEstimates: 0,
+    });
+
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.PAUSED);
+    expect(result.pausedReason).toBe("Some recovered estimates are not linked to a job.");
+    expect(result.pausedReasonCode).toBe("estimate_project_missing");
+    expect(result.technicalDetail).toBe(
+      "One or more estimates reference a project id that is not present locally."
+    );
+  });
 });

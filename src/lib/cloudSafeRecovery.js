@@ -200,6 +200,11 @@ function scanStoredIntegrity(storage) {
   }
 }
 
+function firstIntegrityBlocker(integrity) {
+  const blockers = Array.isArray(integrity?.blockers) ? integrity.blockers : [];
+  return blockers[0] || null;
+}
+
 // After a partial safe recovery, the cloud legitimately keeps rows this
 // device could not take: the skipped (payload-less) estimates and their
 // line items. A backup verification that mismatches ONLY in that exact way
@@ -334,6 +339,21 @@ export async function runRecoveryContinuation({
       repairChanged,
       repairs,
       skippedEstimates,
+    };
+  }
+
+  const backupBlocker = backup?.preview?.integrity?.backupReadiness?.firstBlocker
+    || firstIntegrityBlocker(scanStoredIntegrity(storage));
+  if (backupBlocker) {
+    return {
+      status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+      backupRan: true,
+      repairChanged,
+      repairs,
+      skippedEstimates,
+      pausedReason: describeBackupPauseReason(backupBlocker),
+      pausedReasonCode: String(backupBlocker?.code || backup?.status || "backup_incomplete"),
+      technicalDetail: String(backupBlocker?.message || backup?.error || ""),
     };
   }
 
