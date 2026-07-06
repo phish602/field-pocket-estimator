@@ -2,6 +2,8 @@ const mockCreateSupabaseMigrationPreview = jest.fn();
 const mockIsSupabaseMigrationPreviewReady = jest.fn();
 const mockRunSupabaseMigrationWrite = jest.fn();
 const mockRunSupabaseCloudVerification = jest.fn();
+const mockCheckEstimateRestorePayloadProtection = jest.fn();
+const mockUpdateEstimateRestorePayloads = jest.fn();
 
 jest.mock("./supabaseMigrationPreview", () => ({
   __esModule: true,
@@ -17,6 +19,25 @@ jest.mock("./supabaseMigrationWriter", () => ({
 jest.mock("./supabaseCloudVerification", () => ({
   __esModule: true,
   runSupabaseCloudVerification: (...args) => mockRunSupabaseCloudVerification(...args),
+}));
+
+jest.mock("./supabaseEstimateRestorePayload", () => ({
+  __esModule: true,
+  checkEstimateRestorePayloadProtection: (...args) => mockCheckEstimateRestorePayloadProtection(...args),
+  updateEstimateRestorePayloads: (...args) => mockUpdateEstimateRestorePayloads(...args),
+  ESTIMATE_PAYLOAD_PROTECTION_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    CHECKED: "checked",
+    ERROR: "error",
+  },
+  ESTIMATE_PAYLOAD_UPDATE_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    NO_LOCAL_ESTIMATES: "no_local_estimates",
+    COMPLETED: "completed",
+    ERROR: "error",
+  },
 }));
 
 const {
@@ -86,6 +107,30 @@ function buildWriteResult(overrides = {}) {
   };
 }
 
+function buildPayloadProtection(overrides = {}) {
+  return {
+    status: "checked",
+    repairableMissingLegacyIds: [],
+    oldDeviceRequiredLegacyIds: [],
+    preservedOlderEstimateLegacyIds: [],
+    noWritesPerformed: true,
+    ...overrides,
+  };
+}
+
+function buildPayloadRepairResult(overrides = {}) {
+  return {
+    status: "completed",
+    estimatesChecked: 1,
+    estimatesUpdated: 1,
+    missingCloudRows: [],
+    skipped: [],
+    failed: [],
+    noLocalDataChanged: true,
+    ...overrides,
+  };
+}
+
 const baseContext = {
   storageSnapshot: { getItem: () => null },
   configured: true,
@@ -115,6 +160,10 @@ describe("supabaseCloudOnboarding", () => {
     mockIsSupabaseMigrationPreviewReady.mockReset();
     mockRunSupabaseMigrationWrite.mockReset();
     mockRunSupabaseCloudVerification.mockReset();
+    mockCheckEstimateRestorePayloadProtection.mockReset();
+    mockUpdateEstimateRestorePayloads.mockReset();
+    mockCheckEstimateRestorePayloadProtection.mockResolvedValue(buildPayloadProtection());
+    mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
   });
 
   describe("checkSupabaseCloudOnboardingStatus", () => {
@@ -347,6 +396,47 @@ describe("supabaseCloudOnboarding", () => {
       expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
         preservedSkippedEstimateLegacyIds: ["est_10", "est_9"],
       }));
+    });
+
+    test("repairs matching local estimates when cloud backup protection is missing before backup verifies", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockCheckEstimateRestorePayloadProtection
+        .mockResolvedValueOnce(buildPayloadProtection({ repairableMissingLegacyIds: ["est_1"] }))
+        .mockResolvedValueOnce(buildPayloadProtection());
+      mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult({
+        estimatesChecked: 1,
+        estimatesUpdated: 1,
+      }));
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(mockUpdateEstimateRestorePayloads).toHaveBeenCalledWith(expect.objectContaining({
+        storageSnapshot: baseContext.storageSnapshot,
+        configured: true,
+        company: baseContext.company,
+      }));
+      expect(mockRunSupabaseMigrationWrite).toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalled();
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
+    });
+
+    test("rechecks backup protection after repair before final verification", async () => {
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockCheckEstimateRestorePayloadProtection
+        .mockResolvedValueOnce(buildPayloadProtection({ repairableMissingLegacyIds: ["est_1"] }))
+        .mockResolvedValueOnce(buildPayloadProtection({ repairableMissingLegacyIds: [] }));
+      mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+
+      await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(mockCheckEstimateRestorePayloadProtection).toHaveBeenCalledTimes(2);
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
     });
 
     test("reports backup_completed with no local deletion when write and verification both succeed", async () => {

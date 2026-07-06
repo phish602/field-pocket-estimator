@@ -123,6 +123,20 @@ function buildSkippedEstimateRepairNote(count) {
   return `Use the old device to repair ${total === 1 ? "that estimate" : "those estimates"} if needed.`;
 }
 
+function getOldDeviceBackupProtectionLegacyIds(verification) {
+  const estimatesResult = (Array.isArray(verification?.tableResults) ? verification.tableResults : [])
+    .find((result) => String(result?.table || "").trim() === "estimates");
+  return Array.isArray(estimatesResult?.oldDeviceRequiredMissingRestorePayloadLegacyIds)
+    ? estimatesResult.oldDeviceRequiredMissingRestorePayloadLegacyIds
+    : [];
+}
+
+function needsOldDeviceForBackupProtection(verification) {
+  if (getOldDeviceBackupProtectionLegacyIds(verification).length > 0) return true;
+  return Array.isArray(verification?.notices)
+    && verification.notices.some((notice) => String(notice?.code || "").trim() === "estimates_backup_protection_old_device_required");
+}
+
 export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, style } = {}) {
   const {
     state,
@@ -228,6 +242,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // estimates still exist. On a truly empty device it cannot.
   const repairAvailable = missingPayloadsBlocked && countLocalEstimates() > 0;
   const busy = restoring || checking || safeRecovering || repairing;
+  const currentVerification = backupResult?.verification || onboardingStatus?.verification || null;
   const skippedEstimatesCount = Number(
     (
       completedRecoveryStatus?.skippedEstimateCount
@@ -284,6 +299,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   ) || localPausedReason;
   const pausedMessage = pausedReason || "Backup is paused because some records need attention.";
   const backupPausedForJobLinks = isJobLinkIssue(pausedReasonCode);
+  const oldDeviceBackupProtectionNeeded = !isEmptyDevice
+    && !olderEstimatesKeptInCloud
+    && needsOldDeviceForBackupProtection(currentVerification);
 
   const dismiss = () => {
     setContinuationResult(null);
@@ -597,6 +615,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const heading = showRecoveryFinishedState
     ? "Recovery finished."
+    : oldDeviceBackupProtectionNeeded
+      ? "Backup needs old device."
     : continuationSucceeded || continuationPaused || recoveryBusy || backupBusy
       ? "Recovery Assistant"
     : isEmptyDevice
@@ -613,6 +633,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     bodyCopy = "Recovery finished. Backing up recovered data to cloud.";
   } else if (showRecoveryFinishedState) {
     bodyCopy = "Your data is back on this device.";
+  } else if (oldDeviceBackupProtectionNeeded) {
+    bodyCopy = "Some older estimates need the original device to finish backup protection.";
   } else if (continuationSucceeded) {
     bodyCopy = "Recovery finished. Your data is backed up.";
   } else if (continuationPaused) {
@@ -651,6 +673,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     primaryAction = { id: "backing_up", label: "Backing up...", onClick: null, disabled: true };
   } else if (showRecoveryFinishedState) {
     primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
+  } else if (oldDeviceBackupProtectionNeeded) {
+    primaryAction = { id: "dismiss", label: "Not now", onClick: dismiss, disabled: false };
   } else if (continuationSucceeded) {
     primaryAction = { id: "done", label: "Done", onClick: dismiss, disabled: false };
   } else if (continuationPaused && backupPausedForJobLinks) {
@@ -705,7 +729,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }, "pe-btn pe-btn-ghost");
   }
 
-  if (showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) {
+  if (showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || (isEmptyDevice && !restoreAvailable)) {
     addAction({
       id: "download_emergency_backup_file",
       label: downloadingCloudBackup ? "Preparing file..." : "Download Emergency Backup File",
@@ -780,6 +804,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
         >
           {backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
             ? "Backup finished. Your data is backed up."
+            : oldDeviceBackupProtectionNeeded
+              ? "Some older estimates need the original device to finish backup protection."
             : "Backup is paused because some records need attention."}
         </div>
       ) : null}
@@ -834,7 +860,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           </button>
         ))}
       </div>
-      {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || (isEmptyDevice && !restoreAvailable)) ? (
+      {(showRecoveryFinishedState || continuationPaused || localBackupBlocked || missingPayloadsBlocked || oldDeviceBackupProtectionNeeded || (isEmptyDevice && !restoreAvailable)) ? (
         <div className="pe-field-helper" style={{ opacity: 0.8 }}>
           Downloads an emergency backup file. It does not automatically restore or back up your account.
         </div>

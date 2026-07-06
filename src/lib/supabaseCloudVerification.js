@@ -234,6 +234,32 @@ export async function runSupabaseCloudVerification({
         .filter(Boolean)
         .sort()
       : [];
+    const oldDeviceRequiredMissingRestorePayloadLegacyIds = table === "estimates"
+      ? (Array.isArray(rows) ? rows : [])
+        .filter((row) => {
+          const legacyLocalId = asText(row?.legacy_local_id);
+          return legacyLocalId
+            && !localIds.has(legacyLocalId)
+            && !preservedSkippedIdSet.has(legacyLocalId)
+            && !hasValidEstimateRestorePayload(row);
+        })
+        .map((row) => asText(row?.legacy_local_id))
+        .filter(Boolean)
+        .sort()
+      : [];
+    const preservedMissingRestorePayloadLegacyIds = table === "estimates"
+      ? (Array.isArray(rows) ? rows : [])
+        .filter((row) => {
+          const legacyLocalId = asText(row?.legacy_local_id);
+          return legacyLocalId
+            && !localIds.has(legacyLocalId)
+            && preservedSkippedIdSet.has(legacyLocalId)
+            && !hasValidEstimateRestorePayload(row);
+        })
+        .map((row) => asText(row?.legacy_local_id))
+        .filter(Boolean)
+        .sort()
+      : [];
     const preservedOlderEstimateSetMatched = table === "estimates"
       && preservedSkippedIdSet.size > 0
       && missing.length === 0
@@ -264,6 +290,8 @@ export async function runSupabaseCloudVerification({
       missingLegacyIds: missing,
       extraLegacyIds: extra,
       missingRestorePayloadLegacyIds,
+      oldDeviceRequiredMissingRestorePayloadLegacyIds,
+      preservedMissingRestorePayloadLegacyIds,
       countOnly: false,
       preservedExtraLegacyIds: preservedOlderEstimateSetMatched ? extra : [],
     });
@@ -274,6 +302,14 @@ export async function runSupabaseCloudVerification({
         "estimates_restore_payload_missing",
         "Cloud estimates are present but missing restore payloads needed for safe cross-device restore.",
         { missingLegacyIds: missingRestorePayloadLegacyIds }
+      ));
+    }
+    if (table === "estimates" && oldDeviceRequiredMissingRestorePayloadLegacyIds.length > 0) {
+      notices.push(buildNotice(
+        "warning",
+        "estimates_backup_protection_old_device_required",
+        "Some older estimates need the original device to finish backup protection.",
+        { missingLegacyIds: oldDeviceRequiredMissingRestorePayloadLegacyIds }
       ));
     }
   }

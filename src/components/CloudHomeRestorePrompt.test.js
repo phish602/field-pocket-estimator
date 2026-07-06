@@ -694,6 +694,35 @@ test("local-data-exists state uses Back Up Now as the primary safe action", asyn
   expect(screen.queryByRole("button", { name: "Finish Recovery" })).not.toBeInTheDocument();
 });
 
+test("unknown incomplete cloud estimates show the old-device backup protection state instead of generic backup available copy", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+    verification: {
+      ok: true,
+      allMatched: false,
+      tableResults: [
+        {
+          table: "estimates",
+          status: "mismatch",
+          oldDeviceRequiredMissingRestorePayloadLegacyIds: ["est_unknown"],
+        },
+      ],
+      notices: [{
+        level: "warning",
+        code: "estimates_backup_protection_old_device_required",
+        message: "Some older estimates need the original device to finish backup protection.",
+      }],
+    },
+  });
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Backup needs old device.")).toBeInTheDocument();
+  expect(screen.getByText("Some older estimates need the original device to finish backup protection.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Back Up Now" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download Emergency Backup File" })).toBeInTheDocument();
+});
+
 test("Back Up Now runs the existing onboarding backup path and reports success plainly", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });

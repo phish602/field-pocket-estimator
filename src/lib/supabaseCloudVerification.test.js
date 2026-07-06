@@ -380,6 +380,13 @@ describe("supabaseCloudVerification", () => {
         table: "estimates",
         status: "mismatch",
         extraLegacyIds: ["est_unknown"],
+        oldDeviceRequiredMissingRestorePayloadLegacyIds: ["est_unknown"],
+      }),
+    ]));
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "estimates_backup_protection_old_device_required",
+        message: "Some older estimates need the original device to finish backup protection.",
       }),
     ]));
   });

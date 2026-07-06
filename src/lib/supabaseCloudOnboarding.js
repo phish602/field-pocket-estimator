@@ -3,6 +3,12 @@ import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "./su
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
+import {
+  checkEstimateRestorePayloadProtection,
+  updateEstimateRestorePayloads,
+  ESTIMATE_PAYLOAD_PROTECTION_STATUS,
+  ESTIMATE_PAYLOAD_UPDATE_STATUS,
+} from "./supabaseEstimateRestorePayload";
 
 export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 
@@ -114,6 +120,12 @@ function buildBackupResult(status, extra = {}) {
   };
 }
 
+function getRepairableMissingEstimatePayloadIds(protectionCheck) {
+  return Array.isArray(protectionCheck?.repairableMissingLegacyIds)
+    ? protectionCheck.repairableMissingLegacyIds
+    : [];
+}
+
 // Phase A: read-only status check. Runs migration preview, and cloud
 // verification only when both sides might have data, to classify this
 // device/workspace pair (signed out, no workspace, no data anywhere, cloud
@@ -211,6 +223,59 @@ export async function runSupabaseCloudOnboardingBackup({
 
     if (!isSupabaseMigrationPreviewReady(preview)) {
       return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
+    }
+
+    const payloadProtection = await checkEstimateRestorePayloadProtection({
+      storageSnapshot,
+      configured,
+      user,
+      company,
+      preservedSkippedEstimateLegacyIds: effectivePreservedSkippedEstimateLegacyIds,
+    });
+    const repairableMissingEstimatePayloadIds = getRepairableMissingEstimatePayloadIds(payloadProtection);
+    let payloadRepairResult = null;
+
+    if (payloadProtection?.status === ESTIMATE_PAYLOAD_PROTECTION_STATUS.ERROR) {
+      return buildBackupResult(CLOUD_ONBOARDING_STATUS.ERROR, {
+        preview,
+        payloadProtection,
+        error: payloadProtection.error || "Unable to inspect estimate backup protection.",
+      });
+    }
+
+    if (repairableMissingEstimatePayloadIds.length > 0) {
+      payloadRepairResult = await updateEstimateRestorePayloads({
+        storageSnapshot,
+        configured,
+        user,
+        company,
+      });
+
+      if (
+        payloadRepairResult?.status !== ESTIMATE_PAYLOAD_UPDATE_STATUS.COMPLETED
+        || (Array.isArray(payloadRepairResult?.failed) && payloadRepairResult.failed.length > 0)
+      ) {
+        return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+          preview,
+          payloadProtection,
+          payloadRepairResult,
+        });
+      }
+
+      const postRepairProtection = await checkEstimateRestorePayloadProtection({
+        storageSnapshot,
+        configured,
+        user,
+        company,
+        preservedSkippedEstimateLegacyIds: effectivePreservedSkippedEstimateLegacyIds,
+      });
+      if (getRepairableMissingEstimatePayloadIds(postRepairProtection).length > 0) {
+        return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+          preview,
+          payloadProtection: postRepairProtection,
+          payloadRepairResult,
+        });
+      }
     }
 
     const writeResult = await runSupabaseMigrationWrite({

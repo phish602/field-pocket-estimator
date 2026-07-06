@@ -6,7 +6,9 @@ jest.mock("./supabaseClient", () => ({
 
 const {
   buildEstimateRestorePayload,
+  checkEstimateRestorePayloadProtection,
   updateEstimateRestorePayloads,
+  ESTIMATE_PAYLOAD_PROTECTION_STATUS,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
   ESTIMATE_RESTORE_PAYLOAD_SCHEMA,
   ESTIMATE_RESTORE_PAYLOAD_VERSION,
@@ -164,6 +166,34 @@ describe("supabaseEstimateRestorePayload", () => {
       }));
       expect(payload.estimate.scopeNotes).toContain("[scope-image:scope-image-1]");
       expect(payload.estimate.scopeNotes).toContain("[scope-image:scope-image-8]");
+    });
+  });
+
+  describe("checkEstimateRestorePayloadProtection", () => {
+    test("detects repairable, preserved, and old-device-required cloud estimates missing full backup details", async () => {
+      const mockClient = createMockClient({
+        cloudRows: [
+          { id: "db_est_1", legacy_local_id: "est_1", restore_payload: null, restore_payload_version: null },
+          { id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null },
+          { id: "db_est_3", legacy_local_id: "est_3", restore_payload: null, restore_payload_version: null },
+          { id: "db_est_4", legacy_local_id: "est_4", restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA }, restore_payload_version: "1" },
+        ],
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await checkEstimateRestorePayloadProtection({
+        storageSnapshot: buildStorageSnapshot({
+          estimates: [localEstimateFixture({ id: "est_1" })],
+        }),
+        ...baseContext,
+        preservedSkippedEstimateLegacyIds: ["est_3"],
+      });
+
+      expect(result.status).toBe(ESTIMATE_PAYLOAD_PROTECTION_STATUS.CHECKED);
+      expect(result.repairableMissingLegacyIds).toEqual(["est_1"]);
+      expect(result.oldDeviceRequiredLegacyIds).toEqual(["est_2"]);
+      expect(result.preservedOlderEstimateLegacyIds).toEqual(["est_3"]);
+      expect(result.noWritesPerformed).toBe(true);
     });
   });
 

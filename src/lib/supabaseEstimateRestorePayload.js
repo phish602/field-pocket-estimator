@@ -13,6 +13,13 @@ export const ESTIMATE_PAYLOAD_UPDATE_STATUS = {
   ERROR: "error",
 };
 
+export const ESTIMATE_PAYLOAD_PROTECTION_STATUS = {
+  SIGNED_OUT: "signed_out",
+  NO_WORKSPACE: "no_workspace",
+  CHECKED: "checked",
+  ERROR: "error",
+};
+
 function asText(value) {
   return String(value || "").trim();
 }
@@ -39,6 +46,33 @@ async function readCloudEstimateLegacyIds(client, companyId) {
 
   if (response?.error) throw response.error;
   return Array.isArray(response?.data) ? response.data : [];
+}
+
+async function readCloudEstimateProtectionRows(client, companyId) {
+  const response = await client
+    .from("estimates")
+    .select("id, legacy_local_id, restore_payload, restore_payload_version")
+    .eq("company_id", companyId);
+
+  if (response?.error) throw response.error;
+  return Array.isArray(response?.data) ? response.data : [];
+}
+
+function normalizeLegacyIds(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => asText(value))
+      .filter(Boolean)
+  )].sort();
+}
+
+function hasValidRestorePayload(row) {
+  return Boolean(
+    row?.restore_payload
+    && typeof row.restore_payload === "object"
+    && !Array.isArray(row.restore_payload)
+    && asText(row?.restore_payload_version)
+  );
 }
 
 // Wraps the exact local estimate record (the same object the app already
@@ -68,6 +102,79 @@ function buildResult(status, extra = {}) {
     noLocalDataChanged: true,
     ...extra,
   };
+}
+
+function buildProtectionResult(status, extra = {}) {
+  return {
+    payloadProtectionVersion: SUPABASE_ESTIMATE_RESTORE_PAYLOAD_VERSION,
+    status,
+    repairableMissingLegacyIds: [],
+    oldDeviceRequiredLegacyIds: [],
+    preservedOlderEstimateLegacyIds: [],
+    noWritesPerformed: true,
+    ...extra,
+  };
+}
+
+export async function checkEstimateRestorePayloadProtection({
+  storageSnapshot,
+  configured = false,
+  user = null,
+  company = null,
+  preservedSkippedEstimateLegacyIds = null,
+} = {}) {
+  const gated = gateBasicPrerequisites({ configured, user, company });
+  if (gated === ESTIMATE_PAYLOAD_UPDATE_STATUS.SIGNED_OUT) {
+    return buildProtectionResult(ESTIMATE_PAYLOAD_PROTECTION_STATUS.SIGNED_OUT);
+  }
+  if (gated === ESTIMATE_PAYLOAD_UPDATE_STATUS.NO_WORKSPACE) {
+    return buildProtectionResult(ESTIMATE_PAYLOAD_PROTECTION_STATUS.NO_WORKSPACE);
+  }
+
+  const client = getSupabaseClient();
+  if (!client?.from) {
+    return buildProtectionResult(ESTIMATE_PAYLOAD_PROTECTION_STATUS.ERROR, {
+      error: "Supabase is not configured.",
+    });
+  }
+
+  const localEstimateIds = new Set(
+    readLocalEstimates(storageSnapshot)
+      .map((estimate) => asText(estimate?.id))
+      .filter(Boolean)
+  );
+  const preservedSkippedEstimateIdSet = new Set(normalizeLegacyIds(preservedSkippedEstimateLegacyIds));
+
+  try {
+    const cloudRows = await readCloudEstimateProtectionRows(client, asText(company?.id));
+    const repairableMissingLegacyIds = [];
+    const oldDeviceRequiredLegacyIds = [];
+    const preservedOlderEstimateLegacyIds = [];
+
+    cloudRows.forEach((row) => {
+      const legacyLocalId = asText(row?.legacy_local_id);
+      if (!legacyLocalId || hasValidRestorePayload(row)) return;
+      if (localEstimateIds.has(legacyLocalId)) {
+        repairableMissingLegacyIds.push(legacyLocalId);
+        return;
+      }
+      if (preservedSkippedEstimateIdSet.has(legacyLocalId)) {
+        preservedOlderEstimateLegacyIds.push(legacyLocalId);
+        return;
+      }
+      oldDeviceRequiredLegacyIds.push(legacyLocalId);
+    });
+
+    return buildProtectionResult(ESTIMATE_PAYLOAD_PROTECTION_STATUS.CHECKED, {
+      repairableMissingLegacyIds: normalizeLegacyIds(repairableMissingLegacyIds),
+      oldDeviceRequiredLegacyIds: normalizeLegacyIds(oldDeviceRequiredLegacyIds),
+      preservedOlderEstimateLegacyIds: normalizeLegacyIds(preservedOlderEstimateLegacyIds),
+    });
+  } catch (error) {
+    return buildProtectionResult(ESTIMATE_PAYLOAD_PROTECTION_STATUS.ERROR, {
+      error: asText(error?.message) || "Unable to inspect estimate backup protection.",
+    });
+  }
 }
 
 // Explicit, click-only action. For each local estimate that already has a
