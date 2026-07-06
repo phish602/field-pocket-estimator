@@ -4,6 +4,21 @@ function asText(value) {
   return String(value || "").trim();
 }
 
+function asNumber(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function buildMissingEstimatePayloadMessage(blocker) {
+  const missingCount = asNumber(
+    blocker?.details?.missingRestorePayloadCount
+    ?? blocker?.details?.missingRequiredRestorePayloadCount
+  );
+  if (missingCount > 0) {
+    return `Estimates cannot be safely restored yet. ${missingCount} cloud estimate${missingCount === 1 ? "" : "s"} ${missingCount === 1 ? "is" : "are"} missing restore payload data needed for a faithful restore.`;
+  }
+  return "";
+}
+
 export function buildCloudRestoreConfirmationDialog({ partialLocalSnapshot = false } = {}) {
   return {
     title: "Restore cloud data to this device?",
@@ -27,7 +42,9 @@ export function getCloudRestoreAvailability({
   partialLocalSnapshot = false,
 } = {}) {
   const status = asText(restorePreview?.status);
-  const blockedReason = asText(restorePreview?.blockers?.[0]?.message)
+  const primaryBlocker = restorePreview?.blockers?.[0] || null;
+  const blockedReason = buildMissingEstimatePayloadMessage(primaryBlocker)
+    || asText(primaryBlocker?.message)
     || asText(restorePreview?.error)
     || (status === CLOUD_RESTORE_STATUS.NO_CLOUD_DATA
       ? "No valid cloud backup is available to restore to this device."
@@ -42,6 +59,10 @@ export function getCloudRestoreAvailability({
       partialLocalSnapshot
         ? "Restore is not available yet because the current cloud backup cannot safely rebuild the missing local records."
         : "Restore is not available on this device yet."
+    ),
+    missingEstimatePayloadCount: asNumber(
+      primaryBlocker?.details?.missingRestorePayloadCount
+      ?? primaryBlocker?.details?.missingRequiredRestorePayloadCount
     ),
   };
 }

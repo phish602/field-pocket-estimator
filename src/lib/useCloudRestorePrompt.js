@@ -57,6 +57,7 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
     restorePreview,
     restorePreviewLoading,
     decision,
+    refreshCloudStatus,
   } = useCloudBackupStatus();
 
   let state = CLOUD_RESTORE_PROMPT_STATE.HIDDEN;
@@ -100,6 +101,8 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
     restorePreview,
     restoreAvailable: restoreAvailability.available,
     restoreBlockedReason: restoreAvailability.blockedReason,
+    missingEstimatePayloadCount: restoreAvailability.missingEstimatePayloadCount,
     partialLocalSnapshot,
+    refreshCloudStatus,
   };
 }

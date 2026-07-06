@@ -65,7 +65,7 @@ function buildNotice(level, code, message, details = {}) {
 // display-only columns would force the estimator engine to recompute from
 // guessed defaults the next time the estimate is edited -- exactly the
 // "guessed restore" this lane must not do.
-function buildEstimateBlockerNotice(estimateCount, lineItemCount) {
+function buildEstimateBlockerNotice(estimateCount, lineItemCount, missingRestorePayloadCount = estimateCount) {
   return buildNotice(
     "warning",
     "estimates_not_reconstructable",
@@ -74,6 +74,7 @@ function buildEstimateBlockerNotice(estimateCount, lineItemCount) {
       table: "estimates",
       cloudEstimateCount: estimateCount,
       cloudEstimateLineItemCount: lineItemCount,
+      missingRestorePayloadCount,
       missingFields: ["labor.lines[].hours", "labor.hazardPct", "labor.riskPct", "labor.multiplier", "materials.markupPct", "materialsMode"],
     }
   );
@@ -200,6 +201,7 @@ function buildPartialSnapshotEstimateBlocker(requiredEstimateIds, availableEstim
       requiredEstimateCount: requiredCount,
       missingCloudEstimateIds: missingCloudIds,
       missingRestorePayloadEstimateIds: missingPayloadIds,
+      missingRequiredRestorePayloadCount: missingPayloadIds.length,
     }
   );
 }
@@ -226,6 +228,7 @@ function analyzeEstimateRestoreState({
       .map((row) => asText(row?.legacy_local_id))
       .filter(Boolean)
   );
+  const missingRestorePayloadCount = invalidEstimateIds.size;
   const missingRequiredEstimateIds = requiredEstimateIds.filter((id) => !restorableEstimateIds.has(id));
   const recoveryEligibleForPartialLocalSnapshot = partialSnapshotMode
     && requiredEstimateIds.length > 0
@@ -257,7 +260,7 @@ function analyzeEstimateRestoreState({
 
   const blocker = partialSnapshotMode && requiredEstimateIds.length > 0
     ? buildPartialSnapshotEstimateBlocker(requiredEstimateIds, availableEstimateIds, invalidEstimateIds)
-    : buildEstimateBlockerNotice(estimateCount, estimateLineItemCount);
+    : buildEstimateBlockerNotice(estimateCount, estimateLineItemCount, missingRestorePayloadCount);
 
   return {
     blockers: [blocker],

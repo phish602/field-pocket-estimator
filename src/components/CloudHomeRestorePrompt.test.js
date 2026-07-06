@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import CloudHomeRestorePrompt from "./CloudHomeRestorePrompt";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
@@ -78,6 +78,9 @@ async function renderAndSettle(props = {}) {
 beforeEach(() => {
   localStorage.clear();
   try { sessionStorage.clear(); } catch {}
+  global.Blob = global.Blob || function FakeBlob() {};
+  global.URL.createObjectURL = jest.fn(() => "blob:test");
+  global.URL.revokeObjectURL = jest.fn();
   signInWithCompany();
   previewSupabaseCloudRestore.mockReset();
   previewSupabaseCloudRestore.mockResolvedValue({
@@ -88,6 +91,7 @@ beforeEach(() => {
     notices: [],
   });
   executeSupabaseCloudRestore.mockReset();
+  runSupabaseCloudOnboardingBackup.mockReset();
 });
 
 test("does not show a restore prompt when no cloud backup exists (already matches)", async () => {
@@ -158,15 +162,83 @@ test("empty-device restore stays blocked when preview says cloud data cannot be 
     status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
     eligible: true,
     partial: true,
-    blockers: [{ code: "estimates_not_reconstructable", message: "Estimates cannot be safely restored yet." }],
+    blockers: [{
+      code: "estimates_not_reconstructable",
+      message: "Estimates cannot be safely restored yet.",
+      details: { missingRestorePayloadCount: 2 },
+    }],
     notices: [],
   });
 
   await renderAndSettle();
 
-  expect(screen.getByText("Estimates cannot be safely restored yet.")).toBeInTheDocument();
+  expect(screen.getByText("Estimates cannot be safely restored yet. 2 cloud estimates are missing restore payload data needed for a faithful restore.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Update Payloads in Settings" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download Backup JSON" })).toBeInTheDocument();
+  expect(screen.getByText(/can only run on the original device that still has the local estimate data/i)).toBeInTheDocument();
   expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+});
+
+test("Recheck Cloud Status refreshes the restore preview and can enable restore", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore
+    .mockResolvedValueOnce({
+      status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+      eligible: true,
+      partial: true,
+      blockers: [{
+        code: "estimates_not_reconstructable",
+        message: "Estimates cannot be safely restored yet.",
+        details: { missingRestorePayloadCount: 1 },
+      }],
+      notices: [],
+    })
+    .mockResolvedValueOnce({
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      blockers: [],
+      notices: [],
+    });
+
+  await renderAndSettle();
+  expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
+  });
+
+  await waitFor(() => {
+    expect(previewSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+  });
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Restore This Device" })).toBeEnabled();
+  });
+  expect(screen.getByText("Recheck complete. Restore is now available on this device.")).toBeInTheDocument();
+});
+
+test("Download Backup JSON remains available from the blocked empty-device prompt", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+    eligible: true,
+    partial: true,
+    blockers: [{
+      code: "estimates_not_reconstructable",
+      message: "Estimates cannot be safely restored yet.",
+      details: { missingRestorePayloadCount: 1 },
+    }],
+    notices: [],
+  });
+
+  await renderAndSettle();
+  fireEvent.click(screen.getByRole("button", { name: "Download Backup JSON" }));
+
+  expect(screen.getByText(/Backup JSON downloaded:/)).toBeInTheDocument();
+  expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
+  expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(1);
 });
 
 test("local-data-exists state does not offer a restore action and never calls executeSupabaseCloudRestore", async () => {

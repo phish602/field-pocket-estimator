@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import { executeSupabaseCloudRestore, CLOUD_RESTORE_STATUS } from "../lib/supabaseCloudRestore";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
+import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 import CloudConfirmDialog from "./CloudConfirmDialog";
 import { buildCloudRestoreConfirmationDialog } from "../lib/cloudRestoreUi";
 
@@ -70,7 +71,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     checking,
     restoreAvailable,
     restoreBlockedReason,
+    missingEstimatePayloadCount,
     partialLocalSnapshot,
+    refreshCloudStatus,
   } = useCloudRestorePrompt({ hasChamberedDraft });
   const [dismissed, setDismissed] = useState(readDismissed);
   const [restoring, setRestoring] = useState(false);
@@ -78,12 +81,18 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [backingUp, setBackingUp] = useState(false);
   const [backupResult, setBackupResult] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
+  const [downloadMessage, setDownloadMessage] = useState("");
+  const [recheckState, setRecheckState] = useState("idle");
+  const [recheckMessage, setRecheckMessage] = useState("");
 
   // A fresh sign-in / device state change should get a fresh chance to show
   // the prompt rather than staying dismissed forever.
   useEffect(() => {
     setRestoreResult(null);
     setBackupResult(null);
+    setDownloadMessage("");
+    setRecheckState("idle");
+    setRecheckMessage("");
   }, [state]);
 
   // Gate 13G: "Not now" only hides the large card for the session -- it
@@ -98,6 +107,21 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     return () => window.removeEventListener(SHOW_CLOUD_RESTORE_PROMPT_EVENT, onShowPrompt);
   }, []);
 
+  useEffect(() => {
+    if (recheckState === "requested" && checking) {
+      setRecheckState("running");
+      return;
+    }
+    if (recheckState === "running" && !checking) {
+      setRecheckState("idle");
+      setRecheckMessage(
+        restoreAvailable
+          ? "Recheck complete. Restore is now available on this device."
+          : `Recheck complete. ${restoreBlockedReason}`
+      );
+    }
+  }, [checking, recheckState, restoreAvailable, restoreBlockedReason]);
+
   if (dismissed) return null;
   if (state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
     && state !== CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS) {
@@ -109,6 +133,8 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const isEmptyDevice = state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE;
   const companyName = String(company?.name || "").trim();
+  const missingPayloadsBlocked = isEmptyDevice && !restoreAvailable && Number(missingEstimatePayloadCount || 0) > 0;
+  const settingsActionLabel = missingPayloadsBlocked ? "Update Payloads in Settings" : "Manage Restore in Settings";
 
   const dismiss = () => {
     writeDismissed();
@@ -117,6 +143,28 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
 
   const requestRestoreConfirmation = () => {
     setConfirmDialog(buildCloudRestoreConfirmationDialog({ partialLocalSnapshot }));
+  };
+
+  const recheckRestorePreview = () => {
+    setRestoreResult(null);
+    setDownloadMessage("");
+    setRecheckMessage("");
+    setRecheckState("requested");
+    refreshCloudStatus();
+  };
+
+  const downloadBackupJson = () => {
+    try {
+      const result = triggerLocalStorageExportDownload({
+        storageSnapshot: localStorage,
+        BlobConstructor: Blob,
+        URLObject: URL,
+        documentObject: document,
+      });
+      setDownloadMessage(`Backup JSON downloaded: ${String(result?.filename || "export")}`);
+    } catch {
+      setDownloadMessage("Unable to download backup JSON.");
+    }
   };
 
   const runRestore = async () => {
@@ -196,6 +244,11 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {restoreBlockedReason}
         </div>
       ) : null}
+      {missingPayloadsBlocked ? (
+        <div className="pe-field-helper" style={{ color: "rgba(220,229,238,0.78)" }}>
+          This device is empty, so Update Estimate Restore Payloads can only run on the original device that still has the local estimate data. After that repair, return here and recheck cloud status.
+        </div>
+      ) : null}
 
       {backupResult ? (
         <div role="alert" style={{ fontSize: 12, fontWeight: 700, color: backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
@@ -205,6 +258,16 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           {backupResult.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED
             ? "This device has been backed up to the cloud."
             : "Backup couldn't complete. Try again from Advanced Settings."}
+        </div>
+      ) : null}
+      {recheckMessage ? (
+        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: restoreAvailable ? "rgba(187,247,208,0.92)" : "rgba(191,219,254,0.92)" }}>
+          {recheckMessage}
+        </div>
+      ) : null}
+      {downloadMessage ? (
+        <div role="status" style={{ fontSize: 12, fontWeight: 700, color: "rgba(191,219,254,0.92)" }}>
+          {downloadMessage}
         </div>
       ) : null}
 
@@ -218,6 +281,34 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
           >
             {restoring ? "Restoring..." : checking ? "Checking restore..." : "Restore This Device"}
           </button>
+          {!restoreAvailable ? (
+            <>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={navigateToCloudSettings}
+                disabled={restoring || checking}
+              >
+                {settingsActionLabel}
+              </button>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={recheckRestorePreview}
+                disabled={restoring || checking}
+              >
+                {recheckState === "running" || checking ? "Rechecking..." : "Recheck Cloud Status"}
+              </button>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={downloadBackupJson}
+                disabled={restoring}
+              >
+                Download Backup JSON
+              </button>
+            </>
+          ) : null}
           <button type="button" className="pe-btn pe-btn-ghost" onClick={dismiss} disabled={restoring}>
             Not now
           </button>

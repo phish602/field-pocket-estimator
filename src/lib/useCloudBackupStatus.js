@@ -51,6 +51,7 @@ export default function useCloudBackupStatus() {
   const [onboardingStatus, setOnboardingStatus] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null);
   const [restorePreviewLoading, setRestorePreviewLoading] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => {
     const refresh = () => {
@@ -175,7 +176,13 @@ export default function useCloudBackupStatus() {
     return () => {
       active = false;
     };
-  }, [isSupabaseReady, user, company, role]);
+  }, [isSupabaseReady, user, company, role, refreshToken]);
+
+  const refreshCloudStatus = () => {
+    setQueueState(readCloudBackupQueueState());
+    setLocalIntegrity(readLocalIntegrity());
+    setRefreshToken((value) => value + 1);
+  };
 
   const decision = getCloudDataDecision({
     localIntegrity,
@@ -213,5 +220,6 @@ export default function useCloudBackupStatus() {
     restorePreviewLoading,
     localIntegrity,
     decision,
+    refreshCloudStatus,
   };
 }
