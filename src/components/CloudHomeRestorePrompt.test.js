@@ -35,6 +35,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
   __esModule: true,
   executeSupabaseCloudRestore: jest.fn(),
   previewSupabaseCloudRestore: jest.fn(),
+  exportSupabaseCloudBackupArtifact: jest.fn(),
   CLOUD_RESTORE_STATUS: {
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
@@ -45,6 +46,13 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
     ERROR: "error",
   },
+  CLOUD_BACKUP_EXPORT_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    EXPORTED: "exported",
+    ERROR: "error",
+  },
+  CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION: "cloud-backup-export-artifact-v1",
   CLOUD_RESTORE_COMPLETE_EVENT: "estipaid:cloud-restore-complete",
   getLastCloudRestoreCompleteAt: jest.fn(() => 0),
 }));
@@ -52,7 +60,34 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus, runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
-const { executeSupabaseCloudRestore, previewSupabaseCloudRestore, CLOUD_RESTORE_STATUS } = require("../lib/supabaseCloudRestore");
+const { executeSupabaseCloudRestore, previewSupabaseCloudRestore, exportSupabaseCloudBackupArtifact, CLOUD_RESTORE_STATUS, CLOUD_BACKUP_EXPORT_STATUS } = require("../lib/supabaseCloudRestore");
+
+function buildCloudExportArtifact(overrides = {}) {
+  return {
+    artifactVersion: "cloud-backup-export-artifact-v1",
+    schemaVersion: 1,
+    source: "cloud",
+    app: "EstiPaid",
+    exportedAt: "2026-07-05T12:00:00.000Z",
+    companyId: "company_1",
+    companyName: "BVW Contracting Solutions",
+    counts: {
+      customers: 2,
+      projects: 1,
+      estimates: 1,
+      estimateLineItems: 3,
+      invoices: 1,
+      invoiceLineItems: 2,
+      invoicePayments: 1,
+      scopeTemplates: 0,
+    },
+    restorePayloadCoverage: { totalEstimates: 1, estimatesWithRestorePayload: 1, estimatesMissingRestorePayload: 0 },
+    optionalSections: { appRestoreBundle: "missing" },
+    records: { customers: [], projects: [], estimates: [], invoices: [], companyProfile: null, settings: null, scopeTemplates: null },
+    notices: [],
+    ...overrides,
+  };
+}
 
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
@@ -92,6 +127,12 @@ beforeEach(() => {
   });
   executeSupabaseCloudRestore.mockReset();
   runSupabaseCloudOnboardingBackup.mockReset();
+  exportSupabaseCloudBackupArtifact.mockReset();
+  exportSupabaseCloudBackupArtifact.mockResolvedValue({
+    status: CLOUD_BACKUP_EXPORT_STATUS.EXPORTED,
+    artifact: buildCloudExportArtifact(),
+    error: "",
+  });
 });
 
 test("does not show a restore prompt when no cloud backup exists (already matches)", async () => {
@@ -176,7 +217,12 @@ test("empty-device restore stays blocked when preview says cloud data cannot be 
   expect(screen.getByRole("button", { name: "Restore This Device" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Update Payloads in Settings" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Download Backup JSON" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Download Cloud Backup JSON" })).toBeInTheDocument();
+  // Gate 13O-2J: the cloud recovery prompt must never offer a generic or
+  // device-sourced backup download -- an empty device would export an empty
+  // "backup" that imports as 0 records.
+  expect(screen.queryByRole("button", { name: "Download Backup JSON" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Download This Device Backup JSON" })).not.toBeInTheDocument();
   expect(screen.getByText(/can only run on the original device that still has the local estimate data/i)).toBeInTheDocument();
   expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
 });
@@ -219,7 +265,7 @@ test("Recheck Cloud Status refreshes the restore preview and can enable restore"
   expect(screen.getByText("Recheck complete. Restore is now available on this device.")).toBeInTheDocument();
 });
 
-test("Download Backup JSON remains available from the blocked empty-device prompt", async () => {
+test("Download Cloud Backup JSON downloads the cloud artifact with record counts from the blocked empty-device prompt", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
   previewSupabaseCloudRestore.mockResolvedValue({
     status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
@@ -234,11 +280,85 @@ test("Download Backup JSON remains available from the blocked empty-device promp
   });
 
   await renderAndSettle();
-  fireEvent.click(screen.getByRole("button", { name: "Download Backup JSON" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Download Cloud Backup JSON" }));
+  });
 
-  expect(screen.getByText(/Backup JSON downloaded:/)).toBeInTheDocument();
+  expect(exportSupabaseCloudBackupArtifact).toHaveBeenCalledWith({
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "BVW Contracting Solutions" },
+  });
+  expect(screen.getByText(/Cloud backup JSON downloaded: estipaid-cloud-backup-.*\(2 customers, 1 projects, 1 estimates, 1 invoices\)/)).toBeInTheDocument();
   expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
   expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+});
+
+test("Download Cloud Backup JSON surfaces the cloud read failure instead of downloading an empty file", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+    eligible: true,
+    partial: true,
+    blockers: [{
+      code: "estimates_not_reconstructable",
+      message: "Estimates cannot be safely restored yet.",
+      details: { missingRestorePayloadCount: 1 },
+    }],
+    notices: [],
+  });
+  exportSupabaseCloudBackupArtifact.mockResolvedValue({
+    status: CLOUD_BACKUP_EXPORT_STATUS.ERROR,
+    artifact: null,
+    error: "Unable to read customers from Supabase. Cloud backup JSON was not created.",
+    failedTable: "customers",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Download Cloud Backup JSON" }));
+  });
+
+  expect(screen.getByText("Unable to read customers from Supabase. Cloud backup JSON was not created.")).toBeInTheDocument();
+  expect(global.URL.createObjectURL).not.toHaveBeenCalled();
+});
+
+test("Download Cloud Backup JSON warns when the cloud workspace has no core records", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE });
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE,
+    eligible: true,
+    partial: true,
+    blockers: [{
+      code: "estimates_not_reconstructable",
+      message: "Estimates cannot be safely restored yet.",
+      details: { missingRestorePayloadCount: 1 },
+    }],
+    notices: [],
+  });
+  exportSupabaseCloudBackupArtifact.mockResolvedValue({
+    status: CLOUD_BACKUP_EXPORT_STATUS.EXPORTED,
+    artifact: buildCloudExportArtifact({
+      counts: {
+        customers: 0,
+        projects: 0,
+        estimates: 0,
+        estimateLineItems: 0,
+        invoices: 0,
+        invoiceLineItems: 0,
+        invoicePayments: 0,
+        scopeTemplates: 0,
+      },
+    }),
+    error: "",
+  });
+
+  await renderAndSettle();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Download Cloud Backup JSON" }));
+  });
+
+  expect(screen.getByText(/Warning: the cloud has no customer, project, estimate, or invoice records\./)).toBeInTheDocument();
 });
 
 test("local-data-exists state does not offer a restore action and never calls executeSupabaseCloudRestore", async () => {

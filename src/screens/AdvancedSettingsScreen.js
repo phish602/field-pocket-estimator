@@ -14,8 +14,12 @@ import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
 import {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
+  exportSupabaseCloudBackupArtifact,
   CLOUD_RESTORE_STATUS,
+  CLOUD_BACKUP_EXPORT_STATUS,
 } from "../lib/supabaseCloudRestore";
+import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
+import { buildBackupJsonImportPlan, applyBackupJsonImportPlan } from "../lib/backupJsonImport";
 import {
   checkSupabaseCloudOnboardingStatus,
   runSupabaseCloudOnboardingBackup,
@@ -125,15 +129,6 @@ function readStoredJson(key, fallback) {
     return parsed;
   } catch {
     return fallback;
-  }
-}
-
-function toStorageString(value) {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
   }
 }
 
@@ -290,6 +285,7 @@ export default function AdvancedSettingsScreen({
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [cloudExportBusy, setCloudExportBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const [authAction, setAuthAction] = useState("");
   const [workspaceName, setWorkspaceName] = useState(() => inferWorkspaceName());
@@ -447,6 +443,8 @@ export default function AdvancedSettingsScreen({
     }
   };
 
+  // Gate 13O-2J: exports what is on THIS DEVICE only. Never presented as a
+  // cloud backup -- an empty device produces an empty artifact by design.
   const downloadBackupJson = () => {
     try {
       setBusyLabel("Preparing backup...");
@@ -456,11 +454,47 @@ export default function AdvancedSettingsScreen({
         URLObject: URL,
         documentObject: document,
       });
-      showDiagnosticsMessage(`Backup JSON downloaded: ${result.filename}`);
+      showDiagnosticsMessage(`This device backup JSON downloaded: ${result.filename}`);
     } catch {
-      showDiagnosticsMessage("Unable to download backup JSON.");
+      showDiagnosticsMessage("Unable to download this device backup JSON.");
     } finally {
       setBusyLabel("");
+    }
+  };
+
+  // Gate 13O-2J: true cloud export -- fetches this workspace's Supabase rows
+  // through the same authenticated reads restore uses and downloads a
+  // source:"cloud" artifact with explicit counts. Fails loudly (with the
+  // failing table) instead of producing an empty "successful" file.
+  const downloadCloudBackupJson = async () => {
+    try {
+      setCloudExportBusy(true);
+      const exportResult = await exportSupabaseCloudBackupArtifact({
+        configured: isSupabaseReady,
+        user,
+        company,
+      });
+      if (exportResult.status !== CLOUD_BACKUP_EXPORT_STATUS.EXPORTED || !exportResult.artifact) {
+        showDiagnosticsMessage(String(exportResult.error || "Unable to download cloud backup JSON."));
+        return;
+      }
+      const { filename, artifact } = triggerCloudBackupExportDownload({
+        artifact: exportResult.artifact,
+        BlobConstructor: Blob,
+        URLObject: URL,
+        documentObject: document,
+      });
+      const counts = artifact.counts;
+      const coreTotal = counts.customers + counts.projects + counts.estimates + counts.invoices;
+      showDiagnosticsMessage(
+        coreTotal === 0
+          ? `Cloud backup JSON downloaded: ${filename}. Warning: the cloud has no customer, project, estimate, or invoice records.`
+          : `Cloud backup JSON downloaded: ${filename} (${counts.customers} customers, ${counts.projects} projects, ${counts.estimates} estimates, ${counts.invoices} invoices).`
+      );
+    } catch (error) {
+      showDiagnosticsMessage(String(error?.message || "Unable to download cloud backup JSON."));
+    } finally {
+      setCloudExportBusy(false);
     }
   };
 
@@ -1197,6 +1231,11 @@ export default function AdvancedSettingsScreen({
     }
   };
 
+  // Gate 13O-2J: import goes through the shared backup JSON contract:
+  // detect the source (cloud / device / legacy raw), preview counts before
+  // any write, require explicit confirmation (extra-explicit when the file
+  // holds zero core records -- the empty-device export trap), then write and
+  // refresh the app. Never reports success on a zero-record import.
   const importJsonFile = async (file) => {
     if (!file) return;
     setBusyLabel("Importing...");
@@ -1208,51 +1247,68 @@ export default function AdvancedSettingsScreen({
         return;
       }
 
-      const keysObj = asObject(parsed.keys);
-      let writeCount = 0;
-      const importedDomains = new Set();
-      const IMPORT_KEY_DOMAINS = {
-        [STORAGE_KEYS.CUSTOMERS]: "customers",
-        [STORAGE_KEYS.PROJECTS]: "projects",
-        [STORAGE_KEYS.ESTIMATES]: "estimates",
-        [STORAGE_KEYS.INVOICES]: "invoices",
-        [STORAGE_KEYS.SCOPE_TEMPLATES]: "templates",
-        [STORAGE_KEYS.COMPANY_PROFILE]: "company_profile",
-      };
-
-      Object.keys(keysObj).forEach((key) => {
-        if (!key.startsWith(ESTIPAID_PREFIX)) return;
-        if (key === STORAGE_KEYS.SETTINGS) return;
-        const raw = toStorageString(keysObj[key]);
-        if (!raw) return;
-        try {
-          localStorage.setItem(key, raw);
-          writeCount += 1;
-          if (IMPORT_KEY_DOMAINS[key]) importedDomains.add(IMPORT_KEY_DOMAINS[key]);
-        } catch {}
-      });
-
-      let importedSettings = parsed.settings;
-      if (!importedSettings && Object.prototype.hasOwnProperty.call(keysObj, STORAGE_KEYS.SETTINGS)) {
-        const fromKeys = keysObj[STORAGE_KEYS.SETTINGS];
-        if (typeof fromKeys === "string") {
-          importedSettings = safeJsonParse(fromKeys) || {};
-        } else {
-          importedSettings = fromKeys;
-        }
+      const plan = buildBackupJsonImportPlan(parsed);
+      if (!plan.ok) {
+        window.alert(plan.blockedReason || "This file cannot be imported.");
+        return;
       }
-      const mergedSettings = mergeSettingsSafe(loadSettings(), asObject(importedSettings));
+
+      const counts = plan.counts;
+      const countsPreview = [
+        `Customers: ${counts.customers}`,
+        `Projects: ${counts.projects}`,
+        `Estimates: ${counts.estimates}`,
+        `Invoices: ${counts.invoices}`,
+        `Invoice payments: ${counts.invoicePayments}`,
+      ].join("\n");
+      const warningsPreview = plan.warnings.length > 0 ? `\n\n${plan.warnings.join("\n")}` : "";
+
+      if (plan.coreRecordTotal === 0) {
+        const proceedEmpty = window.confirm(
+          `This backup contains no customer, project, estimate, or invoice records.\n\nSource: ${plan.sourceLabel}\n${countsPreview}${warningsPreview}\n\nIt may be an export taken from an empty device. Import anyway (settings, company profile, and templates only)?`
+        );
+        if (!proceedEmpty) return;
+      } else {
+        const proceed = window.confirm(
+          `Import ${plan.sourceLabel}?\n\n${countsPreview}${warningsPreview}\n\nThis will overwrite matching local data on this device.`
+        );
+        if (!proceed) return;
+      }
+
+      const result = applyBackupJsonImportPlan({ plan, storage: localStorage });
+
+      const mergedSettings = mergeSettingsSafe(loadSettings(), asObject(plan.settings));
       saveSettings(mergedSettings);
       setSettings(mergedSettings);
-      if (importedDomains.size > 0) {
+
+      // Same-tab refresh so Home/Settings show the imported counts without
+      // a reload (mirrors the cloud restore path's change events).
+      try {
+        window.dispatchEvent(new Event("estipaid:customers-changed"));
+        window.dispatchEvent(new Event("estipaid:projects-changed"));
+        window.dispatchEvent(new Event("estipaid:estimates-changed"));
+        window.dispatchEvent(new Event("estipaid:invoices-changed"));
+        window.dispatchEvent(new Event("estipaid:settings-changed"));
+      } catch {}
+
+      if (plan.importedDomains.length > 0) {
         markCloudBackupDirty({
           reason: "bulk_json_import",
-          domains: [...importedDomains],
+          domains: [...new Set(plan.importedDomains)],
           severity: "money_critical",
           source: "importJsonFile",
         });
       }
-      window.alert(`Import complete. Updated ${writeCount + 1} key(s).`);
+
+      const imported = result.importedCounts;
+      const importedCoreTotal = imported.customers + imported.projects + imported.estimates + imported.invoices;
+      if (importedCoreTotal === 0) {
+        window.alert("No records imported. This backup did not contain recoverable customer/project/estimate/invoice data.");
+      } else {
+        window.alert(
+          `Imported backup: ${imported.customers} customers, ${imported.projects} projects, ${imported.estimates} estimates, ${imported.invoices} invoices.`
+        );
+      }
     } catch {
       window.alert("Import failed.");
     } finally {
@@ -1488,7 +1544,7 @@ export default function AdvancedSettingsScreen({
                     Supabase not configured. Set {missingEnvKeys.join(" and ")} to enable account sign-in.
                   </div>
                   <div className="pe-field-helper">
-                    Download Backup JSON in Developer Tools before any future migration or cloud-write step.
+                    Download This Device Backup JSON in Developer Tools before any future migration or cloud-write step.
                   </div>
                 </>
               ) : authLoading ? (
@@ -1679,9 +1735,17 @@ export default function AdvancedSettingsScreen({
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"
+                        onClick={downloadCloudBackupJson}
+                        disabled={cloudExportBusy}
+                      >
+                        {cloudExportBusy ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
                         onClick={downloadBackupJson}
                       >
-                        Download Backup JSON
+                        Download This Device Backup JSON
                       </button>
                       <button
                         type="button"
@@ -1756,9 +1820,17 @@ export default function AdvancedSettingsScreen({
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"
+                        onClick={downloadCloudBackupJson}
+                        disabled={cloudExportBusy}
+                      >
+                        {cloudExportBusy ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
                         onClick={downloadBackupJson}
                       >
-                        Download Backup JSON
+                        Download This Device Backup JSON
                       </button>
                     </div>
                   </>
@@ -1887,9 +1959,17 @@ export default function AdvancedSettingsScreen({
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"
+                        onClick={downloadCloudBackupJson}
+                        disabled={cloudExportBusy}
+                      >
+                        {cloudExportBusy ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
                         onClick={downloadBackupJson}
                       >
-                        Download Backup JSON
+                        Download This Device Backup JSON
                       </button>
                     </div>
                   </>
@@ -2494,8 +2574,16 @@ export default function AdvancedSettingsScreen({
                 >
                   {diagnosticsBusy ? "Exporting..." : "Export Diagnostics"}
                 </button>
+                <button
+                  type="button"
+                  className="pe-btn pe-btn-ghost"
+                  onClick={downloadCloudBackupJson}
+                  disabled={cloudExportBusy}
+                >
+                  {cloudExportBusy ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
+                </button>
                 <button type="button" className="pe-btn pe-btn-ghost" onClick={downloadBackupJson}>
-                  Download Backup JSON
+                  Download This Device Backup JSON
                 </button>
                 <button type="button" className="pe-btn pe-btn-ghost" onClick={exportData}>
                   Export Raw App Data
@@ -2505,7 +2593,7 @@ export default function AdvancedSettingsScreen({
                   className="pe-btn pe-btn-ghost"
                   onClick={() => importInputRef.current?.click?.()}
                 >
-                  Import Raw App Data
+                  Import Backup JSON
                 </button>
               </div>
 
@@ -2527,7 +2615,7 @@ export default function AdvancedSettingsScreen({
               ) : null}
 
               <div className="pe-field-helper" style={{ marginTop: 2 }}>
-                Diagnostics exports create a redacted support bundle. Backup JSON downloads the migration-ready localStorage artifact. Raw app data import/export is for local support workflows.
+                Diagnostics exports create a redacted support bundle. Cloud Backup JSON downloads this workspace&apos;s records from Supabase. This Device Backup JSON exports only data currently stored on this device — it does not download your cloud backup, and it will be empty if this device is empty. Import Backup JSON accepts cloud, device, and raw app data backup files and previews record counts before writing.
               </div>
               {diagnosticsMessage ? (
                 <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: diagnosticsMessage.includes("Unable") ? "rgba(248,113,113,0.95)" : "rgba(187,247,208,0.95)" }}>

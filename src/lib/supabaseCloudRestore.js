@@ -7,6 +7,20 @@ import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDa
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
+// Gate 13O-2J: the downloadable "Cloud Backup JSON" artifact. Records are
+// stored already mapped to the local app shapes (the same mapping the
+// restore path writes to localStorage), so the import path never has to
+// re-derive cloud column mappings from a file.
+export const CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION = "cloud-backup-export-artifact-v1";
+export const CLOUD_BACKUP_EXPORT_SCHEMA_VERSION = 1;
+
+export const CLOUD_BACKUP_EXPORT_STATUS = {
+  SIGNED_OUT: "signed_out",
+  NO_WORKSPACE: "no_workspace",
+  EXPORTED: "exported",
+  ERROR: "error",
+};
+
 // Gate 13C: fired once a restore has finished writing local data, dispatching
 // its change events, and clearing the backup queue -- so the app shell can
 // navigate the user to Home and surface a success signal instead of leaving
@@ -809,5 +823,155 @@ export async function executeSupabaseCloudRestore({
       invoices: payload.invoices.length,
       estimates: payload.estimates.length,
     },
+  });
+}
+
+function buildCloudExportResult(status, extra = {}) {
+  return {
+    exportVersion: CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION,
+    status,
+    artifact: null,
+    error: "",
+    failedTable: "",
+    notices: [],
+    noWritesPerformed: true,
+    ...extra,
+  };
+}
+
+// Gate 13O-2J: read-only cloud backup JSON export. Fetches every cloud table
+// the restore path reads, maps rows through the exact same cloud->local
+// mapping restore uses, and returns a source:"cloud" artifact with explicit
+// counts. Never writes to Supabase or localStorage. If ANY required table
+// read fails, this returns an error instead of a "successful" empty artifact
+// -- a cloud backup download must never silently degrade to zero records.
+// Estimates are included only when they carry a valid restore_payload (the
+// same safety rule restore enforces); missing ones are reported in
+// restorePayloadCoverage, never reconstructed from guessed math.
+export async function exportSupabaseCloudBackupArtifact({
+  configured = false,
+  user = null,
+  company = null,
+} = {}) {
+  const gated = gateBasicPrerequisites({ configured, user, company });
+  if (gated === CLOUD_RESTORE_STATUS.SIGNED_OUT) {
+    return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.SIGNED_OUT, {
+      error: "Sign in to Supabase before downloading a cloud backup JSON.",
+    });
+  }
+  if (gated === CLOUD_RESTORE_STATUS.NO_WORKSPACE) {
+    return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.NO_WORKSPACE, {
+      error: "This account has no cloud workspace to export.",
+    });
+  }
+
+  const client = getSupabaseClient();
+  if (!client?.from) {
+    return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.ERROR, {
+      error: "Supabase is not configured.",
+    });
+  }
+
+  const companyId = asText(company?.id);
+  const fetched = {};
+  for (const table of ALL_CLOUD_TABLES) {
+    const { rows, error } = await readCloudRows(client, table, companyId);
+    if (error) {
+      return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.ERROR, {
+        error: `Unable to read ${table} from Supabase. Cloud backup JSON was not created.`,
+        failedTable: table,
+      });
+    }
+    fetched[table] = rows;
+  }
+
+  // Company profile / settings / scope templates live in the optional app
+  // restore bundle (app_settings row). Its absence must not block exporting
+  // the core business records, but it is reported explicitly.
+  const appBundle = await readAppRestoreBundleResult(client, companyId);
+
+  const estimateRows = fetched.estimates;
+  const payloadBackedEstimates = estimateRows.filter((row) => hasValidRestorePayload(row));
+  const missingPayloadCount = estimateRows.length - payloadBackedEstimates.length;
+
+  let records;
+  try {
+    records = buildLocalRestorePayload({
+      customers: fetched.customers,
+      projects: fetched.projects,
+      invoices: fetched.invoices,
+      invoicePayments: fetched.invoice_payments,
+      invoiceLineItems: fetched.invoice_line_items,
+      estimates: payloadBackedEstimates,
+      appRestoreBundle: appBundle.status === "available" ? appBundle.bundle : null,
+    });
+  } catch (error) {
+    return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.ERROR, {
+      error: asText(error?.message) || "Unable to map cloud data for export.",
+    });
+  }
+
+  const notices = [];
+  if (missingPayloadCount > 0) {
+    notices.push(buildNotice(
+      "warning",
+      "estimates_missing_restore_payload_excluded",
+      `${missingPayloadCount} cloud estimate(s) have no restore payload and are not included as importable estimates. Run Settings -> Update Estimate Restore Payloads on a device that still has the original estimates, then export again.`,
+      { missingRestorePayloadCount: missingPayloadCount }
+    ));
+  }
+  if (appBundle.status !== "available") {
+    notices.push(buildNotice(
+      "info",
+      "app_restore_bundle_unavailable",
+      "Company profile, settings, and scope templates were not available in the cloud app restore bundle and are not included in this export.",
+      { appBundleStatus: appBundle.status }
+    ));
+  }
+
+  const artifact = {
+    artifactVersion: CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION,
+    schemaVersion: CLOUD_BACKUP_EXPORT_SCHEMA_VERSION,
+    source: "cloud",
+    app: "EstiPaid",
+    exportedAt: new Date().toISOString(),
+    companyId,
+    companyName: asText(company?.name),
+    counts: {
+      customers: fetched.customers.length,
+      projects: fetched.projects.length,
+      estimates: fetched.estimates.length,
+      estimateLineItems: fetched.estimate_line_items.length,
+      invoices: fetched.invoices.length,
+      invoiceLineItems: fetched.invoice_line_items.length,
+      invoicePayments: fetched.invoice_payments.length,
+      scopeTemplates: Array.isArray(records.scopeTemplates) ? records.scopeTemplates.length : 0,
+    },
+    restorePayloadCoverage: {
+      totalEstimates: estimateRows.length,
+      estimatesWithRestorePayload: payloadBackedEstimates.length,
+      estimatesMissingRestorePayload: missingPayloadCount,
+    },
+    optionalSections: {
+      appRestoreBundle: appBundle.status === "available" ? "available" : "missing",
+    },
+    // records.* are already in the local app storage shape: invoice line
+    // items and payments are embedded on their invoices, and each estimate
+    // is the exact captured restore_payload object (never a guessed rebuild).
+    records: {
+      customers: records.customers,
+      projects: records.projects,
+      estimates: records.estimates,
+      invoices: records.invoices,
+      companyProfile: records.companyProfile,
+      settings: records.settings,
+      scopeTemplates: records.scopeTemplates,
+    },
+    notices,
+  };
+
+  return buildCloudExportResult(CLOUD_BACKUP_EXPORT_STATUS.EXPORTED, {
+    artifact,
+    notices,
   });
 }

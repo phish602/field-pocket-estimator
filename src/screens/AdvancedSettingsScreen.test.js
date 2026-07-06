@@ -16,7 +16,9 @@ import {
 import {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
+  exportSupabaseCloudBackupArtifact,
   CLOUD_RESTORE_STATUS,
+  CLOUD_BACKUP_EXPORT_STATUS,
 } from "../lib/supabaseCloudRestore";
 import {
   updateEstimateRestorePayloads,
@@ -87,6 +89,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
   __esModule: true,
   previewSupabaseCloudRestore: jest.fn(),
   executeSupabaseCloudRestore: jest.fn(),
+  exportSupabaseCloudBackupArtifact: jest.fn(),
   CLOUD_RESTORE_STATUS: {
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
@@ -97,6 +100,13 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
     ERROR: "error",
   },
+  CLOUD_BACKUP_EXPORT_STATUS: {
+    SIGNED_OUT: "signed_out",
+    NO_WORKSPACE: "no_workspace",
+    EXPORTED: "exported",
+    ERROR: "error",
+  },
+  CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION: "cloud-backup-export-artifact-v1",
 }));
 
 jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
@@ -196,6 +206,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     runSupabaseCloudOnboardingBackup.mockReset();
     previewSupabaseCloudRestore.mockReset();
     executeSupabaseCloudRestore.mockReset();
+    exportSupabaseCloudBackupArtifact.mockReset();
     updateEstimateRestorePayloads.mockReset();
     updateSupabaseAppRestoreBundle.mockReset();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
@@ -466,9 +477,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Reports & Bookkeeping")).toBeInTheDocument();
     expect(screen.getByText("Developer Tools")).toBeInTheDocument();
     expect(screen.getByText(/Supabase not configured/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download Backup JSON" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download This Device Backup JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export Raw App Data" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Import Raw App Data" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Backup JSON" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Business Profile" }));
     fireEvent.click(screen.getByRole("button", { name: "Open Templates" }));
@@ -1105,7 +1116,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
     expect(screen.queryByText(/cannot safely rebuild the missing local records/i)).not.toBeInTheDocument();
   });
@@ -1481,10 +1492,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Restore is blocked here because this device already has local data/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    // "Download Backup JSON" also appears in the always-present Developer
+    // "Download This Device Backup JSON" also appears in the always-present Developer
     // Tools section, so this action must render at least once (not exactly
     // once) inside the mismatch choice card.
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole("button", { name: "Back Up This Device" })).not.toBeInTheDocument();
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
     expect(runSupabaseMigrationWrite).not.toHaveBeenCalled();
@@ -1615,7 +1626,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
     // The concrete mismatch detail can still appear, but it must not be the
     // only thing shown -- there must be no generic "no actions" dead end.
@@ -1873,7 +1884,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
     expect(screen.getByText(/Replace reached estimate line item cleanup, but this account does not have permission/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Cloud backup is up to date.")).not.toBeInTheDocument();
   });
 
@@ -1945,7 +1956,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/estimates: 1 only in the cloud\. Replace can remove the cloud-only rows\./i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
   });
 
   test("metadata repair dead-end branch keeps recovery actions visible after a failed queue state", async () => {
@@ -2010,7 +2021,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText("Cloud backup needs attention.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back Up This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Download Backup JSON" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "Download This Device Backup JSON" }).length).toBeGreaterThanOrEqual(1);
   });
 
   test("protected invoice line-item mismatch does not claim replace will clear it", async () => {
@@ -2563,9 +2574,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     const beforeInvoices = localStorage.getItem(STORAGE_KEYS.INVOICES);
     const beforeSettings = localStorage.getItem(STORAGE_KEYS.SETTINGS);
 
-    fireEvent.click(screen.getByRole("button", { name: /download backup json/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Download This Device Backup JSON" }));
 
-    expect(screen.getByRole("status")).toHaveTextContent(/backup json downloaded:/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/this device backup json downloaded:/i);
     expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
     expect(capturedBlob).toBeTruthy();
 
@@ -2605,5 +2616,210 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.queryByText("Document Defaults")).not.toBeInTheDocument();
     expect(screen.queryByText("Default Internal Estimate Notes")).not.toBeInTheDocument();
     expect(screen.queryByText("Default Internal Notes (Estimate only)")).not.toBeInTheDocument();
+  });
+
+  // Gate 13O-2J: cloud backup JSON export/import recovery contract.
+  function buildCloudBackupArtifactFixture(overrides = {}) {
+    return {
+      artifactVersion: "cloud-backup-export-artifact-v1",
+      schemaVersion: 1,
+      source: "cloud",
+      app: "EstiPaid",
+      exportedAt: "2026-07-05T12:00:00.000Z",
+      companyId: "company_1",
+      companyName: "Field Pocket LLC",
+      counts: {
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        estimateLineItems: 0,
+        invoices: 1,
+        invoiceLineItems: 0,
+        invoicePayments: 1,
+        scopeTemplates: 0,
+      },
+      restorePayloadCoverage: { totalEstimates: 1, estimatesWithRestorePayload: 1, estimatesMissingRestorePayload: 0 },
+      optionalSections: { appRestoreBundle: "missing" },
+      records: {
+        customers: [{ id: "cloud_cust_1", type: "residential", fullName: "Cloud Customer" }],
+        projects: [{ id: "cloud_proj_1", customerId: "cloud_cust_1", projectName: "Cloud Project" }],
+        estimates: [{ id: "cloud_est_1", labor: { hazardPct: 5, lines: [] }, materials: { markupPct: 18, items: [] } }],
+        invoices: [{ id: "cloud_inv_1", invoiceNumber: "INV-9", lineItems: [], payments: [{ id: "cloud_pay_1", amount: 100 }] }],
+        companyProfile: null,
+        settings: null,
+        scopeTemplates: null,
+      },
+      notices: [],
+      ...overrides,
+    };
+  }
+
+  test("Download Cloud Backup JSON downloads the cloud artifact and reports its record counts", async () => {
+    exportSupabaseCloudBackupArtifact.mockResolvedValue({
+      status: CLOUD_BACKUP_EXPORT_STATUS.EXPORTED,
+      artifact: buildCloudBackupArtifactFixture(),
+      error: "",
+    });
+
+    render(<AdvancedSettingsScreen />);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Download Cloud Backup JSON" })[0]);
+    });
+
+    expect(exportSupabaseCloudBackupArtifact).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Cloud backup JSON downloaded: estipaid-cloud-backup-.*\(1 customers, 1 projects, 1 estimates, 1 invoices\)/)).toBeInTheDocument();
+    expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("Download Cloud Backup JSON surfaces the failing table instead of downloading an empty artifact", async () => {
+    exportSupabaseCloudBackupArtifact.mockResolvedValue({
+      status: CLOUD_BACKUP_EXPORT_STATUS.ERROR,
+      artifact: null,
+      error: "Unable to read customers from Supabase. Cloud backup JSON was not created.",
+      failedTable: "customers",
+    });
+
+    render(<AdvancedSettingsScreen />);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Download Cloud Backup JSON" })[0]);
+    });
+
+    expect(screen.getByText("Unable to read customers from Supabase. Cloud backup JSON was not created.")).toBeInTheDocument();
+    expect(createObjectURLSpy).not.toHaveBeenCalled();
+  });
+
+  test("importing a cloud backup JSON previews counts, maps records into local storage, and reports imported counts", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<AdvancedSettingsScreen />);
+
+    const file = { text: async () => JSON.stringify(buildCloudBackupArtifactFixture()) };
+    const input = document.querySelector('input[type="file"]');
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Import Cloud Backup JSON?"));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Customers: 1"));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toEqual([
+      { id: "cloud_cust_1", type: "residential", fullName: "Cloud Customer" },
+    ]);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual([
+      expect.objectContaining({ id: "cloud_est_1" }),
+    ]);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual([
+      expect.objectContaining({ id: "cloud_inv_1", payments: [expect.objectContaining({ id: "cloud_pay_1" })] }),
+    ]);
+    expect(alertSpy).toHaveBeenCalledWith("Imported backup: 1 customers, 1 projects, 1 estimates, 1 invoices.");
+  });
+
+  test("importing a zero-record backup requires explicit confirmation and writes nothing when declined", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(false);
+    const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<AdvancedSettingsScreen />);
+    const beforeCustomers = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+
+    // The exact incident shape: a device export taken after storage was cleared.
+    const emptyDeviceArtifact = {
+      artifactVersion: "localstorage-export-artifact-v1",
+      source: "localStorage",
+      app: "EstiPaid",
+      parsedData: {
+        migration: {
+          companyProfile: { present: false },
+          customers: { present: false },
+          projects: { present: false },
+          estimates: { present: false },
+          invoices: { present: false },
+          settings: { present: false },
+          scopeTemplates: { present: false },
+          auditEvents: { present: false },
+        },
+        supporting: {},
+      },
+    };
+    const file = { text: async () => JSON.stringify(emptyDeviceArtifact) };
+    const input = document.querySelector('input[type="file"]');
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("This backup contains no customer, project, estimate, or invoice records."));
+    expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBe(beforeCustomers);
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed zero-record import never reports success", async () => {
+    jest.spyOn(window, "confirm").mockReturnValue(true);
+    const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<AdvancedSettingsScreen />);
+
+    const file = {
+      text: async () => JSON.stringify(buildCloudBackupArtifactFixture({
+        records: {
+          customers: [],
+          projects: [],
+          estimates: [],
+          invoices: [],
+          companyProfile: null,
+          settings: null,
+          scopeTemplates: null,
+        },
+      })),
+    };
+    const input = document.querySelector('input[type="file"]');
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith("No records imported. This backup did not contain recoverable customer/project/estimate/invoice data.");
+  });
+
+  test("importing an unrecognized JSON file is blocked with a clear reason", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<AdvancedSettingsScreen />);
+
+    const file = { text: async () => JSON.stringify({ some: "random", json: true }) };
+    const input = document.querySelector('input[type="file"]');
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining("not a recognized EstiPaid backup JSON"));
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  test("importing a legacy raw app data export still works", async () => {
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+    render(<AdvancedSettingsScreen />);
+
+    const legacyExport = {
+      app: "EstiPaid",
+      version: 1,
+      exportedAt: "2026-07-05T12:00:00.000Z",
+      settings: {},
+      keys: {
+        [STORAGE_KEYS.CUSTOMERS]: [{ id: "legacy_cust_1", type: "residential", fullName: "Legacy Customer" }],
+        [STORAGE_KEYS.PROJECTS]: [{ id: "legacy_proj_1" }],
+      },
+    };
+    const file = { text: async () => JSON.stringify(legacyExport) };
+    const input = document.querySelector('input[type="file"]');
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Raw App Data export (legacy)"));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toEqual([
+      expect.objectContaining({ id: "legacy_cust_1" }),
+    ]);
+    expect(alertSpy).toHaveBeenCalledWith("Imported backup: 1 customers, 1 projects, 0 estimates, 0 invoices.");
   });
 });

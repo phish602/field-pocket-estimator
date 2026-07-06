@@ -7,7 +7,10 @@ jest.mock("./supabaseClient", () => ({
 const {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
+  exportSupabaseCloudBackupArtifact,
   CLOUD_RESTORE_STATUS,
+  CLOUD_BACKUP_EXPORT_STATUS,
+  CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION,
   CLOUD_RESTORE_COMPLETE_EVENT,
 } = require("./supabaseCloudRestore");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
@@ -998,6 +1001,144 @@ describe("supabaseCloudRestore", () => {
       expect(result.status).toBe(CLOUD_RESTORE_STATUS.BLOCKED_UNSUPPORTED_SHAPE);
       expect(result.restored).toBe(false);
       expect(storage.setItem).not.toHaveBeenCalled();
+    });
+  });
+
+  // Gate 13O-2J: the downloadable source:"cloud" backup artifact.
+  describe("exportSupabaseCloudBackupArtifact", () => {
+    test("blocks at signed_out without touching Supabase", async () => {
+      const result = await exportSupabaseCloudBackupArtifact({
+        configured: false,
+        user: null,
+        company: null,
+      });
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.SIGNED_OUT);
+      expect(result.artifact).toBeNull();
+      expect(result.error).toContain("Sign in");
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
+    });
+
+    test("blocks at no_workspace when there is no company", async () => {
+      const result = await exportSupabaseCloudBackupArtifact({
+        ...baseContext,
+        company: null,
+      });
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.NO_WORKSPACE);
+      expect(result.artifact).toBeNull();
+    });
+
+    test("exports a source:'cloud' artifact with correct counts and locally-shaped records", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: {
+          ...fullCloudRows({ estimates: [cloudEstimateRow()], estimate_line_items: [{ id: "db_est_line_1" }] }),
+          app_settings: [appRestoreBundleRow()],
+        },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await exportSupabaseCloudBackupArtifact(baseContext);
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.EXPORTED);
+      expect(result.noWritesPerformed).toBe(true);
+
+      const artifact = result.artifact;
+      expect(artifact.source).toBe("cloud");
+      expect(artifact.artifactVersion).toBe(CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION);
+      expect(artifact.companyId).toBe("company_1");
+      expect(artifact.counts).toEqual({
+        customers: 1,
+        projects: 1,
+        estimates: 1,
+        estimateLineItems: 1,
+        invoices: 1,
+        invoiceLineItems: 1,
+        invoicePayments: 1,
+        scopeTemplates: 1,
+      });
+      expect(artifact.restorePayloadCoverage).toEqual({
+        totalEstimates: 1,
+        estimatesWithRestorePayload: 1,
+        estimatesMissingRestorePayload: 0,
+      });
+
+      // Records are already mapped to the local app storage shape.
+      expect(artifact.records.customers[0]).toEqual(expect.objectContaining({ id: "cust_1", type: "commercial", companyName: "Acme Co" }));
+      expect(artifact.records.projects[0]).toEqual(expect.objectContaining({ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }));
+      expect(artifact.records.invoices[0]).toEqual(expect.objectContaining({
+        id: "inv_1",
+        invoiceNumber: "INV-1",
+        lineItems: [expect.objectContaining({ description: "Material" })],
+        payments: [expect.objectContaining({ id: "pay_1", amount: 250 })],
+      }));
+      // Estimates come verbatim from restore_payload, pinned to legacy id.
+      expect(artifact.records.estimates[0]).toEqual(expect.objectContaining({
+        id: "est_1",
+        labor: expect.objectContaining({ hazardPct: 5, riskPct: 2, multiplier: 1.25 }),
+      }));
+      expect(artifact.records.companyProfile).toEqual(expect.objectContaining({ companyName: "AAS Property Care" }));
+      expect(artifact.records.scopeTemplates).toEqual([expect.objectContaining({ id: "tmpl_1" })]);
+      expect(artifact.optionalSections.appRestoreBundle).toBe("available");
+    });
+
+    test("fails clearly with the failing table and never produces a 'successful' empty artifact", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: fullCloudRows(),
+        rowErrorsByTable: { customers: { message: "permission denied for table customers" } },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await exportSupabaseCloudBackupArtifact(baseContext);
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.ERROR);
+      expect(result.artifact).toBeNull();
+      expect(result.failedTable).toBe("customers");
+      expect(result.error).toContain("Unable to read customers from Supabase");
+    });
+
+    test("excludes payload-less estimates from records, reports coverage, and never guesses estimate math", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: {
+          ...fullCloudRows({
+            estimates: [
+              cloudEstimateRow(),
+              cloudEstimateRow({ id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null }),
+            ],
+          }),
+          app_settings: [],
+        },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await exportSupabaseCloudBackupArtifact(baseContext);
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.EXPORTED);
+      expect(result.artifact.counts.estimates).toBe(2);
+      expect(result.artifact.restorePayloadCoverage).toEqual({
+        totalEstimates: 2,
+        estimatesWithRestorePayload: 1,
+        estimatesMissingRestorePayload: 1,
+      });
+      expect(result.artifact.records.estimates).toHaveLength(1);
+      expect(result.artifact.records.estimates[0].id).toBe("est_1");
+      expect(result.artifact.notices).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "estimates_missing_restore_payload_excluded" }),
+      ]));
+    });
+
+    test("marks the app restore bundle optional section missing without failing the export", async () => {
+      const mockClient = createMockClient({
+        rowsByTable: { ...fullCloudRows(), app_settings: [] },
+      });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const result = await exportSupabaseCloudBackupArtifact(baseContext);
+
+      expect(result.status).toBe(CLOUD_BACKUP_EXPORT_STATUS.EXPORTED);
+      expect(result.artifact.optionalSections.appRestoreBundle).toBe("missing");
+      expect(result.artifact.records.companyProfile).toBeNull();
+      expect(result.artifact.records.settings).toBeNull();
     });
   });
 });

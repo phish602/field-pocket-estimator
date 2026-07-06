@@ -19,9 +19,14 @@
 
 import { useEffect, useState } from "react";
 import useCloudRestorePrompt, { CLOUD_RESTORE_PROMPT_STATE, SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
-import { executeSupabaseCloudRestore, CLOUD_RESTORE_STATUS } from "../lib/supabaseCloudRestore";
+import {
+  executeSupabaseCloudRestore,
+  exportSupabaseCloudBackupArtifact,
+  CLOUD_RESTORE_STATUS,
+  CLOUD_BACKUP_EXPORT_STATUS,
+} from "../lib/supabaseCloudRestore";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
-import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
+import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
 import CloudConfirmDialog from "./CloudConfirmDialog";
 import { buildCloudRestoreConfirmationDialog } from "../lib/cloudRestoreUi";
 
@@ -82,6 +87,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [backupResult, setBackupResult] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [downloadMessage, setDownloadMessage] = useState("");
+  const [downloadingCloudBackup, setDownloadingCloudBackup] = useState(false);
   const [recheckState, setRecheckState] = useState("idle");
   const [recheckMessage, setRecheckMessage] = useState("");
 
@@ -153,17 +159,41 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     refreshCloudStatus();
   };
 
-  const downloadBackupJson = () => {
+  // Gate 13O-2J: this prompt only ever appears in cloud recovery states, so
+  // the only backup JSON it may offer is the CLOUD one. It previously
+  // exported this device's localStorage here -- on a freshly-cleared device
+  // that produced an empty "backup" that imported as 0 records. The cloud
+  // export fails loudly (with the failing table) rather than downloading a
+  // silently empty artifact.
+  const downloadCloudBackupJson = async () => {
+    setDownloadingCloudBackup(true);
     try {
-      const result = triggerLocalStorageExportDownload({
-        storageSnapshot: localStorage,
+      const exportResult = await exportSupabaseCloudBackupArtifact({
+        configured: isSupabaseReady,
+        user,
+        company,
+      });
+      if (exportResult.status !== CLOUD_BACKUP_EXPORT_STATUS.EXPORTED || !exportResult.artifact) {
+        setDownloadMessage(String(exportResult.error || "Unable to download cloud backup JSON."));
+        return;
+      }
+      const { filename, artifact } = triggerCloudBackupExportDownload({
+        artifact: exportResult.artifact,
         BlobConstructor: Blob,
         URLObject: URL,
         documentObject: document,
       });
-      setDownloadMessage(`Backup JSON downloaded: ${String(result?.filename || "export")}`);
-    } catch {
-      setDownloadMessage("Unable to download backup JSON.");
+      const counts = artifact.counts;
+      const coreTotal = counts.customers + counts.projects + counts.estimates + counts.invoices;
+      setDownloadMessage(
+        coreTotal === 0
+          ? `Cloud backup JSON downloaded: ${filename}. Warning: the cloud has no customer, project, estimate, or invoice records.`
+          : `Cloud backup JSON downloaded: ${filename} (${counts.customers} customers, ${counts.projects} projects, ${counts.estimates} estimates, ${counts.invoices} invoices).`
+      );
+    } catch (error) {
+      setDownloadMessage(String(error?.message || "Unable to download cloud backup JSON."));
+    } finally {
+      setDownloadingCloudBackup(false);
     }
   };
 
@@ -302,10 +332,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
               <button
                 type="button"
                 className="pe-btn pe-btn-ghost"
-                onClick={downloadBackupJson}
-                disabled={restoring}
+                onClick={downloadCloudBackupJson}
+                disabled={restoring || downloadingCloudBackup}
               >
-                Download Backup JSON
+                {downloadingCloudBackup ? "Preparing Cloud Backup..." : "Download Cloud Backup JSON"}
               </button>
             </>
           ) : null}
