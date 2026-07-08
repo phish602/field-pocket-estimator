@@ -138,6 +138,34 @@ export function calcMaterials(mode, materials, settings) {
   };
 }
 
+export function calcAdditionalCharges(additionalCharges) {
+  let subtotal = 0;
+
+  const normalized = (additionalCharges?.items || []).map((item) => {
+    const qty = Math.max(0, toNum(item?.qty));
+    const priceEach = Math.max(0, toNum(item?.priceEach ?? item?.charge ?? item?.amount));
+    const lineTotal = qty * priceEach;
+    subtotal += lineTotal;
+
+    return {
+      ...item,
+      qty,
+      priceEach,
+      lineTotal,
+      total: lineTotal,
+    };
+  });
+
+  return {
+    subtotal,
+    totalRevenue: subtotal,
+    totalCost: 0,
+    grossProfit: subtotal,
+    marginPct: safePct(subtotal, subtotal),
+    normalized,
+  };
+}
+
 export function computeTotals(state, options = {}) {
   const pricing = resolvePricingSettings(options?.settings);
   const labor = calcLabor(state?.labor?.lines || [], pricing);
@@ -155,8 +183,9 @@ export function computeTotals(state, options = {}) {
     state?.materials,
     pricing
   );
+  const additionalCharges = calcAdditionalCharges(state?.additionalCharges);
 
-  const totalRevenue = laborAfterAdjustments + materials.totalRevenue;
+  const totalRevenue = laborAfterAdjustments + materials.totalRevenue + additionalCharges.totalRevenue;
   const totalCost = labor.totalCost + materials.totalCost;
   const grossProfit = totalRevenue - totalCost;
   const grossMarginPct = safePct(grossProfit, totalRevenue);
@@ -172,6 +201,7 @@ export function computeTotals(state, options = {}) {
     laborAfterMultiplier,
     laborAfterAdjustments,
     materials,
+    additionalCharges,
     pricing,
     totalRevenue,
     totalCost,

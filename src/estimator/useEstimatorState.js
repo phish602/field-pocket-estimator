@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_STATE, STORAGE_KEY } from "./defaultState";
-import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
+import { createSaveLoadSwitchingService } from "../lib/saveLoadSwitchingService";
 
 function deepClone(obj) {
   try {
@@ -64,27 +64,6 @@ function stripInternalNotesForPersistence(state) {
   return next;
 }
 
-function applyDefaultInternalNotesForNewEstimate(state) {
-  const next = deepClone(state || DEFAULT_STATE);
-  const uiDocType = next?.ui?.docType === "invoice" ? "invoice" : "estimate";
-  if (uiDocType !== "estimate") return next;
-  if (String(next?.scopeNotes || "").trim()) return next;
-  let defaultNote = "";
-  try {
-    const settings = loadSettings();
-    defaultNote = String(
-      settings?.docDefaults?.defaultInternalNotesEstimate
-      ?? DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate
-      ?? ""
-    ).trim();
-  } catch {
-    defaultNote = String(DEFAULT_SETTINGS?.docDefaults?.defaultInternalNotesEstimate || "").trim();
-  }
-  if (!defaultNote) return next;
-  next.scopeNotes = defaultNote;
-  return next;
-}
-
 function setByPath(obj, path, value) {
   const parts = String(path || "").split(".").filter(Boolean);
   if (!parts.length) return obj;
@@ -110,21 +89,113 @@ function setByPath(obj, path, value) {
   return root;
 }
 
+function readLocalStorageDraft() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? safeParse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorageDraft(serialized) {
+  try {
+    localStorage.setItem(STORAGE_KEY, serialized);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeLocalStorageDraft() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildSaveLoadSwitchingOptions(options = {}) {
+  const cfg = options?.saveLoadSwitching;
+  if (!cfg || typeof cfg !== "object" || cfg.enabled !== true) {
+    return {
+      enabled: false,
+      mode: undefined,
+      enableBackendMode: false,
+      backendAdapter: undefined,
+      allowBackendReadForInitialHydration: false,
+    };
+  }
+
+  return {
+    enabled: true,
+    mode: cfg.mode,
+    enableBackendMode: cfg.enableBackendMode === true,
+    backendAdapter: cfg.backendAdapter,
+    allowBackendReadForInitialHydration: cfg.allowBackendReadForInitialHydration === true,
+  };
+}
+
 export function useEstimatorState(options = {}) {
   const saveTimerRef = useRef(null);
   const lastSerializedRef = useRef("");
   const persistDraft = options?.persistDraft !== false;
+  const saveLoadSwitchingOptions = buildSaveLoadSwitchingOptions(options);
+  const saveLoadService = useMemo(() => {
+    if (!saveLoadSwitchingOptions.enabled) return null;
+
+    return createSaveLoadSwitchingService({
+      mode: saveLoadSwitchingOptions.mode,
+      enableBackendMode: saveLoadSwitchingOptions.enableBackendMode,
+      backendAdapter: saveLoadSwitchingOptions.backendAdapter,
+    });
+  }, [
+    saveLoadSwitchingOptions.backendAdapter,
+    saveLoadSwitchingOptions.enableBackendMode,
+    saveLoadSwitchingOptions.enabled,
+    saveLoadSwitchingOptions.mode,
+  ]);
+
+  function saveThroughSwitchingService(snapshot, context = {}) {
+    if (!saveLoadService || typeof saveLoadService.saveDraft !== "function") return null;
+    try {
+      return saveLoadService.saveDraft(snapshot, context);
+    } catch {
+      return null;
+    }
+  }
+
+  function loadFromSwitchingService(query = {}, context = {}) {
+    if (!saveLoadService || typeof saveLoadService.loadDrafts !== "function") return null;
+    try {
+      return saveLoadService.loadDrafts(query, context);
+    } catch {
+      return null;
+    }
+  }
 
   const [state, setState] = useState(() => {
     const base = deepClone(DEFAULT_STATE);
+
+    if (saveLoadSwitchingOptions.allowBackendReadForInitialHydration) {
+      const loadResult = loadFromSwitchingService(
+        { storageKey: STORAGE_KEY, entityType: "estimator_state" },
+        { source: "useEstimatorState.initial" }
+      );
+      const backendSnapshot = loadResult?.data?.snapshot;
+      if (backendSnapshot && typeof backendSnapshot === "object") {
+        return mergeDefaults(base, backendSnapshot);
+      }
+    }
+
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const loaded = raw ? safeParse(raw) : null;
+      const loaded = readLocalStorageDraft();
       if (loaded && typeof loaded === "object") {
         return mergeDefaults(base, loaded);
       }
     } catch {}
-    return applyDefaultInternalNotesForNewEstimate(base);
+    return base;
   });
 
   // Debounced autosave to STORAGE_KEY
@@ -142,7 +213,11 @@ export function useEstimatorState(options = {}) {
           const serialized = JSON.stringify(next);
           if (serialized === lastSerializedRef.current) return;
 
-          localStorage.setItem(STORAGE_KEY, serialized);
+          saveThroughSwitchingService(next, {
+            source: "useEstimatorState.autosave",
+            storageKey: STORAGE_KEY,
+          });
+          writeLocalStorageDraft(serialized);
           lastSerializedRef.current = serialized;
 
           // Keep in-memory meta in sync (only if it actually changed)
@@ -262,6 +337,39 @@ export function useEstimatorState(options = {}) {
     });
   };
 
+  // ---- Additional charges helpers ----
+  const addAdditionalChargeItem = () => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      items.push({ id: uid("ac_"), desc: "", qty: "", priceEach: "" });
+      next.additionalCharges = { ...(next.additionalCharges || {}), items };
+      return next;
+    });
+  };
+
+  const removeAdditionalChargeItem = (id) => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      const filtered = items.filter((item) => String(item?.id) !== String(id));
+      next.additionalCharges = { ...(next.additionalCharges || {}), items: filtered };
+      return next;
+    });
+  };
+
+  const updateAdditionalChargeItem = (id, patchObj) => {
+    setState((prev) => {
+      const next = deepClone(prev);
+      const items = Array.isArray(next?.additionalCharges?.items) ? next.additionalCharges.items : [];
+      const idx = items.findIndex((item) => String(item?.id) === String(id));
+      if (idx < 0) return prev;
+      items[idx] = { ...(items[idx] || {}), ...(patchObj || {}) };
+      next.additionalCharges = { ...(next.additionalCharges || {}), items };
+      return next;
+    });
+  };
+
   const saveNow = (metaPatch = null, saveOptions = null) => {
     try {
       const next = stripInternalNotesForPersistence(state);
@@ -273,7 +381,11 @@ export function useEstimatorState(options = {}) {
       next.meta = { ...(next.meta || {}), ...extraMeta, lastSavedAt: Date.now() };
       const serialized = JSON.stringify(next);
       if (shouldPersistDraft) {
-        localStorage.setItem(STORAGE_KEY, serialized);
+        saveThroughSwitchingService(next, {
+          source: "useEstimatorState.saveNow",
+          storageKey: STORAGE_KEY,
+        });
+        writeLocalStorageDraft(serialized);
         lastSerializedRef.current = serialized;
       }
       setState(next);
@@ -285,11 +397,9 @@ export function useEstimatorState(options = {}) {
 
   const clearAll = () => {
     if (persistDraft) {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-      } catch {}
+      removeLocalStorageDraft();
     }
-    setState(applyDefaultInternalNotesForNewEstimate(DEFAULT_STATE));
+    setState(DEFAULT_STATE);
   };
 
   const replaceState = (nextState, replaceOptions = null) => {
@@ -307,7 +417,11 @@ export function useEstimatorState(options = {}) {
         const persisted = stripInternalNotesForPersistence(merged);
         persisted.meta = { ...(persisted.meta || {}), lastSavedAt: Date.now() };
         const serialized = JSON.stringify(persisted);
-        localStorage.setItem(STORAGE_KEY, serialized);
+        saveThroughSwitchingService(persisted, {
+          source: "useEstimatorState.replaceState",
+          storageKey: STORAGE_KEY,
+        });
+        writeLocalStorageDraft(serialized);
         lastSerializedRef.current = serialized;
       }
       return merged;
@@ -327,6 +441,9 @@ export function useEstimatorState(options = {}) {
     dupMaterialItem,
     removeMaterialItem,
     updateMaterialItem,
+    addAdditionalChargeItem,
+    removeAdditionalChargeItem,
+    updateAdditionalChargeItem,
     saveNow,
     replaceState,
     clearAll,

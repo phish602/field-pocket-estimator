@@ -3,6 +3,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { normalizePercentInput } from "./format";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 export const DEFAULT_SETTINGS = {
   pricing: {
@@ -75,7 +76,7 @@ export function normalizeSettings(input) {
   const pdf = asObject(src.pdf);
   const customer = asObject(src.customer);
 
-  // Backward compatibility: migrate legacy documents.defaultInternalNotes
+  // Legacy compatibility: prefer documents.defaultInternalNotes over older fields.
   const defaultInternalNotesEstimate = asText(
     docDefaults.defaultInternalNotesEstimate
       ?? docDefaults.defaultInternalNotes
@@ -129,6 +130,12 @@ export function saveSettings(next) {
     try {
       window.dispatchEvent(new Event("estipaid:settings-changed"));
     } catch {}
+    markCloudBackupDirty({
+      reason: "settings_saved",
+      domains: ["app_settings"],
+      severity: "normal",
+      source: "saveSettings",
+    });
     return true;
   } catch {
     return false;

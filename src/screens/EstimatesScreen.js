@@ -3,13 +3,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import {
+  buildEstimateInvoiceSummary,
+  INVOICE_TYPES,
+  createInvoiceBuilderDraftFromEstimate,
+  createInvoiceDraftFromEstimate,
+  readStoredInvoices,
+  roundCurrency,
+  writeStoredInvoices,
+} from "../utils/invoices";
+import {
+  readStoredProjects,
+  resolveProjectNavigationTarget,
+  upsertProject,
+  writeStoredProjects,
+} from "../utils/projects";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
+const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
+const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_LOST = "lost";
+const TOUCH_DRAG_HOLD_MS = 350;
+const TOUCH_DRAG_MOVE_THRESHOLD_PX = 10;
+const INVOICE_AMOUNT_MODE_AMOUNT = "amount";
+const INVOICE_AMOUNT_MODE_PERCENT = "percent";
+const INVOICE_COMPOSER_EPSILON = 0.005;
+const OPEN_ESTIMATE_NAV_GUARD_MS = 800;
 
 function normalizeEstimateStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
@@ -28,6 +52,7 @@ function sortEstimatesByDateDesc(a, b) {
 function normalizeEstimateList(records) {
   const arr = Array.isArray(records) ? records.filter(Boolean) : [];
   return arr
+    .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
     .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
     .sort(sortEstimatesByDateDesc);
 }
@@ -39,6 +64,76 @@ function createSavedDocId() {
 function readSavedEstimatesList() {
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(Boolean).filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function readLegacyInvoiceEstimateRecords() {
+  const collectLegacyInvoiceIdentityKeys = (record) => {
+    const keys = new Set();
+    const id = String(record?.id || "").trim();
+    const invoiceNumber = String(
+      record?.invoiceNumber
+      || record?.job?.docNumber
+      || record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    const docNumber = String(
+      record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    if (id) keys.add(`id:${id}`);
+    if (invoiceNumber) keys.add(`invoiceNumber:${invoiceNumber}`);
+    if (docNumber) keys.add(`docNumber:${docNumber}`);
+    return keys;
+  };
+  try {
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.filter((record) => {
+      if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
+      const recordKeys = [...collectLegacyInvoiceIdentityKeys(record)];
+      if (!recordKeys.length) return true;
+      if (recordKeys.some((key) => seen.has(key))) return false;
+      recordKeys.forEach((key) => seen.add(key));
+      return true;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredEstimatesPreservingLegacy(nextEstimates) {
+  const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
+  const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
+  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]));
+  try {
+    window.dispatchEvent(new Event("estipaid:estimates-changed"));
+  } catch {}
+  markCloudBackupDirty({
+    reason: "estimate_data_saved",
+    domains: ["estimates"],
+    severity: "money_critical",
+    source: "writeStoredEstimatesPreservingLegacy",
+  });
+}
+
+function readCustomers() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
   } catch {
@@ -188,6 +283,131 @@ function safeDiv(a, b) {
   return A / B;
 }
 
+function formatComposerNumber(value) {
+  const n = roundCurrency(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d*[1-9])0$/, "$1");
+}
+
+function getComposerAmountDefaults(invoiceType, summary) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+
+  if (invoiceType === INVOICE_TYPES.DEPOSIT) {
+    const maxPercent = approvedTotal > 0 ? roundCurrency((remainingToInvoice / approvedTotal) * 100) : 0;
+    const preferredPercent = maxPercent >= 25 ? 25 : maxPercent;
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_PERCENT,
+      amountValue: preferredPercent > 0 ? formatComposerNumber(preferredPercent) : "",
+    };
+  }
+
+  if (invoiceType === INVOICE_TYPES.PROGRESS) {
+    const suggestedAmount = remainingToInvoice > 0 ? roundCurrency(Math.max(remainingToInvoice / 2, 0)) : 0;
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+      amountValue: suggestedAmount > 0 ? formatComposerNumber(suggestedAmount) : "",
+    };
+  }
+
+  if (invoiceType === INVOICE_TYPES.FINAL) {
+    return {
+      amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+      amountValue: remainingToInvoice > 0 ? formatComposerNumber(remainingToInvoice) : "",
+    };
+  }
+
+  return {
+    amountMode: INVOICE_AMOUNT_MODE_AMOUNT,
+    amountValue: "",
+  };
+}
+
+function createInvoiceComposerForm(estimate, summary, invoiceType = INVOICE_TYPES.FINAL) {
+  const defaults = getComposerAmountDefaults(invoiceType, summary);
+  return {
+    invoiceType,
+    amountMode: defaults.amountMode,
+    amountValue: defaults.amountValue,
+    dueDate: String(estimate?.job?.due || estimate?.dueDate || "").trim(),
+    note: "",
+  };
+}
+
+function buildComposerRequestedValue(form) {
+  const raw = String(form?.amountValue || "").trim();
+  if (!raw) return "";
+  return String(form?.amountMode) === INVOICE_AMOUNT_MODE_PERCENT ? `${raw}%` : raw;
+}
+
+function resolveComposerInvoiceAmount(form, summary) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+  const raw = String(form?.amountValue || "").trim();
+  const invoiceType = String(form?.invoiceType || "");
+  const amountMode = String(form?.amountMode || INVOICE_AMOUNT_MODE_AMOUNT);
+
+  if (invoiceType === INVOICE_TYPES.FINAL && !raw) {
+    return remainingToInvoice;
+  }
+
+  if (!raw) return 0;
+
+  if (amountMode === INVOICE_AMOUNT_MODE_PERCENT) {
+    return roundCurrency((approvedTotal * toNum(raw)) / 100);
+  }
+
+  return roundCurrency(toNum(raw));
+}
+
+function resolveComposerValidationMessage(form, summary, lang) {
+  const approvedTotal = roundCurrency(summary?.approvedTotal || 0);
+  const remainingToInvoice = roundCurrency(summary?.remainingToInvoice || 0);
+  const raw = String(form?.amountValue || "").trim();
+  const invoiceType = String(form?.invoiceType || "");
+  const amountMode = String(form?.amountMode || INVOICE_AMOUNT_MODE_AMOUNT);
+  const invoiceAmount = resolveComposerInvoiceAmount(form, summary);
+
+  if (invoiceType === INVOICE_TYPES.FINAL && !raw) {
+    if (remainingToInvoice <= 0) {
+      return lang === "es"
+        ? "No queda saldo por facturar para esta estimación."
+        : "Nothing remains to invoice for this estimate.";
+    }
+    return "";
+  }
+
+  if (!raw) return "";
+
+  if (amountMode === INVOICE_AMOUNT_MODE_PERCENT) {
+    const percentValue = roundCurrency(toNum(raw));
+    if (!Number.isFinite(percentValue) || percentValue <= 0) {
+      return lang === "es"
+        ? "El porcentaje debe ser mayor que 0%."
+        : "Invoice percent must be greater than 0%.";
+    }
+    if (approvedTotal <= 0) {
+      return lang === "es"
+        ? "Esta estimación no tiene total aprobado disponible."
+        : "This estimate has no approved total available.";
+    }
+  }
+
+  if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
+    return lang === "es"
+      ? "El monto de la factura debe ser mayor que $0.00."
+      : "Invoice amount must be greater than $0.00.";
+  }
+
+  if (remainingToInvoice > 0 && invoiceAmount > remainingToInvoice + INVOICE_COMPOSER_EPSILON) {
+    return lang === "es"
+      ? `La factura excede el saldo restante por facturar (${money(remainingToInvoice)}).`
+      : `Invoice exceeds the remaining amount to invoice (${money(remainingToInvoice)}).`;
+  }
+
+  return "";
+}
+
 function toTimestamp(v) {
   if (v === null || v === undefined || v === "") return 0;
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -215,9 +435,21 @@ function resolveMaterialsMode(doc) {
   return "itemized";
 }
 
+function hasMeaningfulAdditionalCharges(doc) {
+  const items = Array.isArray(doc?.additionalCharges?.items) ? doc.additionalCharges.items : [];
+  return items.some((item) => {
+    const qty = toNum(item?.qty);
+    const priceEach = toNum(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice);
+    return (qty * priceEach) > 0;
+  });
+}
+
 function toEstimatorState(doc) {
   const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
   const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  const additionalChargeItems = Array.isArray(doc?.additionalCharges?.items)
+    ? doc.additionalCharges.items
+    : (Array.isArray(doc?.additionalChargeItems) ? doc.additionalChargeItems : []);
   const multiplierMode = String(doc?.multiplierMode || "").toLowerCase();
   const customMultiplier = toNum(doc?.customMultiplier);
   const presetMultiplier = toNum(doc?.laborMultiplier);
@@ -263,6 +495,14 @@ function toEstimatorState(doc) {
           0,
           toNum(it?.unitCostInternal ?? it?.costInternal ?? it?.internalCost ?? it?.internalEach ?? it?.internalPrice ?? it?.cost)
         ),
+      })),
+    },
+    additionalCharges: {
+      items: additionalChargeItems.map((it, idx) => ({
+        id: String(it?.id ?? `charge_${idx}`),
+        desc: String(it?.desc || it?.description || it?.label || ""),
+        qty: Math.max(0, toNum(it?.qty)),
+        priceEach: Math.max(0, toNum(it?.priceEach ?? it?.charge ?? it?.amount ?? it?.unitPrice)),
       })),
     },
   };
@@ -373,22 +613,40 @@ function calcBreakdown(e) {
   };
 }
 
-export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDone, spinTick = 0 }) {
+export default function EstimatesScreen({
+  lang,
+  t,
+  history,
+  onOpenEstimate,
+  onOpenProjectDetail,
+  spinTick = 0,
+  requestedInvoiceComposerEstimateId = "",
+  onInvoiceComposerRequestHandled,
+}) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [valueFilter, setValueFilter] = useState("all");
+  const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
   const [draggingEstimateId, setDraggingEstimateId] = useState(null);
   const [touchDraggingId, setTouchDraggingId] = useState(null);
   const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
   const touchStartTimer = useRef(null);
+  const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
+  const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
+  const openEstimateNavRef = useRef({ estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [invoicePromptTarget, setInvoicePromptTarget] = useState(null);
+  const [invoiceComposerTarget, setInvoiceComposerTarget] = useState(null);
+  const [invoiceComposerForm, setInvoiceComposerForm] = useState(() => createInvoiceComposerForm(null, null));
+  const [invoiceComposerError, setInvoiceComposerError] = useState("");
+  const [invoiceComposerShowMore, setInvoiceComposerShowMore] = useState(false);
+  const [invoices, setInvoices] = useState(() => readStoredInvoices());
   const [revenueValuePulse, setRevenueValuePulse] = useState({
     pending: false,
     approved: false,
@@ -396,9 +654,121 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   });
   const boardRef = useRef(null);
   const prevRevenueRef = useRef(null);
+
+  const [boardCols, setBoardCols] = useState(
+    typeof window !== "undefined" ? (window.innerWidth >= 860 ? 3 : window.innerWidth >= 480 ? 2 : 1) : 3
+  );
+  const isPhone = boardCols === 1;
+  const estimatePrimaryActionStyle = {
+    flex: isPhone ? "1 1 100%" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "11px 16px" : undefined,
+    fontWeight: 800,
+    background: isPhone ? "linear-gradient(180deg, rgba(99,179,237,0.24), rgba(99,179,237,0.14))" : undefined,
+    borderColor: isPhone ? "rgba(99,179,237,0.42)" : undefined,
+    boxShadow: isPhone ? "0 10px 22px rgba(0,0,0,0.16)" : undefined,
+  };
+  const estimateSecondaryActionStyle = {
+    flex: isPhone ? "1 1 calc(50% - 5px)" : "0 0 auto",
+    minWidth: isPhone ? 0 : undefined,
+    justifyContent: "center",
+    padding: isPhone ? "10px 12px" : undefined,
+    opacity: isPhone ? 0.92 : undefined,
+    background: isPhone ? "rgba(255,255,255,0.04)" : undefined,
+    borderColor: isPhone ? "rgba(255,255,255,0.11)" : undefined,
+  };
+  useEffect(() => {
+    const onResize = () => {
+      const w = window.innerWidth;
+      setBoardCols(w >= 860 ? 3 : w >= 480 ? 2 : 1);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   useEffect(() => {
     setEstimates(normalizeEstimateList(history));
   }, [history]);
+
+  useEffect(() => {
+    const refresh = () => setEstimates(normalizeEstimateList(readSavedEstimatesList()));
+    window.addEventListener("estipaid:estimates-changed", refresh);
+    return () => window.removeEventListener("estipaid:estimates-changed", refresh);
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setInvoices(readStoredInvoices());
+    refresh();
+    const onStorage = (event) => {
+      if (!event?.key || event.key === STORAGE_KEYS.INVOICES) refresh();
+    };
+    const onLocalStorage = (event) => {
+      if (!event?.detail?.key || event.detail.key === STORAGE_KEYS.INVOICES) refresh();
+    };
+    const onInvoicesChanged = () => refresh();
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => setMetadataRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (!event?.key || event.key === STORAGE_KEYS.PROJECTS || event.key === STORAGE_KEYS.CUSTOMERS) {
+        refresh();
+      }
+    };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || event.detail.key === STORAGE_KEYS.PROJECTS
+        || event.detail.key === STORAGE_KEYS.CUSTOMERS
+      ) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refresh);
+    window.addEventListener("focus", refresh);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refresh);
+      window.removeEventListener("focus", refresh);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -420,9 +790,98 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
       if (touchStartTimer.current) {
         clearTimeout(touchStartTimer.current);
       }
+      if (openEstimateNavRef.current?.rafId && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(openEstimateNavRef.current.rafId);
+      }
+      if (openEstimateNavRef.current?.timerId) {
+        clearTimeout(openEstimateNavRef.current.timerId);
+      }
     },
     []
   );
+
+  const clearTouchStartTimer = () => {
+    if (!touchStartTimer.current) return;
+    clearTimeout(touchStartTimer.current);
+    touchStartTimer.current = null;
+  };
+
+  const clearCardActionIntent = () => {
+    cardActionIntentRef.current = {
+      estimateId: "",
+      action: "",
+      setAt: 0,
+    };
+  };
+
+  const setCardActionIntent = (estimateId, action) => {
+    cardActionIntentRef.current = {
+      estimateId: String(estimateId || "").trim(),
+      action: String(action || "").trim(),
+      setAt: Date.now(),
+    };
+  };
+
+  const getCardActionIntent = () => {
+    const current = cardActionIntentRef.current;
+    if (!current?.action) return { estimateId: "", action: "", setAt: 0 };
+    if (Date.now() - Number(current.setAt || 0) > 1200) {
+      clearCardActionIntent();
+      return { estimateId: "", action: "", setAt: 0 };
+    }
+    return current;
+  };
+
+  const consumeEstimateActionEvent = (event, estimateId, action, { preventDefault = false } = {}) => {
+    if (preventDefault && event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+    if (action) {
+      setCardActionIntent(estimateId, action);
+    }
+  };
+
+  const runEstimateCardAction = (event, estimateId, action, handler) => {
+    consumeEstimateActionEvent(event, estimateId, action, { preventDefault: true });
+    const currentIntent = getCardActionIntent();
+    const normalizedEstimateId = String(estimateId || "").trim();
+    if (
+      currentIntent.estimateId === normalizedEstimateId
+      && currentIntent.action
+      && currentIntent.action !== action
+    ) {
+      return;
+    }
+    handler();
+    window.setTimeout(() => {
+      const latestIntent = getCardActionIntent();
+      if (
+        latestIntent.estimateId === normalizedEstimateId
+        && latestIntent.action === action
+      ) {
+        clearCardActionIntent();
+      }
+    }, 0);
+  };
+
+  const resetTouchGesture = () => {
+    touchGestureRef.current = {
+      estimateId: "",
+      startX: 0,
+      startY: 0,
+    };
+  };
+
+  const isTouchDragBlockedTarget = (target) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        "button, input, select, textarea, a, [role='button'], [data-estimate-details-panel='true']"
+      )
+    );
+  };
 
   const pendingEstimates =
     (estimates || []).filter((e) => e?.status === "pending");
@@ -452,17 +911,68 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     [lang, pendingEstimates, approvedEstimates, lostEstimates]
   );
 
+  const estimateDisplayMeta = useMemo(() => {
+    const currentProjects = readStoredProjects();
+    const currentCustomers = readCustomers();
+    return new Map((estimates || []).map((estimate) => {
+      const target = resolveProjectNavigationTarget(estimate, currentProjects);
+      const project = target?.project && typeof target.project === "object"
+        ? target.project
+        : null;
+      const customer = currentCustomers.find((entry) => String(entry?.id || "").trim() === String(project?.customerId || "").trim())
+        || currentCustomers.find((entry) => {
+          const left = String(entry?.name || entry?.companyName || entry?.fullName || "").trim().toLowerCase();
+          const right = String(project?.customerName || estimate?.customerName || "").trim().toLowerCase();
+          return Boolean(left && right && left === right);
+        })
+        || null;
+
+      return [
+        String(estimate?.id || estimateIdentity(estimate) || ""),
+        {
+          projectName: String(project?.projectName || estimate?.projectName || "").trim(),
+          customerName: String(
+            customer?.name
+            || customer?.companyName
+            || customer?.fullName
+            || project?.customerName
+            || estimate?.customerName
+            || ""
+          ).trim(),
+          siteAddress: String(project?.siteAddress || "").trim(),
+        },
+      ];
+    }));
+  }, [estimates, invoices, metadataRefreshSeq]);
+
   const matchesSearch = (estimate) => {
     const q = (searchQuery || "").toLowerCase();
     const status = String(statusFilter || "all").toLowerCase();
     const value = String(valueFilter || "all").toLowerCase();
 
+    const displayMeta = estimateDisplayMeta.get(String(estimate?.id || estimateIdentity(estimate) || "")) || {};
+
     const name =
       String(estimate?.name || "").toLowerCase();
 
+    const projectName =
+      String(displayMeta.projectName || estimate?.projectName || "").toLowerCase();
+    const workTitle =
+      String(
+        estimate?.workTitle
+        || estimate?.jobTitle
+        || estimate?.jobName
+        || estimate?.job?.title
+        || estimate?.title
+        || estimate?.name
+        || ""
+      ).toLowerCase();
+
     const customer =
       String(
-        estimate?.customer?.name
+        displayMeta.customerName
+        || estimate?.customerName
+        || estimate?.customer?.name
         || estimate?.customer
         || ""
       ).toLowerCase();
@@ -475,6 +985,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
     const matchesText = !q
       || name.includes(q)
+      || workTitle.includes(q)
+      || projectName.includes(q)
       || customer.includes(q)
       || number.includes(q);
 
@@ -511,6 +1023,82 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
     return totals;
   }, [estimates]);
+  const visibleEstimates = (estimates || []).filter(matchesSearch);
+  const estimatePipelineSummary = useMemo(() => {
+    const approvedVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_APPROVED);
+    const pendingVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_PENDING);
+    const lostVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_LOST);
+    const visibleValue = visibleEstimates.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const pendingValue = pendingVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const lostValue = lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0);
+    const highestValueEstimate = visibleEstimates
+      .slice()
+      .sort((left, right) => toNum(right?.total) - toNum(left?.total))[0] || null;
+    const approvedReady = approvedVisible.reduce((acc, estimate) => {
+      const summary = buildEstimateInvoiceSummary(estimate, invoices);
+      const remainingToInvoice = toNum(summary?.remainingToInvoice);
+      if (remainingToInvoice > 0) {
+        acc.count += 1;
+        acc.value += remainingToInvoice;
+      }
+      return acc;
+    }, { count: 0, value: 0 });
+    const highValueCount = visibleEstimates.filter((estimate) => toNum(estimate?.total) >= 10000).length;
+    const nextActions = [];
+
+    if (approvedReady.count > 0) {
+      nextActions.push({
+        key: "approved-ready",
+        tone: "approved",
+        title: lang === "es" ? "Crear facturas desde aprobados" : "Ready to Invoice",
+        detail: lang === "es"
+          ? `${approvedReady.count} ${approvedReady.count === 1 ? "estimado listo" : "estimados listos"} por ${money(approvedReady.value)}.`
+          : `${approvedReady.count} ${approvedReady.count === 1 ? "estimate is" : "estimates are"} ready to invoice for ${money(approvedReady.value)}.`,
+      });
+    }
+    if (pendingVisible.length > 0) {
+      nextActions.push({
+        key: "follow-up",
+        tone: "pending",
+        title: lang === "es" ? "Seguimiento de espera" : "Awaiting Response",
+        detail: lang === "es"
+          ? `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimado necesita respuesta" : "estimados necesitan respuesta"}.`
+          : `${pendingVisible.length} ${pendingVisible.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
+      });
+    }
+    if (lostVisible.length > 0) {
+      nextActions.push({
+        key: "lost",
+        tone: "lost",
+        title: lang === "es" ? "Revisar pérdida de ingresos" : "Lost Revenue",
+        detail: lang === "es"
+          ? `${lostVisible.length} ${lostVisible.length === 1 ? "estimado perdido" : "estimados perdidos"} por ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`
+          : `${lostVisible.length} ${lostVisible.length === 1 ? "estimate is" : "estimates are"} marked lost for ${money(lostVisible.reduce((sum, estimate) => sum + toNum(estimate?.total), 0))}.`,
+      });
+    }
+    if (nextActions.length === 0) {
+      nextActions.push({
+        key: "steady",
+        tone: "approved",
+        title: lang === "es" ? "Pipeline estable" : "Stable Pipeline",
+        detail: lang === "es" ? "No hay acciones inmediatas visibles en los filtros actuales." : "No immediate revenue action is surfacing in the current filters.",
+      });
+    }
+
+    return {
+      totalCount: visibleEstimates.length,
+      totalValue: visibleValue,
+      pendingCount: pendingVisible.length,
+      pendingValue,
+      approvedCount: approvedVisible.length,
+      lostCount: lostVisible.length,
+      lostValue,
+      approvedReady,
+      highValueCount,
+      highestValueEstimate,
+      nextActions: nextActions.slice(0, 3),
+    };
+  }, [visibleEstimates, invoices, lang]);
 
   useEffect(() => {
     const prev = prevRevenueRef.current;
@@ -619,17 +1207,71 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
   const openEstimate = (estimate) => {
     const id = String(estimate?.id || "").trim();
+    const previous = openEstimateNavRef.current || {};
+    const now = Date.now();
+    if (previous.estimateId === id && (now - Number(previous.triggeredAt || 0)) < OPEN_ESTIMATE_NAV_GUARD_MS) {
+      return;
+    }
+
+    if (previous.rafId && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(previous.rafId);
+    }
+    if (previous.timerId) {
+      clearTimeout(previous.timerId);
+    }
+
     try {
       if (id) localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, id);
       else localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}
-    if (onOpenEstimate) onOpenEstimate(estimate);
+    try {
+      window.dispatchEvent(new Event("estipaid:estimate-open"));
+    } catch {}
+
+    const finalizeOpen = () => {
+      const timerId = window.setTimeout(() => {
+        openEstimateNavRef.current = { estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 };
+        if (onOpenEstimate) onOpenEstimate(estimate);
+      }, 0);
+      openEstimateNavRef.current = {
+        ...openEstimateNavRef.current,
+        timerId,
+        rafId: 0,
+      };
+    };
+
+    openEstimateNavRef.current = {
+      estimateId: id,
+      triggeredAt: now,
+      rafId: 0,
+      timerId: 0,
+    };
+
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      const rafId = window.requestAnimationFrame(finalizeOpen);
+      openEstimateNavRef.current = {
+        ...openEstimateNavRef.current,
+        rafId,
+      };
+      return;
+    }
+
+    finalizeOpen();
   };
 
   const setEstimateStatus = (estimate, nextStatus) => {
     const normalized = normalizeEstimateStatus(nextStatus);
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
+
+    if (estimate?.status === STATUS_APPROVED && normalized !== STATUS_APPROVED) {
+      const summary = buildEstimateInvoiceSummary(estimate, readStoredInvoices());
+      if (summary.activeInvoiceCount > 0) {
+        window.alert("Cannot revert approved estimate with linked invoices to another status.");
+        return;
+      }
+    }
 
     setEstimates((prev) => {
       const next = (Array.isArray(prev) ? prev : []).map((item) => {
@@ -644,7 +1286,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
     setExpanded({});
 
-    if (normalized === STATUS_APPROVED) {
+    if (normalized === STATUS_APPROVED && shouldShowApprovalInvoicePrompt(estimate)) {
       setTimeout(() => {
         setInvoicePromptTarget(estimate);
       }, 0);
@@ -673,11 +1315,17 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
         if (!matches) return item;
         return { ...item, status: normalized };
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
-      try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
-      } catch {}
+      writeStoredEstimatesPreservingLegacy(next);
     } catch {}
+  };
+
+  const shouldShowApprovalInvoicePrompt = (estimate) => {
+    if (!estimate || typeof estimate !== "object") return false;
+
+    const summary = buildEstimateInvoiceSummary(estimate, readStoredInvoices());
+    if (summary.remainingToInvoice > 0) return true;
+    if (summary.linkedInvoiceCount > 0) return false;
+    return true;
   };
 
   const moveEstimateToStatus = (estimateId, status) => {
@@ -698,7 +1346,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
     setExpanded({});
 
-    if (normalized === STATUS_APPROVED && movedEstimate) {
+    if (normalized === STATUS_APPROVED && movedEstimate && shouldShowApprovalInvoicePrompt(movedEstimate)) {
       setTimeout(() => {
         setInvoicePromptTarget(movedEstimate);
       }, 0);
@@ -723,10 +1371,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
         if (String(est?.id || "").trim() !== draggedId) return est;
         return { ...est, status: normalized };
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
-      try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
-      } catch {}
+      writeStoredEstimatesPreservingLegacy(next);
     } catch {}
   };
 
@@ -744,11 +1389,140 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     setInvoicePromptTarget(null);
   };
 
-  const handleInvoicePromptYes = () => {
+  const closeInvoiceComposer = () => {
+    setInvoiceComposerTarget(null);
+    setInvoiceComposerForm(createInvoiceComposerForm(null, null));
+    setInvoiceComposerError("");
+    setInvoiceComposerShowMore(false);
+  };
+
+  const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
+    if (!estimate || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
+      return false;
+    }
+
+    if (hasMeaningfulAdditionalCharges(estimate)) {
+      return openInvoiceBuilderFromEstimate(estimate);
+    }
+
+    const currentInvoices = readStoredInvoices();
+    const summary = buildEstimateInvoiceSummary(estimate, currentInvoices);
+    if (summary.remainingToInvoice <= 0) {
+      return false;
+    }
+
+    setInvoiceComposerTarget(estimate);
+    setInvoiceComposerForm(createInvoiceComposerForm(estimate, summary, invoiceType));
+    setInvoiceComposerError("");
+    setInvoiceComposerShowMore(false);
+    return true;
+  };
+
+  const resolveApprovedEstimateForInvoiceLaunch = (estimate) => {
+    const targetIdentity = estimateIdentity(estimate);
+    const targetId = String(estimate?.id || "").trim();
+    const liveEstimate = (Array.isArray(estimates) ? estimates : []).find((entry) => {
+      if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
+      return String(entry?.id || "").trim() === targetId;
+    }) || null;
+    const persistedEstimate = liveEstimate
+      ? null
+      : readSavedEstimatesList().find((entry) => {
+        if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
+        return String(entry?.id || "").trim() === targetId;
+      }) || null;
+    const resolved = liveEstimate || persistedEstimate || estimate || null;
+    if (!resolved || normalizeEstimateStatus(resolved?.status) !== STATUS_APPROVED) return null;
+    return resolved;
+  };
+
+  const openInvoiceBuilderFromEstimate = (estimate) => {
+    const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
+    if (!target) return false;
+
+    const currentInvoices = readStoredInvoices();
+    const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+    if (!created.ok || !created.draft) {
+      return false;
+    }
+
+    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+    setInvoices(nextInvoices);
+    closeInvoiceComposer();
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
+      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
     try {
       window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
     } catch {}
+    return true;
+  };
+
+  useEffect(() => {
+    const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
+    if (!requestedId) return;
+    const target = (Array.isArray(estimates) ? estimates : []).find(
+      (estimate) => String(estimate?.id || "").trim() === requestedId
+    );
+    if (!target) {
+      if (typeof onInvoiceComposerRequestHandled === "function") {
+        onInvoiceComposerRequestHandled();
+      }
+      return;
+    }
+    openInvoiceComposer(target);
+    if (typeof onInvoiceComposerRequestHandled === "function") {
+      onInvoiceComposerRequestHandled();
+    }
+  }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
+
+  const submitInvoiceComposer = () => {
+    if (!invoiceComposerTarget) return false;
+
+    const currentInvoices = readStoredInvoices();
+    const created = createInvoiceDraftFromEstimate(invoiceComposerTarget, currentInvoices, {
+      invoiceType: invoiceComposerForm.invoiceType,
+      requestedValue: buildComposerRequestedValue(invoiceComposerForm),
+      dueDate: invoiceComposerForm.dueDate,
+      note: invoiceComposerForm.note,
+    });
+
+    if (!created.ok || !created.draft) {
+      setInvoiceComposerError(
+        created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
+      );
+      return false;
+    }
+
+    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+    setInvoices(nextInvoices);
+    closeInvoiceComposer();
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+    return true;
+  };
+
+  const handleInvoicePromptYes = () => {
+    const target = invoicePromptTarget;
     setInvoicePromptTarget(null);
+    if (!target) return;
+    openInvoiceBuilderFromEstimate(target);
   };
 
   const onConfirmDelete = () => {
@@ -761,13 +1535,27 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     const targetIdentity = estimateIdentity(target);
     const deletedId = String(target?.id || "").trim();
 
+    if (deletedId) {
+      const summary = buildEstimateInvoiceSummary(target, readStoredInvoices());
+      if (summary.activeInvoiceCount > 0) {
+        const count = summary.activeInvoiceCount;
+        window.alert(
+          lang === "es"
+            ? `No se puede eliminar esta estimación. Tiene ${count} factura${count === 1 ? "" : "s"} vinculada${count === 1 ? "" : "s"} y no puede ser eliminada.`
+            : `Cannot delete this estimate. It has ${count} linked invoice${count === 1 ? "" : "s"} and cannot be removed.`
+        );
+        onCancelDelete();
+        return;
+      }
+    }
+
     try {
       const existing = readSavedEstimatesList();
       const next = existing.filter((item) => {
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
       });
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(next));
+      writeStoredEstimatesPreservingLegacy(next);
 
       if (deletedId) {
         const currentEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
@@ -775,10 +1563,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
           localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
         }
       }
-
-      try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
-      } catch {}
     } catch {}
 
     if (deletedId) {
@@ -806,8 +1590,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   }, [deleteConfirmOpen]);
 
   const labelSaved = lang === "es" ? "Estimaciones guardadas" : "Saved Estimates";
-  const labelBack = lang === "es" ? "Volver" : "Back";
-
   const labelOpen = lang === "es" ? "Abrir" : "Open";
   const labelDetails = lang === "es" ? "Detalles" : "Details";
   const labelHide = lang === "es" ? "Ocultar" : "Hide";
@@ -820,7 +1602,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
   const labelInternal = lang === "es" ? "Costo interno" : "Internal cost";
   const labelProfit = lang === "es" ? "Ganancia" : "Profit";
   const labelMargin = lang === "es" ? "Margen" : "Margin";
-  const visibleEstimatesCount = (estimates || []).filter(matchesSearch).length;
+  const visibleEstimatesCount = visibleEstimates.length;
   const labelSavedWithCount = `${labelSaved} (${visibleEstimatesCount})`;
   const deleteTargetNumber = String(
     deleteTarget?.estimateNumber
@@ -858,18 +1640,14 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
       }
 
       const existing = readSavedEstimatesList();
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify([duplicate, ...existing]));
+      writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
 
       setExpanded({});
 
       try {
+        localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
         localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, duplicate.id);
       } catch {}
-
-      try {
-        window.dispatchEvent(new Event("estipaid:navigate-estimates"));
-      } catch {}
-
       try {
         window.dispatchEvent(
           new CustomEvent("pe-shell-action", {
@@ -891,6 +1669,333 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
     setStatusFilter((prev) => (normalizeEstimateStatus(prev) === normalized ? "all" : normalized));
   };
 
+  const invoiceComposerSummary = invoiceComposerTarget
+    ? buildEstimateInvoiceSummary(invoiceComposerTarget, invoices)
+    : null;
+  const invoiceComposerThisInvoice = resolveComposerInvoiceAmount(invoiceComposerForm, invoiceComposerSummary);
+  const invoiceComposerPreviewError = resolveComposerValidationMessage(
+    invoiceComposerForm,
+    invoiceComposerSummary,
+    lang
+  );
+  const invoiceComposerMessage = invoiceComposerError || invoiceComposerPreviewError;
+  const invoiceComposerAvailablePercent = roundCurrency(
+    invoiceComposerSummary?.approvedTotal > 0
+      ? (roundCurrency(invoiceComposerSummary?.remainingToInvoice || 0) / roundCurrency(invoiceComposerSummary?.approvedTotal || 0)) * 100
+      : 0
+  );
+  const invoiceComposerEstimateLabel = String(invoiceComposerTarget?.projectName || "").trim()
+    || (lang === "es" ? "Estimación aprobada" : "Approved estimate");
+  const invoiceComposerContextItems = [
+    invoiceComposerTarget?.customerName
+      ? {
+          key: "customer",
+          label: invoiceComposerTarget.customerName,
+        }
+      : null,
+    invoiceComposerTarget?.estimateNumber
+      ? {
+          key: "estimate-number",
+          label: `#${invoiceComposerTarget.estimateNumber}`,
+        }
+      : null,
+  ].filter(Boolean);
+  const invoiceComposerTypeOptions = [
+    { value: INVOICE_TYPES.DEPOSIT, label: lang === "es" ? "Depósito" : "Deposit" },
+    { value: INVOICE_TYPES.PROGRESS, label: lang === "es" ? "Progreso" : "Progress" },
+    { value: INVOICE_TYPES.FINAL, label: lang === "es" ? "Final" : "Final" },
+    { value: INVOICE_TYPES.CUSTOM, label: lang === "es" ? "Personalizada" : "Custom" },
+  ];
+  const invoiceComposerSummaryItems = [
+    {
+      key: "contract-total",
+      label: lang === "es" ? "Total contrato" : "Contract total",
+      value: money(invoiceComposerSummary?.approvedTotal),
+    },
+    {
+      key: "already-invoiced",
+      label: lang === "es" ? "Ya facturado" : "Already invoiced",
+      value: money(invoiceComposerSummary?.invoicedTotal),
+    },
+    {
+      key: "remaining",
+      label: lang === "es" ? "Restante" : "Remaining",
+      value: money(invoiceComposerSummary?.remainingToInvoice),
+      tone: "remaining",
+    },
+    {
+      key: "this-invoice",
+      label: lang === "es" ? "Esta factura" : "This invoice",
+      value: money(invoiceComposerThisInvoice),
+      tone: "primary",
+    },
+  ];
+  const invoiceComposerOverlayStyle = {
+    position: "fixed",
+    inset: 0,
+    zIndex: 2050,
+    background: "rgba(4,8,14,0.68)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflowY: "auto",
+    overflowX: "hidden",
+    boxSizing: "border-box",
+    paddingTop: "calc(max(14px, env(safe-area-inset-top, 0px)) + 8px)",
+    paddingRight: "calc(max(14px, env(safe-area-inset-right, 0px)) + 6px)",
+    paddingBottom: "calc(max(18px, env(safe-area-inset-bottom, 0px)) + 12px)",
+    paddingLeft: "calc(max(14px, env(safe-area-inset-left, 0px)) + 6px)",
+  };
+  const invoiceComposerCardStyle = {
+    width: "min(560px, 100%)",
+    maxWidth: "100%",
+    borderRadius: 22,
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "linear-gradient(180deg, rgba(19,28,43,0.97) 0%, rgba(10,15,24,0.96) 100%)",
+    boxShadow: "0 28px 72px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.04)",
+    backdropFilter: "blur(16px)",
+    WebkitBackdropFilter: "blur(16px)",
+    boxSizing: "border-box",
+    overflow: "hidden",
+    position: "relative",
+    color: "rgba(245,248,252,0.98)",
+  };
+  const invoiceComposerCardScrollStyle = {
+    maxHeight: "min(760px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 52px))",
+    overflowY: "auto",
+    overflowX: "hidden",
+    WebkitOverflowScrolling: "touch",
+    boxSizing: "border-box",
+    padding: "clamp(16px, 3vw, 22px)",
+    display: "grid",
+    gap: 16,
+  };
+  const invoiceComposerSectionLabelStyle = {
+    fontSize: 11.5,
+    fontWeight: 900,
+    letterSpacing: "0.12em",
+    opacity: 0.68,
+    textTransform: "uppercase",
+  };
+  const invoiceComposerToneLabelStyle = {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "rgba(191,219,254,0.76)",
+  };
+  const invoiceComposerSegmentWrapStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))",
+    gap: 8,
+    padding: 4,
+    borderRadius: 18,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+  };
+  const invoiceComposerSegmentBtnStyle = {
+    minHeight: 40,
+    width: "100%",
+    borderRadius: 14,
+    fontWeight: 800,
+    fontSize: 13,
+    padding: "9px 12px",
+    boxShadow: "none",
+  };
+  const invoiceComposerSegmentBtnActiveStyle = {
+    borderColor: "rgba(96,165,250,0.34)",
+    background: "linear-gradient(180deg, rgba(59,130,246,0.20), rgba(30,64,175,0.16))",
+    boxShadow: "0 0 0 1px rgba(96,165,250,0.16), inset 0 1px 0 rgba(255,255,255,0.06)",
+    color: "rgba(248,250,252,0.98)",
+  };
+  const invoiceComposerSegmentBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.02)",
+    color: "rgba(226,232,240,0.92)",
+  };
+  const invoiceComposerFieldBlockStyle = {
+    display: "grid",
+    gap: 8,
+    padding: 12,
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+  };
+  const invoiceComposerFieldGridStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 12,
+    alignItems: "start",
+  };
+  const invoiceComposerAmountRowStyle = {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gap: 10,
+    alignItems: "stretch",
+  };
+  const invoiceComposerAmountModeWrapStyle = {
+    display: "inline-grid",
+    gridTemplateColumns: "repeat(2, minmax(44px, 1fr))",
+    gap: 6,
+    padding: 4,
+    borderRadius: 14,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(8,12,18,0.46)",
+    alignSelf: "stretch",
+  };
+  const invoiceComposerModeBtnStyle = {
+    minWidth: 44,
+    minHeight: 44,
+    padding: 0,
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 900,
+    boxShadow: "none",
+  };
+  const invoiceComposerModeBtnActiveStyle = {
+    borderColor: "rgba(34,197,94,0.34)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.20), rgba(21,128,61,0.16))",
+    boxShadow: "0 0 0 1px rgba(34,197,94,0.16), inset 0 1px 0 rgba(255,255,255,0.06)",
+  };
+  const invoiceComposerModeBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.02)",
+  };
+  const invoiceComposerPresetWrapStyle = {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+  };
+  const invoiceComposerPresetBtnStyle = {
+    minHeight: 34,
+    padding: "7px 12px",
+    borderRadius: 999,
+    fontSize: 12.5,
+    fontWeight: 800,
+    boxShadow: "none",
+  };
+  const invoiceComposerPresetBtnActiveStyle = {
+    borderColor: "rgba(125,211,252,0.38)",
+    background: "rgba(14,116,144,0.24)",
+    color: "rgba(240,249,255,0.98)",
+  };
+  const invoiceComposerPresetBtnIdleStyle = {
+    borderColor: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    color: "rgba(226,232,240,0.88)",
+  };
+  const invoiceComposerMoreBtnStyle = {
+    justifySelf: "start",
+    minHeight: 30,
+    padding: "0 2px",
+    border: 0,
+    background: "transparent",
+    color: "rgba(191,219,254,0.84)",
+    fontSize: 12.5,
+    fontWeight: 800,
+    letterSpacing: "0.03em",
+    boxShadow: "none",
+  };
+  const invoiceComposerSummaryCardStyle = {
+    borderRadius: 18,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.025))",
+    padding: 14,
+    display: "grid",
+    gap: 10,
+  };
+  const invoiceComposerSummaryGridStyle = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+    gap: 10,
+  };
+  const invoiceComposerSummaryItemStyle = {
+    display: "grid",
+    gap: 6,
+    borderRadius: 14,
+    padding: "10px 11px",
+    border: "1px solid rgba(255,255,255,0.06)",
+    background: "rgba(255,255,255,0.025)",
+    minWidth: 0,
+  };
+  const invoiceComposerSummaryItemPrimaryStyle = {
+    borderColor: "rgba(34,197,94,0.18)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.12), rgba(20,83,45,0.12))",
+  };
+  const invoiceComposerSummaryItemRemainingStyle = {
+    borderColor: "rgba(96,165,250,0.18)",
+    background: "linear-gradient(180deg, rgba(59,130,246,0.10), rgba(30,64,175,0.10))",
+  };
+  const invoiceComposerSummaryValueStyle = {
+    fontWeight: 900,
+    fontSize: "clamp(13px, 4vw, 16px)",
+    lineHeight: 1.15,
+    color: "rgba(248,250,252,0.98)",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+    overflowWrap: "normal",
+    wordBreak: "normal",
+    minWidth: 0,
+    maxWidth: "100%",
+  };
+  const invoiceComposerFooterStyle = {
+    display: "flex",
+    gap: 8,
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    alignItems: "center",
+    paddingTop: 14,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  };
+  const invoiceComposerFooterBtnStyle = {
+    minHeight: 40,
+    borderRadius: 12,
+    padding: "9px 14px",
+  };
+  const invoiceComposerPrimaryBtnStyle = {
+    ...invoiceComposerFooterBtnStyle,
+    borderColor: "rgba(34,197,94,0.42)",
+    background: "linear-gradient(180deg, rgba(34,197,94,0.30), rgba(21,128,61,0.22))",
+    color: "#fff",
+    boxShadow: "0 8px 18px rgba(21,128,61,0.22)",
+  };
+
+  const handleInvoiceComposerTypeChange = (nextType) => {
+    setInvoiceComposerForm((prev) => {
+      const defaults = getComposerAmountDefaults(nextType, invoiceComposerSummary);
+      return {
+        ...prev,
+        invoiceType: nextType,
+        amountMode: defaults.amountMode,
+        amountValue: defaults.amountValue,
+      };
+    });
+    setInvoiceComposerError("");
+  };
+
+  const handleInvoiceComposerAmountModeChange = (nextMode) => {
+    setInvoiceComposerForm((prev) => {
+      if (prev.amountMode === nextMode) return prev;
+      const nextAmount = resolveComposerInvoiceAmount(prev, invoiceComposerSummary);
+      const nextValue = nextMode === INVOICE_AMOUNT_MODE_PERCENT
+        ? (
+          roundCurrency(invoiceComposerSummary?.approvedTotal || 0) > 0 && nextAmount > 0
+            ? formatComposerNumber((nextAmount / roundCurrency(invoiceComposerSummary?.approvedTotal || 0)) * 100)
+            : ""
+        )
+        : (nextAmount > 0 ? formatComposerNumber(nextAmount) : "");
+      return {
+        ...prev,
+        amountMode: nextMode,
+        amountValue: nextValue,
+      };
+    });
+    setInvoiceComposerError("");
+  };
+
   return (
     <section className="pe-section">
       <div className="pe-card pe-company-shell">
@@ -908,11 +2013,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               draggable={false}
             />
           </div>
-          <div className="pe-company-header-controls">
-            <button className="pe-btn" onClick={onDone}>
-              {labelBack}
-            </button>
-          </div>
         </div>
 
         <div
@@ -925,6 +2025,135 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
             boxSizing: "border-box",
           }}
         >
+
+          <div
+            className="pe-card pe-card-content"
+            style={{
+              width: "100%",
+              marginBottom: "18px",
+              padding: "14px 14px 16px",
+              borderRadius: 18,
+              border: "1px solid rgba(168,184,195,0.14)",
+              background: estimatePipelineSummary.approvedReady.value > 0
+                ? "linear-gradient(135deg, rgba(34,197,94,0.12), rgba(59,130,246,0.08) 46%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+                : estimatePipelineSummary.pendingCount > 0
+                ? "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(245,158,11,0.08) 52%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+                : "linear-gradient(135deg, rgba(148,163,184,0.1), rgba(59,130,246,0.06) 46%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))",
+              boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+              display: "grid",
+              gap: 14,
+            }}
+          >
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                {lang === "es" ? "Pipeline de ingresos" : "Revenue pipeline"}
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+                {lang === "es" ? "Estimados listos para avanzar" : "Estimates in Motion"}
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+                {estimatePipelineSummary.highestValueEstimate
+                  ? (lang === "es"
+                    ? `El estimado más grande visible es ${money(estimatePipelineSummary.highestValueEstimate?.total)} para ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "este trabajo"}.`
+                    : `The highest visible estimate is ${money(estimatePipelineSummary.highestValueEstimate?.total)} for ${String(estimatePipelineSummary.highestValueEstimate?.projectName || estimatePipelineSummary.highestValueEstimate?.customerName || "").trim() || "this job"}.`)
+                  : (lang === "es" ? "Usa esta vista para priorizar seguimiento, aprobación y facturación." : "Use this view to prioritize follow-up, approval, and invoicing.")}
+              </div>
+            </div>
+
+            <div
+              className="pe-estimates-kpi-grid"
+              style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}
+            >
+              {[
+                {
+                  key: "visible-value",
+                  label: lang === "es" ? "Valor visible" : "Visible value",
+                  value: money(estimatePipelineSummary.totalValue),
+                  detail: `${estimatePipelineSummary.totalCount} ${estimatePipelineSummary.totalCount === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  tone: "neutral",
+                },
+                {
+                  key: "awaiting-response",
+                  label: lang === "es" ? "En espera de respuesta" : "Awaiting response",
+                  value: String(estimatePipelineSummary.pendingCount),
+                  detail: money(estimatePipelineSummary.pendingValue),
+                  tone: "pending",
+                },
+                {
+                  key: "approved-ready",
+                  label: lang === "es" ? "Listo para facturar" : "Ready for invoice",
+                  value: money(estimatePipelineSummary.approvedReady.value),
+                  detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
+                  tone: "approved",
+                },
+                {
+                  key: "high-value",
+                  label: lang === "es" ? "Alto valor" : "High value",
+                  value: String(estimatePipelineSummary.highValueCount),
+                  detail: lang === "es" ? "por encima de $10k" : "over $10k",
+                  tone: "approved",
+                },
+              ].map((item) => {
+                const toneColor = item.tone === "approved"
+                  ? "rgba(74,222,128,0.84)"
+                  : item.tone === "pending"
+                  ? "rgba(96,165,250,0.84)"
+                  : "rgba(203,213,225,0.78)";
+                const toneBorder = item.tone === "approved"
+                  ? "rgba(34,197,94,0.2)"
+                  : item.tone === "pending"
+                  ? "rgba(59,130,246,0.22)"
+                  : "rgba(255,255,255,0.1)";
+                return (
+                  <div
+                    key={item.key}
+                    className="pe-estimates-kpi-card"
+                    style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${toneBorder}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}
+                  >
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
+                      {item.label}
+                    </div>
+                    <div
+                      className="pe-estimates-kpi-value"
+                      style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}
+                    >
+                      {item.value}
+                    </div>
+                    <div
+                      className="pe-estimates-kpi-detail"
+                      style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}
+                    >
+                      {item.detail}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+              {estimatePipelineSummary.nextActions.map((action) => {
+                const border = action.tone === "approved"
+                  ? "rgba(34,197,94,0.18)"
+                  : action.tone === "pending"
+                  ? "rgba(59,130,246,0.18)"
+                  : "rgba(239,68,68,0.18)";
+                const dot = action.tone === "approved"
+                  ? "rgba(74,222,128,0.88)"
+                  : action.tone === "pending"
+                  ? "rgba(96,165,250,0.88)"
+                  : "rgba(248,113,113,0.88)";
+                return (
+                  <div key={action.key} style={{ display: "grid", gap: 4, padding: "10px 11px", borderRadius: 12, border: `1px solid ${border}`, background: "rgba(5,8,13,0.18)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: dot, flexShrink: 0 }} />
+                      <div style={{ fontSize: 13, fontWeight: 850, color: "rgba(235,243,248,0.96)" }}>{action.title}</div>
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "rgba(205,217,226,0.7)" }}>{action.detail}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
           <div
             className="pe-estimates-search"
@@ -995,7 +2224,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
-                <option value="all">All Status</option>
+                <option value="all">All Statuses</option>
                 <option value="pending">Pending</option>
                 <option value="approved">Approved</option>
                 <option value="lost">Lost</option>
@@ -1085,7 +2314,7 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               display: "grid",
               gridTemplateColumns:
                 statusFilter === "all"
-                  ? "repeat(3, minmax(0, 1fr))"
+                  ? `repeat(${boardCols}, minmax(0, 1fr))`
                   : "minmax(0, 1fr)",
               gap: 16,
               width: "100%",
@@ -1183,7 +2412,25 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     <div
                       className="pe-pipeline-dropzone"
                     >
-                      <div className="pe-pipeline-header" style={{ display: "grid", gap: 2 }}>
+                      <div
+                        className="pe-pipeline-header"
+                        style={{
+                          display: "grid",
+                          gap: 6,
+                          padding: "12px 12px 10px",
+                          borderRadius: 14,
+                          border: section.key === STATUS_APPROVED
+                            ? "1px solid rgba(34,197,94,0.18)"
+                            : section.key === STATUS_LOST
+                            ? "1px solid rgba(239,68,68,0.18)"
+                            : "1px solid rgba(59,130,246,0.18)",
+                          background: section.key === STATUS_APPROVED
+                            ? "rgba(34,197,94,0.06)"
+                            : section.key === STATUS_LOST
+                            ? "rgba(239,68,68,0.06)"
+                            : "rgba(59,130,246,0.06)",
+                        }}
+                      >
                         <div
                           className="pe-pipeline-tile-drop"
                         >
@@ -1202,6 +2449,13 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                         </div>
                         <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.74 }}>
                           {money(sectionRevenue)} {sectionRevenueText}
+                        </div>
+                        <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(205,217,226,0.64)" }}>
+                          {section.key === STATUS_APPROVED
+                            ? (lang === "es" ? "Los aprobados con saldo por facturar muestran la siguiente acción primero." : "Approved estimates with value left to invoice surface the next action first.")
+                            : section.key === STATUS_LOST
+                            ? (lang === "es" ? "Los perdidos permanecen visibles para revisar ingresos caídos." : "Lost estimates stay visible so dropped revenue is easy to review.")
+                            : (lang === "es" ? "Arrastra aquí para mantener el pipeline y seguimiento al día." : "Drag here to keep follow-up and pipeline status current.")}
                         </div>
                       </div>
                     </div>
@@ -1237,16 +2491,78 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                       const estimate = entry;
                       const e = estimate;
                       const id = String(e?.id || "");
+                      const displayMeta = estimateDisplayMeta.get(id) || {};
                       const isOpen = Boolean(expanded[id]);
                       const status = normalizeEstimateStatus(e?.status);
                       const bd = calcBreakdown(e);
+                      const invoiceSummary = status === STATUS_APPROVED
+                        ? buildEstimateInvoiceSummary(e, invoices)
+                        : null;
                       const isActiveCard = isOpen;
+                      const siteAddr = String(displayMeta.siteAddress || e?.job?.address || e?.siteAddress || e?.customer?.address || "").trim();
+                      const customerLabel = displayMeta.customerName || (lang === "es" ? "Sin cliente" : "No customer");
+                      const projectLabel = String(displayMeta.projectName || e?.projectName || "").trim();
+                      const workTitle = String(
+                        e?.workTitle
+                        || e?.jobTitle
+                        || e?.jobName
+                        || e?.job?.title
+                        || e?.title
+                        || e?.name
+                        || e?.projectName
+                        || ""
+                      ).trim();
+                      const projectTitle = workTitle
+                        || projectLabel
+                        || customerLabel
+                        || (lang === "es" ? "Trabajo sin título" : "Untitled Job");
+
+              const pipelineValue = status === STATUS_APPROVED
+                ? toNum(invoiceSummary?.approvedTotal || e?.total)
+                : toNum(e?.total);
+              const remainingToInvoice = toNum(invoiceSummary?.remainingToInvoice || 0);
+              const isHighValue = pipelineValue >= 10000;
+              const actionMeta = status === STATUS_APPROVED
+                ? remainingToInvoice > 0
+                  ? {
+                      label: lang === "es" ? "Siguiente acción: crear factura" : "Create Invoice",
+                      tone: "rgba(74,222,128,0.9)",
+                      border: "rgba(34,197,94,0.22)",
+                      background: "rgba(34,197,94,0.08)",
+                    }
+                  : {
+                      label: lang === "es" ? "Completamente facturado" : "Fully invoiced",
+                      tone: "rgba(96,165,250,0.9)",
+                      border: "rgba(59,130,246,0.2)",
+                      background: "rgba(59,130,246,0.08)",
+                    }
+                : status === STATUS_LOST
+                  ? {
+                      label: lang === "es" ? "Revisar oportunidad perdida" : "Review lost opportunity",
+                      tone: "rgba(248,113,113,0.9)",
+                      border: "rgba(239,68,68,0.22)",
+                      background: "rgba(239,68,68,0.08)",
+                    }
+                  : {
+                      label: lang === "es" ? "Siguiente acción: seguimiento" : "Follow Up",
+                      tone: "rgba(96,165,250,0.9)",
+                      border: "rgba(59,130,246,0.2)",
+                      background: "rgba(59,130,246,0.08)",
+                    };
 
               const card = {
                 padding: 16,
                 borderRadius: 16,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.04)",
+                border: status === STATUS_APPROVED
+                  ? "1px solid rgba(34,197,94,0.16)"
+                  : status === STATUS_LOST
+                  ? "1px solid rgba(239,68,68,0.16)"
+                  : "1px solid rgba(59,130,246,0.14)",
+                background: status === STATUS_APPROVED
+                  ? "linear-gradient(180deg, rgba(34,197,94,0.07), rgba(255,255,255,0.035))"
+                  : status === STATUS_LOST
+                  ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
+                  : "linear-gradient(180deg, rgba(59,130,246,0.05), rgba(255,255,255,0.03))",
                 boxSizing: "border-box",
                 overflow: "hidden",
                 display: "flex",
@@ -1267,58 +2583,51 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
 
               const small = { fontSize: 11.5, opacity: 0.68, letterSpacing: "0.2px" };
               const cardBodyLine = {
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
+                minWidth: 0,
               };
               const updatedTextLine = {
                 ...small,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
               };
               const row = {
                 display: "grid",
                 gridTemplateRows: "auto auto auto",
-                rowGap: "8px",
+                rowGap: "12px",
                 width: "100%",
+                minWidth: 0,
               };
               const headerRow = {
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "flex-start",
-                gap: 8,
+                gap: 10,
+                flexWrap: "wrap",
               };
               const customerEstimateRow = {
-                display: "flex",
-                justifyContent: "space-between",
-                gap: "8px",
+                display: "grid",
+                gap: 4,
                 minWidth: 0,
               };
               const customerField = {
                 ...cardBodyLine,
-                fontSize: 12.5,
-                opacity: 0.78,
-                lineHeight: 1.2,
-                minWidth: 0,
-                flex: "1 1 auto",
+                fontSize: 13,
+                color: "rgba(99,179,237,0.82)",
+                lineHeight: 1.25,
               };
               const estimateField = {
                 ...cardBodyLine,
-                fontSize: 12.5,
-                opacity: 0.78,
-                lineHeight: 1.2,
-                minWidth: 0,
-                flex: "0 1 auto",
+                fontSize: 12,
+                opacity: 0.60,
+                lineHeight: 1.25,
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "flex-end",
+                gap: 6,
+                flexWrap: "wrap",
               };
               const metricLabel = {
-                fontSize: 10.5,
+                fontSize: 10,
                 fontWeight: 900,
-                opacity: 0.82,
-                letterSpacing: "1px",
+                opacity: 0.72,
+                letterSpacing: "0.9px",
                 textTransform: "uppercase",
                 textAlign: "center",
                 lineHeight: 1.1,
@@ -1328,28 +2637,37 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
-                flexWrap: "nowrap",
-                columnGap: 12,
-                gap: "8px",
+                flexWrap: boardCols === 1 ? "wrap" : "nowrap",
+                gap: boardCols === 1 ? "6px" : "8px",
+                width: "100%",
                 minWidth: 0,
               };
 
               const pill = (ok) => ({
-                padding: "6px 10px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                minHeight: boardCols === 1 ? 30 : 32,
+                padding: boardCols === 1 ? "0 6px" : "0 12px",
                 borderRadius: 999,
                 border: "1px solid rgba(255,255,255,0.14)",
                 background: ok ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.06)",
                 boxShadow: "inset 0 1px 2px rgba(255,255,255,0.05), 0 4px 10px rgba(0,0,0,0.35)",
-                fontSize: 12,
+                fontSize: boardCols === 1 ? 11.5 : 12.5,
                 fontWeight: 800,
                 letterSpacing: "0.3px",
-                flexShrink: 0,
+                lineHeight: 1.15,
                 whiteSpace: "nowrap",
+                overflowWrap: "normal",
+                textAlign: "center",
+                flex: "1 1 0",
+                minWidth: 0,
+                boxSizing: "border-box",
               });
 
               const panel = {
                 overflow: "hidden",
-                maxHeight: isOpen ? 2600 : 0,
+                maxHeight: isOpen ? 9999 : 0,
                 opacity: isOpen ? 1 : 0,
                 transform: isOpen ? "translateY(0px)" : "translateY(-4px)",
                 transition: "max-height 320ms ease, opacity 220ms ease, transform 220ms ease",
@@ -1394,24 +2712,50 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     const touch = e.touches?.[0];
                     if (!touch) return;
 
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
+                    clearTouchStartTimer();
+
+                    if (isTouchDragBlockedTarget(e.target)) {
+                      resetTouchGesture();
+                      return;
                     }
 
+                    touchGestureRef.current = {
+                      estimateId: id,
+                      startX: touch.clientX,
+                      startY: touch.clientY,
+                    };
+
                     touchStartTimer.current = setTimeout(() => {
+                      if (touchGestureRef.current.estimateId !== id) return;
                       setTouchDraggingId(id);
                       setTouchDragPos({
                         x: touch.clientX,
                         y: touch.clientY,
                       });
                       setDraggingEstimateId(id);
-                    }, 350);
+                    }, TOUCH_DRAG_HOLD_MS);
                   }}
                   onTouchMove={(e) => {
-                    if (!touchDraggingId) return;
-
                     const touch = e.touches?.[0];
                     if (!touch) return;
+
+                    if (!touchDraggingId) {
+                      const gesture = touchGestureRef.current;
+                      if (gesture.estimateId !== id) return;
+
+                      const movedX = Math.abs(touch.clientX - gesture.startX);
+                      const movedY = Math.abs(touch.clientY - gesture.startY);
+                      if (
+                        movedX > TOUCH_DRAG_MOVE_THRESHOLD_PX
+                        || movedY > TOUCH_DRAG_MOVE_THRESHOLD_PX
+                      ) {
+                        clearTouchStartTimer();
+                        resetTouchGesture();
+                      }
+                      return;
+                    }
+
+                    if (touchDraggingId !== id) return;
                     e.preventDefault();
 
                     setTouchDragPos({
@@ -1420,12 +2764,10 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     });
                   }}
                   onTouchEnd={(e) => {
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
-                    }
-                    touchStartTimer.current = null;
+                    clearTouchStartTimer();
+                    resetTouchGesture();
 
-                    if (!touchDraggingId) return;
+                    if (!touchDraggingId || touchDraggingId !== id) return;
 
                     const touch = e.changedTouches?.[0];
                     const clientX = touch?.clientX ?? touchDragPos.x;
@@ -1442,10 +2784,8 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     setDraggingEstimateId(null);
                   }}
                   onTouchCancel={() => {
-                    if (touchStartTimer.current) {
-                      clearTimeout(touchStartTimer.current);
-                    }
-                    touchStartTimer.current = null;
+                    clearTouchStartTimer();
+                    resetTouchGesture();
                     setTouchDraggingId(null);
                     setDraggingEstimateId(null);
                   }}
@@ -1481,68 +2821,99 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                     }
                   }}
                 >
-                  <div style={row}>
-                    <div style={headerRow}>
-                      <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                  <div className="pe-estimate-card-mainrow" style={row}>
+                    <div className="pe-estimate-card-header" style={headerRow}>
+                      <div className="pe-estimate-card-info" style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 0" }}>
                         <div
+                          className="pe-estimate-card-title"
                           style={{
-                            fontWeight: 600,
-                            fontSize: "15px",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
+                            fontWeight: 800,
+                            fontSize: "15.5px",
+                            lineHeight: 1.3,
                           }}
                         >
-                          {e?.projectName || (lang === "es" ? "Sin proyecto" : "No project")}
+                          {projectTitle}
                         </div>
-                        <div style={customerEstimateRow}>
-                          <div style={customerField}>
-                            {e?.customerName ? e.customerName : (lang === "es" ? "Sin cliente" : "No customer")}
+                        <div className="pe-estimate-card-customer-row" style={customerEstimateRow}>
+                          {projectLabel ? (
+                            <div style={{ ...cardBodyLine, fontSize: 12.5, lineHeight: 1.28, color: "rgba(226,232,240,0.76)" }}>
+                              {`${lang === "es" ? "Proyecto" : "Project"}: ${projectLabel}`}
+                            </div>
+                          ) : null}
+                          <div className="pe-estimate-card-customer" style={customerField}>
+                            {customerLabel}
                           </div>
-                          <div style={estimateField}>
+                          {siteAddr ? <div style={{ fontSize: 11.5, opacity: 0.52, lineHeight: 1.2, minWidth: 0 }}>{siteAddr}</div> : null}
+                          <div className="pe-estimate-card-numbers" style={estimateField}>
                             {e?.estimateNumber ? (
                               <>
-                                <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap" }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
+                                <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75 }}>{`${t("estimateNumLabel")} ${e.estimateNumber}`}</span>
                                 <button
                                   type="button"
                                   className="ep-icon-btn ep-icon-btn--sm ep-icon-btn--glass"
                                   aria-label="Copy estimate number"
                                   title="Copy estimate number"
                                   onClick={(evt) => copyEstimateNumber(e?.estimateNumber, evt)}
-                                  style={{ marginLeft: 6, verticalAlign: "middle" }}
+                                  style={{ verticalAlign: "middle" }}
                                 >
                                   <CopyIcon />
                                 </button>
                               </>
                             ) : null}
                             {e?.invoiceNumber ? (
-                              <span style={{ fontSize: 12, opacity: 0.75, whiteSpace: "nowrap", marginLeft: e?.estimateNumber ? 6 : 0 }}>
+                              <span className="pe-estimate-card-number" style={{ fontSize: 12, opacity: 0.75, marginLeft: e?.estimateNumber ? 2 : 0 }}>
                                 {`${e?.estimateNumber ? "• " : ""}${t("invoiceNumLabel")} ${e.invoiceNumber}`}
                               </span>
                             ) : null}
                           </div>
                         </div>
-                        {updatedLine ? <div style={updatedTextLine}>{updatedLine}</div> : null}
+                        {updatedLine ? <div className="pe-estimate-card-updated" style={updatedTextLine}>{updatedLine}</div> : null}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${actionMeta.border}`, background: actionMeta.background, color: actionMeta.tone, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                            {actionMeta.label}
+                          </span>
+                          {isHighValue ? (
+                            <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(245,158,11,0.2)", background: "rgba(245,158,11,0.08)", color: "rgba(251,191,36,0.88)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                              {lang === "es" ? "Alto valor" : "High value"}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                      <div
-                        className={`pe-estimate-status ${statusClassName}`}
-                        style={{
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {statusLabel}
+                      <div style={{ display: "grid", gap: 8, justifyItems: "end", alignContent: "start", minWidth: 0 }}>
+                        <div
+                          className={`pe-estimate-status pe-estimate-card-status ${statusClassName}`}
+                          style={{
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {statusLabel}
+                        </div>
                       </div>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
-                      <div style={metricRow}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <div className="pe-estimate-card-pipeline-row">
+                      <div className="pe-estimate-card-pipeline-label">
+                        {lang === "es" ? "Pipeline value" : "Pipeline value"}
+                      </div>
+                      <div className="pe-estimate-card-pipeline-value">
+                        {money(pipelineValue)}
+                      </div>
+                    </div>
+                    <div className="pe-estimate-card-metrics-wrap" style={{ display: "flex", width: "100%", minWidth: 0 }}>
+                      <div className="pe-estimate-card-metrics" style={metricRow}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
                           <div style={metricLabel}>{labelTotalMetric}</div>
                           <div style={pill(true)} title={labelRevenue}>
                             {money(bd.totals.revenue)}
                           </div>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
+                          <div style={metricLabel}>{labelProfit}</div>
+                          <div style={pill(bd.totals.profit > 0)} title={labelProfit}>
+                            {money(bd.totals.profit)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 4, flex: "1 1 0", minWidth: 0, overflow: "hidden" }}>
                           <div style={metricLabel}>{labelMarginMetric}</div>
                           <div style={pill(false)} title={labelMargin}>
                             {(bd.totals.margin * 100).toFixed(1)}%
@@ -1550,6 +2921,25 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                         </div>
                       </div>
                     </div>
+                    {status === STATUS_APPROVED && invoiceSummary ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", opacity: 0.52 }}>
+                          {lang === "es" ? "Facturado" : "Invoiced"}
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, opacity: 0.82 }}>
+                          {money(invoiceSummary.invoicedTotal)} / {money(invoiceSummary.approvedTotal)}
+                        </div>
+                        {invoiceSummary.remainingToInvoice > 0 ? (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(245,158,11,0.84)" }}>
+                            {money(invoiceSummary.remainingToInvoice)} {lang === "es" ? "restante" : "remaining"}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(72,187,120,0.82)" }}>
+                            {lang === "es" ? "Completamente facturado" : "Fully invoiced"}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="pe-estimate-actions">
@@ -1557,20 +2947,61 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                       className="actions-right pe-estimate-actions-row"
                       style={{
                         display: "flex",
+                        flexWrap: "wrap",
                         gap: 10,
                         marginTop: 8,
+                        position: "relative",
+                        zIndex: 2,
+                      }}
+                      onClick={(evt) => {
+                        if (evt?.stopPropagation) evt.stopPropagation();
                       }}
                     >
-                      <button className="pe-btn" type="button" onClick={() => openEstimate(e)}>
+                      <button
+                        className="pe-btn"
+                        type="button"
+                        onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "open")}
+                        onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "open")}
+                        onClick={(evt) => runEstimateCardAction(evt, id, "open", () => openEstimate(e))}
+                        style={estimatePrimaryActionStyle}
+                      >
                         {labelOpen}
                       </button>
-                      <button className="pe-btn pe-btn-ghost" type="button" onClick={() => toggle(id)}>
+                      <button
+                        className="pe-btn pe-btn-ghost"
+                        type="button"
+                        onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "details")}
+                        onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "details")}
+                        onClick={(evt) => runEstimateCardAction(evt, id, "details", () => toggle(id))}
+                        style={estimateSecondaryActionStyle}
+                      >
                         {isOpen ? labelHide : labelDetails}
                       </button>
+                      {onOpenProjectDetail ? (
+                        <button
+                          className="pe-btn pe-btn-ghost"
+                          type="button"
+                          onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "project")}
+                          onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "project")}
+                          onClick={(evt) => runEstimateCardAction(evt, id, "project", () => {
+                            const currentProjects = readStoredProjects();
+                            const target = resolveProjectNavigationTarget(e, currentProjects);
+                            if (target?.needsBackfill && target?.project) {
+                              const nextProjects = upsertProject(currentProjects, target.project);
+                              writeStoredProjects(nextProjects);
+                              window.dispatchEvent(new Event("estipaid:projects-changed"));
+                            }
+                            if (target?.projectId) onOpenProjectDetail(target.projectId);
+                          })}
+                          style={estimateSecondaryActionStyle}
+                        >
+                          Project
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 
-                  <div style={panel} aria-hidden={!isOpen}>
+                  <div style={panel} aria-hidden={!isOpen} data-estimate-details-panel="true">
                     <div className="pe-card pe-card-content" style={subCard}>
                       <div style={sectionTitle}>{lang === "es" ? "Estado" : "Status"}</div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1579,7 +3010,6 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                           type="button"
                           onClick={() => {
                             setEstimateStatus(e, STATUS_APPROVED);
-                            setInvoicePromptTarget(e);
                           }}
                         >
                           {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
@@ -1609,8 +3039,40 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                           <CopyIcon />
                           Duplicate
                         </button>
+                        {status === STATUS_APPROVED ? (
+                          <button
+                            className="pe-btn"
+                            type="button"
+                            onClick={() => openInvoiceBuilderFromEstimate(e)}
+                            disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
+                          >
+                            {lang === "es" ? "Crear factura" : "Create Invoice"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
+
+                    {status === STATUS_APPROVED ? (
+                      <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
+                        <div style={sectionTitle}>{lang === "es" ? "Facturación" : "Invoicing"}</div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Total aprobado" : "Approved total"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.approvedTotal)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Total facturado" : "Invoiced total"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.invoicedTotal)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Restante por facturar" : "Remaining to invoice"}</div>
+                          <div style={{ fontWeight: 900 }}>{money(invoiceSummary?.remainingToInvoice)}</div>
+                        </div>
+                        <div style={row}>
+                          <div style={small}>{lang === "es" ? "Facturas vinculadas" : "Linked invoices"}</div>
+                          <div style={{ fontWeight: 900 }}>{Number(invoiceSummary?.linkedInvoiceCount || 0)}</div>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
@@ -1675,19 +3137,19 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                               gap: 6,
                             }}
                           >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                              <div style={{ fontWeight: 900 }}>{r.name}</div>
-                              <div style={{ fontWeight: 900 }}>{money(r.billed)}</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                              <div style={{ fontWeight: 900, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 auto" }}>{r.name}</div>
+                              <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
                               <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
                               <div>{lang === "es" ? "Horas" : "Hours"}: {r.hours}</div>
-                              <div>{lang === "es" ? "Tarifa" : "Rate"}: {money(r.rate)}</div>
-                              <div>
+                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Tarifa" : "Rate"}: {money(r.rate)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>
                                 {lang === "es" ? "Int" : "Internal"}: {r.internalRate != null ? money(r.internalRate) : (lang === "es" ? "—" : "—")}
                               </div>
-                              <div>{labelProfit}: {money(r.profit)}</div>
-                              <div>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
                             </div>
                           </div>
                         ))}
@@ -1738,18 +3200,18 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
                               gap: 6,
                             }}
                           >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                              <div style={{ fontWeight: 900 }}>{r.name}</div>
-                              <div style={{ fontWeight: 900 }}>{money(r.billed)}</div>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+                              <div style={{ fontWeight: 900, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 auto" }}>{r.name}</div>
+                              <div style={{ fontWeight: 900, minWidth: 0, whiteSpace: "nowrap", flex: "0 1 auto" }}>{money(r.billed)}</div>
                             </div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, opacity: 0.8, minWidth: 0 }}>
                               <div>{lang === "es" ? "Cant" : "Qty"}: {r.qty}</div>
-                              <div>{lang === "es" ? "Precio" : "Price"}: {money(r.chargeEach)}</div>
-                              <div>
+                              <div style={{ whiteSpace: "nowrap" }}>{lang === "es" ? "Precio" : "Price"}: {money(r.chargeEach)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>
                                 {lang === "es" ? "Int" : "Internal"}: {r.internalEach != null ? money(r.internalEach) : (lang === "es" ? "—" : "—")}
                               </div>
-                              <div>{labelProfit}: {money(r.profit)}</div>
-                              <div>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelProfit}: {money(r.profit)}</div>
+                              <div style={{ whiteSpace: "nowrap" }}>{labelMargin}: {(r.margin * 100).toFixed(1)}%</div>
                             </div>
                           </div>
                         ))}
@@ -1880,6 +3342,290 @@ export default function EstimatesScreen({ lang, t, history, onOpenEstimate, onDo
               >
                 Delete
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {invoiceComposerTarget ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={lang === "es" ? "Crear factura" : "Create invoice"}
+          onClick={closeInvoiceComposer}
+          style={invoiceComposerOverlayStyle}
+        >
+          <div
+            className="pe-card pe-card-content"
+            onClick={(evt) => evt.stopPropagation()}
+            style={invoiceComposerCardStyle}
+          >
+            <div style={invoiceComposerCardScrollStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+              <div style={{ display: "grid", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
+                <div style={invoiceComposerToneLabelStyle}>
+                  {lang === "es" ? "Compositor rápido" : "Quick Composer"}
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "0.01em", lineHeight: 1.06 }}>
+                  {lang === "es" ? "Crear factura" : "Create Invoice"}
+                </div>
+                <div style={{ fontSize: 13.5, opacity: 0.86, lineHeight: 1.35 }}>{invoiceComposerEstimateLabel}</div>
+                {invoiceComposerContextItems.length ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {invoiceComposerContextItems.map((item) => (
+                      <div
+                        key={item.key}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          minHeight: 28,
+                          padding: "5px 10px",
+                          borderRadius: 999,
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "rgba(226,232,240,0.88)",
+                          fontSize: 12.5,
+                          fontWeight: 700,
+                          maxWidth: "100%",
+                        }}
+                      >
+                        {item.label}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={closeInvoiceComposer}
+                style={{ ...invoiceComposerFooterBtnStyle, minHeight: 36, padding: "7px 12px", flexShrink: 0 }}
+              >
+                {lang === "es" ? "Cerrar" : "Close"}
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={invoiceComposerSectionLabelStyle}>
+                {lang === "es" ? "Tipo de factura" : "Invoice Type"}
+              </div>
+              <div style={invoiceComposerSegmentWrapStyle}>
+                {invoiceComposerTypeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="pe-btn pe-btn-ghost"
+                    onClick={() => handleInvoiceComposerTypeChange(option.value)}
+                    style={{
+                      ...invoiceComposerSegmentBtnStyle,
+                      ...(invoiceComposerForm.invoiceType === option.value
+                        ? invoiceComposerSegmentBtnActiveStyle
+                        : invoiceComposerSegmentBtnIdleStyle),
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={invoiceComposerFieldGridStyle}>
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Monto de factura" : "Invoice Amount"}
+                </div>
+                <div style={invoiceComposerAmountRowStyle}>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="pe-input"
+                    value={invoiceComposerForm.amountValue}
+                    placeholder={
+                      invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
+                        ? (lang === "es" ? "Dejar vacío para usar el saldo restante" : "Leave blank to use remaining balance")
+                        : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")
+                    }
+                    onChange={(evt) => {
+                      setInvoiceComposerForm((prev) => ({ ...prev, amountValue: evt.target.value }));
+                      setInvoiceComposerError("");
+                    }}
+                    style={{ width: "100%" }}
+                  />
+                  <div style={invoiceComposerAmountModeWrapStyle}>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_AMOUNT)}
+                      style={{
+                        ...invoiceComposerModeBtnStyle,
+                        ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_AMOUNT
+                          ? invoiceComposerModeBtnActiveStyle
+                          : invoiceComposerModeBtnIdleStyle),
+                      }}
+                    >
+                      $
+                    </button>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_PERCENT)}
+                      style={{
+                        ...invoiceComposerModeBtnStyle,
+                        ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT
+                          ? invoiceComposerModeBtnActiveStyle
+                          : invoiceComposerModeBtnIdleStyle),
+                      }}
+                    >
+                      %
+                    </button>
+                  </div>
+                </div>
+
+                {invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT ? (
+                  <div style={invoiceComposerPresetWrapStyle}>
+                  {[10, 25, 50].map((percent) => {
+                    const disabled = invoiceComposerAvailablePercent > 0 && percent > invoiceComposerAvailablePercent + INVOICE_COMPOSER_EPSILON;
+                    const isActive = invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT
+                      && roundCurrency(toNum(invoiceComposerForm.amountValue)) === percent;
+                    return (
+                      <button
+                        key={`deposit-${percent}`}
+                        type="button"
+                        className="pe-btn pe-btn-ghost"
+                        disabled={disabled}
+                        onClick={() => {
+                          setInvoiceComposerForm((prev) => ({
+                            ...prev,
+                            amountMode: INVOICE_AMOUNT_MODE_PERCENT,
+                            amountValue: String(percent),
+                          }));
+                          setInvoiceComposerError("");
+                        }}
+                        style={{
+                          ...invoiceComposerPresetBtnStyle,
+                          ...(isActive ? invoiceComposerPresetBtnActiveStyle : invoiceComposerPresetBtnIdleStyle),
+                        }}
+                      >
+                        {percent}%
+                      </button>
+                    );
+                  })}
+                  </div>
+                ) : null}
+
+                <div style={{ fontSize: 12.5, opacity: 0.72, lineHeight: 1.4 }}>
+                  {invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL
+                    ? (lang === "es"
+                      ? "Final usa el saldo restante por defecto si dejas el monto vacío."
+                      : "Final defaults to the remaining balance if you leave the amount blank.")
+                    : invoiceComposerForm.invoiceType === INVOICE_TYPES.PROGRESS
+                      ? (lang === "es"
+                        ? "Progreso sugiere una parte del saldo restante; puedes ajustarlo."
+                        : "Progress suggests part of the remaining balance; you can override it.")
+                      : invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT
+                        ? (lang === "es"
+                          ? "Depósito ofrece atajos rápidos de porcentaje; puedes ajustarlo."
+                          : "Deposit includes quick percent presets; you can override them.")
+                        : (lang === "es"
+                          ? "Ingresa un monto o porcentaje personalizado."
+                          : "Enter a custom amount or percentage.")}
+                </div>
+              </div>
+
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Fecha de vencimiento" : "Due Date"}
+                </div>
+                <input
+                  type="date"
+                  className="pe-input"
+                  value={invoiceComposerForm.dueDate}
+                  onChange={(evt) => {
+                    setInvoiceComposerForm((prev) => ({ ...prev, dueDate: evt.target.value }));
+                    setInvoiceComposerError("");
+                  }}
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setInvoiceComposerShowMore((prev) => !prev)}
+              style={invoiceComposerMoreBtnStyle}
+            >
+              {invoiceComposerShowMore
+                ? (lang === "es" ? "Ocultar más" : "Hide More")
+                : (lang === "es" ? "Más" : "More")}
+            </button>
+
+            {invoiceComposerShowMore ? (
+              <div style={invoiceComposerFieldBlockStyle}>
+                <div style={invoiceComposerSectionLabelStyle}>
+                  {lang === "es" ? "Nota" : "Note"}
+                </div>
+                <textarea
+                  className="pe-input pe-textarea"
+                  value={invoiceComposerForm.note}
+                  onChange={(evt) => {
+                    setInvoiceComposerForm((prev) => ({ ...prev, note: evt.target.value }));
+                    setInvoiceComposerError("");
+                  }}
+                  rows={3}
+                  placeholder={lang === "es" ? "Nota opcional para esta factura" : "Optional note for this invoice"}
+                  style={{ minHeight: 88, resize: "vertical" }}
+                />
+              </div>
+            ) : null}
+
+            <div style={invoiceComposerSummaryCardStyle}>
+              <div style={invoiceComposerSectionLabelStyle}>
+                {lang === "es" ? "Resumen de facturación" : "Billing Summary"}
+              </div>
+              <div style={invoiceComposerSummaryGridStyle}>
+                {invoiceComposerSummaryItems.map((item) => (
+                  <div
+                    key={item.key}
+                    style={{
+                      ...invoiceComposerSummaryItemStyle,
+                      ...(item.tone === "primary"
+                        ? invoiceComposerSummaryItemPrimaryStyle
+                        : item.tone === "remaining"
+                          ? invoiceComposerSummaryItemRemainingStyle
+                          : null),
+                    }}
+                  >
+                    <div style={{ fontSize: 12.5, opacity: 0.72, lineHeight: 1.25 }}>{item.label}</div>
+                    <div style={invoiceComposerSummaryValueStyle}>{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {invoiceComposerMessage ? (
+              <div
+                role="alert"
+                style={{
+                  fontSize: 13,
+                  color: "rgba(254, 202, 202, 0.95)",
+                  border: "1px solid rgba(248,113,113,0.36)",
+                  background: "rgba(127,29,29,0.18)",
+                  borderRadius: 12,
+                  padding: "10px 12px",
+                  lineHeight: 1.4,
+                }}
+              >
+                {invoiceComposerMessage}
+              </div>
+            ) : null}
+
+            <div style={invoiceComposerFooterStyle}>
+              <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>
+                {lang === "es" ? "Cancelar" : "Cancel"}
+              </button>
+              <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
+                {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
+              </button>
+            </div>
             </div>
           </div>
         </div>

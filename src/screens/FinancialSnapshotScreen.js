@@ -1,11 +1,22 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { computeTotals } from "../estimator/engine";
+import {
+  buildEstimateInvoiceSummary,
+  deriveInvoiceStatus,
+  INVOICE_STATUSES,
+  isInvoiceFinanciallyCommitted,
+  isInvoiceReceivable,
+  readStoredInvoices,
+} from "../utils/invoices";
+import { readStoredProjects } from "../utils/projects";
 
+const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
+const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
-
+const COMPANY_PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 function safeParseJSON(raw, fallback) {
   try {
     const v = JSON.parse(raw);
@@ -23,6 +34,17 @@ function loadArray(key) {
     return Array.isArray(v) ? v.filter(Boolean) : [];
   } catch {
     return [];
+  }
+}
+
+function loadObject(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const v = safeParseJSON(raw, null);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
   }
 }
 
@@ -59,15 +81,16 @@ function startOfDay(d) {
   return x;
 }
 
+function endOfDay(d) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
 function addDays(d, days) {
   const x = new Date(d);
   x.setDate(x.getDate() + (Number(days) || 0));
   return x;
-}
-
-function clamp01(n) {
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(1, n));
 }
 
 function fmtMoney(n) {
@@ -83,19 +106,256 @@ function fmtPct(p) {
   return `${n.toFixed(1)}%`;
 }
 
-function isPaidInvoice(inv) {
-  const v =
-    inv?.paid === true ||
-    inv?.isPaid === true ||
-    String(inv?.status || "").toLowerCase() === "paid" ||
-    String(inv?.paymentStatus || "").toLowerCase() === "paid" ||
-    !!inv?.paidDate ||
-    !!inv?.datePaid;
-  return !!v;
+function fmtDateShort(value) {
+  const d = parseDateAny(value);
+  if (!d) return "No due date";
+  try {
+    return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(d);
+  } catch {
+    return d.toLocaleDateString();
+  }
+}
+
+function cleanPhone(value) {
+  return String(value || "").replace(/[^\d+]/g, "").trim();
+}
+
+function getCustomerDisplayName(customer) {
+  if (!customer || typeof customer !== "object") return "";
+  return String(
+    customer?.name
+    || customer?.companyName
+    || customer?.fullName
+    || ""
+  ).trim();
+}
+
+function getCustomerEmail(customer) {
+  if (!customer || typeof customer !== "object") return "";
+  return String(
+    customer?.email
+    || customer?.comEmail
+    || customer?.resEmail
+    || ""
+  ).trim();
+}
+
+function getCustomerPhone(customer) {
+  if (!customer || typeof customer !== "object") return "";
+  return String(
+    customer?.phone
+    || customer?.comPhone
+    || customer?.resPhone
+    || ""
+  ).trim();
+}
+
+function getCompanySignatureLines(profile) {
+  const company = profile && typeof profile === "object" ? profile : null;
+  const contactName = String(company?.attn || "").trim();
+  const companyName = String(company?.companyName || "").trim();
+  const phone = String(company?.phone || "").trim();
+  const email = String(company?.email || "").trim();
+  const website = String(company?.website || "").trim();
+  const roc = String(company?.roc || "").trim();
+
+  if (!contactName && !companyName && !phone && !email && !website && !roc) {
+    return ["EstiPaid"];
+  }
+
+  return [
+    contactName,
+    contactName && companyName ? companyName : (contactName ? "" : companyName),
+    phone,
+    email,
+    website ? `Website: ${website}` : "",
+    roc ? `ROC: ${roc}` : "",
+  ].filter(Boolean);
+}
+
+function resolveAgingBucket(daysLate, lang = "en") {
+  if (daysLate <= 0) {
+    return {
+      key: "current",
+      label: lang === "es" ? "Actual" : "Current",
+      riskRank: 0,
+      color: "rgba(255,255,255,0.55)",
+    };
+  }
+  if (daysLate <= 15) {
+    return {
+      key: "late1_15",
+      label: "1-15",
+      riskRank: 1,
+      color: "rgba(34,197,94,0.70)",
+    };
+  }
+  if (daysLate <= 30) {
+    return {
+      key: "late16_30",
+      label: "16-30",
+      riskRank: 2,
+      color: "rgba(245,158,11,0.78)",
+    };
+  }
+  if (daysLate <= 60) {
+    return {
+      key: "late31_60",
+      label: "31-60",
+      riskRank: 3,
+      color: "rgba(249,115,22,0.82)",
+    };
+  }
+  return {
+    key: "late60p",
+    label: "60+",
+    riskRank: 4,
+    color: "rgba(239,68,68,0.82)",
+  };
+}
+
+function getMarginTone(marginPct) {
+  if (marginPct >= 30) return "healthy";
+  if (marginPct >= 20) return "caution";
+  return "risk";
+}
+
+function hasKnownCost(doc) {
+  const directCost = doc?.financials?.totalCost ?? doc?.totals?.totalCost ?? doc?.totalCost;
+  if (directCost !== undefined && directCost !== null && String(directCost) !== "") return true;
+
+  const directGrossProfit = doc?.financials?.grossProfit ?? doc?.totals?.grossProfit ?? doc?.grossProfit;
+  if (directGrossProfit !== undefined && directGrossProfit !== null && String(directGrossProfit) !== "") return true;
+
+  const directInternalCost = doc?.financials?.internalCost ?? doc?.totals?.internalCost ?? doc?.internalCost;
+  if (directInternalCost !== undefined && directInternalCost !== null && String(directInternalCost) !== "") return true;
+
+  const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  if (laborLines.some((line) => {
+    const v = line?.trueRateInternal ?? line?.internalRate ?? line?.rateInternal;
+    return v !== undefined && v !== null && String(v) !== "";
+  })) return true;
+
+  const materialItems = Array.isArray(doc?.materials?.items) ? doc.materials.items : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  if (materialItems.some((item) => {
+    const v = item?.unitCostInternal ?? item?.costInternal ?? item?.internalCost ?? item?.internalEach ?? item?.internalPrice;
+    return v !== undefined && v !== null && String(v) !== "";
+  })) return true;
+
+  const blanketInternalCost = doc?.materials?.blanketInternalCost ?? doc?.blanketInternalCost;
+  if (blanketInternalCost !== undefined && blanketInternalCost !== null && String(blanketInternalCost) !== "") return true;
+
+  return false;
+}
+
+function buildFollowUpMailto(row, companyProfile, lang = "en") {
+  const subject = `Invoice ${row.invoiceNumber || row.invoiceLabel} follow-up`;
+  const detailsLines = [
+    lang === "es" ? "Detalles de la factura:" : "Invoice details:",
+    `${lang === "es" ? "- Saldo pendiente" : "- Amount due"}: ${fmtMoney(row.balanceDue)}`,
+    `${lang === "es" ? "- Fecha de vencimiento" : "- Due date"}: ${row.dueDateLabel}`,
+    row.projectName ? `${lang === "es" ? "- Proyecto" : "- Project"}: ${row.projectName}` : "",
+  ].filter(Boolean);
+  const signatureLines = getCompanySignatureLines(companyProfile);
+  const bodySections = [
+    lang === "es" ? `Hola ${row.customerName},` : `Hi ${row.customerName},`,
+    lang === "es"
+      ? `Quería dar seguimiento a la factura ${row.invoiceNumber || row.invoiceLabel}.`
+      : `I wanted to follow up on invoice ${row.invoiceNumber || row.invoiceLabel}.`,
+    detailsLines.join("\n"),
+    lang === "es"
+      ? "Avíseme si necesita una copia de la factura o si tiene alguna pregunta."
+      : "Please let me know if you need a copy of the invoice or have any questions.",
+    [lang === "es" ? "Gracias," : "Thank you,", "", ...signatureLines].join("\n"),
+  ];
+  const body = bodySections.join("\n\n");
+  return `mailto:${encodeURIComponent(row.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
+function normalizeEstimatePipelineStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  if (raw === "draft") return "draft";
+  if (raw === "sent") return "pending";
+  return "pending";
+}
+
+function buildEstimateFollowUpMailto(row, companyProfile, lang = "en") {
+  const subject = lang === "es"
+    ? `Seguimiento de estimado ${row.estimateLabel}`
+    : `Estimate ${row.estimateLabel} follow-up`;
+  const signatureLines = getCompanySignatureLines(companyProfile);
+  const projectName = String(row?.projectName || "").trim();
+  const isApproved = String(row?.statusKey || "").trim().toLowerCase() === "approved";
+  const introProject = projectName ? `${lang === "es" ? " para " : " for "}${projectName}` : "";
+  const statusLabel = String(
+    row?.statusLabel
+    || (isApproved
+      ? (lang === "es" ? "Aprobado" : "Approved")
+      : (lang === "es" ? "Pendiente" : "Pending"))
+  ).trim();
+  const detailsLines = isApproved
+    ? [
+      lang === "es" ? "Detalles del estimado:" : "Estimate details:",
+      `${lang === "es" ? "- Monto aprobado" : "- Approved amount"}: ${fmtMoney(row.total)}`,
+      `${lang === "es" ? "- Pendiente por facturar" : "- Remaining to invoice"}: ${fmtMoney(row.remainingToInvoice)}`,
+      projectName ? `${lang === "es" ? "- Proyecto" : "- Project"}: ${projectName}` : "",
+    ].filter(Boolean)
+    : [
+      lang === "es" ? "Detalles del estimado:" : "Estimate details:",
+      `${lang === "es" ? "- Monto del estimado" : "- Estimate amount"}: ${fmtMoney(row.total)}`,
+      `${lang === "es" ? "- Estado" : "- Status"}: ${statusLabel}`,
+      projectName ? `${lang === "es" ? "- Proyecto" : "- Project"}: ${projectName}` : "",
+    ].filter(Boolean);
+  const body = [
+    lang === "es" ? `Hola ${row.customerName},` : `Hi ${row.customerName},`,
+    isApproved
+      ? (
+        lang === "es"
+          ? `Gracias por aprobar el estimado ${row.estimateLabel}${introProject}.`
+          : `Thank you for approving estimate ${row.estimateLabel}${introProject}.`
+      )
+      : (
+        lang === "es"
+          ? `Quería dar seguimiento al estimado ${row.estimateLabel}${introProject}.`
+          : `I wanted to follow up on estimate ${row.estimateLabel}${introProject}.`
+      ),
+    detailsLines.join("\n"),
+    isApproved
+      ? (
+        lang === "es"
+          ? "Avíseme si hay algún detalle de facturación que quiera incluir en la factura."
+          : "Please let me know if there are any billing details you would like included on the invoice."
+      )
+      : (
+        lang === "es"
+          ? "Avíseme si tiene alguna pregunta o si le gustaría seguir adelante."
+          : "Please let me know if you have any questions or if you would like to move forward."
+      ),
+    [lang === "es" ? "Gracias," : "Thank you,", "", ...signatureLines].join("\n"),
+  ].join("\n\n");
+  return `mailto:${encodeURIComponent(row.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
+function normalizeEstimateStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  return "pending";
 }
 
 function getDocDate(doc) {
   const cands = [doc?.invoiceDate, doc?.date, doc?.createdAt, doc?.updatedAt, doc?.ts, doc?.timestamp];
+  for (const c of cands) {
+    const d = parseDateAny(c);
+    if (d) return d;
+  }
+  return null;
+}
+
+function getInvoiceChartDate(invoice) {
+  const cands = [invoice?.invoiceDate, invoice?.date, invoice?.job?.date, invoice?.createdAt, invoice?.updatedAt, invoice?.ts];
   for (const c of cands) {
     const d = parseDateAny(c);
     if (d) return d;
@@ -213,6 +473,40 @@ function calcMarginPct(doc) {
   return (calcGrossProfit(doc) / revenue) * 100;
 }
 
+function getReceivableAmount(invoice) {
+  const balance = asNumber(invoice?.balanceRemaining);
+  if (balance > 0) return balance;
+  return Math.max(calcRevenue(invoice) - asNumber(invoice?.amountPaid), 0);
+}
+
+function readSavedEstimates() {
+  const records = loadArray(ESTIMATES_KEY);
+  return records
+    .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
+    .map((entry) => ({
+      ...entry,
+      snapshotStatus: String(entry?.status || "").trim().toLowerCase(),
+      status: normalizeEstimateStatus(entry?.status),
+    }));
+}
+
+function normalizeEstimateLifecycleStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "approved") return "approved";
+  if (raw === "lost") return "lost";
+  if (raw === "draft") return "draft";
+  return "pending";
+}
+
+function normalizeProjectLifecycleStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (raw === "completed" || raw === "complete") return "completed";
+  if (raw === "estimating") return "estimating";
+  if (raw === "draft") return "draft";
+  if (raw === "archived" || raw === "closed" || raw === "inactive") return "archived";
+  return "active";
+}
+
 function getTimeRangeStart(rangeKey) {
   const now = new Date();
   const today = startOfDay(now);
@@ -222,6 +516,46 @@ function getTimeRangeStart(rangeKey) {
 
   const y = today.getFullYear();
   return new Date(y, 0, 1);
+}
+
+function parseInputDate(value, mode = "start") {
+  const raw = String(value || "").trim();
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return mode === "end" ? endOfDay(parsed) : startOfDay(parsed);
+}
+
+function resolveSnapshotRange(rangeKey, customStartDate, customEndDate) {
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const todayEnd = endOfDay(now);
+
+  if (rangeKey === "custom") {
+    const customStart = parseInputDate(customStartDate, "start");
+    const customEnd = parseInputDate(customEndDate, "end");
+    if (customStart && customEnd && customStart.getTime() <= customEnd.getTime()) {
+      return {
+        start: customStart,
+        end: customEnd,
+        isCustomApplied: true,
+        isCustomInvalid: false,
+      };
+    }
+    return {
+      start: new Date(todayStart.getFullYear(), 0, 1),
+      end: todayEnd,
+      isCustomApplied: false,
+      isCustomInvalid: true,
+    };
+  }
+
+  return {
+    start: getTimeRangeStart(rangeKey === "ytd" ? "ytd" : rangeKey),
+    end: todayEnd,
+    isCustomApplied: false,
+    isCustomInvalid: false,
+  };
 }
 
 function inRange(docDate, start, end) {
@@ -242,25 +576,31 @@ function weekKey(d) {
   return `${y}-W${String(wk).padStart(2, "0")}`;
 }
 
-function buildWeeklySeries(invoices) {
-  const now = startOfDay(new Date());
+function buildWeeklySeries(invoices, { nowTs = Date.now(), endDate = new Date() } = {}) {
+  const chartEnd = startOfDay(endDate);
   const weeks = [];
-  const start = addDays(now, -7 * 11);
+  const start = addDays(chartEnd, -7 * 11);
   for (let i = 0; i < 12; i++) {
     const wStart = addDays(start, i * 7);
     const key = weekKey(wStart);
-    weeks.push({ key, start: wStart, revenue: 0, profit: 0 });
+    weeks.push({ key, start: wStart, revenue: 0, profit: 0, paid: 0, sent: 0, overdue: 0, other: 0 });
   }
   const idx = new Map(weeks.map((w, i) => [w.key, i]));
 
   for (const inv of invoices) {
-    const d = getDocDate(inv);
+    const d = getInvoiceChartDate(inv);
     if (!d) continue;
     const k = weekKey(d);
     const i = idx.get(k);
     if (i === undefined) continue;
-    weeks[i].revenue += calcRevenue(inv);
+    const rev = calcRevenue(inv);
+    weeks[i].revenue += rev;
     weeks[i].profit += calcGrossProfit(inv);
+    const status = deriveInvoiceStatus(inv, nowTs);
+    if (status === INVOICE_STATUSES.PAID) weeks[i].paid += rev;
+    else if (status === INVOICE_STATUSES.OVERDUE) weeks[i].overdue += rev;
+    else if (status === INVOICE_STATUSES.SENT) weeks[i].sent += rev;
+    else weeks[i].other += rev;
   }
 
   return weeks;
@@ -290,191 +630,875 @@ function useCountUp(targetValue, durationMs = 720) {
   return value;
 }
 
-function Donut({ segments, size = 180, stroke = 18, centerLabelTop, centerLabelBottom }) {
-  const r = (size - stroke) / 2;
-  const c = size / 2;
-  const circ = 2 * Math.PI * r;
-
-  let offset = 0;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Donut chart">
-      <g transform={`rotate(-90 ${c} ${c})`}>
-        <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={stroke} />
-        {segments.map((s, idx) => {
-          const dash = circ * clamp01(s.frac);
-          const seg = (
-            <circle
-              key={idx}
-              cx={c}
-              cy={c}
-              r={r}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={stroke}
-              strokeLinecap="round"
-              strokeDasharray={`${dash} ${circ - dash}`}
-              strokeDashoffset={-offset}
-              opacity={s.opacity ?? 1}
-            />
-          );
-          offset += dash;
-          return seg;
-        })}
-      </g>
-
-      <g>
-        <text x="50%" y="48%" textAnchor="middle" fill="rgba(229,231,235,0.95)" fontSize="12" fontWeight="800">
-          {centerLabelTop}
-        </text>
-        <text x="50%" y="60%" textAnchor="middle" fill="rgba(229,231,235,0.95)" fontSize="18" fontWeight="950">
-          {centerLabelBottom}
-        </text>
-      </g>
-    </svg>
-  );
-}
-
-function Bars({ data, height = 120, width = 320 }) {
+function Bars({ data, height = 196, width = 320 }) {
   const max = Math.max(1, ...data.map((d) => asNumber(d.revenue)));
-  const pad = 6;
-  const barW = (width - pad * (data.length + 1)) / data.length;
+
+  const ML = 46;  // left margin — Y-axis labels
+  const MR = 6;   // right margin
+  const MT = 24;  // top margin — value labels
+  const MB = 30;  // bottom margin — X-axis labels
+
+  const plotW = width - ML - MR;
+  const plotH = height - MT - MB;
+  const baseY = MT + plotH;
+  const midY  = MT + plotH / 2;
+
+  const barSlot = plotW / Math.max(1, data.length);
+  const barW    = Math.max(4, Math.floor(barSlot * 0.62));
+  const barPad  = (barSlot - barW) / 2;
+
+  function fmtCompact(n) {
+    const v = asNumber(n);
+    if (v === 0) return "$0";
+    if (v >= 1000000) return `$${(v / 1000000).toFixed(1)}M`;
+    if (v >= 1000)    return `$${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
+    return `$${Math.round(v)}`;
+  }
+
+  const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  const SEG_COLORS = {
+    overdue: "rgba(249,115,22,0.75)",
+    sent:    "rgba(96,165,250,0.75)",
+    paid:    "rgba(34,197,94,0.72)",
+    other:   "rgba(156,163,175,0.40)",
+  };
+
+  // One label per calendar month, centered over that month's bar group
+  const monthLabels = (() => {
+    const seen = new Set();
+    const result = [];
+    data.forEach((d) => {
+      if (!(d.start instanceof Date)) return;
+      const m = d.start.getMonth();
+      if (seen.has(m)) return;
+      seen.add(m);
+      const indices = data.reduce((acc, dd, ii) => {
+        if (dd.start instanceof Date && dd.start.getMonth() === m) acc.push(ii);
+        return acc;
+      }, []);
+      const bxFirst = ML + indices[0] * barSlot + barPad + barW / 2;
+      const bxLast  = ML + indices[indices.length - 1] * barSlot + barPad + barW / 2;
+      result.push({ label: MON[m], cx: (bxFirst + bxLast) / 2 });
+    });
+    return result;
+  })();
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Revenue bars">
-      {data.map((d, i) => {
-        const h = (asNumber(d.revenue) / max) * (height - 18);
-        const x = pad + i * (barW + pad);
-        const y = height - h - 12;
-        return (
-          <g key={d.key}>
-            <rect x={x} y={y} width={barW} height={h} rx="6" ry="6" fill="rgba(34,197,94,0.35)" />
-          </g>
-        );
-      })}
-      <line x1="0" y1={height - 12} x2={width} y2={height - 12} stroke="rgba(255,255,255,0.10)" />
-    </svg>
+    <>
+      <svg
+        className="pe-snapshot-bars"
+        width="100%"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Weekly revenue trend by invoice status"
+      >
+        {/* mid grid line */}
+        <line x1={ML} y1={midY} x2={width - MR} y2={midY}
+          stroke="rgba(255,255,255,0.07)" strokeDasharray="4 4" />
+
+        {/* baseline */}
+        <line x1={ML} y1={baseY} x2={width - MR} y2={baseY}
+          stroke="rgba(255,255,255,0.18)" />
+
+        {/* Y-axis scale */}
+        <text x={ML - 4} y={MT + 4}    textAnchor="end" fill="rgba(229,231,235,0.45)" fontSize="9" fontWeight="600">{fmtCompact(max)}</text>
+        <text x={ML - 4} y={midY + 4}  textAnchor="end" fill="rgba(229,231,235,0.35)" fontSize="9" fontWeight="600">{fmtCompact(max / 2)}</text>
+        <text x={ML - 4} y={baseY + 4} textAnchor="end" fill="rgba(229,231,235,0.28)" fontSize="9" fontWeight="600">$0</text>
+
+        {data.map((d, i) => {
+          const total = asNumber(d.revenue);
+          const bx    = ML + i * barSlot + barPad;
+
+          // Stacked segments bottom-to-top: overdue → sent → paid → other
+          const segDefs = [
+            { key: "overdue", v: asNumber(d.overdue), color: SEG_COLORS.overdue },
+            { key: "sent",    v: asNumber(d.sent),    color: SEG_COLORS.sent },
+            { key: "paid",    v: asNumber(d.paid),    color: SEG_COLORS.paid },
+            { key: "other",   v: asNumber(d.other),   color: SEG_COLORS.other },
+          ].filter((s) => s.v > 0);
+
+          const rects = segDefs.reduce((acc, { key, v, color }) => {
+            const prevY = acc.length > 0 ? acc[acc.length - 1].y : baseY;
+            const h = Math.max(2, (v / max) * plotH);
+            acc.push({ key, y: prevY - h, h, color });
+            return acc;
+          }, []);
+
+          const topY = rects.length > 0 ? rects[rects.length - 1].y : baseY;
+
+          return (
+            <g key={d.key}>
+              {rects.map(({ key, y, h, color }) => (
+                <rect key={key} x={bx} y={y} width={barW} height={h} rx="3" ry="3" fill={color} />
+              ))}
+
+              {total > 0 && (
+                <text
+                  x={bx + barW / 2}
+                  y={topY - 4}
+                  textAnchor="middle"
+                  fill="rgba(229,231,235,0.78)"
+                  fontSize="8.5"
+                  fontWeight="700"
+                >
+                  {fmtCompact(total)}
+                </text>
+              )}
+
+            </g>
+          );
+        })}
+
+        {monthLabels.map(({ label, cx }) => (
+          <text key={label} x={cx} y={height - 4} textAnchor="middle" fill="rgba(229,231,235,0.38)" fontSize="9" fontWeight="600">
+            {label}
+          </text>
+        ))}
+      </svg>
+
+      <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
+        {[
+          { color: SEG_COLORS.paid,    label: "Paid" },
+          { color: SEG_COLORS.sent,    label: "Sent" },
+          { color: SEG_COLORS.overdue, label: "Overdue" },
+          { color: SEG_COLORS.other,   label: "Other" },
+        ].map(({ color, label }) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 3, background: color, display: "inline-block", flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(229,231,235,0.50)" }}>{label}</span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
-export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
-  const [range, setRange] = useState("30");
+export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onCreateInvoiceFromEstimate = null }) {
+  const [range, setRange] = useState("ytd");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [companyProfile, setCompanyProfile] = useState(null);
+  const [customers, setCustomers] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [estimates, setEstimates] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [invoiceDateFlags, setInvoiceDateFlags] = useState({});
+  const [marginFilter, setMarginFilter] = useState("all");
+  const [expandedMarginId, setExpandedMarginId] = useState(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  const topRef       = useRef(null);
+  const overviewRef  = useRef(null);
+  const revenueRef   = useRef(null);
+  const arRef        = useRef(null);
+  const marginRef    = useRef(null);
+  const pipelineRef  = useRef(null);
+  const summaryRef   = useRef(null);
+
+  const resolvedRange = useMemo(
+    () => resolveSnapshotRange(range, customStartDate, customEndDate),
+    [range, customStartDate, customEndDate]
+  );
 
   useEffect(() => {
+    const collectInvoiceIdentityKeys = (invoice) => {
+      const keys = new Set();
+      const id = String(invoice?.id || "").trim();
+      const invoiceNumber = String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim();
+      if (id) keys.add(`id:${id}`);
+      if (invoiceNumber) keys.add(`num:${invoiceNumber}`);
+      return [...keys];
+    };
+    const buildInvoiceDateFlags = () => {
+      const rawInvoices = [
+        ...loadArray(INVOICES_KEY),
+        ...loadArray(ESTIMATES_KEY).filter((entry) => String(entry?.docType || "").toLowerCase() === "invoice"),
+      ];
+      return rawInvoices.reduce((flags, invoice) => {
+        const hasRealDate = Boolean(parseDateAny(invoice?.invoiceDate || invoice?.date || invoice?.job?.date));
+        collectInvoiceIdentityKeys(invoice).forEach((key) => {
+          flags[key] = hasRealDate;
+        });
+        return flags;
+      }, {});
+    };
     const refresh = () => {
-      const est = loadArray(ESTIMATES_KEY);
-      const inv = loadArray(INVOICES_KEY);
-      setEstimates(est);
-      setInvoices(inv);
+      setCompanyProfile(loadObject(COMPANY_PROFILE_KEY));
+      setCustomers(loadArray(CUSTOMERS_KEY));
+      setProjects(readStoredProjects());
+      setEstimates(readSavedEstimates());
+      setInvoices(readStoredInvoices());
+      setInvoiceDateFlags(buildInvoiceDateFlags());
     };
     refresh();
 
     const onStorage = (e) => {
       if (!e) return;
-      if (e.key === ESTIMATES_KEY || e.key === INVOICES_KEY) refresh();
+      if (
+        e.key === COMPANY_PROFILE_KEY
+        || e.key === CUSTOMERS_KEY
+        || e.key === PROJECTS_KEY
+        || e.key === ESTIMATES_KEY
+        || e.key === INVOICES_KEY
+      ) refresh();
     };
+    const onLocalStorage = (event) => {
+      const key = String(event?.detail?.key || "").trim();
+      if (
+        key === COMPANY_PROFILE_KEY
+        || key === CUSTOMERS_KEY
+        || key === PROJECTS_KEY
+        || key === ESTIMATES_KEY
+        || key === INVOICES_KEY
+      ) refresh();
+    };
+    const onEstimatesChanged = () => refresh();
+    const onInvoicesChanged = () => refresh();
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:estimates-changed", onEstimatesChanged);
+    window.addEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:estimates-changed", onEstimatesChanged);
+      window.removeEventListener("estipaid:invoices-changed", onInvoicesChanged);
+    };
   }, []);
+
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 280);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const handleCreateInvoiceFromEstimate = (estimate) => {
+    if (!estimate || normalizeEstimateStatus(estimate?.status) !== "approved") {
+      return false;
+    }
+    if (typeof onCreateInvoiceFromEstimate !== "function") {
+      return false;
+    }
+    return onCreateInvoiceFromEstimate(estimate) !== false;
+  };
 
   const computed = useMemo(() => {
     const now = startOfDay(new Date());
-    const start = getTimeRangeStart(range === "ytd" ? "ytd" : range);
-    const end = now;
+    const start = resolvedRange.start;
+    const end = resolvedRange.end;
+    const getInvoiceIdentityKeys = (invoice) => {
+      const keys = new Set();
+      const id = String(invoice?.id || "").trim();
+      const invoiceNumber = String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim();
+      if (id) keys.add(`id:${id}`);
+      if (invoiceNumber) keys.add(`num:${invoiceNumber}`);
+      return [...keys];
+    };
+    const hasRealInvoiceDate = (invoice) => {
+      const keys = getInvoiceIdentityKeys(invoice);
+      if (keys.length === 0) return false;
+      return keys.some((key) => invoiceDateFlags[key] === true);
+    };
 
+    const customerAll = (Array.isArray(customers) ? customers : []).filter(Boolean);
+    const projectAll = (Array.isArray(projects) ? projects : []).filter(Boolean);
     const invAll = (Array.isArray(invoices) ? invoices : []).filter(Boolean);
     const estAll = (Array.isArray(estimates) ? estimates : []).filter(Boolean);
+    const committedInvoices = invAll.filter((invoice) => isInvoiceFinanciallyCommitted(invoice, now.getTime()));
+    const datedCommittedInvoices = committedInvoices.filter((invoice) => hasRealInvoiceDate(invoice));
+    const missingInvoiceDateCount = committedInvoices.length - datedCommittedInvoices.length;
 
-    const estOnly = estAll.filter((x) => String(x?.docType || "").toLowerCase() === "estimate");
-    const invFromEstimates = estAll.filter((x) => String(x?.docType || "").toLowerCase() === "invoice");
-
-    const byKey = new Map();
-    for (const x of invAll) {
-      const k = String(x?.id || x?.invoiceNumber || x?.estimateNumber || Math.random());
-      byKey.set(k, x);
-    }
-    for (const x of invFromEstimates) {
-      const k = String(x?.id || x?.invoiceNumber || x?.estimateNumber || Math.random());
-      if (!byKey.has(k)) byKey.set(k, x);
-    }
-
-    const invMerged = Array.from(byKey.values());
-    const invUse = invMerged.filter((x) => inRange(getDocDate(x), start, end));
-
-    const revenue = invUse.reduce((s, x) => s + calcRevenue(x), 0);
-    const grossProfit = invUse.reduce((s, x) => s + calcGrossProfit(x), 0);
+    const activeInvoices = datedCommittedInvoices
+      .filter((invoice) => inRange(getDocDate(invoice), start, end))
+      .filter(Boolean);
+    const revenue = activeInvoices.reduce((sum, invoice) => sum + calcRevenue(invoice), 0);
+    const grossProfit = activeInvoices.reduce((sum, invoice) => sum + calcGrossProfit(invoice), 0);
     const marginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
 
-    const unpaid = invUse.filter((x) => !isPaidInvoice(x));
-    const arTotal = unpaid.reduce((s, x) => s + calcRevenue(x), 0);
+    const receivables = activeInvoices.filter((invoice) => isInvoiceReceivable(invoice, now.getTime()));
+    const arTotal = receivables.reduce((sum, invoice) => sum + getReceivableAmount(invoice), 0);
+    const customerById = new Map(
+      customerAll
+        .map((customer) => [String(customer?.id || "").trim(), customer])
+        .filter(([id]) => id)
+    );
+    const projectById = new Map(
+      projectAll
+        .map((project) => [String(project?.id || "").trim(), project])
+        .filter(([id]) => id)
+    );
 
-    const aging = { current: 0, late1_15: 0, late16_30: 0, late30p: 0, delinquentTotal: 0, canCompute: true };
+    const aging = { current: 0, current_n: 0, late1_15: 0, late1_15_n: 0, late16_30: 0, late16_30_n: 0, late30p: 0, late30p_n: 0, delinquentTotal: 0, canCompute: true };
 
-    for (const inv of unpaid) {
+    for (const inv of receivables) {
       const due = getDueDate(inv);
       if (!due) {
         aging.canCompute = false;
         continue;
       }
       const daysLate = Math.floor((startOfDay(now).getTime() - startOfDay(due).getTime()) / 86400000);
-      const amt = calcRevenue(inv);
-      if (daysLate <= 0) aging.current += amt;
-      else if (daysLate <= 15) aging.late1_15 += amt;
-      else if (daysLate <= 30) aging.late16_30 += amt;
-      else aging.late30p += amt;
+      const amt = getReceivableAmount(inv);
+      if (daysLate <= 0) { aging.current += amt; aging.current_n += 1; }
+      else if (daysLate <= 15) { aging.late1_15 += amt; aging.late1_15_n += 1; }
+      else if (daysLate <= 30) { aging.late16_30 += amt; aging.late16_30_n += 1; }
+      else { aging.late30p += amt; aging.late30p_n += 1; }
 
       if (daysLate > 0) aging.delinquentTotal += amt;
     }
 
-    const estInRange = estOnly.filter((x) => inRange(getDocDate(x), start, end));
-    const pipelineValue = estInRange.reduce((s, x) => s + calcRevenue(x), 0);
-    const pipelineCount = estInRange.length;
+    const arBuckets = [
+      { key: "current", label: lang === "es" ? "Actual" : "Current", amount: 0, count: 0, color: "rgba(255,255,255,0.55)", riskRank: 0 },
+      { key: "late1_15", label: "1-15", amount: 0, count: 0, color: "rgba(34,197,94,0.70)", riskRank: 1 },
+      { key: "late16_30", label: "16-30", amount: 0, count: 0, color: "rgba(245,158,11,0.78)", riskRank: 2 },
+      { key: "late31_60", label: "31-60", amount: 0, count: 0, color: "rgba(249,115,22,0.82)", riskRank: 3 },
+      { key: "late60p", label: "60+", amount: 0, count: 0, color: "rgba(239,68,68,0.82)", riskRank: 4 },
+    ];
+    const arBucketIndex = new Map(arBuckets.map((bucket, index) => [bucket.key, index]));
+    const arRows = receivables.map((invoice) => {
+      const dueDate = getDueDate(invoice);
+      const daysLate = dueDate
+        ? Math.floor((startOfDay(now).getTime() - startOfDay(dueDate).getTime()) / 86400000)
+        : 0;
+      const bucket = resolveAgingBucket(daysLate, lang);
+      const customerId = String(invoice?.customerId || invoice?.customer?.id || "").trim();
+      const linkedCustomer = customerById.get(customerId) || null;
+      const linkedProject = projectById.get(String(invoice?.projectId || "").trim()) || null;
+      const customerName = String(
+        invoice?.customerName
+        || invoice?.customer?.name
+        || getCustomerDisplayName(linkedCustomer)
+        || "Unknown customer"
+      ).trim();
+      const email = String(
+        invoice?.customer?.email
+        || invoice?.email
+        || getCustomerEmail(linkedCustomer)
+        || ""
+      ).trim();
+      const phone = String(
+        invoice?.customer?.phone
+        || invoice?.phone
+        || getCustomerPhone(linkedCustomer)
+        || ""
+      ).trim();
+      const balanceDue = getReceivableAmount(invoice);
+      const amountPaid = asNumber(invoice?.amountPaid);
+      const invoiceTotal = calcRevenue(invoice);
+      const status = deriveInvoiceStatus(invoice, now.getTime());
+      const projectName = String(
+        invoice?.projectName
+        || invoice?.job?.projectName
+        || linkedProject?.projectName
+        || linkedProject?.projectNumber
+        || ""
+      ).trim();
+      const invoiceNumber = String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim();
+      const entry = {
+        id: String(invoice?.id || invoiceNumber || `${customerName}-${balanceDue}`),
+        invoiceNumber,
+        invoiceLabel: invoiceNumber || (lang === "es" ? "Sin número" : "No number"),
+        customerName,
+        email,
+        phone,
+        phoneHref: cleanPhone(phone),
+        projectName,
+        invoiceTotal,
+        amountPaid,
+        balanceDue,
+        dueDate,
+        dueDateLabel: fmtDateShort(dueDate),
+        daysLate,
+        bucketKey: bucket.key,
+        bucketLabel: bucket.label,
+        bucketColor: bucket.color,
+        status,
+        isPartial: amountPaid > 0 && balanceDue > 0,
+      };
+      const bucketIndex = arBucketIndex.get(bucket.key);
+      if (bucketIndex !== undefined) {
+        arBuckets[bucketIndex].amount += balanceDue;
+        arBuckets[bucketIndex].count += 1;
+      }
+      return entry;
+    }).sort((a, b) => {
+      const riskDiff = resolveAgingBucket(b.daysLate, lang).riskRank - resolveAgingBucket(a.daysLate, lang).riskRank;
+      if (riskDiff !== 0) return riskDiff;
+      if (a.daysLate > 0 || b.daysLate > 0) {
+        if (b.daysLate !== a.daysLate) return b.daysLate - a.daysLate;
+        if (b.balanceDue !== a.balanceDue) return b.balanceDue - a.balanceDue;
+      } else {
+        const aPriority = a.isPartial || a.status === INVOICE_STATUSES.SENT ? 1 : 0;
+        const bPriority = b.isPartial || b.status === INVOICE_STATUSES.SENT ? 1 : 0;
+        if (bPriority !== aPriority) return bPriority - aPriority;
+        if (b.balanceDue !== a.balanceDue) return b.balanceDue - a.balanceDue;
+      }
+      return String(a.customerName).localeCompare(String(b.customerName));
+    });
+    const atRiskRows = arRows.filter((row) => row.daysLate > 15 || row.balanceDue >= 2500).slice(0, 5);
+
+    const estimateStatusEntries = estAll.map((estimate) => ({
+      estimate,
+      statusKey: normalizeEstimatePipelineStatus(estimate?.snapshotStatus || estimate?.status),
+      estimateDate: getDocDate(estimate),
+    }));
+    const estimatesInRange = estimateStatusEntries
+      .filter(({ estimateDate }) => inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
+    const pipelineEstimates = estimateStatusEntries
+      .filter(({ statusKey, estimateDate }) => statusKey === "pending" && inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
+    const approvedInRange = estimateStatusEntries
+      .filter(({ statusKey, estimateDate }) => statusKey === "approved" && inRange(estimateDate, start, end))
+      .map(({ estimate }) => estimate);
+
+    const pipelineValue = pipelineEstimates.reduce((sum, estimate) => sum + calcRevenue(estimate), 0);
+    const pipelineCount = pipelineEstimates.length;
     const avgEstimate = pipelineCount ? pipelineValue / pipelineCount : 0;
 
-    const weekly = buildWeeklySeries(invUse);
+    let approvedReadyValue = 0;
+    let approvedReadyCount = 0;
+    for (const estimate of approvedInRange) {
+      const summary = buildEstimateInvoiceSummary(estimate, invAll);
+      const remaining = Math.max(0, asNumber(summary?.remainingToInvoice));
+      approvedReadyValue += remaining;
+      if (remaining > 0) approvedReadyCount += 1;
+    }
+    const pipelineBuckets = [
+      { key: "draft", label: lang === "es" ? "Borrador" : "Draft", count: 0, value: 0, color: "rgba(156,163,175,0.75)" },
+      { key: "pending", label: lang === "es" ? "Pendiente / enviado" : "Pending / sent", count: 0, value: 0, color: "rgba(96,165,250,0.78)" },
+      { key: "approved", label: lang === "es" ? "Aprobado" : "Approved", count: 0, value: 0, color: "rgba(34,197,94,0.78)" },
+      { key: "lost", label: lang === "es" ? "Perdido" : "Lost", count: 0, value: 0, color: "rgba(239,68,68,0.78)" },
+    ];
+    const pipelineBucketIndex = new Map(pipelineBuckets.map((bucket, index) => [bucket.key, index]));
+    const pipelineRows = estimatesInRange.map((estimate, index) => {
+      const customerId = String(estimate?.customerId || estimate?.customer?.id || "").trim();
+      const linkedCustomer = customerById.get(customerId) || null;
+      const linkedProject = projectById.get(String(estimate?.projectId || "").trim()) || null;
+      const statusKey = normalizeEstimatePipelineStatus(estimate?.snapshotStatus || estimate?.status);
+      const total = calcRevenue(estimate);
+      const estimateDate = getDocDate(estimate);
+      const ageDays = estimateDate ? Math.floor((startOfDay(now).getTime() - startOfDay(estimateDate).getTime()) / 86400000) : 0;
+      const summary = buildEstimateInvoiceSummary(estimate, invAll);
+      const remainingToInvoice = Math.max(0, asNumber(summary?.remainingToInvoice));
+      const row = {
+        id: String(estimate?.id || `estimate-${index}`),
+        sourceEstimate: estimate,
+        estimateNumber: String(estimate?.estimateNumber || estimate?.job?.docNumber || "").trim(),
+        estimateLabel: String(estimate?.estimateNumber || estimate?.job?.docNumber || (lang === "es" ? "Sin número" : "No number")).trim(),
+        customerName: String(
+          estimate?.customerName
+          || estimate?.customer?.name
+          || getCustomerDisplayName(linkedCustomer)
+          || (lang === "es" ? "Cliente sin nombre" : "Unnamed customer")
+        ).trim(),
+        email: String(
+          estimate?.customer?.email
+          || estimate?.email
+          || getCustomerEmail(linkedCustomer)
+          || ""
+        ).trim(),
+        projectName: String(
+          estimate?.projectName
+          || estimate?.job?.projectName
+          || linkedProject?.projectName
+          || linkedProject?.projectNumber
+          || ""
+        ).trim(),
+        statusKey,
+        statusLabel: statusKey === "draft"
+          ? (lang === "es" ? "Borrador" : "Draft")
+          : statusKey === "approved"
+          ? (lang === "es" ? "Aprobado" : "Approved")
+          : statusKey === "lost"
+          ? (lang === "es" ? "Perdido" : "Lost")
+          : (lang === "es" ? "Pendiente" : "Pending"),
+        total,
+        estimateDate,
+        estimateDateLabel: estimateDate ? fmtDateShort(estimateDate) : "",
+        ageDays,
+        remainingToInvoice,
+      };
+      const bucketIndex = pipelineBucketIndex.get(statusKey);
+      if (bucketIndex !== undefined) {
+        pipelineBuckets[bucketIndex].count += 1;
+        pipelineBuckets[bucketIndex].value += total;
+      }
+      return row;
+    }).sort((a, b) => {
+      const priority = { approved: 0, pending: 1, draft: 2, lost: 3 };
+      const prioDiff = (priority[a.statusKey] ?? 9) - (priority[b.statusKey] ?? 9);
+      if (prioDiff !== 0) return prioDiff;
+      if (a.statusKey === "approved") {
+        if (b.remainingToInvoice !== a.remainingToInvoice) return b.remainingToInvoice - a.remainingToInvoice;
+      }
+      if (a.statusKey === "pending") {
+        if (b.ageDays !== a.ageDays) return b.ageDays - a.ageDays;
+      }
+      if (b.total !== a.total) return b.total - a.total;
+      return a.customerName.localeCompare(b.customerName);
+    });
+    const approvedReadyRows = pipelineRows
+      .filter((row) => row.statusKey === "approved" && row.remainingToInvoice > 0)
+      .sort((a, b) => b.remainingToInvoice - a.remainingToInvoice)
+      .slice(0, 5);
+    const pendingFollowUpRows = pipelineRows
+      .filter((row) => row.statusKey === "pending")
+      .sort((a, b) => {
+        if (b.ageDays !== a.ageDays) return b.ageDays - a.ageDays;
+        return b.total - a.total;
+      })
+      .slice(0, 5);
 
-    const withRevenue = invUse.filter((x) => calcRevenue(x) > 0);
-    const sortedByMargin = withRevenue.map((x) => ({ x, m: calcMarginPct(x) })).sort((a, b) => b.m - a.m);
-    const best = sortedByMargin.slice(0, 3);
-    const worst = sortedByMargin.slice(-3).reverse();
+    const chartRangeInvoices = datedCommittedInvoices.filter((invoice) => {
+      const chartDate = getInvoiceChartDate(invoice);
+      if (!chartDate) return false;
+      return chartDate.getTime() >= start.getTime() && chartDate.getTime() <= end.getTime();
+    });
+    const latestChartDate = chartRangeInvoices.reduce((latest, invoice) => {
+      const chartDate = getInvoiceChartDate(invoice);
+      if (!chartDate) return latest;
+      return chartDate.getTime() > latest.getTime() ? chartDate : latest;
+    }, end);
+    const weekly = buildWeeklySeries(chartRangeInvoices, {
+      nowTs: now.getTime(),
+      endDate: latestChartDate,
+    });
 
-    return { revenue, grossProfit, marginPct, arTotal, delinquentTotal: aging.delinquentTotal, aging, weekly, pipelineValue, pipelineCount, avgEstimate, best, worst, invCount: invUse.length };
-  }, [range, estimates, invoices]);
+    const withRevenue = activeInvoices.filter((invoice) => calcRevenue(invoice) > 0);
+    const customerMarginMap = new Map();
+    withRevenue.forEach((invoice, index) => {
+      const customerId = String(invoice?.customerId || invoice?.customer?.id || "").trim();
+      const customerName = String(
+        invoice?.customerName
+        || invoice?.customer?.name
+        || invoice?.customer?.companyName
+        || invoice?.customer?.fullName
+        || ""
+      ).trim();
+      const key = customerId || customerName.toLowerCase() || `unknown-${index}`;
+      const revenue = calcRevenue(invoice);
+      const knownCost = hasKnownCost(invoice);
+      const cost = knownCost ? calcCost(invoice) : 0;
+      const grossProfit = knownCost ? calcGrossProfit(invoice) : 0;
+      const detail = {
+        id: String(invoice?.id || `${key}-${index}`),
+        invoiceNumber: String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim(),
+        invoiceLabel: String(invoice?.invoiceNumber || invoice?.job?.docNumber || (lang === "es" ? "Sin número" : "No number")).trim(),
+        projectName: String(invoice?.projectName || invoice?.job?.projectName || "").trim(),
+        revenue,
+        cost,
+        grossProfit,
+        marginPct: knownCost ? calcMarginPct(invoice) : null,
+        knownCost,
+      };
+      if (!customerMarginMap.has(key)) {
+        customerMarginMap.set(key, {
+          id: key,
+          customerId,
+          customerName: customerName || (lang === "es" ? "Cliente sin nombre" : "Unnamed customer"),
+          revenue: 0,
+          cost: 0,
+          grossProfit: 0,
+          invoiceCount: 0,
+          knownCostInvoiceCount: 0,
+          unknownCostInvoiceCount: 0,
+          details: [],
+        });
+      }
+      const group = customerMarginMap.get(key);
+      group.invoiceCount += 1;
+      if (knownCost) {
+        group.revenue += revenue;
+        group.cost += cost;
+        group.grossProfit += grossProfit;
+        group.knownCostInvoiceCount += 1;
+      } else {
+        group.unknownCostInvoiceCount += 1;
+      }
+      group.details.push(detail);
+    });
+    const customerMargins = [...customerMarginMap.values()]
+      .filter((group) => group.knownCostInvoiceCount > 0)
+      .map((group) => ({
+        ...group,
+        marginPct: group.revenue > 0 ? (group.grossProfit / group.revenue) * 100 : 0,
+        tone: getMarginTone(group.revenue > 0 ? (group.grossProfit / group.revenue) * 100 : 0),
+        details: group.details.slice().sort((a, b) => b.revenue - a.revenue),
+      }))
+      .sort((a, b) => b.marginPct - a.marginPct);
+    const unknownCostCustomers = [...customerMarginMap.values()]
+      .filter((group) => group.knownCostInvoiceCount === 0 && group.unknownCostInvoiceCount > 0)
+      .map((group) => ({
+        ...group,
+        unknownRevenue: group.details.reduce((sum, detail) => sum + detail.revenue, 0),
+        details: group.details.slice().sort((a, b) => b.revenue - a.revenue),
+      }))
+      .sort((a, b) => b.unknownRevenue - a.unknownRevenue);
 
-  const donutSegments = useMemo(() => {
-    const a = computed.aging;
-    if (!a.canCompute) return [];
+    const statusCounts = activeInvoices.reduce((counts, invoice) => {
+      const status = deriveInvoiceStatus(invoice, now.getTime());
+      counts.total += 1;
+      if (status === INVOICE_STATUSES.PAID) counts.paid += 1;
+      else if (status === INVOICE_STATUSES.OVERDUE) counts.overdue += 1;
+      else if (status === INVOICE_STATUSES.SENT) counts.sent += 1;
+      else counts.draft += 1;
+      return counts;
+    }, { total: 0, draft: 0, sent: 0, paid: 0, overdue: 0 });
 
-    const total = a.current + a.late1_15 + a.late16_30 + a.late30p;
-    const safeTotal = total > 0 ? total : 1;
+    const customerCount = customerAll.length;
+    const projectCounts = projectAll.reduce((counts, project) => {
+      counts.total += 1;
+      counts[normalizeProjectLifecycleStatus(project?.status)] += 1;
+      return counts;
+    }, { total: 0, active: 0, completed: 0, estimating: 0, draft: 0, archived: 0 });
 
-    return [
-      { label: lang === "es" ? "Actual" : "Current", value: a.current, frac: a.current / safeTotal, color: "rgba(255,255,255,0.55)", opacity: 0.9 },
-      { label: "1–15", value: a.late1_15, frac: a.late1_15 / safeTotal, color: "rgba(34,197,94,0.70)", opacity: 0.9 },
-      { label: "16–30", value: a.late16_30, frac: a.late16_30 / safeTotal, color: "rgba(245,158,11,0.78)", opacity: 0.95 },
-      { label: "30+", value: a.late30p, frac: a.late30p / safeTotal, color: "rgba(239,68,68,0.78)", opacity: 0.95 },
-    ].filter((s) => s.value > 0);
-  }, [computed.aging, lang]);
+    const estimateCounts = estAll.reduce((counts, estimate) => {
+      counts.total += 1;
+      counts[normalizeEstimateLifecycleStatus(estimate?.snapshotStatus || estimate?.status)] += 1;
+      return counts;
+    }, { total: 0, approved: 0, pending: 0, draft: 0, lost: 0 });
+
+    const invoiceTotals = invAll.reduce((totals, invoice) => {
+      const status = deriveInvoiceStatus(invoice, now.getTime());
+      const invoiceTotal = calcRevenue(invoice);
+      const amountPaid = asNumber(invoice?.amountPaid);
+      const balanceRemaining = getReceivableAmount(invoice);
+      totals.total += 1;
+      totals.totalValue += invoiceTotal;
+      totals.paidValue += amountPaid;
+      totals.outstandingValue += balanceRemaining;
+      if (status === INVOICE_STATUSES.PAID) totals.paid += 1;
+      else if (status === INVOICE_STATUSES.OVERDUE) {
+        totals.overdue += 1;
+        totals.overdueValue += balanceRemaining;
+      } else if (status === INVOICE_STATUSES.SENT) totals.sent += 1;
+      else {
+        totals.draft += 1;
+        totals.draftValue += invoiceTotal;
+      }
+      if (amountPaid > 0 && balanceRemaining > 0) {
+        totals.partial += 1;
+        totals.partialValue += balanceRemaining;
+      }
+      return totals;
+    }, {
+      total: 0,
+      paid: 0,
+      sent: 0,
+      overdue: 0,
+      draft: 0,
+      partial: 0,
+      totalValue: 0,
+      paidValue: 0,
+      outstandingValue: 0,
+      overdueValue: 0,
+      draftValue: 0,
+      partialValue: 0,
+    });
+
+    return {
+      customerCount,
+      projectCounts,
+      estimateCounts,
+      missingInvoiceDateCount,
+      invoiceTotals,
+      revenue,
+      grossProfit,
+      marginPct,
+      arTotal,
+      delinquentTotal: aging.delinquentTotal,
+      aging,
+      arBuckets,
+      arRows,
+      atRiskRows,
+      pipelineBuckets,
+      pipelineRows,
+      approvedReadyRows,
+      pendingFollowUpRows,
+      weekly,
+      pipelineValue,
+      pipelineCount,
+      avgEstimate,
+      approvedReadyValue,
+      approvedReadyCount,
+      customerMargins,
+      unknownCostCustomers,
+      invCount: activeInvoices.length,
+      statusCounts,
+    };
+  }, [lang, customers, projects, estimates, invoices, invoiceDateFlags, resolvedRange]);
 
   const title = lang === "es" ? "Resumen financiero" : "Financial Snapshot";
 
   const insight = useMemo(() => {
-    const parts = [];
+    const allTimeLine = lang === "es"
+      ? `Registros históricos: ${computed.customerCount} clientes, ${computed.projectCounts.total} proyectos, ${computed.estimateCounts.total} estimados, ${computed.invoiceTotals.total} facturas`
+      : `All-time records: ${computed.customerCount} customers, ${computed.projectCounts.total} projects, ${computed.estimateCounts.total} estimates, ${computed.invoiceTotals.total} invoices`;
+
+    const rangeParts = [];
     if (computed.invCount === 0) {
-      parts.push(lang === "es" ? "Aún no hay facturas en este rango." : "No invoices in this range yet.");
+      rangeParts.push(lang === "es" ? "sin facturas comprometidas en este rango" : "no committed invoices in this range");
     } else {
-      parts.push((lang === "es" ? "Margen promedio: " : "Average margin: ") + fmtPct(computed.marginPct));
-      if (computed.arTotal > 0) parts.push((lang === "es" ? "Cuentas por cobrar: " : "Receivables: ") + fmtMoney(computed.arTotal));
-      if (computed.delinquentTotal > 0) parts.push((lang === "es" ? "Delincuencia: " : "Delinquent: ") + fmtMoney(computed.delinquentTotal));
+      rangeParts.push((lang === "es" ? "ingresos " : "revenue ") + fmtMoney(computed.revenue));
+      if (computed.arTotal > 0) {
+        rangeParts.push((lang === "es" ? "cuentas por cobrar " : "receivables ") + fmtMoney(computed.arTotal));
+      }
+      rangeParts.push(
+        lang === "es"
+          ? `${computed.invCount} facturas activas`
+          : `${computed.invCount} active invoices`
+      );
+      if (computed.statusCounts.sent > 0 || computed.statusCounts.overdue > 0 || computed.statusCounts.paid > 0) {
+        rangeParts.push(
+          lang === "es"
+            ? `${computed.statusCounts.sent} enviadas, ${computed.statusCounts.overdue} vencidas, ${computed.statusCounts.paid} pagadas`
+            : `${computed.statusCounts.sent} sent, ${computed.statusCounts.overdue} overdue, ${computed.statusCounts.paid} paid`
+        );
+      }
+      rangeParts.push((lang === "es" ? "margen promedio " : "avg margin ") + fmtPct(computed.marginPct));
+      if (computed.delinquentTotal > 0) {
+        rangeParts.push((lang === "es" ? "vencido " : "delinquent ") + fmtMoney(computed.delinquentTotal));
+      }
     }
-    return parts.join(" • ");
+    if (computed.approvedReadyValue > 0) {
+      rangeParts.push(
+        (lang === "es" ? "aprobadas por facturar " : "approved ready to invoice ")
+        + `${fmtMoney(computed.approvedReadyValue)} (${computed.approvedReadyCount})`
+      );
+    }
+    if (computed.missingInvoiceDateCount > 0) {
+      rangeParts.push(
+        lang === "es"
+          ? `${computed.missingInvoiceDateCount} facturas sin fecha excluidas de los totales por fecha`
+          : `${computed.missingInvoiceDateCount} undated invoices excluded from date-based totals`
+      );
+    }
+
+    const rangeLine = (lang === "es" ? "Rango seleccionado: " : "Selected range: ") + rangeParts.join(" • ");
+    return `${allTimeLine} • ${rangeLine}`;
+  }, [computed, lang]);
+  const snapshotCockpit = useMemo(() => {
+    const actions = [];
+    if (computed.invoiceTotals.overdueValue > 0) {
+      actions.push({
+        key: "overdue",
+        tone: "bad",
+        title: lang === "es" ? "Cobrar facturas vencidas" : "Follow Up on Overdue Invoices",
+        detail: lang === "es"
+          ? `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "factura vencida" : "facturas vencidas"} por ${fmtMoney(computed.invoiceTotals.overdueValue)}.`
+          : `${computed.invoiceTotals.overdue} ${computed.invoiceTotals.overdue === 1 ? "invoice is" : "invoices are"} overdue for ${fmtMoney(computed.invoiceTotals.overdueValue)}.`,
+      });
+    }
+    if (computed.approvedReadyValue > 0) {
+      actions.push({
+        key: "approved-ready",
+        tone: "ok",
+        title: lang === "es" ? "Facturar trabajo aprobado" : "Ready to Invoice",
+        detail: lang === "es"
+          ? `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimado listo" : "estimados listos"} por ${fmtMoney(computed.approvedReadyValue)}.`
+          : `${computed.approvedReadyCount} ${computed.approvedReadyCount === 1 ? "estimate is" : "estimates are"} ready to invoice for ${fmtMoney(computed.approvedReadyValue)}.`,
+      });
+    }
+    if (computed.pendingFollowUpRows.length > 0) {
+      actions.push({
+        key: "pending-follow-up",
+        tone: "info",
+        title: lang === "es" ? "Seguimiento de estimados" : "Pending Follow-Up",
+        detail: lang === "es"
+          ? `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimado necesita seguimiento" : "estimados necesitan seguimiento"}.`
+          : `${computed.pendingFollowUpRows.length} ${computed.pendingFollowUpRows.length === 1 ? "estimate needs" : "estimates need"} follow-up.`,
+      });
+    }
+    if (computed.missingInvoiceDateCount > 0) {
+      actions.push({
+        key: "missing-dates",
+        tone: "warn",
+        title: lang === "es" ? "Completar fechas de factura" : "Missing Due Dates",
+        detail: lang === "es"
+          ? `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "factura está excluida" : "facturas están excluidas"} de los totales por fecha.`
+          : `${computed.missingInvoiceDateCount} ${computed.missingInvoiceDateCount === 1 ? "invoice is" : "invoices are"} excluded from date-based totals.`,
+      });
+    }
+    if (actions.length === 0) {
+      actions.push({
+        key: "steady",
+        tone: "ok",
+        title: lang === "es" ? "Sin alertas inmediatas" : "All Clear",
+        detail: lang === "es"
+          ? "Las cobranzas y el pipeline están al día en este momento."
+          : "Receivables and pipeline actions are currently under control.",
+      });
+    }
+
+    return {
+      heroLabel: lang === "es" ? "Cabina financiera" : "Financial cockpit",
+      heroTitle: lang === "es" ? "Dinero en juego y siguiente acción" : "Active Exposure",
+      heroNote: computed.missingInvoiceDateCount > 0
+        ? (lang === "es"
+          ? `La exposición mostrada aquí usa tus documentos actuales mientras ${computed.missingInvoiceDateCount} facturas siguen sin fecha.`
+          : `The exposure shown here uses your current documents while ${computed.missingInvoiceDateCount} invoices still need invoice dates.`)
+        : (lang === "es"
+          ? "Usa esta vista para pasar de visibilidad financiera a cobro o facturación."
+          : "Use this view to move from visibility into collection or invoicing."),
+      metrics: [
+        {
+          key: "outstanding",
+          label: lang === "es" ? "Outstanding" : "Outstanding",
+          value: fmtMoney(computed.invoiceTotals.outstandingValue),
+          detail: lang === "es"
+            ? `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} abiertas`
+            : `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} open invoices`,
+          tone: computed.invoiceTotals.outstandingValue > 0 ? "warn" : "ok",
+        },
+        {
+          key: "overdue",
+          label: lang === "es" ? "Overdue" : "Overdue",
+          value: fmtMoney(computed.invoiceTotals.overdueValue),
+          detail: computed.invoiceTotals.overdue > 0
+            ? (lang === "es"
+              ? `${computed.invoiceTotals.overdue} vencidas`
+              : `${computed.invoiceTotals.overdue} overdue`)
+            : (lang === "es" ? "Al corriente" : "Caught up"),
+          tone: computed.invoiceTotals.overdueValue > 0 ? "bad" : "ok",
+        },
+        {
+          key: "paid",
+          label: lang === "es" ? "Collected" : "Collected",
+          value: fmtMoney(computed.invoiceTotals.paidValue),
+          detail: computed.invoiceTotals.paid > 0
+            ? (lang === "es"
+              ? `${computed.invoiceTotals.paid} pagadas`
+              : `${computed.invoiceTotals.paid} paid invoices`)
+            : (lang === "es" ? "Sin pagos aún" : "No payments yet"),
+          tone: computed.invoiceTotals.paidValue > 0 ? "ok" : "info",
+        },
+        {
+          key: "projects",
+          label: lang === "es" ? "Project activity" : "Project activity",
+          value: String(computed.projectCounts.active + computed.projectCounts.estimating),
+          detail: computed.approvedReadyCount > 0
+            ? (lang === "es"
+              ? `${computed.approvedReadyCount} listas para facturar`
+              : `${computed.approvedReadyCount} ready to invoice`)
+            : (lang === "es" ? "Trabajos en movimiento" : "Jobs in motion"),
+          tone: computed.projectCounts.active + computed.projectCounts.estimating > 0 ? "info" : "ok",
+        },
+      ],
+      drivers: [
+        { key: "receivables", label: lang === "es" ? "Receivables" : "Receivables", value: computed.arRows.length },
+        { key: "partial", label: lang === "es" ? "Partial" : "Partial", value: computed.invoiceTotals.partial },
+        { key: "approved", label: lang === "es" ? "Approved" : "Approved", value: computed.approvedReadyCount },
+        { key: "pending", label: lang === "es" ? "Pending" : "Pending", value: computed.pendingFollowUpRows.length },
+      ],
+      actions: actions.slice(0, 4),
+    };
   }, [computed, lang]);
 
   return (
-    <section className="pe-section">
-      <div className="pe-card pe-company-shell">
-        <div className="pe-company-profile-header" style={{ position: "relative", minHeight: 56 }}>
+    <section className="pe-section pe-snapshot-screen">
+      <div className="pe-card pe-company-shell pe-snapshot-shell">
+        <div ref={topRef} className="pe-company-profile-header pe-snapshot-header" style={{ position: "relative", minHeight: 56 }}>
           <div className="pe-company-header-title">
             <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={title}>{title}</h1>
           </div>
@@ -491,18 +1515,204 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
           </div>
 
           <div className="pe-company-header-controls">
-            <div style={{ width: 110, display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ display: "grid", gap: 6, justifyItems: "end" }}>
+              <div style={{ width: range === "custom" ? 328 : 110, maxWidth: "100%", display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
               <Field as="select" value={range} onChange={(e) => setRange(e.target.value)} aria-label={lang === "es" ? "Rango de tiempo" : "Time range"}>
                 <option value="30">{lang === "es" ? "30 días" : "30 Days"}</option>
                 <option value="90">{lang === "es" ? "90 días" : "90 Days"}</option>
                 <option value="ytd">{lang === "es" ? "Año" : "YTD"}</option>
+                <option value="custom">{lang === "es" ? "Personalizado" : "Custom"}</option>
               </Field>
+              {range === "custom" ? (
+                <>
+                  <Field
+                    as="input"
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    aria-label={lang === "es" ? "Fecha inicial" : "Start date"}
+                  />
+                  <Field
+                    as="input"
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    aria-label={lang === "es" ? "Fecha final" : "End date"}
+                  />
+                </>
+              ) : null}
+              </div>
+              <div className="pe-muted" style={{ fontSize: 11, textAlign: "right", maxWidth: 328 }}>
+                {range === "custom" && resolvedRange.isCustomInvalid
+                  ? (lang === "es" ? "Seleccione ambas fechas para aplicar un rango personalizado. Usando Año por ahora." : "Select both dates to apply a custom range. Using YTD for now.")
+                  : range === "custom" && resolvedRange.isCustomApplied
+                  ? (lang === "es" ? `Aplicando ${customStartDate} a ${customEndDate}` : `Using ${customStartDate} to ${customEndDate}`)
+                  : range === "30"
+                  ? (lang === "es" ? "Últimos 30 días" : "Last 30 days")
+                  : range === "90"
+                  ? (lang === "es" ? "Últimos 90 días" : "Last 90 days")
+                  : (lang === "es" ? "Año en curso" : "Year to date")}
+              </div>
             </div>
           </div>
         </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md">
-        <div style={{ display: "grid", gap: 10 }}>
+        <div
+          className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm"
+          style={{
+            display: "grid",
+            gap: 14,
+            padding: "14px 14px 16px",
+            border: "1px solid rgba(168,184,195,0.14)",
+            background: computed.invoiceTotals.overdueValue > 0
+              ? "linear-gradient(135deg, rgba(239,68,68,0.12), rgba(59,130,246,0.06) 45%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+              : computed.invoiceTotals.outstandingValue > 0
+              ? "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(59,130,246,0.06) 45%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))"
+              : "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(16,185,129,0.08) 55%, rgba(8,12,18,0.18)), linear-gradient(180deg, rgba(24,34,44,0.42), rgba(7,10,15,0.94))",
+            boxShadow: "0 24px 54px rgba(0,0,0,0.26), inset 0 1px 0 rgba(255,255,255,0.05)",
+          }}
+        >
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+              {snapshotCockpit.heroLabel}
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+              {snapshotCockpit.heroTitle}
+            </div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 720 }}>
+              {snapshotCockpit.heroNote}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(156px, 1fr))", gap: 10 }}>
+            {snapshotCockpit.metrics.map((item) => {
+              const toneColor = item.tone === "bad"
+                ? "rgba(248,113,113,0.86)"
+                : item.tone === "warn"
+                ? "rgba(251,191,36,0.86)"
+                : item.tone === "info"
+                ? "rgba(96,165,250,0.84)"
+                : "rgba(74,222,128,0.84)";
+              const toneBorder = item.tone === "bad"
+                ? "rgba(239,68,68,0.24)"
+                : item.tone === "warn"
+                ? "rgba(245,158,11,0.22)"
+                : item.tone === "info"
+                ? "rgba(59,130,246,0.22)"
+                : "rgba(34,197,94,0.2)";
+              return (
+                <div
+                  key={item.key}
+                  style={{
+                    minWidth: 0,
+                    display: "grid",
+                    gap: 6,
+                    padding: "12px 12px 11px",
+                    borderRadius: 14,
+                    border: `1px solid ${toneBorder}`,
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+                  }}
+                >
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                    {item.value}
+                  </div>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                    {item.detail}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                {lang === "es" ? "Próximo paso" : "Needs attention"}
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {snapshotCockpit.actions.map((action) => {
+                  const border = action.tone === "bad"
+                    ? "rgba(239,68,68,0.18)"
+                    : action.tone === "warn"
+                    ? "rgba(245,158,11,0.18)"
+                    : action.tone === "info"
+                    ? "rgba(59,130,246,0.18)"
+                    : "rgba(34,197,94,0.16)";
+                  const dot = action.tone === "bad"
+                    ? "rgba(248,113,113,0.9)"
+                    : action.tone === "warn"
+                    ? "rgba(251,191,36,0.9)"
+                    : action.tone === "info"
+                    ? "rgba(96,165,250,0.88)"
+                    : "rgba(74,222,128,0.88)";
+                  return (
+                    <div key={action.key} style={{ display: "grid", gap: 4, padding: "10px 11px", borderRadius: 12, border: `1px solid ${border}`, background: "rgba(5,8,13,0.18)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 999, background: dot, flexShrink: 0 }} />
+                        <div style={{ fontSize: 13, fontWeight: 850, color: "rgba(235,243,248,0.96)" }}>{action.title}</div>
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "rgba(205,217,226,0.7)" }}>{action.detail}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
+                {lang === "es" ? "Documentos que impulsan los números" : "Document drivers"}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                {snapshotCockpit.drivers.map((item) => (
+                  <div key={item.key} style={{ padding: "10px 11px", borderRadius: 12, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.46)" }}>
+                      {item.label}
+                    </div>
+                    <div style={{ marginTop: 5, fontSize: 18, fontWeight: 900, color: "rgba(239,245,249,0.96)" }}>
+                      {item.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", padding: "6px 0 8px" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "nowrap", padding: "0 2px" }}>
+          {[
+            { label: lang === "es" ? "Resumen" : "Overview",  sectionRef: overviewRef  },
+            { label: lang === "es" ? "Ingresos" : "Revenue",  sectionRef: revenueRef   },
+            { label: "AR",                                     sectionRef: arRef        },
+            { label: lang === "es" ? "Margen" : "Margin",     sectionRef: marginRef    },
+            { label: "Pipeline",                               sectionRef: pipelineRef  },
+            { label: lang === "es" ? "Sumario" : "Summary",   sectionRef: summaryRef   },
+          ].map((chip) => (
+            <button
+              key={chip.label}
+              type="button"
+              onClick={() => chip.sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              style={{ flexShrink: 0, padding: "4px 12px", borderRadius: 999, fontSize: 11, fontWeight: 800, cursor: "pointer", border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.05)", color: "rgba(229,231,235,0.72)" }}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div ref={overviewRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-md pe-snapshot-kpi-panel">
+        <div style={{ display: "grid", gap: 4, marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.46)" }}>
+            {lang === "es" ? "Rendimiento del rango" : "Range performance"}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 850, color: "rgba(239,245,249,0.96)" }}>
+            {lang === "es" ? "Resumen financiero del rango seleccionado" : "Financial summary for the selected range"}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
           <KPI label={lang === "es" ? "Ingresos (facturas)" : "Revenue (invoices)"} value={fmtMoney(computed.revenue)} numericValue={computed.revenue} formatValue={fmtMoney} tone="ok" />
           <KPI label={lang === "es" ? "Ganancia bruta" : "Gross Profit"} value={fmtMoney(computed.grossProfit)} numericValue={computed.grossProfit} formatValue={fmtMoney} tone="ok" />
           <KPI
@@ -524,88 +1734,564 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0 }) {
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div ref={revenueRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-chart-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Tendencia de ingresos" : "Revenue Trend"}</div>
-        <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Últimas 12 semanas (facturas en el rango)" : "Last 12 weeks (invoices in range)"}</div>
+        <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Últimas 12 semanas, agrupadas por período de factura y estado actual" : "Last 12 weeks, grouped by invoice period and current status"}</div>
+        {computed.missingInvoiceDateCount > 0 ? (
+          <div className="pe-muted" style={{ marginBottom: 10 }}>
+            {lang === "es"
+              ? `${computed.missingInvoiceDateCount} facturas sin fecha se excluyen de los totales basados en fecha.`
+              : `${computed.missingInvoiceDateCount} invoices missing invoice dates are excluded from date-based totals.`}
+          </div>
+        ) : null}
         <Bars data={computed.weekly} />
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div ref={arRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-aging-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Envejecimiento de cuentas por cobrar" : "Receivables Aging"}</div>
-        <div className="pe-muted" style={{ marginBottom: 12 }}>{lang === "es" ? "Basado en fecha de vencimiento (Net 30 por defecto)" : "Based on due date (defaults to Net 30)"}</div>
+        <div className="pe-muted" style={{ marginBottom: 10 }}>{lang === "es" ? "Seguimiento por cliente, fecha de vencimiento y saldo pendiente." : "Track who owes you, when it is due, and who to contact next."}</div>
 
-        <div style={{ display: "grid", placeItems: "center" }}>
-          <Donut
-            segments={donutSegments.length ? donutSegments : [{ label: "none", value: 1, frac: 1, color: "rgba(255,255,255,0.12)", opacity: 1 }]}
-            centerLabelTop={lang === "es" ? "AR" : "AR"}
-            centerLabelBottom={fmtMoney(computed.arTotal)}
-          />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 12 }}>
+          <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(229,231,235,0.40)" }}>
+              {lang === "es" ? "Total AR" : "Total AR"}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(computed.arTotal)}</div>
+          </div>
+          <div style={{ padding: "10px 12px", borderRadius: 10, background: computed.delinquentTotal > 0 ? "rgba(239,68,68,0.08)" : "rgba(255,255,255,0.04)", border: computed.delinquentTotal > 0 ? "1px solid rgba(239,68,68,0.22)" : "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(229,231,235,0.40)" }}>
+              {lang === "es" ? "Necesita atención" : "Needs attention"}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 20, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(computed.delinquentTotal)}</div>
+          </div>
         </div>
 
-        <div className="ep-section-gap-sm" style={{ display: "grid", gap: 8 }}>
-          {(donutSegments.length ? donutSegments : []).map((s) => (
-            <div key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 999, background: s.color, display: "inline-block" }} />
-                <span style={{ fontWeight: 800, opacity: 0.9 }}>{s.label}</span>
+        {computed.arTotal > 0 ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))", gap: 8, marginBottom: 14 }}>
+              {computed.arBuckets.map((bucket) => (
+                <div key={bucket.key} style={{ padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 3, background: bucket.color, display: "inline-block", flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(229,231,235,0.78)" }}>{bucket.label}</span>
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(bucket.amount)}</div>
+                  <div style={{ fontSize: 11, color: "rgba(229,231,235,0.40)", marginTop: 2 }}>
+                    {bucket.count} {lang === "es" ? (bucket.count === 1 ? "factura" : "facturas") : (bucket.count === 1 ? "invoice" : "invoices")}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {computed.atRiskRows.length ? (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "En riesgo / atender primero" : "At risk / needs attention"}</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {computed.atRiskRows.map((row) => (
+                    <div key={`risk-${row.id}`} style={{ padding: "11px 12px", borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.20)" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</div>
+                          <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>
+                            {row.invoiceLabel} • {row.bucketLabel} • {row.daysLate > 0 ? `${row.daysLate} ${lang === "es" ? "días tarde" : "days late"}` : (lang === "es" ? "Pendiente" : "Open")}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.balanceDue)}</div>
+                          <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{row.dueDateLabel}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div style={{ fontWeight: 900 }}>{fmtMoney(s.value)}</div>
+            ) : null}
+
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Cuentas activas" : "Active receivables"}</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {(() => {
+                const atRiskIds = new Set(computed.atRiskRows.map((r) => r.id));
+                const remainingArRows = computed.arRows.filter((r) => !atRiskIds.has(r.id));
+                if (remainingArRows.length === 0) {
+                  return <div className="pe-muted">{lang === "es" ? "Todas las cuentas activas se muestran arriba." : "All active receivables are shown above."}</div>;
+                }
+                return remainingArRows.map((row) => {
+                const mailtoHref = row.email ? buildFollowUpMailto(row, companyProfile, lang) : "";
+                return (
+                  <div key={row.id} style={{ padding: "12px", borderRadius: 12, background: row.daysLate > 0 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.03)", border: row.daysLate > 30 ? "1px solid rgba(239,68,68,0.22)" : "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</span>
+                          <span style={{ padding: "2px 7px", borderRadius: 999, background: row.bucketColor, color: "#08111f", fontSize: 11, fontWeight: 900 }}>{row.bucketLabel}</span>
+                          {row.isPartial ? <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(96,165,250,0.92)" }}>{lang === "es" ? "Parcial" : "Partial"}</span> : null}
+                        </div>
+                        <div className="pe-muted" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+                          {[row.invoiceLabel, row.projectName, row.dueDateLabel ? `${lang === "es" ? "Vence" : "Due"} ${row.dueDateLabel}` : "", row.daysLate > 0 ? `${row.daysLate} ${lang === "es" ? "días tarde" : "days late"}` : ""].filter(Boolean).join(" • ")}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", flex: "0 0 auto" }}>
+                        <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.balanceDue)}</div>
+                        <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>
+                          {lang === "es" ? "Factura" : "Invoice"} {fmtMoney(row.invoiceTotal)}{row.amountPaid > 0 ? ` • ${lang === "es" ? "Pagado" : "Paid"} ${fmtMoney(row.amountPaid)}` : ""}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                      {row.email ? (
+                        <a href={mailtoHref} style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(96,165,250,0.14)", border: "1px solid rgba(96,165,250,0.30)", color: "rgba(191,219,254,0.96)", textDecoration: "none", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Email" : "Email"}
+                        </a>
+                      ) : (
+                        <span style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(229,231,235,0.34)", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Sin email" : "No email"}
+                        </span>
+                      )}
+                      {row.phoneHref ? (
+                        <a href={`tel:${row.phoneHref}`} style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.30)", color: "rgba(187,247,208,0.95)", textDecoration: "none", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Llamar" : "Call"}
+                        </a>
+                      ) : (
+                        <span style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(229,231,235,0.34)", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Sin teléfono" : "No phone"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              });
+              })()}
             </div>
-          ))}
-          {!computed.aging.canCompute ? (
-            <div className="pe-muted" style={{ marginTop: 6 }}>
-              {lang === "es"
-                ? "Nota: algunas facturas no tienen dueDate/termsDays. Se usa Net 30 cuando faltan."
-                : "Note: some invoices lack dueDate/termsDays. Net 30 is used when missing."}
-            </div>
-          ) : null}
-        </div>
+          </>
+        ) : (
+          <div className="pe-muted">{lang === "es" ? "Sin cuentas por cobrar" : "No outstanding receivables"}</div>
+        )}
+
+        {!computed.aging.canCompute ? (
+          <div className="pe-muted" style={{ marginTop: 8 }}>
+            {lang === "es"
+              ? "Nota: algunas facturas no tienen dueDate/termsDays. Se usa Net 30 cuando faltan."
+              : "Note: some invoices lack dueDate/termsDays. Net 30 is used when missing."}
+          </div>
+        ) : null}
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div ref={marginRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-margin-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Salud del margen" : "Margin Health"}</div>
-
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <div className="pe-muted" style={{ fontWeight: 900 }}>{lang === "es" ? "Mejores márgenes" : "Best margins"}</div>
-            {computed.best.length ? (
-              computed.best.map((it, idx) => (
-                <MiniRow key={`b-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(calcRevenue(it.x))} right={fmtPct(it.m)} tone="ok" />
-              ))
-            ) : (
-              <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
-            )}
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <div className="pe-muted" style={{ fontWeight: 900 }}>{lang === "es" ? "Peores márgenes" : "Worst margins"}</div>
-            {computed.worst.length ? (
-              computed.worst.map((it, idx) => (
-                <MiniRow key={`w-${idx}`} left={String(it.x?.projectName || it.x?.customerName || it.x?.invoiceNumber || "Invoice")} mid={fmtMoney(calcRevenue(it.x))} right={fmtPct(it.m)} tone="bad" />
-              ))
-            ) : (
-              <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
-            )}
-          </div>
+        <div className="pe-muted" style={{ marginBottom: 10 }}>
+          {lang === "es" ? "Basado en facturas comprometidas dentro del rango seleccionado." : "Based on committed invoices in the selected range."}
         </div>
+
+        {computed.customerMargins.length === 0 ? (
+          computed.unknownCostCustomers.length > 0 ? (
+            <>
+              <div className="pe-muted" style={{ marginBottom: 10 }}>
+                {lang === "es" ? "Sin datos de margen confirmados — agrega costos para revisar márgenes." : "No confirmed margin data yet — add cost info to review margins."}
+              </div>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Costo pendiente / revisar" : "Needs cost review"}</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {computed.unknownCostCustomers.map((group) => (
+                  <div key={`unknown-${group.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.20)" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{group.customerName}</div>
+                        <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                          {group.unknownCostInvoiceCount} {lang === "es" ? (group.unknownCostInvoiceCount === 1 ? "factura sin costo confirmado" : "facturas sin costo confirmado") : (group.unknownCostInvoiceCount === 1 ? "invoice missing confirmed cost" : "invoices missing confirmed cost")}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(group.unknownRevenue)}</div>
+                        <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{lang === "es" ? "Margen no disponible" : "Margin unavailable"}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
+          )
+        ) : (() => {
+          const healthyCount = computed.customerMargins.filter((it) => it.tone === "healthy").length;
+          const cautionCount = computed.customerMargins.filter((it) => it.tone === "caution").length;
+          const riskCount = computed.customerMargins.filter((it) => it.tone === "risk").length;
+          const avgMargin = computed.customerMargins.reduce((sum, it) => sum + it.marginPct, 0) / computed.customerMargins.length;
+          const filtered = marginFilter === "healthy"
+            ? computed.customerMargins.filter((it) => it.tone === "healthy")
+            : marginFilter === "caution"
+            ? computed.customerMargins.filter((it) => it.tone === "caution")
+            : marginFilter === "risk"
+            ? computed.customerMargins.filter((it) => it.tone === "risk")
+            : computed.customerMargins;
+          return (
+            <>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 12, padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(229,231,235,0.40)" }}>{lang === "es" ? "Margen prom." : "Avg margin"}</div>
+                  <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtPct(avgMargin)}</div>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginLeft: "auto" }}>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: "rgba(34,197,94,0.92)" }}>{healthyCount} {lang === "es" ? "sanos" : "healthy"}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: "rgba(245,158,11,0.92)" }}>{cautionCount} {lang === "es" ? "precaución" : "caution"}</span>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: "rgba(239,68,68,0.92)" }}>{riskCount} {lang === "es" ? "riesgo" : "risk"}</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+                {[
+                  { key: "all", label: lang === "es" ? "Todos" : "All" },
+                  { key: "healthy", label: lang === "es" ? "Saludable" : "Healthy" },
+                  { key: "caution", label: lang === "es" ? "Precaución" : "Caution" },
+                  { key: "risk", label: lang === "es" ? "Riesgo" : "Risk" },
+                ].map((chip) => (
+                  <button
+                    key={chip.key}
+                    onClick={() => setMarginFilter(chip.key)}
+                    style={{
+                      padding: "4px 10px", borderRadius: 999, fontSize: 11, fontWeight: 800, cursor: "pointer",
+                      border: marginFilter === chip.key ? "1px solid rgba(96,165,250,0.60)" : "1px solid rgba(255,255,255,0.12)",
+                      background: marginFilter === chip.key ? "rgba(96,165,250,0.18)" : "rgba(255,255,255,0.04)",
+                      color: marginFilter === chip.key ? "rgba(191,219,254,0.96)" : "rgba(229,231,235,0.60)",
+                    }}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gap: 6 }}>
+                {filtered.length === 0 ? (
+                  <div className="pe-muted">{lang === "es" ? "Sin clientes para este filtro" : "No customers for this filter"}</div>
+                ) : filtered.map((group) => {
+                  const toneColor = group.tone === "healthy" ? "rgba(34,197,94,0.95)" : group.tone === "caution" ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)";
+                  const itemId = String(group.id);
+                  const isExpanded = expandedMarginId === itemId;
+                  const actionHint = group.tone === "healthy"
+                    ? (lang === "es" ? "Cliente saludable en el rango seleccionado." : "Healthy customer margin in the selected range.")
+                    : group.tone === "caution"
+                    ? (lang === "es" ? "Revisa mezcla de trabajo, mano de obra y markup." : "Review work mix, labor, and markup.")
+                    : (lang === "es" ? "Revisa trabajos subpreciados o costos reales faltantes." : "Check underpriced jobs or missing true costs.");
+                  return (
+                    <div key={itemId}>
+                      <div
+                        onClick={() => setExpandedMarginId(isExpanded ? null : itemId)}
+                        style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: isExpanded ? "10px 10px 0 0" : 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", cursor: "pointer", userSelect: "none" }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.customerName}</div>
+                          <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{group.invoiceCount} {lang === "es" ? (group.invoiceCount === 1 ? "factura/proyecto" : "facturas/proyectos") : (group.invoiceCount === 1 ? "invoice/job" : "invoices/jobs")}</div>
+                          {group.unknownCostInvoiceCount > 0 ? (
+                            <div className="pe-muted" style={{ fontSize: 11, marginTop: 2, color: "rgba(245,158,11,0.92)" }}>
+                              {lang === "es"
+                                ? `${group.unknownCostInvoiceCount} sin costo confirmado`
+                                : `${group.unknownCostInvoiceCount} missing confirmed cost`}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div style={{ fontWeight: 900, opacity: 0.88 }}>{fmtMoney(group.revenue)}</div>
+                        <div style={{ fontWeight: 950, color: toneColor }}>{fmtPct(group.marginPct)}</div>
+                      </div>
+                      {isExpanded && (
+                        <div style={{ padding: "10px 12px", borderRadius: "0 0 10px 10px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.08)", borderTop: "none" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(229,231,235,0.40)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{lang === "es" ? "Ingresos" : "Revenue"}</div>
+                              <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMoney(group.revenue)}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(229,231,235,0.40)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{lang === "es" ? "Costo" : "Cost"}</div>
+                              <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMoney(group.cost)}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(229,231,235,0.40)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{lang === "es" ? "Ganancia bruta" : "Gross Profit"}</div>
+                              <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMoney(group.grossProfit)}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(229,231,235,0.40)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{lang === "es" ? "Margen" : "Margin"}</div>
+                              <div style={{ fontWeight: 900, fontSize: 14, color: toneColor }}>{fmtPct(group.marginPct)}</div>
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
+                            {group.details.map((detail) => (
+                              <div key={detail.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 800, color: "rgba(229,231,235,0.90)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detail.invoiceLabel}</div>
+                                  {detail.projectName ? <div className="pe-muted" style={{ fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{detail.projectName}</div> : null}
+                                </div>
+                                <div style={{ textAlign: "right" }}>
+                                  <div style={{ fontSize: 12, fontWeight: 800 }}>{fmtMoney(detail.revenue)}</div>
+                                  <div className="pe-muted" style={{ fontSize: 11 }}>{detail.knownCost ? fmtMoney(detail.cost) : (lang === "es" ? "Costo pendiente" : "Cost pending")}</div>
+                                </div>
+                                <div style={{ textAlign: "right" }}>
+                                  <div style={{ fontSize: 12, fontWeight: 900 }}>{detail.knownCost ? fmtMoney(detail.grossProfit) : "—"}</div>
+                                  <div style={{ fontSize: 11, fontWeight: 900, color: detail.knownCost ? (detail.marginPct >= 30 ? "rgba(34,197,94,0.95)" : detail.marginPct >= 20 ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)") : "rgba(245,158,11,0.95)" }}>
+                                    {detail.knownCost ? fmtPct(detail.marginPct) : (lang === "es" ? "Sin costo" : "Unknown cost")}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(229,231,235,0.55)", fontStyle: "italic" }}>{actionHint}</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {computed.unknownCostCustomers.length > 0 ? (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Costo pendiente / revisar" : "Needs cost review"}</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {computed.unknownCostCustomers.map((group) => (
+                      <div key={`unknown-${group.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.20)" }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{group.customerName}</div>
+                            <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                              {group.unknownCostInvoiceCount} {lang === "es" ? (group.unknownCostInvoiceCount === 1 ? "factura sin costo confirmado" : "facturas sin costo confirmado") : (group.unknownCostInvoiceCount === 1 ? "invoice missing confirmed cost" : "invoices missing confirmed cost")}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(group.unknownRevenue)}</div>
+                            <div className="pe-muted" style={{ fontSize: 12, marginTop: 2 }}>{lang === "es" ? "Margen no disponible" : "Margin unavailable"}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          );
+        })()}
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div ref={pipelineRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-pipeline-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pipeline de estimados" : "Estimate Pipeline"}</div>
         <div style={{ display: "grid", gap: 10 }}>
-          <KPI label={lang === "es" ? "Valor total" : "Total value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
-          <KPI label={lang === "es" ? "Cantidad" : "Count"} value={String(computed.pipelineCount)} numericValue={computed.pipelineCount} formatValue={(n) => String(Math.round(asNumber(n)))} tone="ok" />
-          <KPI label={lang === "es" ? "Promedio" : "Average size"} value={fmtMoney(computed.avgEstimate)} numericValue={computed.avgEstimate} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Valor pendiente" : "Pending value"} value={fmtMoney(computed.pipelineValue)} numericValue={computed.pipelineValue} formatValue={fmtMoney} tone="ok" />
+          <KPI label={lang === "es" ? "Pendientes" : "Pending count"} value={String(computed.pipelineCount)} numericValue={computed.pipelineCount} formatValue={(n) => String(Math.round(asNumber(n)))} tone="ok" />
+          <KPI label={lang === "es" ? "Promedio pendiente" : "Avg pending"} value={fmtMoney(computed.avgEstimate)} numericValue={computed.avgEstimate} formatValue={fmtMoney} tone="ok" />
+        </div>
+        <div className="pe-muted" style={{ marginTop: 8, marginBottom: 12 }}>
+          {lang === "es"
+            ? "Vista de pipeline basada en estimados dentro del rango seleccionado."
+            : "Pipeline view based on estimates in the selected range."}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))", gap: 8, marginBottom: 14 }}>
+          {computed.pipelineBuckets.map((bucket) => (
+            <div key={bucket.key} style={{ padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 3, background: bucket.color, display: "inline-block", flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(229,231,235,0.78)" }}>{bucket.label}</span>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(bucket.value)}</div>
+              <div style={{ fontSize: 11, color: "rgba(229,231,235,0.40)", marginTop: 2 }}>
+                {bucket.count} {lang === "es" ? (bucket.count === 1 ? "estimado" : "estimados") : (bucket.count === 1 ? "estimate" : "estimates")}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {computed.approvedReadyRows.length ? (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Aprobados listos para facturar" : "Approved ready to invoice"}</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {computed.approvedReadyRows.map((row) => (
+                <div key={`approved-${row.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.18)" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</div>
+                      <div className="pe-muted" style={{ marginTop: 2, fontSize: 12, overflowWrap: "anywhere" }}>
+                        {[row.estimateLabel, row.projectName, row.estimateDateLabel].filter(Boolean).join(" • ")}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.remainingToInvoice)}</div>
+                      <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{lang === "es" ? "Pendiente por facturar" : "Remaining to invoice"}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleCreateInvoiceFromEstimate(row.sourceEstimate)}
+                      style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.30)", color: "rgba(187,247,208,0.95)", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+                    >
+                      {lang === "es" ? "Crear factura" : "Create Invoice"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {computed.pendingFollowUpRows.length ? (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Pendientes para seguimiento" : "Pending follow-up"}</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {computed.pendingFollowUpRows.map((row) => {
+                const followUpHref = row.email ? buildEstimateFollowUpMailto(row, companyProfile, lang) : "";
+                return (
+                  <div key={`pending-${row.id}`} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(96,165,250,0.08)", border: "1px solid rgba(96,165,250,0.18)" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</div>
+                        <div className="pe-muted" style={{ marginTop: 2, fontSize: 12, overflowWrap: "anywhere" }}>
+                          {[row.estimateLabel, row.projectName, `${row.ageDays} ${lang === "es" ? "días" : "days"}`].filter(Boolean).join(" • ")}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.total)}</div>
+                        <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{row.statusLabel}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                      {row.email ? (
+                        <a href={followUpHref} style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(96,165,250,0.14)", border: "1px solid rgba(96,165,250,0.30)", color: "rgba(191,219,254,0.96)", textDecoration: "none", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Email" : "Email"}
+                        </a>
+                      ) : (
+                        <span style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(229,231,235,0.34)", fontSize: 12, fontWeight: 800 }}>
+                          {lang === "es" ? "Sin email" : "No email"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Estimados en pipeline" : "Estimates in pipeline"}</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {computed.pipelineRows.length === 0 ? (
+            <div className="pe-muted">{lang === "es" ? "Sin estimados en este rango" : "No estimates in this range"}</div>
+          ) : (() => {
+            const highlightedIds = new Set([
+              ...computed.approvedReadyRows.map((r) => r.id),
+              ...computed.pendingFollowUpRows.map((r) => r.id),
+            ]);
+            const remainingPipelineRows = computed.pipelineRows.filter((r) => !highlightedIds.has(r.id));
+            if (remainingPipelineRows.length === 0) {
+              return <div className="pe-muted">{lang === "es" ? "Todos los estimados relevantes se muestran arriba." : "All actionable estimates are shown above."}</div>;
+            }
+            return remainingPipelineRows.map((row) => {
+            const followUpHref = row.email ? buildEstimateFollowUpMailto(row, companyProfile, lang) : "";
+            const toneColor = row.statusKey === "approved"
+              ? "rgba(34,197,94,0.95)"
+              : row.statusKey === "lost"
+              ? "rgba(239,68,68,0.95)"
+              : row.statusKey === "draft"
+              ? "rgba(156,163,175,0.95)"
+              : "rgba(96,165,250,0.95)";
+            return (
+              <div key={row.id} style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</span>
+                      <span style={{ fontSize: 11, fontWeight: 900, color: toneColor }}>{row.statusLabel}</span>
+                    </div>
+                    <div className="pe-muted" style={{ marginTop: 3, fontSize: 12, overflowWrap: "anywhere" }}>
+                      {[row.estimateLabel, row.projectName, row.estimateDateLabel, `${row.ageDays} ${lang === "es" ? "días" : "days"}`].filter(Boolean).join(" • ")}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.total)}</div>
+                    {row.remainingToInvoice > 0 ? <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{lang === "es" ? "Por facturar" : "To invoice"} {fmtMoney(row.remainingToInvoice)}</div> : null}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                  {row.email ? (
+                    <a href={followUpHref} style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(96,165,250,0.14)", border: "1px solid rgba(96,165,250,0.30)", color: "rgba(191,219,254,0.96)", textDecoration: "none", fontSize: 12, fontWeight: 800 }}>
+                      {lang === "es" ? "Email" : "Email"}
+                    </a>
+                  ) : (
+                    <span style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(229,231,235,0.34)", fontSize: 12, fontWeight: 800 }}>
+                      {lang === "es" ? "Sin email" : "No email"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+            });
+          })()}
         </div>
       </div>
 
-      <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm">
+      <div ref={summaryRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm pe-snapshot-summary-panel">
         <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "Resumen" : "Summary"}</div>
-        <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.35 }}>{insight}</div>
+        {insight ? (() => {
+          const items = insight.split(" • ");
+          const rangePrefix = lang === "es" ? "Rango seleccionado: " : "Selected range: ";
+          const rangeIdx = items.findIndex((it) => it.startsWith(rangePrefix));
+          const allTimeItems = rangeIdx > 0 ? items.slice(0, rangeIdx) : items;
+          const rangeItems = rangeIdx >= 0
+            ? [items[rangeIdx].slice(rangePrefix.length), ...items.slice(rangeIdx + 1)].filter(Boolean)
+            : [];
+          const rowStyle = { fontSize: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", color: "rgba(229,231,235,0.82)", lineHeight: 1.4 };
+          const labelStyle = { fontSize: 10, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(229,231,235,0.35)", marginBottom: 4 };
+          return (
+            <div style={{ display: "grid", gap: 5 }}>
+              {allTimeItems.length > 0 && (
+                <>
+                  <div style={labelStyle}>{lang === "es" ? "Histórico" : "All-time"}</div>
+                  {allTimeItems.map((item, i) => <div key={`at-${i}`} style={rowStyle}>{item}</div>)}
+                </>
+              )}
+              {rangeItems.length > 0 && (
+                <>
+                  <div style={{ ...labelStyle, marginTop: allTimeItems.length > 0 ? 8 : 0 }}>{lang === "es" ? "Rango seleccionado" : "Selected range"}</div>
+                  {rangeItems.map((item, i) => <div key={`rng-${i}`} style={rowStyle}>{item}</div>)}
+                </>
+              )}
+            </div>
+          );
+        })() : (
+          <div className="pe-muted">{lang === "es" ? "Sin datos" : "No data"}</div>
+        )}
       </div>
 
       <div className="pe-footer ep-section-gap-sm">{lang === "es" ? "Vista de solo lectura." : "Display-only view."}</div>
       </div>
+
+      <button
+        type="button"
+        aria-label={lang === "es" ? "Volver arriba" : "Back to top"}
+        onClick={() => topRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        style={{
+          position: "fixed",
+          bottom: 84,
+          right: 16,
+          zIndex: 45,
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,0.18)",
+          background: "rgba(15,15,20,0.55)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          color: "rgba(229,231,235,0.72)",
+          fontSize: 16,
+          fontWeight: 700,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: showScrollTop ? 1 : 0,
+          pointerEvents: showScrollTop ? "auto" : "none",
+          transition: "opacity 220ms ease",
+          lineHeight: 1,
+          padding: 0,
+        }}
+      >
+        ↑
+      </button>
     </section>
   );
 }
@@ -619,25 +2305,13 @@ function KPI({ label, value, tone = "ok", note = "", numericValue, formatValue }
     : value;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12 }}>
-      <div style={{ width: 6, borderRadius: 999, background: stripe }} />
-      <div style={{ display: "grid", gap: 4 }}>
-        <div style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</div>
-        <div style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{displayValue}</div>
-        {note ? <div style={{ fontSize: 12, opacity: 0.7 }}>{note}</div> : null}
+    <div className={`pe-snapshot-kpi pe-tone-${tone}`} style={{ display: "grid", gridTemplateColumns: "6px 1fr", gap: 12, alignItems: "stretch", padding: 12 }}>
+      <div className="pe-snapshot-kpi-stripe" style={{ width: 6, borderRadius: 999, background: stripe }} />
+      <div className="pe-snapshot-kpi-content" style={{ display: "grid", gap: 4 }}>
+        <div className="pe-snapshot-kpi-label" style={{ fontSize: 12, opacity: 0.78, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>{label}</div>
+        <div className="pe-snapshot-kpi-value" style={{ fontSize: 22, fontWeight: 950, letterSpacing: "0.2px" }}>{displayValue}</div>
+        {note ? <div className="pe-snapshot-kpi-note" style={{ fontSize: 12, opacity: 0.7 }}>{note}</div> : null}
       </div>
-    </div>
-  );
-}
-
-function MiniRow({ left, mid, right, tone = "ok" }) {
-  const c = tone === "ok" ? "rgba(34,197,94,0.95)" : tone === "warn" ? "rgba(245,158,11,0.95)" : "rgba(239,68,68,0.95)";
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center", padding: "10px 12px" }}>
-      <div style={{ fontWeight: 900, opacity: 0.92, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</div>
-      <div style={{ fontWeight: 900, opacity: 0.88 }}>{mid}</div>
-      <div style={{ fontWeight: 950, color: c }}>{right}</div>
     </div>
   );
 }

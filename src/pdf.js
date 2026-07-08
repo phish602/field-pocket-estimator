@@ -114,6 +114,16 @@ function formatDenseLongTextParagraph(value) {
   return groupedSentences.map((group) => group.join(" ")).join("\n\n");
 }
 
+export function stripScopeMarkdownMarkers(value) {
+  const text = String(value ?? "");
+  if (!text) return "";
+
+  return text
+    .replace(/^[ \t]*##+\s+/gm, "")
+    .replace(/\*\*(\S(?:[\s\S]*?\S)?)\*\*/g, "$1")
+    .replace(/(^|[^\w/])_(\S(?:[\s\S]*?\S)?)_(?=($|[^\w/]))/gm, (_, prefix, content) => `${prefix}${content}`);
+}
+
 function formatLongFormPdfText(value) {
   const text = asText(value);
   if (!text) return "";
@@ -164,6 +174,142 @@ function formatLongFormPdfText(value) {
   return formattedBlocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function parsePlainScopeBlocks(rawText) {
+  if (!rawText) return [];
+  const normalized = String(rawText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  const lines = normalized.split("\n");
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line) { i++; continue; }
+    if (/^---+$/.test(line)) {
+      blocks.push({ type: "divider" });
+      i++;
+      continue;
+    }
+    if (/^##\s+/.test(line)) {
+      const text = normalizeLongTextLine(line.replace(/^##\s+/, ""));
+      if (text) blocks.push({ type: "heading", text });
+      i++;
+      continue;
+    }
+    if (isStructuredListLine(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const l = lines[i];
+        if (!l.trim()) { i++; break; }
+        if (/^---+$/.test(l.trim()) || /^##\s+/.test(l)) break;
+        if (isStructuredListLine(l)) items.push(normalizeLongTextLine(l));
+        i++;
+      }
+      if (items.length) blocks.push({ type: "list", items });
+      continue;
+    }
+    const paraLines = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim()) { i++; break; }
+      if (/^---+$/.test(l.trim()) || /^##\s+/.test(l) || isStructuredListLine(l)) break;
+      paraLines.push(l);
+      i++;
+    }
+    if (paraLines.length) {
+      const text = formatLongFormPdfText(paraLines.join("\n"));
+      if (text) blocks.push({ type: "paragraph", text });
+    }
+  }
+  return blocks;
+}
+
+function parseScopeBlocks(rawText) {
+  if (!rawText) return [];
+  const normalized = String(rawText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  const blocks = [];
+  const imageMarkerPattern = /\[scope-image:([a-zA-Z0-9_-]+)\]/g;
+  let lastIndex = 0;
+  let match = null;
+
+  while ((match = imageMarkerPattern.exec(normalized))) {
+    const before = normalized.slice(lastIndex, match.index);
+    if (before) blocks.push(...parsePlainScopeBlocks(before));
+    if (match[1]) blocks.push({ type: "image", id: match[1] });
+    lastIndex = match.index + match[0].length;
+  }
+
+  const tail = normalized.slice(lastIndex);
+  if (tail) blocks.push(...parsePlainScopeBlocks(tail));
+  return blocks;
+}
+
+function buildScopeImageLookup(scopeImages) {
+  const lookup = new Map();
+  for (const image of ensureArray(scopeImages)) {
+    const id = asText(image?.id);
+    if (!id) continue;
+    lookup.set(id, image);
+  }
+  return lookup;
+}
+
+function getScopeImageRenderSpec(doc, imageRecord, maxWidth, maxHeight) {
+  const dataUrl = asText(imageRecord?.dataUrl);
+  if (!dataUrl) return null;
+
+  try {
+    const props = doc.getImageProperties(dataUrl);
+    const width = Number(props?.width) || 1;
+    const height = Number(props?.height) || 1;
+    const widthCap = Math.max(1, Number(maxWidth) || 0);
+    const heightCap = Math.max(1, Number(maxHeight) || 0);
+    const scale = Math.min(
+      widthCap / width,
+      heightCap / height,
+      1
+    );
+    return {
+      format: detectDataUrlType(dataUrl),
+      dataUrl,
+      drawWidth: width * scale,
+      drawHeight: height * scale,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getScopeImageCaption(imageRecord) {
+  const rawName = asText(
+    imageRecord?.fileName
+    || imageRecord?.filename
+    || imageRecord?.name
+    || imageRecord?.label
+    || imageRecord?.title
+  );
+  if (!rawName) return "Reference photo";
+
+  const cleanedName = rawName
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\?.*$/, "")
+    .replace(/[^a-zA-Z0-9._ -]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleanedName || /^(image|photo|attachment)$/i.test(cleanedName)) {
+    return "Reference photo";
+  }
+
+  const shortened = cleanedName.length > 44
+    ? `${cleanedName.slice(0, 41).trimEnd()}...`
+    : cleanedName;
+  return `Reference photo: ${shortened}`;
+}
+
 function cleanMaterialNoteText(value) {
   const text = asText(value);
   if (!text) return "";
@@ -207,6 +353,46 @@ function normalizeMaterialRow(row) {
     each: "-",
     total: "-",
   };
+}
+
+function normalizeLaborRow(row) {
+  if (Array.isArray(row)) {
+    return {
+      label: asText(row?.[0]),
+      qty: asText(row?.[1], "-"),
+      hours: asText(row?.[2], "-"),
+      rate: asText(row?.[3], "-"),
+      total: asText(row?.[4], "-"),
+    };
+  }
+
+  if (row && typeof row === "object") {
+    return {
+      label: asText(row?.label, asText(row?.role)),
+      qty: asText(row?.qty, "-"),
+      hours: asText(row?.hours, "-"),
+      rate: asText(row?.rate, asText(row?.billRate, "-")),
+      total: asText(row?.total, asText(row?.lineTotal, asText(row?.amount, "-"))),
+    };
+  }
+
+  return {
+    label: "",
+    qty: "-",
+    hours: "-",
+    rate: "-",
+    total: "-",
+  };
+}
+
+function toNumericAmount(value) {
+  const parsed = parseFloat(String(value ?? "").replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isPlaceholderBlanketDescription(value) {
+  const normalized = asText(value).toLowerCase();
+  return normalized === "blanket materials";
 }
 
 function buildFooterLine(company) {
@@ -354,10 +540,10 @@ function buildLogoFallbackInitials(company) {
 }
 
 function drawLogoFallbackBadge(doc, company, x, y) {
-  const badgeWidth = 48;
-  const badgeHeight = 22;
+  const badgeWidth = 90;
+  const badgeHeight = 50;
   const initials = buildLogoFallbackInitials(company);
-  const fontSize = initials.length >= 3 ? 12.6 : 14.6;
+  const fontSize = initials.length >= 3 ? 18.0 : 21.0;
 
   doc.setDrawColor(165, 165, 165);
   doc.setFillColor(245, 245, 245);
@@ -384,8 +570,8 @@ function drawLogo(doc, company, x, y) {
     const props = doc.getImageProperties(logoDataUrl);
     const width = Number(props?.width) || 1;
     const height = Number(props?.height) || 1;
-    const maxWidth = 48;
-    const maxHeight = 22;
+    const maxWidth = 90;
+    const maxHeight = 50;
     const scale = Math.min(maxWidth / width, maxHeight / height);
     const drawWidth = width * scale;
     const drawHeight = height * scale;
@@ -571,6 +757,37 @@ function buildInvoicePaymentTermsText(payload) {
   return "Payment Terms: Full payment is due within 30 days of receipt of this invoice, unless otherwise agreed to in writing.";
 }
 
+function titleCaseStatus(value) {
+  return String(value || "")
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function resolveInvoiceStatusText(payload) {
+  if (payload?.docType !== "invoice") return "";
+
+  const invoiceStatus = asText(payload?.invoiceStatus, asText(payload?.status)).toLowerCase();
+  const paymentStatus = asText(payload?.paymentStatus).toLowerCase();
+
+  if (invoiceStatus === "void") return "Void";
+  if (invoiceStatus === "paid" || paymentStatus === "paid") return "Paid";
+  if (invoiceStatus === "overdue") return "Overdue";
+  if (
+    paymentStatus === "partial"
+    || paymentStatus === "partially_paid"
+    || paymentStatus === "partial_paid"
+  ) {
+    return "Partially Paid";
+  }
+  if (invoiceStatus === "sent") return "Sent";
+  if (invoiceStatus === "draft") return "Draft";
+  if (invoiceStatus) return titleCaseStatus(invoiceStatus);
+  if (paymentStatus) return titleCaseStatus(paymentStatus);
+  return "";
+}
+
 function buildPdfDoc(payload) {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -578,34 +795,81 @@ function buildPdfDoc(payload) {
   const company = payload?.company || {};
   const customer = payload?.customer || {};
   const job = payload?.job || {};
+  const laborRows = ensureArray(payload?.laborRows);
   const materialRows = ensureArray(payload?.materialRows);
+  const additionalChargeRows = ensureArray(payload?.additionalChargeRows);
   const isItemizedMaterials = payload?.materialsMode === "itemized";
-  const normalizedMaterialRows = (
-    isItemizedMaterials
-      ? materialRows
-      : (materialRows.length ? materialRows : [["-", "-", "-", "-"]])
-  )
+  const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
+  const normalizedLaborRows = laborRows
+    .map(normalizeLaborRow)
+    .filter((row) => (
+      row.label
+      || row.qty !== "-"
+      || row.hours !== "-"
+      || row.rate !== "-"
+      || row.total !== "-"
+    ));
+  const hasMeaningfulLaborContent = normalizedLaborRows.some((row) => {
+    return (
+      toNumericAmount(row.hours) !== 0
+      || toNumericAmount(row.total) !== 0
+    );
+  });
+
+  const normalizedMaterialRows = materialRows
     .map(normalizeMaterialRow)
     .filter((row) => !isItemizedMaterials || !!asText(row?.desc));
+  const normalizedAdditionalChargeRows = additionalChargeRows
+    .map(normalizeMaterialRow)
+    .filter((row) => !!asText(row?.desc) || toNumericAmount(row?.total) !== 0);
+  const hasMeaningfulItemizedMaterials = normalizedMaterialRows.some((row) => !!asText(row?.desc) && asText(row?.desc) !== "-");
+  const hasMeaningfulBlanketMaterials = (
+    !!materialsBlanketDescription
+    || normalizedMaterialRows.some((row) => (
+      toNumericAmount(row?.total) !== 0
+      || toNumericAmount(row?.each) !== 0
+      || (!!asText(row?.desc) && !isPlaceholderBlanketDescription(row?.desc))
+    ))
+  );
+  const hasMeaningfulMaterialsContent = isItemizedMaterials
+    ? hasMeaningfulItemizedMaterials
+    : hasMeaningfulBlanketMaterials;
+  const hasMeaningfulAdditionalChargesContent = normalizedAdditionalChargeRows.some((row) => {
+    return toNumericAmount(row?.total) !== 0 || toNumericAmount(row?.each) !== 0;
+  });
   const summaryRows = ensureArray(payload?.summaryRows);
-  const scopeNotesText = formatLongFormPdfText(payload?.scopeNotes);
-  const tradeInsertText = formatLongFormPdfText(payload?.tradeInsertText);
+  const scopeBlocks = parseScopeBlocks(payload?.scopeNotes);
+  const scopeImageLookup = buildScopeImageLookup(payload?.scopeImages);
+  const shouldRenderScopeNotes = scopeBlocks.length > 0
+    && (
+      payload?.docType === "estimate"
+      || (payload?.docType === "invoice" && payload?.includeInvoiceScopeNotes === true)
+    );
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
-  const materialsBlanketDescription = asText(payload?.materialsBlanketDescription);
   const displayedSummaryRows = (summaryRows.length ? summaryRows : [["Total", "$0.00"]]).filter((row) => {
     const label = asText(row?.[0]).toLowerCase();
-    return !label.startsWith("hazard") && !label.startsWith("risk");
+    if (label.startsWith("hazard") || label.startsWith("risk")) return false;
+    if (!hasMeaningfulLaborContent && label.startsWith("labor")) return false;
+    if (!hasMeaningfulMaterialsContent && label.startsWith("materials")) return false;
+    if (!hasMeaningfulAdditionalChargesContent && label.startsWith("additional charges")) return false;
+    return true;
   });
   const safeSummaryRows = displayedSummaryRows.length ? displayedSummaryRows : [["Total", "$0.00"]];
-  const subtotalRowIndex = safeSummaryRows.findIndex((row) => asText(row?.[0]).toLowerCase() === "subtotal");
   const grandTotalRowIndex = safeSummaryRows.length - 1;
+  const totalsDividerRowIndex = safeSummaryRows.findIndex((row, index) => {
+    if (index === grandTotalRowIndex) return false;
+    const label = asText(row?.[0]).toLowerCase();
+    return label === "subtotal" || label === "total";
+  });
   const estimateLabel = payload?.docType === "invoice" ? "INVOICE #" : "ESTIMATE #";
+  const documentTypeLabel = payload?.docType === "invoice" ? "INVOICE" : "ESTIMATE";
   const estimateNumber = asText(payload?.documentNumber, "Draft");
   const date = asText(job?.dateDisplay, asText(job?.date, "-"));
   const po = asText(job?.poNumber, "-");
   const footerLine = buildFooterLine(company);
   const footerCompanyName = asText(company?.companyName);
   const footerDetails = buildFooterDetails(company);
+  const invoiceStatusText = resolveInvoiceStatusText(payload);
   const invoicePaymentTermsText = payload?.docType === "invoice" ? buildInvoicePaymentTermsText(payload) : "";
   const billToText = buildBillToText(customer);
   const customerText = buildCustomerText(customer);
@@ -615,13 +879,13 @@ function buildPdfDoc(payload) {
   const CENTER = 105;
   const LOGO_Y = 15.5;
   const META_Y = 18;
-  const CLIENT_Y = 48;
+  const CLIENT_Y = 69;
   const MATERIAL_HEADER_Y = 80.5;
   const ROW_HEIGHT = 5;
   const FOOTER_Y = pageHeight - 18.2;
   const RIGHT_GUTTER = Math.max(0, pageWidth - RIGHT);
   const TOTALS_TOP_OFFSET = 6.3;
-  const TOTALS_TABLE_WIDTH = 62;
+  const TOTALS_TABLE_WIDTH = 72;
   const TOTALS_RIGHT_GUTTER = RIGHT_GUTTER + 4.5;
   const TOTALS_X = Math.max(LEFT, pageWidth - TOTALS_RIGHT_GUTTER - TOTALS_TABLE_WIDTH);
   const TOTALS_ROW_HEIGHT = ROW_HEIGHT + 1.35;
@@ -629,6 +893,11 @@ function buildPdfDoc(payload) {
   const PAGE_NUMBER_Y = FOOTER_Y;
   const PAGE_NUMBER_FONT_SIZE = 8.1;
   const PAGE_NUMBER_TEXT_COLOR = 110;
+  const CONTINUATION_TITLE_Y = 11;
+  const CONTINUATION_NUMBER_Y = 17.8;
+  const CONTINUATION_DIVIDER_Y = 21.5;
+  const HEADER_SAFE_BOTTOM_Y = CONTINUATION_DIVIDER_Y + 7;
+  const CONTINUATION_SECTION_TOP_Y = HEADER_SAFE_BOTTOM_Y - 2.8;
   const FOOTER_BLOCK_BOTTOM_Y = pageHeight - 24.2;
   const FOOTER_PRIMARY_FONT_SIZE = 15.4;
   const FOOTER_SECONDARY_FONT_SIZE = 12.4;
@@ -646,14 +915,23 @@ function buildPdfDoc(payload) {
   const MATERIAL_NOTE_LINE_HEIGHT_FACTOR = 1.1;
   const MATERIAL_NOTE_GAP = 1.05;
   const MATERIAL_NOTE_INDENT = 2.8;
-  const SECTION_PAGE_TOP = 25.5;
+  const SECTION_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const CONTENT_BOTTOM_BUFFER = 8.1;
   const TEXT_SECTION_GAP = 5.1;
   const MATERIAL_SECTION_GAP = 5.9;
   const SECTION_PREVIEW_LINES = 2;
-  const SECTION_LINE_HEIGHT_FACTOR = 1.15;
+  const SECTION_LINE_HEIGHT_FACTOR = 1.19;
   const SECTION_HEADER_MIN_HEIGHT = 5.8;
   const SECTION_BODY_PREVIEW_PADDING = 2.6;
+  const SCOPE_IMAGE_MAX_WIDTH = 83.5;
+  const SCOPE_IMAGE_MAX_HEIGHT = 54.2;
+  const SCOPE_IMAGE_VERTICAL_GAP = 4.2;
+  const SCOPE_IMAGE_CELL_PADDING = 2.6;
+  const SCOPE_IMAGE_FRAME_PADDING = 2.2;
+  const SCOPE_IMAGE_FRAME_RADIUS = 1.6;
+  const SCOPE_IMAGE_FRAME_INSET = 6.2;
+  const SCOPE_IMAGE_CAPTION_GAP = 1.3;
+  const SCOPE_IMAGE_CAPTION_HEIGHT = 3.2;
   const MATERIAL_KEEP_BUFFER = 5.8;
   const TOTALS_KEEP_BUFFER = 8.8;
   const TOTALS_HEIGHT_SAFETY = 4.6;
@@ -668,12 +946,12 @@ function buildPdfDoc(payload) {
   const TERMS_BOX_BOTTOM_PADDING = 2.8;
   const TERMS_BOX_HEADER_BAND_HEIGHT = 5.8;
   const TERMS_BOX_BODY_TOP_GAP = 1.9;
-  const TERMS_BOX_PAGE_TOP = 25.5;
+  const TERMS_BOX_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const TERMS_BOX_FOOTER_GAP = 9;
   const TERMS_HEADER_TEXT = "TERMS & CONDITIONS";
   const TERMS_HEADER_FONT_SIZE = 7.1;
   const TERMS_BODY_FONT_SIZE = 9.85;
-  const TERMS_LINE_HEIGHT_FACTOR = 1.12;
+  const TERMS_LINE_HEIGHT_FACTOR = 1.16;
   const INVOICE_NOTES_BOX_GAP = 12.8;
   const INVOICE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
   const ESTIMATE_NOTES_BOX_GAP = 16;
@@ -683,12 +961,12 @@ function buildPdfDoc(payload) {
   const ESTIMATE_NOTES_BOX_BOTTOM_PADDING = 2.8;
   const ESTIMATE_NOTES_HEADER_BAND_HEIGHT = 5.8;
   const ESTIMATE_NOTES_BODY_TOP_GAP = 1.9;
-  const ESTIMATE_NOTES_PAGE_TOP = 25.5;
+  const ESTIMATE_NOTES_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
   const ESTIMATE_NOTES_FOOTER_GAP = 9;
   const ESTIMATE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
   const ESTIMATE_NOTES_HEADER_FONT_SIZE = 7.1;
   const ESTIMATE_NOTES_BODY_FONT_SIZE = 9.4;
-  const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.14;
+  const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.18;
   const sectionTextWidth = Math.max(60, pageWidth - LEFT - RIGHT_GUTTER - 4.5);
   const footerTextWidth = RIGHT - LEFT - 14;
 
@@ -710,14 +988,28 @@ function buildPdfDoc(payload) {
   const footerStartY = footerDetails ? footerPrimaryY : FOOTER_BLOCK_BOTTOM_Y;
   const footerDividerY = footerStartY - FOOTER_DIVIDER_GAP;
   const contentBottomLimit = (footerLine ? footerStartY : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
+  const footerSafeTopY = Math.min(contentBottomLimit, PAGE_NUMBER_Y - 4.8);
+  const pagedTableMargin = {
+    left: LEFT,
+    right: RIGHT_GUTTER,
+    top: SECTION_PAGE_TOP,
+    bottom: Math.max(10, pageHeight - footerSafeTopY),
+  };
 
   function ensureSectionFits(startY, requiredHeight, nextPageTop = SECTION_PAGE_TOP) {
     let nextY = startY;
-    if (nextY + requiredHeight > contentBottomLimit) {
+    if (nextY + requiredHeight > footerSafeTopY) {
       doc.addPage();
       nextY = nextPageTop;
     }
     return nextY;
+  }
+
+  function resetContinuationCursor(hookData) {
+    if (Number(hookData?.pageNumber || 1) <= 1) return;
+    if (!hookData?.cursor) return;
+    hookData.cursor.x = LEFT;
+    hookData.cursor.y = SECTION_PAGE_TOP;
   }
 
   function estimatePreviewTextHeight(text, fontSize, minCellHeight) {
@@ -774,7 +1066,7 @@ function buildPdfDoc(payload) {
   function estimateTotalsBlockHeight() {
     const rowsHeight = safeSummaryRows.reduce((sum, row, index) => {
       if (index === grandTotalRowIndex) return sum + TOTALS_GRAND_TOTAL_ROW_HEIGHT;
-      if (index === subtotalRowIndex) return sum + Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
+      if (index === totalsDividerRowIndex) return sum + Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
       return sum + TOTALS_ROW_HEIGHT;
     }, 0);
     return TOTALS_TOP_OFFSET + rowsHeight + TOTALS_KEEP_BUFFER + TOTALS_HEIGHT_SAFETY;
@@ -802,8 +1094,16 @@ function buildPdfDoc(payload) {
     metaBoxX + estimateCellWidth + dateCellWidth + (poCellWidth / 2),
   ];
   const TERMS_BOX_WIDTH = Math.max(contentRightEdge - LEFT + 2, RIGHT - LEFT + 2);
+  const documentTypeLabelY = 10.8;
   const labelCenterY = META_Y + (META_ROW_HEIGHT / 2) + 0.05;
   const valueCenterY = META_Y + META_ROW_HEIGHT + (META_ROW_HEIGHT / 2) + 0.05;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13.2);
+  doc.text(documentTypeLabel, CENTER, documentTypeLabelY, {
+    align: "center",
+    baseline: "middle",
+  });
 
   doc.setFillColor(...HEADER_FILL);
   doc.rect(metaBoxX, META_Y, metaBoxWidth, META_ROW_HEIGHT, "F");
@@ -830,6 +1130,15 @@ function buildPdfDoc(payload) {
   doc.text(estimateNumber, metaCenters[0], valueCenterY, { align: "center", baseline: "middle" });
   doc.text(date, metaCenters[1], valueCenterY, { align: "center", baseline: "middle" });
   doc.text(po, metaCenters[2], valueCenterY, { align: "center", baseline: "middle" });
+
+  if (invoiceStatusText) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.1);
+    doc.text(`STATUS: ${invoiceStatusText}`, RIGHT, META_Y + META_BOX_HEIGHT + 6.2, {
+      align: "right",
+      baseline: "middle",
+    });
+  }
 
   autoTable(doc, {
     startY: CLIENT_Y,
@@ -858,217 +1167,447 @@ function buildPdfDoc(payload) {
       1: { cellWidth: 60 },
       2: { cellWidth: 58 },
     },
-    margin: { left: LEFT, right: RIGHT_GUTTER },
+    margin: pagedTableMargin,
   });
 
   let y = (doc.lastAutoTable?.finalY || CLIENT_Y) + 9.6;
 
-  if (payload?.docType === "estimate" && scopeNotesText) {
-    const scopeSectionMinHeight = SECTION_HEADER_MIN_HEIGHT + estimatePreviewTextHeight(scopeNotesText, 8.95, 3.7) + 1.8;
-    y = ensureSectionFits(y, scopeSectionMinHeight);
-
-    autoTable(doc, {
-      startY: y,
-      head: [["SCOPE / NOTES"]],
-      body: [[scopeNotesText]],
+  if (shouldRenderScopeNotes) {
+    const SCOPE_MARGIN = pagedTableMargin;
+    const SCOPE_HEAD = [["SCOPE / NOTES"]];
+    const SCOPE_HEAD_STYLES = { fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
+    const SCOPE_COMMON = {
       theme: "plain",
       tableLineWidth: 0,
-      styles: {
-        fontSize: 8.95,
-        cellPadding: 0.9,
-        minCellHeight: 3.7,
-        overflow: "linebreak",
-        lineWidth: 0,
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-        valign: "top",
-      },
-      headStyles: {
-        fontStyle: "bold",
-        fillColor: HEADER_FILL,
-        textColor: [20, 20, 20],
-        lineWidth: 0,
-      },
-      margin: { left: LEFT, right: RIGHT_GUTTER },
-    });
+      showHead: "firstPage",
+      margin: SCOPE_MARGIN,
+      willDrawPage: resetContinuationCursor,
+    };
+    const SCOPE_BASE = { overflow: "linebreak", lineWidth: 0, fillColor: [255, 255, 255], textColor: [20, 20, 20], valign: "top" };
+    let scopeHeaderPending = true;
 
-    y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
-  }
+    for (const blk of scopeBlocks) {
+      if (blk.type === "image") {
+        const imageRecord = scopeImageLookup.get(blk.id);
+        const imgLayout = (imageRecord?.layout && typeof imageRecord.layout === "object")
+          ? imageRecord.layout
+          : {};
+        const imgSize = String(imgLayout.size || "medium").toLowerCase();
+        const imgAlign = String(imgLayout.align || "center").toLowerCase();
+        const imgShowCaption = imgLayout.caption === true;
+        const [resolvedMaxW, resolvedMaxH] = imgSize === "small"
+          ? [55.0, 36.0]
+          : imgSize === "large"
+            ? [112.0, 73.0]
+            : [SCOPE_IMAGE_MAX_WIDTH, SCOPE_IMAGE_MAX_HEIGHT];
+        const imageSpec = getScopeImageRenderSpec(doc, imageRecord, resolvedMaxW, resolvedMaxH);
+        const imageCaption = imgShowCaption ? getScopeImageCaption(imageRecord) : null;
+        if (scopeHeaderPending) {
+          autoTable(doc, { ...SCOPE_COMMON, startY: y, head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES, body: [], styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0, minCellHeight: 0 } });
+          y = doc.lastAutoTable?.finalY ?? y;
+          scopeHeaderPending = false;
+        }
 
-  if (tradeInsertText) {
-    const tradeSectionMinHeight = SECTION_HEADER_MIN_HEIGHT + estimatePreviewTextHeight(tradeInsertText, 8.9, 3.45) + 1.8;
-    y = ensureSectionFits(y, tradeSectionMinHeight);
-
-    autoTable(doc, {
-      startY: y,
-      head: [["TRADE INSERTS"]],
-      body: [[tradeInsertText]],
-      theme: "plain",
-      tableLineWidth: 0,
-      styles: {
-        fontSize: 8.9,
-        cellPadding: 0.78,
-        minCellHeight: 3.45,
-        overflow: "linebreak",
-        lineWidth: 0,
-        fillColor: [255, 255, 255],
-        textColor: [20, 20, 20],
-        valign: "top",
-      },
-      headStyles: {
-        fontStyle: "bold",
-        fillColor: HEADER_FILL,
-        textColor: [20, 20, 20],
-        lineWidth: 0,
-      },
-      margin: { left: LEFT, right: RIGHT_GUTTER },
-    });
-
-    y = (doc.lastAutoTable?.finalY || y) + TEXT_SECTION_GAP;
-  }
-
-  y += MATERIAL_SECTION_GAP;
-  y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
-  y = ensureSectionFits(
-    y,
-    MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + estimateFirstMaterialRowHeight() + MATERIAL_KEEP_BUFFER,
-    SECTION_PAGE_TOP
-  );
-  const materialsSectionStartPage = doc.getNumberOfPages();
-  const materialsTitleY = y + 1.2;
-  const materialsSectionTop = materialsTitleY - 3;
-  const materialsSectionLeft = LEFT;
-  const materialsSectionRight = Math.max(contentRightEdge, RIGHT);
-  const materialsSectionWidth = materialsSectionRight - materialsSectionLeft;
-  doc.setFillColor(...HEADER_FILL);
-  doc.rect(materialsSectionLeft, materialsSectionTop, materialsSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9.4);
-  doc.text("Material Schedule", LEFT + 3, materialsTitleY);
-  y = materialsSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
-  const materialTableBody = normalizedMaterialRows.map((row) => ([
-    { content: row.desc || "-", materialRow: row },
-    row.qty,
-    row.each,
-    row.total,
-  ]));
-
-  autoTable(doc, {
-    startY: y,
-    head: [["", "QTY", "PRICE (each)", "TOTAL"]],
-    body: materialTableBody,
-    theme: "plain",
-    tableLineWidth: 0,
-    styles: {
-      fontSize: MATERIAL_DESC_FONT_SIZE,
-      cellPadding: 1.45,
-      minCellHeight: 4.2,
-      overflow: "linebreak",
-      lineWidth: 0,
-      textColor: [20, 20, 20],
-      valign: "top",
-    },
-    headStyles: {
-      fontStyle: "bold",
-      textColor: [20, 20, 20],
-      lineWidth: 0,
-      cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
-      minCellHeight: 4.3,
-    },
-    columnStyles: {
-      0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
-      1: { cellWidth: 20, halign: "right" },
-      2: { cellWidth: 33, halign: "right" },
-      3: { cellWidth: 37, halign: "right" },
-    },
-    margin: { left: LEFT, right: RIGHT_GUTTER },
-    didParseCell: (hookData) => {
-      if (hookData.section === "head") {
-        if (hookData.column.index < 1 || hookData.column.index > 3) return;
-        hookData.cell.styles.halign = "right";
-        return;
+        if (imageSpec) {
+          const imageCellMinHeight = Math.max(
+            22,
+            imageSpec.drawHeight
+              + (SCOPE_IMAGE_CELL_PADDING * 2)
+              + (SCOPE_IMAGE_FRAME_PADDING * 2)
+              + (imgShowCaption ? SCOPE_IMAGE_CAPTION_GAP + SCOPE_IMAGE_CAPTION_HEIGHT : 0)
+          );
+          y = ensureSectionFits(y, imageCellMinHeight + 1.2);
+          autoTable(doc, {
+            ...SCOPE_COMMON,
+            startY: y,
+            body: [[""]],
+            ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+            styles: {
+              ...SCOPE_BASE,
+              fontSize: 8.95,
+              cellPadding: { top: SCOPE_IMAGE_CELL_PADDING, bottom: SCOPE_IMAGE_CELL_PADDING, left: SCOPE_IMAGE_CELL_PADDING, right: SCOPE_IMAGE_CELL_PADDING },
+              minCellHeight: imageCellMinHeight,
+            },
+            didParseCell: (hookData) => {
+              if (hookData.section !== "body") return;
+              if (hookData.column.index !== 0) return;
+              hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), imageCellMinHeight);
+              hookData.row.height = Math.max(Number(hookData.row.height || 0), imageCellMinHeight);
+            },
+            didDrawCell: (hookData) => {
+              if (hookData.section !== "body") return;
+              if (hookData.column.index !== 0) return;
+              try {
+                const cellPadding = hookData.cell.styles.cellPadding;
+                const padTop = getCellPaddingValue(cellPadding, "top", SCOPE_IMAGE_CELL_PADDING);
+                const padRight = getCellPaddingValue(cellPadding, "right", SCOPE_IMAGE_CELL_PADDING);
+                const padBottom = getCellPaddingValue(cellPadding, "bottom", SCOPE_IMAGE_CELL_PADDING);
+                const padLeft = getCellPaddingValue(cellPadding, "left", SCOPE_IMAGE_CELL_PADDING);
+                const availableWidth = Math.max(12, hookData.cell.width - padLeft - padRight);
+                const availableHeight = Math.max(
+                  12,
+                  hookData.cell.height - padTop - padBottom - (imgShowCaption ? SCOPE_IMAGE_CAPTION_GAP + SCOPE_IMAGE_CAPTION_HEIGHT : 0)
+                );
+                const frameMaxWidth = Math.max(
+                  24,
+                  Math.min(availableWidth - SCOPE_IMAGE_FRAME_INSET, imageSpec.drawWidth + (SCOPE_IMAGE_FRAME_PADDING * 2))
+                );
+                const frameMaxHeight = Math.max(
+                  18,
+                  Math.min(availableHeight, imageSpec.drawHeight + (SCOPE_IMAGE_FRAME_PADDING * 2))
+                );
+                const scale = Math.min(
+                  Math.max(12, frameMaxWidth - (SCOPE_IMAGE_FRAME_PADDING * 2)) / Math.max(1, imageSpec.drawWidth),
+                  Math.max(12, frameMaxHeight - (SCOPE_IMAGE_FRAME_PADDING * 2)) / Math.max(1, imageSpec.drawHeight),
+                  1
+                );
+                const drawWidth = imageSpec.drawWidth * scale;
+                const drawHeight = imageSpec.drawHeight * scale;
+                const frameWidth = Math.min(frameMaxWidth, drawWidth + (SCOPE_IMAGE_FRAME_PADDING * 2));
+                const frameHeight = Math.min(frameMaxHeight, drawHeight + (SCOPE_IMAGE_FRAME_PADDING * 2));
+                const frameXLeft = hookData.cell.x + padLeft;
+                const frameXCenter = hookData.cell.x + padLeft + Math.max(0, (availableWidth - frameWidth) / 2);
+                const frameXRight = hookData.cell.x + padLeft + Math.max(0, availableWidth - frameWidth);
+                const frameX = imgAlign === "left"
+                  ? frameXLeft
+                  : imgAlign === "right"
+                    ? frameXRight
+                    : frameXCenter;
+                const frameY = hookData.cell.y + padTop + Math.max(0, (availableHeight - frameHeight) / 2);
+                const drawX = frameX + Math.max(SCOPE_IMAGE_FRAME_PADDING, (frameWidth - drawWidth) / 2);
+                const drawY = frameY + Math.max(SCOPE_IMAGE_FRAME_PADDING, (frameHeight - drawHeight) / 2);
+                doc.setFillColor(247, 247, 247);
+                doc.setDrawColor(198, 203, 208);
+                doc.setLineWidth(0.22);
+                doc.roundedRect(frameX, frameY, frameWidth, frameHeight, SCOPE_IMAGE_FRAME_RADIUS, SCOPE_IMAGE_FRAME_RADIUS, "FD");
+                doc.addImage(imageSpec.dataUrl, imageSpec.format, drawX, drawY, drawWidth, drawHeight);
+                if (imgShowCaption && imageCaption) {
+                  doc.setFont("helvetica", "normal");
+                  doc.setFontSize(7.1);
+                  doc.setTextColor(112, 118, 126);
+                  doc.text(
+                    imageCaption,
+                    hookData.cell.x + (hookData.cell.width / 2),
+                    frameY + frameHeight + SCOPE_IMAGE_CAPTION_GAP + 2.1,
+                    { align: "center", baseline: "top" }
+                  );
+                  doc.setTextColor(20, 20, 20);
+                }
+              } catch {
+                doc.setFont("helvetica", "normal");
+                doc.setFontSize(8.6);
+                doc.setTextColor(20, 20, 20);
+                doc.text("[Image unavailable]", hookData.cell.x + 2.2, hookData.cell.y + 4.8);
+              }
+            },
+          });
+        } else {
+          y = ensureSectionFits(y, 12.2);
+          autoTable(doc, {
+            ...SCOPE_COMMON,
+            startY: y,
+            body: [["[Image unavailable]"]],
+            ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+            styles: {
+              ...SCOPE_BASE,
+              fontSize: 8.95,
+              cellPadding: 1.15,
+              minCellHeight: 4.1,
+            },
+          });
+        }
+        y = doc.lastAutoTable?.finalY ?? y;
+        y += SCOPE_IMAGE_VERTICAL_GAP;
+        scopeHeaderPending = false;
+        continue;
       }
 
-      if (hookData.section !== "body") return;
-      if (hookData.column.index !== 0) return;
+      if (blk.type === "divider") {
+        if (scopeHeaderPending) {
+          autoTable(doc, { ...SCOPE_COMMON, startY: y, head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES, body: [], styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 0, minCellHeight: 0 } });
+          y = doc.lastAutoTable?.finalY ?? y;
+          scopeHeaderPending = false;
+        }
+        const divY = y + 2;
+        doc.setDrawColor(180, 180, 180);
+        doc.setLineWidth(0.28);
+        doc.line(LEFT + 0.9, divY, RIGHT - 0.9, divY);
+        y = divY + 3;
+        continue;
+      }
+      if (blk.type === "heading") {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: [[blk.text]],
+          styles: { ...SCOPE_BASE, fontStyle: "bold", fontSize: 10.2, cellPadding: { top: 2.8, bottom: 1.3, left: 1.0, right: 1.0 }, minCellHeight: 4.9 },
+        });
+      } else if (blk.type === "list") {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: blk.items.map((item) => [item]),
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: { top: 0.85, bottom: 0.85, left: 4.6, right: 1.0 }, minCellHeight: 3.5 },
+        });
+      } else {
+        autoTable(doc, {
+          ...SCOPE_COMMON, startY: y,
+          ...(scopeHeaderPending ? { head: SCOPE_HEAD, headStyles: SCOPE_HEAD_STYLES } : {}),
+          body: [[blk.text]],
+          styles: { ...SCOPE_BASE, fontSize: 8.95, cellPadding: 1.15, minCellHeight: 4.1 },
+        });
+      }
+      y = doc.lastAutoTable?.finalY ?? y;
+      scopeHeaderPending = false;
+    }
 
-      const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
-      if (!materialRow.note) return;
-
-      const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
-      hookData.cell.text = [""];
-      hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), layout.height);
-      hookData.row.height = Math.max(Number(hookData.row.height || 0), layout.height);
-    },
-    didDrawCell: (hookData) => {
-      if (hookData.section !== "body") return;
-      if (hookData.column.index !== 0) return;
-
-      const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
-      if (!materialRow.note) return;
-
-      const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
-      const textX = hookData.cell.x + layout.paddingLeft;
-      const textY = hookData.cell.y + layout.paddingTop;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(MATERIAL_DESC_FONT_SIZE);
-      doc.setTextColor(20, 20, 20);
-      doc.text(
-        layout.descLines.length ? layout.descLines : [materialRow.desc || "-"],
-        textX,
-        textY,
-        { baseline: "top", lineHeightFactor: MATERIAL_DESC_LINE_HEIGHT_FACTOR }
-      );
-
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(MATERIAL_NOTE_FONT_SIZE);
-      doc.setTextColor(106, 106, 106);
-      doc.text(
-        layout.noteLines,
-        textX + MATERIAL_NOTE_INDENT,
-        textY + (Math.max(layout.descLines.length, 1) * layout.descLineHeight) + MATERIAL_NOTE_GAP,
-        { baseline: "top", lineHeightFactor: MATERIAL_NOTE_LINE_HEIGHT_FACTOR }
-      );
-      doc.setTextColor(20, 20, 20);
-    },
-  });
-
-  y = (doc.lastAutoTable?.finalY || y);
-
-  if (materialsBlanketDescription) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.25);
-    const materialsDescriptionLines = splitText(doc, materialsBlanketDescription, 182);
-    doc.text(materialsDescriptionLines, LEFT + 4, y);
-    y += (materialsDescriptionLines.length || 1) * 3.6 + 0.05;
+    y += TEXT_SECTION_GAP;
   }
 
-  const materialsSectionEndPage = doc.getNumberOfPages();
-  const materialsSectionBottom = y - 0.2;
-  doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
-  doc.setLineWidth(BORDER_LINE_WIDTH);
-
-  if (materialsSectionStartPage === materialsSectionEndPage) {
-    doc.rect(
-      materialsSectionLeft,
-      materialsSectionTop,
-      materialsSectionWidth,
-      materialsSectionBottom - materialsSectionTop
+  if (hasMeaningfulMaterialsContent && normalizedMaterialRows.length) {
+    y += MATERIAL_SECTION_GAP;
+    y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
+    y = ensureSectionFits(
+      y,
+      MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + estimateFirstMaterialRowHeight() + MATERIAL_KEEP_BUFFER,
+      SECTION_PAGE_TOP
     );
-  } else {
-    for (let page = materialsSectionStartPage; page <= materialsSectionEndPage; page += 1) {
-      doc.setPage(page);
-      const top = page === materialsSectionStartPage ? materialsSectionTop : 4.5;
-      const bottom = page === materialsSectionEndPage ? materialsSectionBottom : pageHeight - 19;
+    const materialsSectionStartPage = doc.getNumberOfPages();
+    const materialsTitleY = y + 1.2;
+    const materialsSectionTop = materialsTitleY - 3;
+    const materialsSectionLeft = LEFT;
+    const materialsSectionRight = Math.max(contentRightEdge, RIGHT);
+    const materialsSectionWidth = materialsSectionRight - materialsSectionLeft;
+    doc.setFillColor(...HEADER_FILL);
+    doc.rect(materialsSectionLeft, materialsSectionTop, materialsSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.4);
+    doc.text("Material Schedule", LEFT + 3, materialsTitleY);
+    y = materialsSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
+    const materialTableBody = normalizedMaterialRows.map((row) => ([
+      { content: row.desc || "-", materialRow: row },
+      row.qty,
+      row.each,
+      row.total,
+    ]));
+
+    autoTable(doc, {
+      startY: y,
+      head: [["", "QTY", "PRICE (each)", "TOTAL"]],
+      body: materialTableBody,
+      theme: "plain",
+      tableLineWidth: 0,
+      rowPageBreak: "avoid",
+      styles: {
+        fontSize: MATERIAL_DESC_FONT_SIZE,
+        cellPadding: 1.45,
+        minCellHeight: 4.2,
+        overflow: "linebreak",
+        lineWidth: 0,
+        textColor: [20, 20, 20],
+        valign: "top",
+      },
+      headStyles: {
+        fontStyle: "bold",
+        textColor: [20, 20, 20],
+        lineWidth: 0,
+        cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
+        minCellHeight: 4.3,
+      },
+      willDrawPage: resetContinuationCursor,
+      columnStyles: {
+        0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
+        1: { cellWidth: 20, halign: "right" },
+        2: { cellWidth: 33, halign: "right" },
+        3: { cellWidth: 37, halign: "right" },
+      },
+      margin: pagedTableMargin,
+      didParseCell: (hookData) => {
+        if (hookData.section === "head") {
+          if (hookData.column.index < 1 || hookData.column.index > 3) return;
+          hookData.cell.styles.halign = "right";
+          return;
+        }
+
+        if (hookData.section !== "body") return;
+        if (hookData.column.index !== 0) return;
+
+        const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
+        if (!materialRow.note) return;
+
+        const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
+        hookData.cell.text = [""];
+        hookData.cell.styles.minCellHeight = Math.max(Number(hookData.cell.styles.minCellHeight || 0), layout.height);
+        hookData.row.height = Math.max(Number(hookData.row.height || 0), layout.height);
+      },
+      didDrawCell: (hookData) => {
+        if (hookData.section !== "body") return;
+        if (hookData.column.index !== 0) return;
+
+        const materialRow = normalizeMaterialRow(hookData.cell.raw?.materialRow);
+        if (!materialRow.note) return;
+
+        const layout = getMaterialRowLayout(materialRow, hookData.cell.width, hookData.cell.styles.cellPadding);
+        const textX = hookData.cell.x + layout.paddingLeft;
+        const textY = hookData.cell.y + layout.paddingTop;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(MATERIAL_DESC_FONT_SIZE);
+        doc.setTextColor(20, 20, 20);
+        doc.text(
+          layout.descLines.length ? layout.descLines : [materialRow.desc || "-"],
+          textX,
+          textY,
+          { baseline: "top", lineHeightFactor: MATERIAL_DESC_LINE_HEIGHT_FACTOR }
+        );
+
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(MATERIAL_NOTE_FONT_SIZE);
+        doc.setTextColor(106, 106, 106);
+        doc.text(
+          layout.noteLines,
+          textX + MATERIAL_NOTE_INDENT,
+          textY + (Math.max(layout.descLines.length, 1) * layout.descLineHeight) + MATERIAL_NOTE_GAP,
+          { baseline: "top", lineHeightFactor: MATERIAL_NOTE_LINE_HEIGHT_FACTOR }
+        );
+        doc.setTextColor(20, 20, 20);
+      },
+    });
+
+    y = (doc.lastAutoTable?.finalY || y);
+
+    if (materialsBlanketDescription) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.25);
+      const materialsDescriptionLines = splitText(doc, materialsBlanketDescription, 182);
+      doc.text(materialsDescriptionLines, LEFT + 4, y);
+      y += (materialsDescriptionLines.length || 1) * 3.6 + 0.05;
+    }
+
+    const materialsSectionEndPage = doc.getNumberOfPages();
+    const materialsSectionBottom = y - 0.2;
+    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+    doc.setLineWidth(BORDER_LINE_WIDTH);
+
+    if (materialsSectionStartPage === materialsSectionEndPage) {
       doc.rect(
         materialsSectionLeft,
-        top,
+        materialsSectionTop,
         materialsSectionWidth,
-        Math.max(0, bottom - top)
+        Math.max(0, Math.min(materialsSectionBottom, footerSafeTopY) - materialsSectionTop)
       );
+    } else {
+      for (let page = materialsSectionStartPage; page <= materialsSectionEndPage; page += 1) {
+        doc.setPage(page);
+        const top = page === materialsSectionStartPage ? materialsSectionTop : CONTINUATION_SECTION_TOP_Y;
+        const bottom = page === materialsSectionEndPage
+          ? Math.min(materialsSectionBottom, footerSafeTopY)
+          : footerSafeTopY;
+        doc.rect(
+          materialsSectionLeft,
+          top,
+          materialsSectionWidth,
+          Math.max(0, bottom - top)
+        );
+      }
+      doc.setPage(materialsSectionEndPage);
     }
-    doc.setPage(materialsSectionEndPage);
+  }
+
+  if (hasMeaningfulAdditionalChargesContent && normalizedAdditionalChargeRows.length) {
+    y += MATERIAL_SECTION_GAP;
+    y = doc.getNumberOfPages() === 1 ? Math.max(MATERIAL_HEADER_Y, y) : Math.max(SECTION_PAGE_TOP, y);
+    y = ensureSectionFits(
+      y,
+      MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP + 5.2 + 5.6 + MATERIAL_KEEP_BUFFER,
+      SECTION_PAGE_TOP
+    );
+    const additionalChargesSectionStartPage = doc.getNumberOfPages();
+    const additionalChargesTitleY = y + 1.2;
+    const additionalChargesSectionTop = additionalChargesTitleY - 3;
+    const additionalChargesSectionLeft = LEFT;
+    const additionalChargesSectionRight = Math.max(contentRightEdge, RIGHT);
+    const additionalChargesSectionWidth = additionalChargesSectionRight - additionalChargesSectionLeft;
+    doc.setFillColor(...HEADER_FILL);
+    doc.rect(additionalChargesSectionLeft, additionalChargesSectionTop, additionalChargesSectionWidth, MATERIAL_TITLE_BAND_HEIGHT, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.4);
+    doc.text("Additional Charges", LEFT + 3, additionalChargesTitleY);
+    y = additionalChargesSectionTop + MATERIAL_TITLE_BAND_HEIGHT + MATERIAL_HEADER_GAP;
+    const additionalChargeTableBody = normalizedAdditionalChargeRows.map((row) => ([
+      row.desc || "Additional Charge",
+      row.qty,
+      row.each,
+      row.total,
+    ]));
+
+    autoTable(doc, {
+      startY: y,
+      head: [["", "QTY", "UNIT PRICE", "TOTAL"]],
+      body: additionalChargeTableBody,
+      theme: "plain",
+      tableLineWidth: 0,
+      styles: {
+        fontSize: MATERIAL_DESC_FONT_SIZE,
+        cellPadding: 1.45,
+        minCellHeight: 4.2,
+        overflow: "linebreak",
+        lineWidth: 0,
+        textColor: [20, 20, 20],
+        valign: "top",
+      },
+      headStyles: {
+        fontStyle: "bold",
+        textColor: [20, 20, 20],
+        lineWidth: 0,
+        cellPadding: { top: 0.7, right: 1.45, bottom: 1.15, left: 1.45 },
+        minCellHeight: 4.3,
+      },
+      willDrawPage: resetContinuationCursor,
+      columnStyles: {
+        0: { cellWidth: 84, halign: "left", overflow: "linebreak" },
+        1: { cellWidth: 20, halign: "right" },
+        2: { cellWidth: 33, halign: "right" },
+        3: { cellWidth: 37, halign: "right" },
+      },
+      margin: pagedTableMargin,
+      didParseCell: (hookData) => {
+        if (hookData.section !== "head") return;
+        if (hookData.column.index < 1 || hookData.column.index > 3) return;
+        hookData.cell.styles.halign = "right";
+      },
+    });
+
+    y = (doc.lastAutoTable?.finalY || y);
+
+    const additionalChargesSectionEndPage = doc.getNumberOfPages();
+    const additionalChargesSectionBottom = y - 0.2;
+    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+    doc.setLineWidth(BORDER_LINE_WIDTH);
+
+    if (additionalChargesSectionStartPage === additionalChargesSectionEndPage) {
+      doc.rect(
+        additionalChargesSectionLeft,
+        additionalChargesSectionTop,
+        additionalChargesSectionWidth,
+        Math.max(0, Math.min(additionalChargesSectionBottom, footerSafeTopY) - additionalChargesSectionTop)
+      );
+    } else {
+      for (let page = additionalChargesSectionStartPage; page <= additionalChargesSectionEndPage; page += 1) {
+        doc.setPage(page);
+        const top = page === additionalChargesSectionStartPage ? additionalChargesSectionTop : CONTINUATION_SECTION_TOP_Y;
+        const bottom = page === additionalChargesSectionEndPage
+          ? Math.min(additionalChargesSectionBottom, footerSafeTopY)
+          : footerSafeTopY;
+        doc.rect(
+          additionalChargesSectionLeft,
+          top,
+          additionalChargesSectionWidth,
+          Math.max(0, bottom - top)
+        );
+      }
+      doc.setPage(additionalChargesSectionEndPage);
+    }
   }
 
   const totalsStartY = ensureSectionFits(y, estimateTotalsBlockHeight(), SECTION_PAGE_TOP) + TOTALS_TOP_OFFSET;
@@ -1091,13 +1630,13 @@ function buildPdfDoc(payload) {
       valign: "top",
     },
     columnStyles: {
-      0: { cellWidth: 36, fontStyle: "normal" },
+      0: { cellWidth: 46, fontStyle: "normal" },
       1: { cellWidth: 26, halign: "right" },
     },
     margin: { left: TOTALS_X, right: TOTALS_RIGHT_GUTTER },
     didDrawCell: (hookData) => {
       if (hookData.section !== "body") return;
-      if (hookData.row.index !== subtotalRowIndex) return;
+      if (hookData.row.index !== totalsDividerRowIndex) return;
       if (hookData.column.index !== 0) return;
       const rowY = hookData.cell.y;
       const rowHeight = hookData.row.height;
@@ -1108,7 +1647,7 @@ function buildPdfDoc(payload) {
     },
     didParseCell: (hookData) => {
       if (hookData.section !== "body") return;
-      if (hookData.row.index === subtotalRowIndex) {
+      if (hookData.row.index === totalsDividerRowIndex) {
         hookData.cell.styles.cellPadding = { top: 2.35, right: 1.25, bottom: 2.2, left: 1.25 };
         hookData.cell.styles.minCellHeight = Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
       }
@@ -1292,6 +1831,24 @@ function buildPdfDoc(payload) {
     doc.setFontSize(PAGE_NUMBER_FONT_SIZE);
     doc.setTextColor(PAGE_NUMBER_TEXT_COLOR);
     doc.text(`Page ${page} of ${pageCount}`, RIGHT, PAGE_NUMBER_Y, { align: "right" });
+
+    if (page > 1) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13.2);
+      doc.setTextColor(20, 20, 20);
+      doc.text(documentTypeLabel, CENTER, CONTINUATION_TITLE_Y, { align: "center", baseline: "middle" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.1);
+      doc.setTextColor(80, 80, 80);
+      doc.text(estimateNumber, RIGHT, CONTINUATION_NUMBER_Y, { align: "right", baseline: "middle" });
+
+      doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+      doc.setLineWidth(BORDER_LINE_WIDTH);
+      doc.line(LEFT, CONTINUATION_DIVIDER_Y, RIGHT, CONTINUATION_DIVIDER_Y);
+
+      doc.setTextColor(20, 20, 20);
+    }
   }
 
   if (footerLine) {

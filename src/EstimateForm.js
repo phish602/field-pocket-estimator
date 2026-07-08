@@ -1,18 +1,35 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./EstimateForm.css";
 
-import { BUILD_TAG, STORAGE_KEY } from "./estimator/defaultState";
+import { BUILD_TAG, DEFAULT_STATE, STORAGE_KEY } from "./estimator/defaultState";
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import PdfPromptModal from "./components/estimator/PdfPromptModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
+import CloudBackupInlineStatus from "./components/CloudBackupInlineStatus";
+import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
+import SectionAssistPanel from "./estimator/aiAssist/SectionAssistPanel";
+import { getAssistConfig } from "./estimator/aiAssist/registry";
+import { requestSectionAssist } from "./estimator/aiAssist/service";
+import { deriveProjectNameFromScopeFlow } from "./estimator/aiAssist/adapters/scope";
+import {
+  dedupeProposedMaterialLines,
+  isBlankMaterialItem,
+  resolveMaterialsAssistMode,
+} from "./estimator/aiAssist/adapters/materials";
 import { exportPdf } from "./pdf";
+import {
+  captureAssistAccept,
+  captureAssistRequest,
+  captureAssistResult,
+  captureDocumentSave,
+} from "./utils/jobLearningCapture";
 import {
   createMoneyFormatter,
   formatDateMMDDYYYY,
@@ -23,12 +40,74 @@ import {
 import { formatPhoneForDisplay, sanitizePdfToken } from "./utils/sanitize";
 import { requireCompanyProfile } from "./utils/guards";
 import { loadCompanyProfile } from "./utils/storage";
+import {
+  findSavedCustomLaborRoleLabel,
+  getLegacyLaborRoleLabel,
+  readStoredCustomLaborRoles,
+  resolveLaborRoleSelectValue,
+  writeStoredCustomLaborRoles,
+} from "./utils/customLaborRoles";
+import {
+  createScopeTemplate,
+  isLegacyScopeTemplateRecord,
+  readStoredScopeTemplates,
+  writeStoredScopeTemplates,
+} from "./utils/scopeTemplates";
+import {
+  extractTradeInsertBlocksForPdf,
+  stripTradeInsertBlocksFromScope,
+} from "./utils/scopeTradeStarters";
+import {
+  addToCustomerRecents,
+  buildSelectedCustomerProfileFromDraft,
+  flattenCustomerForEstimator,
+  readCustomerRecents,
+} from "./utils/estimatorCustomers";
 import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
+import {
+  allocateFinancialSummaryFromSource,
+  buildFinancialSummaryFromComputed,
+  generateNextInvoiceNumber,
+  normalizeInvoiceRecord,
+  readStoredInvoices,
+  validateInvoiceAgainstEstimate,
+  writeStoredInvoices,
+} from "./utils/invoices";
+import { generateNextEstimateNumber } from "./utils/estimateNumbers";
+import {
+  backfillProjectCollections,
+  readStoredProjects,
+  resolveProjectPersistenceTarget,
+  upsertProject,
+  writeStoredProjects,
+} from "./utils/projects";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
+import { markCloudBackupDirty } from "./lib/cloudBackupQueue";
+import useGuidedBuild, {
+  buildCanonicalBlankDisplayState,
+  hasCoreGuidedDraftState,
+  hasGuidedRuntimeResidue,
+} from "./estimator/guided/useGuidedBuild";
+import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockpitTotals";
+import CustomerPortalSharePanel from "./components/portal/CustomerPortalSharePanel";
+import {
+  estimateDataUrlBytes,
+  isStorageQuotaExceededError,
+  normalizeScopeImageForStorage,
+  SCOPE_IMAGE_HARD_MAX_STORED_BYTES,
+} from "./lib/scopeImageStorage";
 
 const money = createMoneyFormatter("en-US", "USD");
 const LANG_KEY = STORAGE_KEYS.LANG;
+const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
+const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
+const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
+const MAX_SCOPE_IMAGES_PER_DOCUMENT = 8;
+const MAX_SCOPE_IMAGE_STORED_BYTES = SCOPE_IMAGE_HARD_MAX_STORED_BYTES;
+const MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES = 800 * 1024;
+const SCOPE_IMAGE_MARKER_PATTERN = /\[scope-image:([a-zA-Z0-9_-]+)\]/g;
+const STORAGE_FULL_MESSAGE = "Storage is full. Remove some photos or templates and try again.";
 const I18N = {
   en: {
     standard: "Standard (1.00×)",
@@ -43,15 +122,15 @@ const I18N = {
     risk: "% risk",
     materialsMeta: "% materials",
     materials: "Materials",
-    materialsMode: "Materials mode",
+    materialsMode: "Entry type",
     materialsModeBlanket: "Blanket",
     materialsModeItemized: "Itemized",
     materialsCost: "Materials cost",
     markupPct: "Markup %",
-    materialsBlanketDescriptionLabel: "Materials Description (prints on PDF)",
-    materialsBlanketDescriptionPlaceholder: "Example: Include primer, caulk, fasteners, sundries, and disposal.",
+    materialsBlanketDescriptionLabel: "What's included (prints on PDF)",
+    materialsBlanketDescriptionPlaceholder: "Example: Fixtures, fittings, fasteners, consumables, delivery, and disposal.",
     addMaterialItem: "+ Add Item",
-    materialsItemizedHelp: "Itemized mode: qty × price (each) rolls into estimate total. Internal cost is for margin tracking only.",
+    materialsItemizedHelp: "List materials line by line — qty × price builds the section total. Good for detailed breakdowns or when itemizing helps price the job.",
     materialDesc: "Description",
     materialNote: "Line note (optional)",
     materialNotePlaceholder: "Prints under this item in the PDF",
@@ -59,6 +138,18 @@ const I18N = {
     materialCostInternal: "Cost (internal)",
     materialCharge: "Price (each)",
     materialsItemizedTotal: "Itemized materials total",
+    additionalCharges: "Additional Charges",
+    additionalChargesHelp: "Custom fee or service lines that bill separately from labor and materials.",
+    addChargeItem: "+ Add Charge",
+    chargeDesc: "Description",
+    chargeQty: "Qty",
+    chargeUnitPrice: "Unit price",
+    chargeLineTotal: "Line total",
+    additionalChargesSubtotal: "Additional charges subtotal",
+    labor: "Labor",
+    hours: "Hours",
+    rate: "Rate ($/hr)",
+    selectRole: "Select role…",
   },
   es: {
     standard: "Estándar (1.00×)",
@@ -73,15 +164,15 @@ const I18N = {
     risk: "% riesgo",
     materialsMeta: "% materiales",
     materials: "Materiales",
-    materialsMode: "Modo de materiales",
+    materialsMode: "Tipo de entrada",
     materialsModeBlanket: "Global",
     materialsModeItemized: "Detallado",
     materialsCost: "Costo de materiales",
     markupPct: "Margen %",
-    materialsBlanketDescriptionLabel: "Descripción de materiales (se imprime en PDF)",
-    materialsBlanketDescriptionPlaceholder: "Ejemplo: Incluye primer, sellador, fijaciones, insumos y disposición.",
+    materialsBlanketDescriptionLabel: "Qué incluye (se imprime en PDF)",
+    materialsBlanketDescriptionPlaceholder: "Ejemplo: Accesorios, herrajes, fijaciones, consumibles, entrega y disposición.",
     addMaterialItem: "+ Agregar Partida",
-    materialsItemizedHelp: "Modo por partida: cant. × precio (c/u) se suma al total. El costo interno solo es para margen.",
+    materialsItemizedHelp: "Lista materiales línea por línea — cant. × precio construye el total. Útil para desglosar costos o cuando conviene itemizar el presupuesto.",
     materialDesc: "Descripción",
     materialNote: "Nota de línea (opcional)",
     materialNotePlaceholder: "Se imprime debajo de esta partida en el PDF",
@@ -89,6 +180,18 @@ const I18N = {
     materialCostInternal: "Costo (interno)",
     materialCharge: "Precio (c/u)",
     materialsItemizedTotal: "Total de materiales por partida",
+    additionalCharges: "Cargos adicionales",
+    additionalChargesHelp: "Cargos o servicios personalizados que se facturan aparte de la mano de obra y los materiales.",
+    addChargeItem: "+ Agregar cargo",
+    chargeDesc: "Descripción",
+    chargeQty: "Cant.",
+    chargeUnitPrice: "Precio unitario",
+    chargeLineTotal: "Total de línea",
+    additionalChargesSubtotal: "Subtotal de cargos adicionales",
+    labor: "Mano de obra",
+    hours: "Horas",
+    rate: "Tarifa ($/hr)",
+    selectRole: "Seleccionar rol…",
   },
 };
 
@@ -97,83 +200,336 @@ const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
 const PENDING_CUSTOMER_CREATE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_CREATE;
 const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
-const CUSTOMER_RECENTS_KEY = STORAGE_KEYS.CUSTOMER_RECENTS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
+const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
+const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const CREATE_NEW_CUSTOMER_VALUE = "__CREATE_NEW__";
 const SAVE_PROMPT_TIMEOUT_MS = 2200;
-function readSavedCustomers() {
-  try { return JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || []; } catch { return []; }
-}
-function customerDisplayName(c) {
-  if (!c) return "";
-  return String(c.type === "commercial" ? (c.companyName || c.name || "") : (c.fullName || c.name || "")).trim();
-}
-function readCustomerRecents() {
-  try { return JSON.parse(localStorage.getItem(CUSTOMER_RECENTS_KEY) || "[]") || []; } catch { return []; }
-}
-function addToCustomerRecents(id) {
+const SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS = 38000;
+const SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE = "AI assist took too long to respond. Please try again.";
+const SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE = "AI assist could not reach the local AI server.";
+const SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE = "AI assist hit an internal error. Please try again.";
+const SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE = "Scope draft was too generic. Add more job detail and try again.";
+
+function readAndConsumeProjectCreateSeed() {
   try {
-    const prev = readCustomerRecents();
-    const next = [id, ...prev.filter((r) => r !== id)].slice(0, 8);
-    localStorage.setItem(CUSTOMER_RECENTS_KEY, JSON.stringify(next));
-  } catch {}
-}
-function flattenCustomerForEstimator(c) {
-  if (!c) return {};
-  const joinAddr = (a) => {
-    const street = String(a?.street || "").trim();
-    const line2 = [String(a?.city || "").trim(), String(a?.state || "").trim()].filter(Boolean).join(", ");
-    const line2Full = [line2, String(a?.zip || "").trim()].filter(Boolean).join(" ");
-    return [street, line2Full].filter(Boolean).join("\n");
-  };
-  if (String(c.type || "") === "commercial") {
-    const job = c.jobsite || {};
-    const bill = c.billSameAsJob ? (c.jobsite || {}) : (c.billing || {});
-    return { name: String(c.companyName || "").trim(), phone: String(c.comPhone || "").trim(), email: String(c.comEmail || "").trim(), attn: String(c.contactName || "").trim(), address: joinAddr(job), billingAddress: joinAddr(bill) };
-  }
-  const svc = c.resService || {};
-  const bill = c.resBillingSame ? (c.resService || {}) : (c.resBilling || {});
-  return { name: String(c.fullName || "").trim(), phone: String(c.resPhone || "").trim(), email: String(c.resEmail || "").trim(), attn: "", address: joinAddr(svc), billingAddress: joinAddr(bill) };
-}
+    let returnTarget = null;
+    try {
+      const returnTargetRaw = localStorage.getItem(PROJECT_DETAIL_RETURN_TARGET_KEY);
+      returnTarget = returnTargetRaw ? JSON.parse(returnTargetRaw) : null;
+    } catch {
+      returnTarget = null;
+    }
+    const hasLiveProjectDetailReturnTarget = returnTarget
+      && typeof returnTarget === "object"
+      && String(returnTarget.route || "").trim() === ROUTES.PROJECT_DETAIL
+      && String(returnTarget.projectId || "").trim();
+    const raw = localStorage.getItem(PROJECT_CREATE_SEED_KEY);
+    if (!raw) return null;
+    if (!hasLiveProjectDetailReturnTarget) {
+      localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+      return null;
+    }
+    localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const projectId = String(parsed.projectId || "").trim();
+    const customerId = String(parsed.customerId || "").trim();
+    if (!projectId && !customerId) return null;
 
-function buildSelectedCustomerProfileFromDraft(customerState, customerId = "", customerList = []) {
-  const sid = String(customerId || customerState?.id || "").trim();
-  if (!sid) return null;
+    if (projectId) {
+      const storedProjects = readStoredProjects();
+      const projectExists = storedProjects.some((p) => String(p?.id || "").trim() === projectId);
+      if (!projectExists) {
+        return null;
+      }
+    }
 
-  const matchedCustomer = Array.isArray(customerList)
-    ? customerList.find((item) => String(item?.id || "").trim() === sid)
-    : null;
+    if (customerId) {
+      const storedCustomers = readSavedCustomers();
+      const customerExists = storedCustomers.some((c) => String(c?.id || "").trim() === customerId);
+      if (!customerExists) {
+        return null;
+      }
+    }
 
-  if (matchedCustomer) {
     return {
-      ...matchedCustomer,
-      ...flattenCustomerForEstimator(matchedCustomer),
-      id: sid,
+      projectId,
+      customerId,
+      customerName: String(parsed.customerName || "").trim(),
+      projectName: String(parsed.projectName || "").trim(),
+      projectNumber: String(parsed.projectNumber || "").trim(),
+      siteAddress: String(parsed.siteAddress || "").trim(),
+    };
+  } catch {
+    try { localStorage.removeItem(PROJECT_CREATE_SEED_KEY); } catch {}
+    return null;
+  }
+}
+
+function looksLikeScopeAssistNetworkFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\bfailed to fetch\b/i,
+    /\bfetch failed\b/i,
+    /\bnetworkerror\b/i,
+    /\bnetwork request failed\b/i,
+    /\beconnrefused\b/i,
+    /\benotfound\b/i,
+    /\bconnection refused\b/i,
+    /\bcould not reach the local ai server\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function looksLikeScopeAssistTimeoutFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\btimed out\b/i,
+    /\btimeout\b/i,
+    /\btook too long to respond\b/i,
+    /\brequest timed out\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function looksLikeScopeAssistInternalFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return [
+    /\binternal error\b/i,
+    /\binternal failure\b/i,
+    /\bmalformed\b/i,
+    /\bcouldn'?t complete\b/i,
+    /\bcould not complete\b/i,
+    /\brequest failed\b/i,
+    /\bunable to complete\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function resolveScopeAssistDisplayError(value, elapsedMs = 0) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  if (looksLikeScopeAssistNetworkFailure(text)) return SCOPE_ASSIST_NETWORK_DISPLAY_MESSAGE;
+  if (looksLikeScopeAssistTimeoutFailure(text)) return SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE;
+  if (looksLikeScopeAssistInternalFailure(text)) return SCOPE_ASSIST_INTERNAL_DISPLAY_MESSAGE;
+
+  const busyLike = [
+    /\btemporar(?:y|ily)\b/i,
+    /\bbusy\b/i,
+    /\boverload(?:ed)?\b/i,
+    /\brate[_\s-]?limit\b/i,
+    /\btoo many requests\b/i,
+    /\bunavailable\b/i,
+  ].some((pattern) => pattern.test(text));
+
+  if (busyLike && elapsedMs >= SCOPE_ASSIST_TIMEOUT_DISPLAY_THRESHOLD_MS) {
+    return SCOPE_ASSIST_TIMEOUT_DISPLAY_MESSAGE;
+  }
+
+  return text;
+}
+
+function normalizeScopeAssistClientText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function resolveScopeAssistDisplaySource({ runtime = null, result = null } = {}) {
+  if (String(result?._scopeClientResultSource || "").trim() === "grounded_local_fallback") {
+    return "grounded_local_fallback";
+  }
+  const runtimePath = String(runtime?.path || "").trim();
+  if (runtimePath === "direct_groq_success") return "groq_success";
+  if (runtimePath === "direct_groq_clarify") return "groq_clarify";
+  if (runtimePath === "grounded_fallback_success") return "grounded_local_fallback";
+  if (runtimePath === "provider_failure_no_grounded_fallback") return "provider_failure_unavailable";
+  if (runtimePath === "junk_blocked_pre_groq") return "junk_blocked_pre_groq";
+  return runtimePath || "unknown";
+}
+
+const SCOPE_ASSIST_META_LANGUAGE_PATTERNS = [
+  /\braw scope prompt\b/i,
+  /\bdescribed in the prompt\b/i,
+  /\btrade bucket\b/i,
+  /\boutcome\b/i,
+  /\bclarificationquestion\b/i,
+  /\bmissingfields\b/i,
+  /\bprompt\b/i,
+];
+
+function describeScopeAssistMetaLanguageMatch(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) return { matched: false, pattern: "", match: "" };
+
+  for (const pattern of SCOPE_ASSIST_META_LANGUAGE_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match) {
+      return {
+        matched: true,
+        pattern: String(pattern),
+        match: String(match[0] || ""),
+      };
+    }
+  }
+
+  return { matched: false, pattern: "", match: "" };
+}
+
+function classifyScopeAssistClientResponse({ userInput = "", scopeNotes = "", outcome = "", clarificationQuestion = "" } = {}) {
+  const rawScopeNotes = typeof scopeNotes === "string" ? scopeNotes : "";
+  const normalizedScopeNotes = normalizeScopeAssistClientText(rawScopeNotes);
+  const normalizedOutcome = String(outcome || "").trim().toLowerCase();
+  const normalizedClarificationQuestion = normalizeScopeAssistClientText(clarificationQuestion);
+  if (normalizedOutcome === "clarify" && normalizedClarificationQuestion) {
+    return {
+      valid: false,
+      reason: "clarify",
+      message: normalizedClarificationQuestion,
+      clarify: true,
+    };
+  }
+  if (typeof scopeNotes !== "string") {
+    return { valid: false, reason: "rejected_malformed", message: "Scope text was malformed." };
+  }
+  if (!normalizedScopeNotes) {
+    return { valid: false, reason: "rejected_empty", message: "Scope text was empty." };
+  }
+  const metaLanguageMatch = describeScopeAssistMetaLanguageMatch(normalizedScopeNotes);
+  if (metaLanguageMatch.matched) {
+    return {
+      valid: false,
+      reason: "rejected_meta_language",
+      message: "Scope text contained internal prompt metadata.",
+      metaPattern: metaLanguageMatch.pattern,
+      metaMatch: metaLanguageMatch.match,
     };
   }
 
-  const name = String(customerState?.name || "").trim();
-  return {
-    id: sid,
-    name,
-    fullName: name,
-    attn: String(customerState?.attn || "").trim(),
-    phone: String(customerState?.phone || "").trim(),
-    email: String(customerState?.email || "").trim(),
-    netTermsType: String(customerState?.netTermsType || "").trim(),
-    netTermsDays: customerState?.netTermsDays === null || customerState?.netTermsDays === undefined
-      ? ""
-      : String(customerState?.netTermsDays),
-    address: String(customerState?.address || "").trim(),
-    billingAddress: String(customerState?.billingAddress || "").trim(),
-  };
+  const normalizedInput = normalizeScopeAssistClientText(userInput);
+  if (!normalizedInput) {
+    return { valid: true, reason: "accepted" };
+  }
+
+  const stripPunctuation = (text) => String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const inputNorm = stripPunctuation(normalizedInput);
+  const outputNorm = stripPunctuation(normalizedScopeNotes);
+  if (!outputNorm) {
+    return { valid: false, reason: "rejected_malformed", message: "Scope text was malformed." };
+  }
+  if (outputNorm === inputNorm) {
+    return { valid: false, reason: "rejected_echo", message: "Scope text only repeated the prompt." };
+  }
+
+  const inputTokens = inputNorm.split(" ").filter(Boolean);
+  const outputTokens = outputNorm.split(" ").filter(Boolean);
+  if (inputNorm && outputNorm.startsWith(inputNorm) && outputTokens.length <= inputTokens.length + 2) {
+    return { valid: false, reason: "rejected_echo", message: "Scope text only repeated the prompt." };
+  }
+
+  return { valid: true, reason: "accepted" };
 }
 
+const SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS = [
+  /\bwork on affected areas\b/i,
+  /\bcomplete the described scope\b/i,
+  /\bcomplete the stated scope\b/i,
+  /\bclean up the work area\b/i,
+  /\bnot included unless identified and approved\b/i,
+];
+
+function isExplicitScopeAssistScaffoldText(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) return false;
+  return SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function describeExplicitScopeAssistScaffoldMatch(scopeNotes) {
+  const normalized = normalizeScopeAssistClientText(scopeNotes);
+  if (!normalized) {
+    return { matched: false, pattern: "", match: "" };
+  }
+
+  for (const pattern of SCOPE_ASSIST_EXPLICIT_SCAFFOLD_PATTERNS) {
+    const match = normalized.match(pattern);
+    if (match) {
+      return {
+        matched: true,
+        pattern: String(pattern),
+        match: String(match[0] || ""),
+      };
+    }
+  }
+
+  return { matched: false, pattern: "", match: "" };
+}
+
+function readSavedCustomers() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOMERS_KEY) || "[]") || [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function summarizeGuidedShellText(value, max = 140) {
+  const raw = String(value || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  return raw.length > max ? `${raw.slice(0, max - 1)}...` : raw;
+}
+
+const ESTIPAID_GUIDED_TRACE_KEY = "__ESTIPAID_GUIDED_TRACE__";
+
+function isBrowserDevelopmentRuntime() {
+  try {
+    const runtimeProcess = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    return Boolean(runtimeProcess && runtimeProcess.env && runtimeProcess.env.NODE_ENV === "development");
+  } catch {
+    return false;
+  }
+}
+
+function shouldTraceEstiPaidGuidedRuntime() {
+  const runtimeProcess = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+  if (runtimeProcess && runtimeProcess.env) {
+    const envEnabled = runtimeProcess.env.ESTIPAID_GUIDED_TRACE === "1"
+      || runtimeProcess.env.REACT_APP_ESTIPAID_GUIDED_TRACE === "1";
+    if (envEnabled) return true;
+  }
+  if (typeof window === "undefined") return false;
+  try {
+    return window[ESTIPAID_GUIDED_TRACE_KEY] === true
+      || window.localStorage?.getItem(ESTIPAID_GUIDED_TRACE_KEY) === "1";
+  } catch {
+    return window[ESTIPAID_GUIDED_TRACE_KEY] === true;
+  }
+}
+
+function traceEstiPaidGuidedRuntime(source, event, payload = {}) {
+  if (!shouldTraceEstiPaidGuidedRuntime()) return;
+  try {
+    console.info(`[ESTIPAID_GUIDED_TRACE][${source}] ${event}`, payload);
+  } catch {}
+}
+function customerDisplayName(c) {
+  if (!c) return "";
+  const inferredType = String(c?.type || (c?.companyName ? "commercial" : "residential")).toLowerCase();
+  if (inferredType === "commercial") {
+    return String(c?.companyName || c?.name || c?.fullName || "").trim();
+  }
+  return String(c?.fullName || c?.name || c?.companyName || "").trim();
+}
 function formatAddressObject(a) {
   const street = String(a?.street || "").trim();
   const city = String(a?.city || "").trim();
@@ -198,12 +554,164 @@ function triggerHaptic() {
 
 function readSavedDocList(key) {
   try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    if (key !== ESTIMATES_KEY && key !== INVOICES_KEY) {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    }
+
+    const readList = (storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const next = backfillProjectCollections({
+      customers: readSavedCustomers(),
+      projects: readStoredProjects(),
+      estimates: readList(ESTIMATES_KEY).filter(
+        (record) => String(record?.docType || "estimate").toLowerCase() !== "invoice"
+      ),
+      invoices: readList(INVOICES_KEY),
+    });
+
+    return key === ESTIMATES_KEY ? next.estimates : next.invoices;
   } catch {
     return [];
   }
+}
+
+function resolveExportMaterialsMode(candidateState, fallbackMode = "blanket") {
+  const explicitMode = String(
+    candidateState?.ui?.materialsMode
+    || candidateState?.materialsMode
+    || ""
+  ).trim().toLowerCase();
+  if (explicitMode === "itemized" || explicitMode === "blanket") return explicitMode;
+  const hasItemizedMaterials = Array.isArray(candidateState?.materials?.items)
+    && candidateState.materials.items.some((item) => String(item?.desc || "").trim());
+  return hasItemizedMaterials ? "itemized" : fallbackMode;
+}
+
+function hasMeaningfulInvoiceExportData(candidateState, candidateComputed) {
+  const documentNumber = String(
+    candidateState?.job?.docNumber
+    || candidateState?.invoiceNumber
+    || candidateState?.customer?.projectNumber
+    || ""
+  ).trim();
+  const customerName = String(candidateState?.customer?.name || "").trim();
+  const projectName = String(candidateState?.customer?.projectName || "").trim();
+  const totalRevenue = Number(candidateComputed?.totals?.grandTotal ?? candidateComputed?.grandTotal ?? 0);
+  const hasLaborRows = Array.isArray(candidateComputed?.labor?.normalized)
+    && candidateComputed.labor.normalized.some((line) => {
+      const label = String(line?.label || line?.role || "").trim();
+      return Boolean(label || Number(line?.hours || 0) || Number(line?.rate || line?.effectiveRate || 0));
+    });
+  const hasMaterialRows = Array.isArray(candidateComputed?.materials?.normalized)
+    && candidateComputed.materials.normalized.some((item) => {
+      const desc = String(item?.desc || "").trim();
+      return Boolean(desc || Number(item?.qty || 0) || Number(item?.priceEach || item?.effectivePriceEach || 0));
+    });
+
+  return Boolean(documentNumber || customerName || projectName || totalRevenue || hasLaborRows || hasMaterialRows);
+}
+
+function findStoredInvoiceForExport(editingId, candidateState) {
+  const matchId = String(editingId || candidateState?.meta?.savedDocId || "").trim();
+  const matchDocNumber = String(
+    candidateState?.job?.docNumber
+    || candidateState?.invoiceNumber
+    || ""
+  ).trim();
+
+  if (!matchId && !matchDocNumber) return null;
+
+  const invoices = readStoredInvoices();
+  return invoices.find((entry) => {
+    const entryId = String(entry?.id || "").trim();
+    const entryDocNumber = String(entry?.job?.docNumber || entry?.invoiceNumber || "").trim();
+    return (matchId && entryId === matchId)
+      || (matchDocNumber && entryDocNumber === matchDocNumber);
+  }) || null;
+}
+
+function writeStoredEstimatesLocal(nextEstimates) {
+  const collectLegacyInvoiceIdentityKeys = (record) => {
+    const keys = new Set();
+    const id = String(record?.id || "").trim();
+    const invoiceNumber = String(
+      record?.invoiceNumber
+      || record?.job?.docNumber
+      || record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    const docNumber = String(
+      record?.docNumber
+      || record?.documentNumber
+      || record?.documentNo
+      || record?.number
+      || ""
+    ).trim();
+    if (id) keys.add(`id:${id}`);
+    if (invoiceNumber) keys.add(`invoiceNumber:${invoiceNumber}`);
+    if (docNumber) keys.add(`docNumber:${docNumber}`);
+    return keys;
+  };
+  let legacyInvoiceRecords = [];
+  try {
+    const raw = localStorage.getItem(ESTIMATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) {
+      const seen = new Set();
+      legacyInvoiceRecords = parsed.filter((record) => {
+        if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
+        const recordKeys = [...collectLegacyInvoiceIdentityKeys(record)];
+        if (!recordKeys.length) return true;
+        if (recordKeys.some((key) => seen.has(key))) return false;
+        recordKeys.forEach((key) => seen.add(key));
+        return true;
+      });
+    }
+  } catch {}
+  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...(Array.isArray(nextEstimates) ? nextEstimates : []), ...legacyInvoiceRecords]));
+  try {
+    window.dispatchEvent(new Event("estipaid:estimates-changed"));
+  } catch {}
+  markCloudBackupDirty({
+    reason: "estimate_data_saved",
+    domains: ["estimates"],
+    severity: "money_critical",
+    source: "writeStoredEstimatesLocal",
+  });
+}
+
+function hasExplicitInternalCostInputs(doc) {
+  const blanketInternalCost = String(
+    doc?.materials?.blanketInternalCost
+    ?? doc?.blanketInternalCost
+    ?? ""
+  ).trim();
+  if (blanketInternalCost) return true;
+
+  const materialItems = Array.isArray(doc?.materials?.items)
+    ? doc.materials.items
+    : (Array.isArray(doc?.materialItems) ? doc.materialItems : []);
+  if (materialItems.some((item) => String(item?.unitCostInternal ?? item?.costInternal ?? "").trim() !== "")) {
+    return true;
+  }
+
+  const laborLines = Array.isArray(doc?.labor?.lines)
+    ? doc.labor.lines
+    : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
+  return laborLines.some((line) => String(line?.trueRateInternal ?? line?.internalRate ?? line?.rateInternal ?? "").trim() !== "");
 }
 
 function toDocTimestamp(value) {
@@ -271,13 +779,10 @@ function readPendingEditTarget() {
   try {
     const invoiceId = String(localStorage.getItem(EDIT_INVOICE_TARGET_KEY) || "").trim();
     if (invoiceId) {
-      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       return { type: "invoice", id: invoiceId };
     }
     const estimateId = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();
     if (estimateId) {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       return { type: "estimate", id: estimateId };
     }
     return null;
@@ -286,11 +791,102 @@ function readPendingEditTarget() {
   }
 }
 
+function consumePendingEditTarget(type) {
+  try {
+    if (type === "invoice") {
+      localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      return;
+    }
+    if (type === "estimate") {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+    }
+  } catch {}
+}
+
 function clearPendingEditTarget(type) {
   try {
     if (!type || type === "estimate") localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
     if (!type || type === "invoice") localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
   } catch {}
+}
+
+// Explicit snapshot/restore for the shared live Create draft slot while a
+// saved-record edit session is open. The live slot must never be replaced by
+// the edited saved record, no matter how the edit session ends (save, cancel,
+// or a stale/missing target). Rather than relying solely on persistDraft
+// timing, this stash is the authoritative source of truth restored on exit.
+const LIVE_DRAFT_EDIT_SESSION_STASH_KEY = "estipaid-live-draft-edit-stash-v1";
+
+function stashLiveDraftForEditSession() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      localStorage.setItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY, raw);
+    } else {
+      localStorage.removeItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+    }
+  } catch {}
+}
+
+function restoreLiveDraftFromEditSessionStash() {
+  try {
+    const stashed = localStorage.getItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+    if (stashed) {
+      localStorage.setItem(STORAGE_KEY, stashed);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    localStorage.removeItem(LIVE_DRAFT_EDIT_SESSION_STASH_KEY);
+  } catch {}
+}
+
+function dispatchLocalStorageUpdate(key, value = "") {
+  try {
+    window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key, value } }));
+  } catch {}
+}
+
+function clearSuccessfulCreateDraftChamber() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEY, "");
+
+  try {
+    localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEYS.ESTIMATE_DRAFT, "");
+
+  try {
+    localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+  } catch {}
+  dispatchLocalStorageUpdate(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "");
+}
+
+function buildCleanBuilderState(docType = "estimate") {
+  const normalizedDocType = docType === "invoice" ? "invoice" : "estimate";
+  let next = {};
+
+  try {
+    next = JSON.parse(JSON.stringify(DEFAULT_STATE)) || {};
+  } catch {
+    next = { ...(DEFAULT_STATE || {}) };
+  }
+
+  next.ui = {
+    ...(next.ui || {}),
+    docType: normalizedDocType,
+    materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
+    includeInvoiceScopeNotes: normalizedDocType === "invoice"
+      ? Boolean(next?.ui?.includeInvoiceScopeNotes)
+      : false,
+  };
+  next.scopeNotes = String(next.scopeNotes || "");
+  next.tradeInsert = { key: "", text: "" };
+  next.meta = { lastSavedAt: 0 };
+
+  return next;
 }
 
 function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
@@ -325,14 +921,28 @@ const LABOR_PRESETS = [
   { key: "operator", label: "Equipment Operator" },
 ];
 
-// Scope / Notes master templates (append-on-select)
-const SCOPE_MASTER_TEMPLATES = [
-  { key: "furnish_install", label: "Furnish & Install", text: "Furnish all materials, labor, and equipment required to complete the scope of work per specifications." },
-  { key: "demo_dispose",    label: "Demo & Dispose",    text: "Demolish and dispose of existing materials. Remove all debris from site in a safe and timely manner." },
-  { key: "inspect_repair",  label: "Inspect & Repair",  text: "Inspect existing conditions and perform repairs as needed per site assessment. Document all findings." },
-  { key: "supply_install",  label: "Supply & Install",  text: "Supply and install per approved submittal. Coordinate with general contractor for scheduling and inspections." },
-  { key: "rough_finish",    label: "Rough & Finish",    text: "Complete rough-in phase followed by finish work per drawings and specifications." },
-];
+function normalizeLaborRoleLabel(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLaborRoleLabelKey(value) {
+  return normalizeLaborRoleLabel(value).toLowerCase();
+}
+
+const LABOR_PRESET_BY_NORMALIZED_LABEL = LABOR_PRESETS.reduce((map, preset) => {
+  map.set(normalizeLaborRoleLabelKey(preset.label), preset);
+  return map;
+}, new Map());
+
+function findLaborPresetByLabel(label = "") {
+  return LABOR_PRESET_BY_NORMALIZED_LABEL.get(normalizeLaborRoleLabelKey(label)) || null;
+}
+
+const CUSTOM_LABOR_ROLE_HELPER_OPTIONS = Object.freeze({
+  storageKey: CUSTOM_LABOR_ROLES_KEY,
+  presetByNormalizedLabel: LABOR_PRESET_BY_NORMALIZED_LABEL,
+});
+
 // TEMPLATE ADD-ONS (TRADE INSERTS)
 const SCOPE_TRADE_INSERTS = [
   {
@@ -514,43 +1124,10 @@ Optional Add-Ons (if needed):
 - Unknown/hidden conditions behind walls/ceilings excluded.`,
   },
 ];
-
-function extractTradeInsertBlocksForPdf(scopeText, explicitTradeText) {
-  const fromScope = String(scopeText || "");
-  const unique = new Set();
-  const out = [];
-  const push = (text) => {
-    const val = String(text || "").trim();
-    if (!val || unique.has(val)) return;
-    unique.add(val);
-    out.push(val);
-  };
-
-  // Known curated trade inserts
-  for (const item of SCOPE_TRADE_INSERTS) {
-    const txt = String(item?.text || "").trim();
-    if (txt && fromScope.includes(txt)) push(txt);
-  }
-
-  // Manual "Trade Insert:" blocks
-  const tradeBlockPattern = /(Trade Insert:[\s\S]*?)(?=\n{2,}Trade Insert:|\s*$)/gi;
-  const manualBlocks = fromScope.match(tradeBlockPattern) || [];
-  manualBlocks.forEach((block) => push(block));
-
-  // Explicit tracked insert
-  push(explicitTradeText);
-  return out;
-}
-
-function stripTradeInsertBlocksFromScope(scopeText, tradeBlocks) {
-  let next = String(scopeText || "");
-  for (const block of tradeBlocks || []) {
-    const txt = String(block || "").trim();
-    if (!txt) continue;
-    next = next.replace(txt, "\n\n");
-  }
-  return next.replace(/\n{3,}/g, "\n\n").trim();
-}
+const TRADE_INSERT_TEXT_BY_KEY = SCOPE_TRADE_INSERTS.reduce((acc, item) => {
+  acc[item.key] = String(item?.text || "");
+  return acc;
+}, {});
 
 // Additional notes quick-insert snippets
 const ADDITIONAL_NOTES_SNIPPETS = [
@@ -685,7 +1262,8 @@ function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
 
 const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
-const SHELL_DOCK_HEIGHT = 78;
+const SHELL_DOCK_HEIGHT = 98;
+const SHELL_DOCK_HEIGHT_MOBILE = 70;
 const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
 const MOBILE_ACTION_BAR_BREAKPOINT = 820;
@@ -836,10 +1414,67 @@ function createBlankMaterialItem(idOverride, markupPct) {
   };
 }
 
+function createBlankAdditionalChargeItem(idOverride) {
+  return {
+    id: idOverride || `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    desc: "",
+    qty: "",
+    priceEach: "",
+  };
+}
+
+function createBlankTemplateLaborLine(idOverride) {
+  return {
+    id: idOverride || `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    role: "",
+    label: "",
+    hours: "",
+    rate: "",
+    trueRateInternal: "",
+    internalRate: "",
+    qty: 1,
+  };
+}
+
+function buildMaterialsAssistSuggestedPrompts(mode) {
+  if (mode === "blanket") {
+    return [
+      { label: "One total allowance", prompt: "Suggest one total materials allowance." },
+      { label: "From scope notes", prompt: "Use the current scope notes to suggest a blanket materials allowance." },
+      { label: "Add common supplies", prompt: "Include common supplies and consumables in the allowance." },
+    ];
+  }
+
+  if (mode === "itemized") {
+    return [
+      { label: "Build material list", prompt: "Build a draft itemized material list for this job." },
+      { label: "Add common supplies", prompt: "Add common supplies and consumables for this scope." },
+      { label: "From scope notes", prompt: "Use the current scope notes to draft material lines." },
+    ];
+  }
+
+  return [];
+}
+
+function resolveMaterialsFromScopePrompt(mode) {
+  const prompts = buildMaterialsAssistSuggestedPrompts(mode);
+  const fromScopeEntry = prompts.find((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    return String(entry.label || "").trim().toLowerCase() === "from scope notes";
+  });
+  return String(fromScopeEntry?.prompt || "").trim();
+}
+
 export default function EstimateForm(props) {
   const {
     embeddedInShell = false,
     mobileBottomChromeVisible = true,
+    shellBottomChromeVisible,
+    shellOverlayOpen = false,
+    onGuidedOverlayOpenChange,
+    onCockpitSnapshotChange,
+    homeEstimateLaunch = null,
+    onHomeEstimateLaunchConsumed,
   } = props || {};
   const [editTarget, setEditTarget] = useState(() => readPendingEditTarget());
   const editingRecordId = String(editTarget?.id || "").trim();
@@ -847,8 +1482,24 @@ export default function EstimateForm(props) {
   const isEditMode = Boolean(editingRecordId);
   const isInvoiceEditMode = isEditMode && editingTargetType === "invoice";
   const isEditModeRef = useRef(isEditMode);
+  const editingRecordIdRef = useRef(editingRecordId);
+  const editingTargetTypeRef = useRef(editingTargetType);
   const openedEditIdRef = useRef(editingRecordId);
   const openedDocNumberRef = useRef("");
+  const stashedLiveDraftForEditIdRef = useRef("");
+  const editSessionCleanupTimerRef = useRef(0);
+  const initialDraftDocType = useMemo(() => {
+    if (isEditMode) return "estimate";
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return "estimate";
+      const parsed = JSON.parse(raw);
+      return parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
+    } catch {
+      return "estimate";
+    }
+  }, [isEditMode]);
+  const [suppressDraftPersistenceUntilUnmount, setSuppressDraftPersistenceUntilUnmount] = useState(false);
   const lang = useMemo(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
@@ -863,7 +1514,10 @@ export default function EstimateForm(props) {
   );
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
+  const customerDropdownPortalRef = useRef(null);
   const scopeNotesRef = useRef(null);
+  const scopeImageInputRef = useRef(null);
+  const scopeImageSelectionRef = useRef(null);
   const additionalNotesRef = useRef(null);
   const actionBarRef = useRef(null);
   const didNormalizeLaborRef = useRef(false);
@@ -882,9 +1536,87 @@ export default function EstimateForm(props) {
     clearAll,
     saveNow,
     replaceState,
-  } = hook({ persistDraft: !isEditMode });
+  } = hook({ persistDraft: !isEditMode && initialDraftDocType !== "invoice" && !suppressDraftPersistenceUntilUnmount });
+  const replaceStateRef = useRef(replaceState);
   const scopeNotes = String(state?.scopeNotes || "");
+  const scopeImages = Array.isArray(state?.scopeImages) ? state.scopeImages.filter(Boolean) : [];
+  const scopeImageUsage = useMemo(() => {
+    const totalBytes = scopeImages.reduce((sum, img) => {
+      const storedBytes = Number(img?.storedSizeBytes || 0);
+      if (storedBytes > 0) return sum + storedBytes;
+      return sum + estimateDataUrlBytes(String(img?.dataUrl || ""));
+    }, 0);
+    return {
+      count: scopeImages.length,
+      totalBytes,
+      countLabel: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT
+        ? `Scope photos: ${scopeImages.length} of ${MAX_SCOPE_IMAGES_PER_DOCUMENT} used — remove a photo before adding another.`
+        : `Scope photos: ${scopeImages.length} of ${MAX_SCOPE_IMAGES_PER_DOCUMENT} used`,
+      storageLabel: totalBytes > 0
+        ? `Photo storage: ${(totalBytes / 1000000).toFixed(1)} MB of ${(MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES / 1000000).toFixed(1)} MB`
+        : "",
+      isNearCountLimit: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT - 1,
+      isAtCountLimit: scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT,
+      isNearStorageLimit: totalBytes >= (MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES * 0.8),
+    };
+  }, [scopeImages]);
   const additionalNotes = String(state?.additionalNotes || "");
+  const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
+  const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
+  const invoiceScopeNotesEnabled = guidedDocType === "invoice" && Boolean(state?.ui?.includeInvoiceScopeNotes);
+  const showScopeNotesEditor = guidedDocType === "estimate" || invoiceScopeNotesEnabled;
+
+  // ── Section AI Assist ──────────────────────────────────────────────────────
+  const laborAssist = useAiAssist("labor", state);
+  const materialsAssist = useAiAssist("materials", state);
+  const handleSuggestLaborFromScope = useCallback(() => {
+    laborAssist.submit("", { laborRequestMode: "from_scope" });
+  }, [laborAssist]);
+  const scopeAssistConfig = getAssistConfig("scope");
+  const laborAssistConfig = getAssistConfig("labor");
+  const materialsAssistConfig = getAssistConfig("materials");
+  const scopeAssistRequestStartedAtRef = useRef(0);
+  const scopeAssistLatestCaptureMetaRef = useRef(null);
+  const scopeRuntimeMetaRef = useRef({
+    build: "",
+    path: "",
+    parseSource: "",
+    outcome: "",
+    clarificationQuestion: "",
+    promptBasisField: "",
+    promptBasisExcerpt: "",
+    preGroqJunkGateFired: false,
+    groqHandedOff: false,
+    reasonTag: "",
+    excerpt: "",
+    status: "",
+    retryUsed: false,
+  });
+  const scopeRuntimePromiseRef = useRef(Promise.resolve(scopeRuntimeMetaRef.current));
+  const scopeAssistSubmitSeqRef = useRef(0);
+  const scopeRefineInFlightRef = useRef(null);
+  const [scopeAssistState, setScopeAssistState] = useState({ phase: "idle" });
+  const scopeAssistLatestResultRef = useRef(null);
+  scopeAssistLatestResultRef.current = scopeAssistState?.result || null;
+  const pendingMaterialsModeSwitchRequestRef = useRef(null);
+  const homeLaunchId = String(homeEstimateLaunch?.id || "").trim();
+  const homeLaunchPrompt = String(homeEstimateLaunch?.prompt || "").trim();
+  const homeLaunchMode = String(homeEstimateLaunch?.mode || "").trim();
+  const linkedSourceEstimateId = String(
+    state?.sourceEstimateId
+    || state?.sourceEstimateSnapshot?.estimateId
+    || ""
+  ).trim();
+  const hasLinkedSourceEstimate = guidedDocType === "invoice"
+    && (
+      !!linkedSourceEstimateId
+      || String(state?.invoiceMeta?.sourceType || "").trim() === "estimate"
+    );
+  const estimatorCoreIsBlank = useMemo(() => !hasCoreGuidedDraftState(state), [state]);
+  // ──────────────────────────────────────────────────────────────────────────
+  const lastHomeLaunchIdRef = useRef("");
+  const projectNameAutoStateRef = useRef({ manual: false, auto: "" });
+
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const pricingSettings = settingsSnapshot?.pricing || DEFAULT_SETTINGS.pricing;
   const globalDefaultMarkupPct = resolveDefaultMarkupPct(pricingSettings?.defaultMarkupPct);
@@ -896,7 +1628,13 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     isEditModeRef.current = isEditMode;
-  }, [isEditMode]);
+    editingRecordIdRef.current = editingRecordId;
+    editingTargetTypeRef.current = editingTargetType;
+  }, [isEditMode, editingRecordId, editingTargetType]);
+
+  useEffect(() => {
+    replaceStateRef.current = replaceState;
+  }, [replaceState]);
 
   useEffect(() => {
     if (!isEditMode) {
@@ -908,6 +1646,14 @@ export default function EstimateForm(props) {
       openedEditIdRef.current = editingRecordId;
     }
   }, [editingRecordId, isEditMode]);
+
+  useEffect(() => {
+    if (!editingRecordId || !editingTargetType) return undefined;
+    const timer = window.setTimeout(() => {
+      consumePendingEditTarget(editingTargetType);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [editingRecordId, editingTargetType]);
 
   useEffect(() => {
     try {
@@ -938,9 +1684,46 @@ export default function EstimateForm(props) {
   }, [editingRecordId, editingTargetType, isEditMode]);
 
   useEffect(() => {
+    // A remount (real or React StrictMode's dev-only simulated one) reaches
+    // this setup right after the cleanup below scheduled a deferred clear.
+    // Cancel it here so a simulated unmount never actually wipes a still-live
+    // edit session's pending target out from under it.
+    if (editSessionCleanupTimerRef.current) {
+      window.clearTimeout(editSessionCleanupTimerRef.current);
+      editSessionCleanupTimerRef.current = 0;
+    }
     return () => {
       if (!isEditModeRef.current) return;
-      clearPendingEditTarget();
+      const recordIdAtCleanup = editingRecordIdRef.current;
+      const targetTypeAtCleanup = editingTargetTypeRef.current;
+      // Defer rather than clearing synchronously: StrictMode's dev-only
+      // mount->cleanup->remount simulation runs this cleanup even when the
+      // component isn't really unmounting. Deferring lets the setup above
+      // cancel the clear before it runs. On a genuine unmount there is no
+      // matching setup to cancel it, so it still fires shortly after.
+      editSessionCleanupTimerRef.current = window.setTimeout(() => {
+        editSessionCleanupTimerRef.current = 0;
+        // Only clear if nothing else has since taken over the pending edit
+        // target slot (e.g. the user opened a different saved record before
+        // this deferred cleanup could run).
+        const stillPending = readPendingEditTarget();
+        const stillSameTarget = stillPending
+          && stillPending.id === recordIdAtCleanup
+          && stillPending.type === targetTypeAtCleanup;
+        if (!stillPending || stillSameTarget) {
+          clearPendingEditTarget();
+        }
+      }, 0);
+      // Restoring the stashed live draft stays synchronous and immediate
+      // (unlike the deferred clear above): the hydration effect re-stashes
+      // on every remount whenever the ref was reset, so StrictMode's
+      // simulated cleanup->remount cycle round-trips this correctly without
+      // needing to be deferred. Deferring it too would let it fire after a
+      // genuinely later, unrelated edit session has already started.
+      if (stashedLiveDraftForEditIdRef.current) {
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
+      }
     };
   }, []);
 
@@ -949,15 +1732,59 @@ export default function EstimateForm(props) {
       if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
       setSettingsSnapshot(loadSettings());
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SETTINGS) {
+        setSettingsSnapshot(loadSettings());
+      }
+    };
     window.addEventListener("estipaid:settings-changed", refresh);
     window.addEventListener("storage", refresh);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     return () => {
       window.removeEventListener("estipaid:settings-changed", refresh);
       window.removeEventListener("storage", refresh);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshScopeTemplates = (e) => {
+      if (e?.key && e.key !== STORAGE_KEYS.SCOPE_TEMPLATES) return;
+      setScopeTemplates(readStoredScopeTemplates());
+    };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SCOPE_TEMPLATES) {
+        setScopeTemplates(readStoredScopeTemplates());
+      }
+    };
+    window.addEventListener("storage", refreshScopeTemplates);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", refreshScopeTemplates);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshCustomLaborRoles = (e) => {
+      if (e?.key && e.key !== CUSTOM_LABOR_ROLES_KEY) return;
+      setCustomLaborRoles(readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
+    };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === CUSTOM_LABOR_ROLES_KEY) {
+        setCustomLaborRoles(readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
+      }
+    };
+    window.addEventListener("storage", refreshCustomLaborRoles);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", refreshCustomLaborRoles);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
     };
   }, []);
 
   const [searchCustomerText, setSearchCustomerText] = useState(() => String(state?.customer?.name || "").trim());
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState(() => String(state?.customer?.id || "").trim());
   const [selectedCustomerProfile, setSelectedCustomerProfile] = useState(() => (
     buildSelectedCustomerProfileFromDraft(
@@ -983,6 +1810,7 @@ export default function EstimateForm(props) {
     return window.matchMedia(`(max-width: ${MOBILE_ACTION_BAR_BREAKPOINT}px)`).matches;
   });
   const [allCustomers, setAllCustomers] = useState(() => readSavedCustomers());
+  const [allProjects, setAllProjects] = useState(() => readStoredProjects());
   const [newLaborLineIds, setNewLaborLineIds] = useState({});
   const [newMaterialItemIds, setNewMaterialItemIds] = useState({});
   const [animateLaborBaseTotal, setAnimateLaborBaseTotal] = useState(false);
@@ -995,12 +1823,18 @@ export default function EstimateForm(props) {
   const [savePrompt, setSavePrompt] = useState(null);
   const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
   const [savePulse, setSavePulse] = useState(false);
+  const [projectSeedSummary, setProjectSeedSummary] = useState(null);
+  const [scopeTemplates, setScopeTemplates] = useState(() => readStoredScopeTemplates());
+  const [customLaborRoles, setCustomLaborRoles] = useState(() => readStoredCustomLaborRoles(CUSTOM_LABOR_ROLE_HELPER_OPTIONS));
   const saveBaselineRef = useRef("");
   const hasSaveBaselineRef = useRef(false);
   const lastSavedAtSeenRef = useRef(0);
   const wasDirtyRef = useRef(false);
   const savePulseTimerRef = useRef(null);
   const pendingSpecialConditionsAutoCollapseRef = useRef(false);
+  const seededProjectContextRef = useRef(null);
+  const editProjectContextRef = useRef(null);
+  const selectedLinkedProjectContextRef = useRef(null);
 
   // Always load Estimator at absolute top
   useEffect(() => {
@@ -1014,6 +1848,153 @@ export default function EstimateForm(props) {
       if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "auto" });
     } catch {}
   }, []);
+
+  // Consume project-scoped create seed (written by ProjectDetailScreen before navigation)
+  useEffect(() => {
+    if (isEditMode) return;
+    const seed = readAndConsumeProjectCreateSeed();
+    if (!seed) return;
+    if (seed.customerName) {
+      patch("customer.name", seed.customerName);
+      setSearchCustomerText(seed.customerName);
+      setCustomerSearchQuery("");
+    }
+    if (seed.customerId) {
+      patch("customer.id", seed.customerId);
+      setSelectedCustomerId(seed.customerId);
+      const profile = buildSelectedCustomerProfileFromDraft(
+        { id: seed.customerId, name: seed.customerName },
+        seed.customerId,
+        readSavedCustomers()
+      );
+      if (profile) setSelectedCustomerProfile(profile);
+    }
+    if (seed.projectName) patch("customer.projectName", seed.projectName);
+    if (seed.projectNumber) patch("customer.projectNumber", seed.projectNumber);
+    if (seed.siteAddress) patch("customer.projectAddress", seed.siteAddress);
+    if (seed.projectId) patch("projectId", seed.projectId);
+    seededProjectContextRef.current = seed.projectId
+      ? {
+          projectId: seed.projectId,
+          customerId: seed.customerId,
+          customerName: seed.customerName,
+        }
+      : null;
+    setProjectSeedSummary({
+      projectId: seed.projectId,
+      customerId: seed.customerId,
+      projectName: seed.projectName,
+      customerName: seed.customerName,
+      siteAddress: seed.siteAddress,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const clearSelectedExistingProjectLink = useCallback(() => {
+    const context = selectedLinkedProjectContextRef.current;
+    if (!context) return;
+
+    const activeProjectId = String(state?.projectId || "").trim();
+    const autofilledProjectName = String(context.autofilledProjectName || "").trim();
+    const autofilledProjectNumber = String(context.autofilledProjectNumber || "").trim();
+    const autofilledProjectAddress = String(context.autofilledProjectAddress || "").trim();
+
+    if (activeProjectId && activeProjectId === String(context.projectId || "").trim()) {
+      patch("projectId", "");
+    }
+    if (autofilledProjectName && String(state?.customer?.projectName || "").trim() === autofilledProjectName) {
+      patch("customer.projectName", "");
+    }
+    if (autofilledProjectNumber && String(state?.customer?.projectNumber || "").trim() === autofilledProjectNumber) {
+      patch("customer.projectNumber", "");
+    }
+    if (autofilledProjectAddress && String(state?.customer?.projectAddress || "").trim() === autofilledProjectAddress) {
+      patch("customer.projectAddress", "");
+    }
+
+    selectedLinkedProjectContextRef.current = null;
+  }, [patch, state?.customer?.projectAddress, state?.customer?.projectName, state?.customer?.projectNumber, state?.projectId]);
+
+  const clearStaleProjectIdForCustomerBoundary = useCallback((nextCustomer = null) => {
+    const activeProjectId = String(state?.projectId || "").trim();
+    if (!activeProjectId) {
+      if (!nextCustomer) {
+        clearSelectedExistingProjectLink();
+      }
+      return;
+    }
+
+    const nextCustomerId = String(nextCustomer?.id || "").trim();
+    const nextCustomerName = String(nextCustomer?.name || "").trim().toLowerCase();
+    const liveProject = (Array.isArray(allProjects) ? allProjects : []).find(
+      (project) => String(project?.id || "").trim() === activeProjectId
+    ) || null;
+    const liveProjectCustomerId = String(liveProject?.customerId || "").trim();
+    const liveProjectCustomerName = String(liveProject?.customerName || "").trim().toLowerCase();
+    const liveProjectMatches = liveProject
+      ? (
+        liveProjectCustomerId
+          ? liveProjectCustomerId === nextCustomerId
+          : (!!nextCustomerName && liveProjectCustomerName === nextCustomerName)
+      )
+      : false;
+    const seededOrEditContext = isEditMode
+      ? editProjectContextRef.current
+      : seededProjectContextRef.current;
+    const manualContext = seededOrEditContext ? null : selectedLinkedProjectContextRef.current;
+    const context = seededOrEditContext || manualContext;
+    if ((!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) && liveProjectMatches) return;
+
+    if (manualContext && (!nextCustomer || !liveProjectMatches)) {
+      clearSelectedExistingProjectLink();
+      return;
+    }
+
+    if (!context?.projectId || activeProjectId !== String(context.projectId || "").trim()) {
+      patch("projectId", "");
+      if (liveProject) {
+        const liveProjectName = String(liveProject?.projectName || "").trim();
+        const liveProjectNumber = String(liveProject?.projectNumber || "").trim();
+        const liveProjectAddress = String(liveProject?.siteAddress || "").trim();
+        if (liveProjectName && String(state?.customer?.projectName || "").trim() === liveProjectName) {
+          patch("customer.projectName", "");
+        }
+        if (liveProjectNumber && String(state?.customer?.projectNumber || "").trim() === liveProjectNumber) {
+          patch("customer.projectNumber", "");
+        }
+        if (liveProjectAddress && String(state?.customer?.projectAddress || "").trim() === liveProjectAddress) {
+          patch("customer.projectAddress", "");
+        }
+      }
+      return;
+    }
+
+    const contextCustomerId = String(context.customerId || "").trim();
+    const contextCustomerName = String(context.customerName || "").trim().toLowerCase();
+    if (!manualContext && !contextCustomerId && !contextCustomerName) {
+      return;
+    }
+    const customerMatches = contextCustomerId
+      ? nextCustomerId === contextCustomerId
+      : (!!nextCustomerName && nextCustomerName === contextCustomerName);
+
+    if (!customerMatches) {
+      if (manualContext) {
+        clearSelectedExistingProjectLink();
+        return;
+      }
+      patch("projectId", "");
+    }
+  }, [
+    allProjects,
+    clearSelectedExistingProjectLink,
+    isEditMode,
+    patch,
+    state?.customer?.projectAddress,
+    state?.customer?.projectName,
+    state?.customer?.projectNumber,
+    state?.projectId,
+  ]);
 
   useEffect(() => {
     if (!savePrompt) return undefined;
@@ -1072,10 +2053,35 @@ export default function EstimateForm(props) {
 
   useEffect(() => {
     if (!isEditMode || !editingRecordId) return;
-    const sourceKey = isInvoiceEditMode ? INVOICES_KEY : ESTIMATES_KEY;
-    const list = readSavedDocList(sourceKey);
+    if (stashedLiveDraftForEditIdRef.current !== editingRecordId) {
+      stashLiveDraftForEditSession();
+      stashedLiveDraftForEditIdRef.current = editingRecordId;
+    }
+    const list = isInvoiceEditMode ? readStoredInvoices() : readSavedDocList(ESTIMATES_KEY);
     const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
-    if (!match || typeof replaceState !== "function") {
+    const applyHydratedState = replaceStateRef.current;
+    if (!match || typeof applyHydratedState !== "function") {
+      if (isInvoiceEditMode && typeof applyHydratedState === "function") {
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
+        clearPendingEditTarget("invoice");
+        editProjectContextRef.current = null;
+        selectedLinkedProjectContextRef.current = null;
+        projectNameAutoStateRef.current = { manual: false, auto: "" };
+        setSelectedCustomerId("");
+        setSelectedCustomerProfile(null);
+        setSearchCustomerText("");
+        setCustomerSearchQuery("");
+        setProjectSeedSummary(null);
+        applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
+        setSpecialConditionsOpen(false);
+        setActiveSpecialConditionsCustomField("");
+        setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+        pendingSpecialConditionsAutoCollapseRef.current = false;
+      } else {
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
+      }
       setSavePrompt({
         tone: "error",
         message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Switched to new mode.`,
@@ -1093,6 +2099,19 @@ export default function EstimateForm(props) {
       || match?.customer?.projectNumber
       || ""
     ).trim();
+    editProjectContextRef.current = String(match?.projectId || "").trim()
+      ? {
+          projectId: String(match?.projectId || "").trim(),
+          customerId: String(match?.customerId || match?.customer?.id || "").trim(),
+          customerName: String(
+            match?.customerName
+            || match?.customer?.name
+            || match?.customer?.companyName
+            || match?.customer?.fullName
+            || ""
+          ).trim(),
+        }
+      : null;
     const createdAt = Number(match?.createdAt || Date.now()) || Date.now();
     const hydrated = {
       ...match,
@@ -1106,7 +2125,7 @@ export default function EstimateForm(props) {
         savedDocCreatedAt: createdAt,
       },
     };
-    replaceState(hydrated, { persistNow: false, persistDraft: false });
+    applyHydratedState(hydrated, { persistNow: false, persistDraft: false });
     const hydratedHazardSelection = deriveSteppedPercentSelection(hydrated?.labor?.hazardPct);
     const hydratedRiskSelection = deriveSteppedPercentSelection(hydrated?.labor?.riskPct);
     setSpecialConditionsOpen(!isSpecialConditionsSectionComplete(
@@ -1130,8 +2149,200 @@ export default function EstimateForm(props) {
       || match?.customer?.company
       || ""
     ).trim();
-    if (displayName) setSearchCustomerText(displayName);
-  }, [editingRecordId, isEditMode, isInvoiceEditMode, replaceState]);
+    if (displayName) {
+      setSearchCustomerText(displayName);
+      setCustomerSearchQuery("");
+    }
+  }, [editingRecordId, isEditMode, isInvoiceEditMode]);
+
+  useEffect(() => {
+    if (!isInvoiceEditMode || !editingRecordId) return;
+
+    const liveLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    if (liveLines.some((line) => isMeaningfulLaborLine(line))) return;
+
+    const storedInvoice = readStoredInvoices().find(
+      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
+    );
+    const storedLabor = storedInvoice?.labor && typeof storedInvoice.labor === "object"
+      ? storedInvoice.labor
+      : null;
+    const storedLines = Array.isArray(storedLabor?.lines) ? storedLabor.lines : [];
+    if (!storedLines.some((line) => isMeaningfulLaborLine(line))) return;
+
+    patch("labor.lines", storedLines.map((line) => ({ ...line })));
+    patch("labor.hazardPct", storedLabor?.hazardPct ?? 0);
+    patch("labor.riskPct", storedLabor?.riskPct ?? 0);
+    patch("labor.multiplier", storedLabor?.multiplier ?? 1);
+  }, [
+    editingRecordId,
+    isInvoiceEditMode,
+    patch,
+    state?.labor?.lines,
+  ]);
+
+  useEffect(() => {
+    if (!isEditMode || isInvoiceEditMode || !editingRecordId) return;
+
+    const storedEstimate = readSavedDocList(ESTIMATES_KEY).find(
+      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
+    );
+    if (!storedEstimate || typeof storedEstimate !== "object") return;
+
+    const liveLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const storedLabor = storedEstimate?.labor && typeof storedEstimate.labor === "object"
+      ? storedEstimate.labor
+      : null;
+    const storedLines = Array.isArray(storedLabor?.lines) ? storedLabor.lines : [];
+    const liveEstimateDocNumber = String(state?.job?.docNumber || state?.estimateNumber || "").trim();
+    const shouldRecoverEstimateCore = !liveEstimateDocNumber;
+    const shouldRecoverLabor =
+      shouldRecoverEstimateCore
+      || (
+        !liveLines.some((line) => isMeaningfulLaborLine(line))
+        && storedLines.some((line) => isMeaningfulLaborLine(line))
+      );
+
+    if (shouldRecoverEstimateCore) {
+      const storedCustomer = storedEstimate?.customer && typeof storedEstimate.customer === "object"
+        ? storedEstimate.customer
+        : {};
+      const storedJob = storedEstimate?.job && typeof storedEstimate.job === "object"
+        ? storedEstimate.job
+        : {};
+      patch("projectId", String(storedEstimate?.projectId || "").trim());
+      patch("customer", {
+        ...(DEFAULT_STATE?.customer || {}),
+        ...storedCustomer,
+        id: String(storedEstimate?.customerId || storedCustomer?.id || "").trim(),
+        name: String(
+          storedEstimate?.customerName
+          || storedCustomer?.name
+          || storedCustomer?.displayName
+          || storedCustomer?.companyName
+          || ""
+        ).trim(),
+        projectName: String(storedEstimate?.projectName || storedCustomer?.projectName || "").trim(),
+      });
+      patch("job", {
+        ...(DEFAULT_STATE?.job || {}),
+        ...storedJob,
+        docNumber: String(storedEstimate?.estimateNumber || storedJob?.docNumber || "").trim(),
+      });
+      patch("estimateNumber", String(storedEstimate?.estimateNumber || "").trim());
+      patch("status", String(storedEstimate?.status || "").trim());
+      patch("scopeNotes", String(storedEstimate?.scopeNotes || "").trim());
+      patch("tradeInsert", storedEstimate?.tradeInsert && typeof storedEstimate.tradeInsert === "object"
+        ? { ...storedEstimate.tradeInsert }
+        : { key: "", text: "" });
+      patch("additionalNotes", String(storedEstimate?.additionalNotes || "").trim());
+    }
+
+    if (shouldRecoverLabor) {
+      patch("labor.lines", storedLines.map((line) => ({ ...line })));
+      patch("labor.hazardPct", storedLabor?.hazardPct ?? 0);
+      patch("labor.riskPct", storedLabor?.riskPct ?? 0);
+      patch("labor.multiplier", storedLabor?.multiplier ?? 1);
+    }
+
+    const storedMaterials = storedEstimate?.materials && typeof storedEstimate.materials === "object"
+      ? storedEstimate.materials
+      : null;
+    const storedMaterialItems = Array.isArray(storedMaterials?.items) ? storedMaterials.items : [];
+    const liveMaterialItems = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    const liveMaterialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
+    const storedMaterialsMode = resolveExportMaterialsMode(storedEstimate, "itemized");
+    const liveHasMeaningfulItemizedMaterials = liveMaterialItems.some((item) => !isBlankMaterialItem(item));
+    const storedHasMeaningfulItemizedMaterials = storedMaterialItems.some((item) => !isBlankMaterialItem(item));
+    const liveHasMeaningfulBlanketMaterials = Boolean(
+      String(state?.materials?.blanketCost ?? "").trim()
+      || String(state?.materials?.blanketInternalCost ?? "").trim()
+      || String(state?.materials?.materialsBlanketDescription ?? "").trim()
+    );
+    const storedHasMeaningfulBlanketMaterials = Boolean(
+      String(storedMaterials?.blanketCost ?? "").trim()
+      || String(storedMaterials?.blanketInternalCost ?? "").trim()
+      || String(storedMaterials?.materialsBlanketDescription ?? "").trim()
+    );
+    const shouldRecoverMaterials =
+      shouldRecoverEstimateCore
+      || (
+      (storedMaterialsMode === "itemized" && storedHasMeaningfulItemizedMaterials && !liveHasMeaningfulItemizedMaterials)
+      || (storedMaterialsMode === "blanket" && storedHasMeaningfulBlanketMaterials && !liveHasMeaningfulBlanketMaterials)
+      || (
+        storedMaterialsMode !== liveMaterialsMode
+        && (storedHasMeaningfulItemizedMaterials || storedHasMeaningfulBlanketMaterials)
+      ));
+
+    if (!shouldRecoverMaterials) return;
+
+    patch("ui.materialsMode", storedMaterialsMode);
+    patch("materials.items", storedMaterialItems.map((item) => ({ ...item })));
+    patch("materials.markupPct", storedMaterials?.markupPct ?? 0);
+    patch("materials.blanketCost", storedMaterials?.blanketCost ?? "");
+    patch("materials.blanketInternalCost", storedMaterials?.blanketInternalCost ?? "");
+    patch("materials.materialsBlanketDescription", storedMaterials?.materialsBlanketDescription ?? "");
+  }, [
+    editingRecordId,
+    isEditMode,
+    isInvoiceEditMode,
+    patch,
+    state?.labor?.lines,
+    state?.materials?.blanketCost,
+    state?.materials?.blanketInternalCost,
+    state?.materials?.items,
+    state?.materials?.materialsBlanketDescription,
+    state?.ui?.materialsMode,
+  ]);
+
+  useEffect(() => {
+    if (isEditMode) return;
+    if (guidedDocType !== "invoice") return;
+
+    const savedDocId = String(state?.meta?.savedDocId || "").trim();
+    const invoiceNumber = String(state?.invoiceNumber || state?.job?.docNumber || "").trim();
+    if (!savedDocId && !invoiceNumber) return;
+
+    const invoices = readStoredInvoices();
+    const matchesSavedInvoice = invoices.some((entry) => {
+      const entryId = String(entry?.id || "").trim();
+      const entryInvoiceNumber = String(entry?.invoiceNumber || entry?.job?.docNumber || "").trim();
+      return (savedDocId && entryId === savedDocId)
+        || (invoiceNumber && entryInvoiceNumber === invoiceNumber);
+    });
+    if (!matchesSavedInvoice) return;
+
+    const applyHydratedState = replaceStateRef.current;
+    if (typeof applyHydratedState !== "function") return;
+
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    clearPendingEditTarget("invoice");
+    openedEditIdRef.current = "";
+    openedDocNumberRef.current = "";
+    editProjectContextRef.current = null;
+    selectedLinkedProjectContextRef.current = null;
+    projectNameAutoStateRef.current = { manual: false, auto: "" };
+    setSelectedCustomerId("");
+    setSelectedCustomerProfile(null);
+    setSearchCustomerText("");
+    setCustomerSearchQuery("");
+    setProjectSeedSummary(null);
+    applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
+    setSpecialConditionsOpen(false);
+    setActiveSpecialConditionsCustomField("");
+    setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
+    pendingSpecialConditionsAutoCollapseRef.current = false;
+    setSavePrompt({
+      tone: "error",
+      message: "Invoice not found. Switched to new mode.",
+    });
+  }, [
+    guidedDocType,
+    isEditMode,
+    state?.invoiceNumber,
+    state?.job?.docNumber,
+    state?.meta?.savedDocId,
+  ]);
 
   useEffect(() => {
     if (isEditMode) return;
@@ -1143,27 +2354,799 @@ export default function EstimateForm(props) {
       return;
     }
 
-    if (String(selectedCustomerId || "") === draftCustomerId && selectedCustomerProfile) {
+    const liveCustomer = Array.isArray(allCustomers)
+      ? allCustomers.find((customer) => String(customer?.id || "").trim() === draftCustomerId) || null
+      : null;
+
+    if (!liveCustomer) {
+      if (selectedCustomerId) setSelectedCustomerId("");
+      if (selectedCustomerProfile) setSelectedCustomerProfile(null);
       return;
     }
 
-    const nextProfile = buildSelectedCustomerProfileFromDraft(state?.customer, draftCustomerId, allCustomers);
-    if (!nextProfile) return;
+    const nextProfile = {
+      ...liveCustomer,
+      ...flattenCustomerForEstimator(liveCustomer),
+      id: draftCustomerId,
+    };
+
+    if (
+      String(selectedCustomerId || "") === draftCustomerId
+      && JSON.stringify(selectedCustomerProfile || null) === JSON.stringify(nextProfile)
+    ) {
+      return;
+    }
 
     setSelectedCustomerId(draftCustomerId);
     setSelectedCustomerProfile(nextProfile);
 
     if (!String(searchCustomerText || "").trim()) {
       const displayName = customerDisplayName(nextProfile) || String(nextProfile?.name || "").trim();
-      if (displayName) setSearchCustomerText(displayName);
+      if (displayName) {
+        setSearchCustomerText(displayName);
+        setCustomerSearchQuery("");
+      }
     }
   }, [
     allCustomers,
+    customerSearchQuery,
     isEditMode,
     searchCustomerText,
     selectedCustomerId,
     selectedCustomerProfile,
     state?.customer,
+  ]);
+
+  const openScopeAssist = useCallback((openOptions = null) => {
+    const options = openOptions && typeof openOptions === "object" ? openOptions : {};
+    setScopeAssistState({ phase: "open", input: "", ...options });
+  }, []);
+
+  const closeScopeAssist = useCallback(() => {
+    scopeAssistSubmitSeqRef.current += 1;
+    scopeAssistLatestCaptureMetaRef.current = null;
+    setScopeAssistState({ phase: "idle" });
+  }, []);
+
+  const submitScopeAssist = useCallback((userInput, serviceOptions = {}) => {
+    const isRefineRequest = String(serviceOptions?.mode || "").trim().toLowerCase() === "refine";
+    if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_SUBMIT_ENTER]", { isRefineRequest, chip: userInput, inFlightActive: Boolean(scopeRefineInFlightRef.current), ts: Date.now() });
+
+    // Upstream in-flight guard: only one scope refine request at a time
+    if (isRefineRequest && scopeRefineInFlightRef.current) {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_UPSTREAM_BLOCKED]", { chip: userInput, ts: Date.now() });
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_SKIPPED_DUPLICATE]", { chip: userInput, ts: Date.now() });
+      return scopeRefineInFlightRef.current;
+    }
+
+    const runScopeAssist = async () => {
+    const mySeq = ++scopeAssistSubmitSeqRef.current;
+    const normalizedInput = String(userInput || "").trim();
+    const assistMode = isEditMode ? "edit" : "create";
+    const assistTraceId = `scope:${uiDocType}:${assistMode}:${mySeq}`;
+    const assistCaptureMeta = {
+      sectionKey: "scope",
+      docType: uiDocType,
+      mode: assistMode,
+      assistTraceId,
+      assistSequenceIndex: mySeq,
+      assistSectionKey: "scope",
+      assistDocType: uiDocType,
+      assistMode,
+    };
+    const traceId = assistTraceId;
+
+    const previousResult = isRefineRequest ? (scopeAssistLatestResultRef.current || null) : null;
+    scopeAssistRequestStartedAtRef.current = Date.now();
+    scopeRuntimeMetaRef.current = {
+      build: "",
+      path: "",
+      parseSource: "",
+      parseBranch: "",
+      parseFailureReason: "",
+      outcome: "",
+      responseSource: "",
+      fallbackSource: "",
+      backendPid: "",
+      backendPort: "",
+      backendStartedAt: "",
+      backendBootId: "",
+      backendServerFile: "",
+      backendRuntimeBuild: "",
+      clientRequestUrl: "",
+      clientPageOrigin: "",
+      clarificationQuestion: "",
+      promptBasisField: "",
+      promptBasisExcerpt: "",
+      preGroqJunkGateFired: false,
+      groqHandedOff: false,
+      reasonTag: "",
+      excerpt: "",
+      status: "",
+      retryUsed: false,
+    };
+    scopeRuntimePromiseRef.current = Promise.resolve(scopeRuntimeMetaRef.current);
+    setScopeAssistState({
+      phase: "requesting",
+      input: normalizedInput,
+      result: null,
+      error: "",
+      runtime: { ...scopeRuntimeMetaRef.current },
+    });
+    if (traceId) {
+      console.log(`[ai-assist:${traceId}] scope_submit_start`, { inputLen: normalizedInput.length });
+    }
+
+    const restorePreviousReviewForBlockedRefine = (message) => {
+      if (!isRefineRequest || !previousResult) return false;
+      setScopeAssistState({
+        phase: "review",
+        input: normalizedInput,
+        result: previousResult,
+        refineError: resolveScopeAssistDisplayError(
+          message,
+          Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+        ),
+        runtime: runtimeMeta,
+      });
+      return true;
+    };
+
+    const shouldCaptureScopeRuntime = typeof window !== "undefined"
+      && typeof window.fetch === "function";
+    const originalFetch = shouldCaptureScopeRuntime ? window.fetch : null;
+    if (shouldCaptureScopeRuntime && originalFetch) {
+      window.fetch = async (...args) => {
+        let requestJson = null;
+        try {
+          const requestInput = args[0];
+          const requestInit = args[1] || {};
+          const requestUrl = typeof requestInput === "string" ? requestInput : String(requestInput?.url || "");
+          const resolvedRequestUrl = (() => {
+            try {
+              return typeof window !== "undefined"
+                ? new URL(requestUrl || "", window.location.origin).href
+                : String(requestUrl || "");
+            } catch {
+              return String(requestUrl || "");
+            }
+          })();
+          const requestBody = typeof requestInit.body === "string" ? requestInit.body : "";
+          if (requestUrl.includes("/api/ai-assist") && requestBody) {
+            requestJson = JSON.parse(requestBody);
+            if (requestJson?.sectionKey === "scope" && traceId) {
+              console.log(`[ai-assist:${traceId}] scope_runtime_request_target`, {
+                requestUrlRaw: requestUrl,
+                resolvedRequestUrl,
+                requestOrigin: (() => {
+                  try { return new URL(resolvedRequestUrl).origin; } catch { return ""; }
+                })(),
+                pageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                serverBuildExpectedByClient: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+              });
+              console.log(`[ai-assist:${traceId}] scope_runtime_outbound`, {
+                payload: requestJson,
+              });
+            }
+          }
+        } catch (_error) {}
+        const response = await originalFetch.apply(window, args);
+        try {
+          if (requestJson?.sectionKey === "scope") {
+            scopeRuntimePromiseRef.current = response.clone().json()
+                .then((payload) => {
+                  const scopeNotesRaw = String(payload?.scopeNotes || "");
+                  if (traceId) {
+                    console.log(`[ai-assist:${traceId}] scope_runtime_payload_received`, {
+                      payload,
+                      scopeNotesExcerpt: scopeNotesRaw.replace(/\s+/g, " ").trim().slice(0, 300),
+                      _scopeRuntimeBuild: String(payload?._scopeRuntimeBuild || "missing"),
+                      _scopeRuntimePath: String(payload?._scopeRuntimePath || "missing"),
+                      _scopeParseSource: String(payload?._scopeParseSource || "missing"),
+                      _scopeParseBranch: String(payload?._scopeParseBranch || "missing"),
+                      _scopeParseFailureReason: String(payload?._scopeParseFailureReason || "missing"),
+                      _scopeOutcome: String(payload?._scopeOutcome || "missing"),
+                      _scopeResponseSource: String(payload?._scopeResponseSource || "missing"),
+                      _scopeFallbackSource: String(payload?._scopeFallbackSource || "missing"),
+                      _backendPid: String(payload?._backendPid || "missing"),
+                      _backendPort: String(payload?._backendPort || "missing"),
+                      _backendStartedAt: String(payload?._backendStartedAt || "missing"),
+                      _backendBootId: String(payload?._backendBootId || "missing"),
+                      _backendServerFile: String(payload?._backendServerFile || "missing"),
+                      _backendRuntimeBuild: String(payload?._backendRuntimeBuild || "missing"),
+                      _scopeReasonTag: String(payload?._scopeReasonTag || "missing"),
+                      _scopePromptBasisField: String(payload?._scopePromptBasisField || "missing"),
+                      _scopePromptBasisExcerpt: String(payload?._scopePromptBasisExcerpt || "missing"),
+                      _scopePreGroqJunkGateFired: Boolean(payload?._scopePreGroqJunkGateFired),
+                      _scopeGroqHandedOff: Boolean(payload?._scopeGroqHandedOff),
+                    });
+                  }
+                  const runtimeMeta = {
+                    build: String(payload?._scopeRuntimeBuild || "missing"),
+                    path: String(payload?._scopeRuntimePath || "missing"),
+                    parseSource: String(payload?._scopeParseSource || "missing"),
+                    parseBranch: String(payload?._scopeParseBranch || ""),
+                    parseFailureReason: String(payload?._scopeParseFailureReason || ""),
+                    outcome: String(payload?._scopeOutcome || "missing"),
+                    responseSource: String(payload?._scopeResponseSource || "missing"),
+                    fallbackSource: String(payload?._scopeFallbackSource || ""),
+                    backendPid: String(payload?._backendPid || ""),
+                    backendPort: String(payload?._backendPort || ""),
+                    backendStartedAt: String(payload?._backendStartedAt || ""),
+                    backendBootId: String(payload?._backendBootId || ""),
+                    backendServerFile: String(payload?._backendServerFile || ""),
+                    backendRuntimeBuild: String(payload?._backendRuntimeBuild || ""),
+                    clientRequestUrl: resolvedRequestUrl,
+                    clientPageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                    clarificationQuestion: String(payload?.clarificationQuestion || "").trim(),
+                    promptBasisField: String(payload?._scopePromptBasisField || "missing"),
+                    promptBasisExcerpt: String(payload?._scopePromptBasisExcerpt || "").trim(),
+                    preGroqJunkGateFired: Boolean(payload?._scopePreGroqJunkGateFired),
+                    groqHandedOff: Boolean(payload?._scopeGroqHandedOff),
+                    reasonTag: String(payload?._scopeReasonTag || "missing"),
+                    excerpt: String(payload?._scopeExcerpt || scopeNotesRaw || payload?.clarificationQuestion || "")
+                      .replace(/\s+/g, " ")
+                      .trim()
+                      .slice(0, 160),
+                    status: response.status,
+                    retryUsed: Boolean(payload?._scopeRetryUsed),
+                  };
+                  scopeRuntimeMetaRef.current = runtimeMeta;
+                  if (traceId) {
+                    console.log(`[ai-assist:${traceId}] scope_runtime_response`, {
+                      ...runtimeMeta,
+                      _scopeRuntimeBuild: runtimeMeta.build,
+                      _scopeRuntimePath: runtimeMeta.path,
+                      _scopeParseSource: runtimeMeta.parseSource,
+                      _scopeParseBranch: runtimeMeta.parseBranch,
+                      _scopeParseFailureReason: runtimeMeta.parseFailureReason,
+                      _scopeOutcome: runtimeMeta.outcome,
+                      _scopeResponseSource: runtimeMeta.responseSource,
+                      _scopeFallbackSource: runtimeMeta.fallbackSource,
+                      _backendPid: runtimeMeta.backendPid,
+                      _backendPort: runtimeMeta.backendPort,
+                      _backendStartedAt: runtimeMeta.backendStartedAt,
+                      _backendBootId: runtimeMeta.backendBootId,
+                      _backendServerFile: runtimeMeta.backendServerFile,
+                      _backendRuntimeBuild: runtimeMeta.backendRuntimeBuild,
+                      clientRequestUrl: runtimeMeta.clientRequestUrl,
+                      clientPageOrigin: runtimeMeta.clientPageOrigin,
+                      serverBuildMatchesClientExpectation: runtimeMeta.backendRuntimeBuild === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+                      _scopeReasonTag: runtimeMeta.reasonTag,
+                      _scopePromptBasisField: runtimeMeta.promptBasisField,
+                      _scopePromptBasisExcerpt: runtimeMeta.promptBasisExcerpt,
+                      _scopePreGroqJunkGateFired: runtimeMeta.preGroqJunkGateFired,
+                      _scopeGroqHandedOff: runtimeMeta.groqHandedOff,
+                      _scopeExcerpt: runtimeMeta.excerpt,
+                      _scopeRetryUsed: runtimeMeta.retryUsed,
+                    });
+                    const missingTruthFields = [
+                      ["_scopeRuntimeBuild", runtimeMeta.build],
+                      ["_scopeRuntimePath", runtimeMeta.path],
+                      ["_scopeParseSource", runtimeMeta.parseSource],
+                      ["_scopeParseBranch", runtimeMeta.parseBranch],
+                      ["_scopeOutcome", runtimeMeta.outcome],
+                      ["_scopeResponseSource", runtimeMeta.responseSource],
+                      ["_backendPid", runtimeMeta.backendPid],
+                      ["_backendPort", runtimeMeta.backendPort],
+                      ["_backendStartedAt", runtimeMeta.backendStartedAt],
+                      ["_backendBootId", runtimeMeta.backendBootId],
+                      ["_backendServerFile", runtimeMeta.backendServerFile],
+                      ["_backendRuntimeBuild", runtimeMeta.backendRuntimeBuild],
+                      ["_scopeReasonTag", runtimeMeta.reasonTag],
+                      ["_scopePromptBasisField", runtimeMeta.promptBasisField],
+                      ["_scopePromptBasisExcerpt", runtimeMeta.promptBasisExcerpt],
+                      ["_scopeExcerpt", runtimeMeta.excerpt],
+                    ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
+                    if (missingTruthFields.length) {
+                      console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+                        missingTruthFields,
+                        status: response.status,
+                        excerpt: runtimeMeta.excerpt,
+                      });
+                    }
+                  }
+                  return runtimeMeta;
+                })
+                .catch(async () => {
+                  try {
+                    const text = await response.clone().text();
+                    const runtimeMeta = {
+                      build: "missing",
+                      path: "missing",
+                      parseSource: "missing",
+                      parseBranch: "",
+                      parseFailureReason: "",
+                      outcome: "missing",
+                      responseSource: "missing",
+                      fallbackSource: "",
+                      backendPid: "",
+                      backendPort: "",
+                      backendStartedAt: "",
+                      backendBootId: "",
+                      backendServerFile: "",
+                      backendRuntimeBuild: "",
+                      clientRequestUrl: resolvedRequestUrl,
+                      clientPageOrigin: typeof window !== "undefined" ? String(window.location.origin || "") : "",
+                      clarificationQuestion: "",
+                      promptBasisField: "missing",
+                      promptBasisExcerpt: "",
+                      preGroqJunkGateFired: false,
+                      groqHandedOff: false,
+                      reasonTag: "missing",
+                      excerpt: String(text || "").replace(/\s+/g, " ").trim().slice(0, 160),
+                      status: response.status,
+                      retryUsed: false,
+                    };
+                    scopeRuntimeMetaRef.current = runtimeMeta;
+                    if (traceId) {
+                      console.log(`[ai-assist:${traceId}] scope_runtime_response_unparsed`, {
+                        ...runtimeMeta,
+                      });
+                      console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+                        missingTruthFields: [
+                          "_scopeRuntimeBuild",
+                          "_scopeRuntimePath",
+                          "_scopeParseSource",
+                          "_scopeOutcome",
+                          "_backendPid",
+                          "_backendPort",
+                          "_backendStartedAt",
+                          "_backendBootId",
+                          "_backendServerFile",
+                          "_backendRuntimeBuild",
+                          "_scopeReasonTag",
+                          "_scopePromptBasisField",
+                          "_scopePromptBasisExcerpt",
+                          "_scopeExcerpt",
+                        ],
+                        status: response.status,
+                        excerpt: runtimeMeta.excerpt,
+                      });
+                    }
+                    return runtimeMeta;
+                  } catch (_error) {}
+                });
+          }
+        } catch (_error) {}
+        return response;
+      };
+    }
+
+    let runtimeMeta = scopeRuntimeMetaRef.current;
+    const logFinalDecision = (decision, extra = {}) => {
+      if (!traceId) return;
+      const { result: decisionResult = null, ...decisionExtra } = extra || {};
+      const finalDisplayedExcerpt = normalizeScopeAssistClientText(
+        String(decisionExtra?.excerpt || decisionExtra?.scopeNotes || decisionExtra?.error || "")
+      ).slice(0, 160);
+      const scopeDisplaySource = resolveScopeAssistDisplaySource({
+        runtime: runtimeMeta,
+        result: decisionResult,
+      });
+      console.log(`[ai-assist:${traceId}] final_decision`, {
+        decision,
+        scopeDisplaySource,
+        clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+        clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
+        _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+        _scopeRuntimePath: String(runtimeMeta?.path || ""),
+        _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+        _scopeParseBranch: String(runtimeMeta?.parseBranch || ""),
+        _scopeParseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
+        _scopeOutcome: String(runtimeMeta?.outcome || ""),
+        _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+        _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
+        _backendPid: String(runtimeMeta?.backendPid || ""),
+        _backendPort: String(runtimeMeta?.backendPort || ""),
+        _backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+        _backendBootId: String(runtimeMeta?.backendBootId || ""),
+        _backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+        _backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+        expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+        serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+        _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        _scopePromptBasisField: String(runtimeMeta?.promptBasisField || ""),
+        _scopePromptBasisExcerpt: String(runtimeMeta?.promptBasisExcerpt || ""),
+        _scopePreGroqJunkGateFired: Boolean(runtimeMeta?.preGroqJunkGateFired),
+        _scopeGroqHandedOff: Boolean(runtimeMeta?.groqHandedOff),
+        _scopeExcerpt: String(runtimeMeta?.excerpt || finalDisplayedExcerpt || ""),
+        _scopeRetryUsed: Boolean(runtimeMeta?.retryUsed),
+        finalDisplayedExcerpt,
+        ...decisionExtra,
+      });
+      const missingTruthFields = [
+        ["_scopeRuntimeBuild", runtimeMeta?.build],
+        ["_scopeRuntimePath", runtimeMeta?.path],
+        ["_scopeParseSource", runtimeMeta?.parseSource],
+        ["_scopeParseBranch", runtimeMeta?.parseBranch],
+        ["_scopeOutcome", runtimeMeta?.outcome],
+        ["_scopeResponseSource", runtimeMeta?.responseSource],
+        ["_backendPid", runtimeMeta?.backendPid],
+        ["_backendPort", runtimeMeta?.backendPort],
+        ["_backendStartedAt", runtimeMeta?.backendStartedAt],
+        ["_backendBootId", runtimeMeta?.backendBootId],
+        ["_backendServerFile", runtimeMeta?.backendServerFile],
+        ["_backendRuntimeBuild", runtimeMeta?.backendRuntimeBuild],
+        ["_scopeReasonTag", runtimeMeta?.reasonTag],
+        ["_scopePromptBasisField", runtimeMeta?.promptBasisField],
+        ["_scopePromptBasisExcerpt", runtimeMeta?.promptBasisExcerpt],
+        ["_scopeExcerpt", runtimeMeta?.excerpt],
+      ].filter(([, value]) => !String(value || "").trim()).map(([field]) => field);
+      if (missingTruthFields.length) {
+        console.log(`[ai-assist:${traceId}] scope_runtime_truth_missing`, {
+          decision,
+          missingTruthFields,
+          excerpt: finalDisplayedExcerpt,
+        });
+      }
+    };
+
+    try {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_START]", { chip: normalizedInput, isRefine: isRefineRequest, seq: mySeq, ts: Date.now() });
+      captureAssistRequest({
+        ...assistCaptureMeta,
+        rawInput: normalizedInput,
+        scopeTextLength: String(scopeNotes || "").length,
+        laborLineCount: Array.isArray(state?.labor?.lines) ? state.labor.lines.length : 0,
+        materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+      });
+      const result = await requestSectionAssist({
+        sectionKey: "scope",
+        userInput: normalizedInput,
+        state,
+        ...serviceOptions,
+        _traceId: traceId,
+      });
+      runtimeMeta = await scopeRuntimePromiseRef.current.catch(() => scopeRuntimeMetaRef.current) || scopeRuntimeMetaRef.current;
+
+      if (scopeAssistSubmitSeqRef.current !== mySeq) {
+        if (traceId) {
+          console.log(`[ai-assist:${traceId}] scope_stale_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
+        }
+        return result;
+      }
+
+      captureAssistResult({
+        ...assistCaptureMeta,
+        success: !!result,
+        hasWrites: !!result?.writes,
+        writeKeys: Object.keys(result?.writes || {}),
+        validationValid: result?.validation?.valid === true,
+        validationError: result?.validation?.valid === false ? String(result?.validation?.error || "").trim() : "",
+      });
+
+      const scopeNotesValue = result?.writes?.scopeNotes;
+      const normalizedClarificationQuestion = normalizeScopeAssistClientText(runtimeMeta?.clarificationQuestion);
+      const clarifyBranchFired = String(runtimeMeta?.outcome || "").trim().toLowerCase() === "clarify"
+        && Boolean(normalizedClarificationQuestion);
+      const scopeDisplaySource = resolveScopeAssistDisplaySource({
+        runtime: runtimeMeta,
+        result,
+      });
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_client_payload`, {
+          scopeDisplaySource,
+          clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+          clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
+          outcome: String(runtimeMeta?.outcome || ""),
+          parseBranch: String(runtimeMeta?.parseBranch || ""),
+          parseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
+          responseSource: String(runtimeMeta?.responseSource || ""),
+          fallbackSource: String(runtimeMeta?.fallbackSource || ""),
+          backendPid: String(runtimeMeta?.backendPid || ""),
+          backendPort: String(runtimeMeta?.backendPort || ""),
+          backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+          backendBootId: String(runtimeMeta?.backendBootId || ""),
+          backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+          backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+          expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          clarificationQuestion: normalizedClarificationQuestion,
+          scopeNotes: String(scopeNotesValue || ""),
+          clarifyBranchFired,
+        });
+      }
+      if (clarifyBranchFired) {
+        if (traceId) {
+          logFinalDecision("clarify", {
+            blocked: false,
+            excerpt: normalizedClarificationQuestion,
+            result,
+          });
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: normalizedClarificationQuestion,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+      const explicitScaffoldBlocked = isExplicitScopeAssistScaffoldText(scopeNotesValue);
+      const explicitScaffoldMatch = describeExplicitScopeAssistScaffoldMatch(scopeNotesValue);
+      const metaLanguageMatch = describeScopeAssistMetaLanguageMatch(scopeNotesValue);
+      const localClassification = classifyScopeAssistClientResponse({
+        userInput: normalizedInput,
+        scopeNotes: scopeNotesValue,
+        outcome: runtimeMeta?.outcome,
+        clarificationQuestion: runtimeMeta?.clarificationQuestion,
+      });
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_client_scaffold_check`, {
+          scopeNotesExcerpt: String(scopeNotesValue || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          explicitScaffoldMatch: explicitScaffoldMatch.matched,
+          matchedPattern: explicitScaffoldMatch.pattern,
+          matchedSubstring: explicitScaffoldMatch.match,
+          metaLanguageMatch: metaLanguageMatch.matched,
+          metaLanguagePattern: metaLanguageMatch.pattern,
+          metaLanguageSubstring: metaLanguageMatch.match,
+          clientClassification: localClassification.reason,
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+          _scopeOutcome: String(runtimeMeta?.outcome || ""),
+          _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+          _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
+          _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        });
+      }
+      if (explicitScaffoldBlocked && traceId) {
+        console.warn(`[ai-assist:${traceId}] scope_client_scaffold_detected_non_blocking`, {
+          scopeNotesExcerpt: String(scopeNotesValue || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          explicitScaffoldMatch: explicitScaffoldMatch.matched,
+          matchedPattern: explicitScaffoldMatch.pattern,
+          matchedSubstring: explicitScaffoldMatch.match,
+          clientClassification: localClassification.reason,
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseSource: String(runtimeMeta?.parseSource || ""),
+          _scopeOutcome: String(runtimeMeta?.outcome || ""),
+          _scopeReasonTag: String(runtimeMeta?.reasonTag || ""),
+        });
+      }
+      if (explicitScaffoldBlocked) {
+        if (traceId) {
+          logFinalDecision("rejected_explicit_scaffold", {
+            blocked: true,
+            excerpt: scopeNotesValue,
+            result,
+          });
+        }
+        if (restorePreviousReviewForBlockedRefine(SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE)) {
+          return result;
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: SCOPE_ASSIST_SCAFFOLD_DISPLAY_MESSAGE,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+
+      if (!localClassification.valid) {
+        if (traceId) {
+          logFinalDecision(localClassification.reason, { blocked: false, excerpt: scopeNotesValue, result });
+        }
+        if (restorePreviousReviewForBlockedRefine(localClassification.message)) {
+          return result;
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: localClassification.message,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+
+      if (result?.validation?.valid === false) {
+        const validationErrorMessage = String(result?.validation?.error || "").trim() || "Could not generate a result. Try adding more detail.";
+        if (traceId) {
+          logFinalDecision("rejected_validation", {
+            blocked: false,
+            excerpt: scopeNotesValue,
+            result,
+            validationError: validationErrorMessage,
+          });
+        }
+        if (restorePreviousReviewForBlockedRefine(validationErrorMessage)) {
+          return result;
+        }
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: validationErrorMessage,
+          runtime: runtimeMeta,
+        });
+        return result;
+      }
+
+      if (traceId) {
+        logFinalDecision("accepted_review", {
+          backendValidated: result?.validation?.valid === true,
+          excerpt: scopeNotesValue,
+          result,
+        });
+        console.log(`[ai-assist:${traceId}] scope_final_displayed`, {
+          scopeDisplaySource,
+          displayedScopeExcerpt: normalizeScopeAssistClientText(scopeNotesValue).slice(0, 240),
+          clientRequestUrl: String(runtimeMeta?.clientRequestUrl || ""),
+          clientPageOrigin: String(runtimeMeta?.clientPageOrigin || ""),
+          _scopeRuntimeBuild: String(runtimeMeta?.build || ""),
+          _scopeRuntimePath: String(runtimeMeta?.path || ""),
+          _scopeParseBranch: String(runtimeMeta?.parseBranch || ""),
+          _scopeParseFailureReason: String(runtimeMeta?.parseFailureReason || ""),
+          _scopeResponseSource: String(runtimeMeta?.responseSource || ""),
+          _scopeFallbackSource: String(runtimeMeta?.fallbackSource || ""),
+          _backendPid: String(runtimeMeta?.backendPid || ""),
+          _backendPort: String(runtimeMeta?.backendPort || ""),
+          _backendStartedAt: String(runtimeMeta?.backendStartedAt || ""),
+          _backendBootId: String(runtimeMeta?.backendBootId || ""),
+          _backendServerFile: String(runtimeMeta?.backendServerFile || ""),
+          _backendRuntimeBuild: String(runtimeMeta?.backendRuntimeBuild || ""),
+          expectedServerRuntimeBuild: SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+          serverBuildMatchesClientExpectation: String(runtimeMeta?.backendRuntimeBuild || "") === SCOPE_EXPECTED_SERVER_RUNTIME_BUILD,
+        });
+      }
+
+      scopeAssistLatestCaptureMetaRef.current = assistCaptureMeta;
+      setScopeAssistState({ phase: "review", input: normalizedInput, result, runtime: runtimeMeta });
+      return result;
+    } catch (error) {
+      if (scopeAssistSubmitSeqRef.current !== mySeq) {
+        if (traceId) {
+          console.log(`[ai-assist:${traceId}] scope_stale_error_discarded`, { seq: mySeq, current: scopeAssistSubmitSeqRef.current });
+        }
+        return undefined;
+      }
+
+      if (traceId) {
+        console.log(`[ai-assist:${traceId}] scope_submit_error`, {
+          code: error?.assistErrorCode,
+          class: error?.assistFailureClass,
+          msg: String(error?.assistSafeMessage || error?.message || "").slice(0, 100),
+        });
+        logFinalDecision(error?.assistErrorCode || "rejected_error", {
+          blocked: false,
+          error: true,
+          excerpt: error?.assistSafeMessage || error?.message || "",
+        });
+      }
+
+      // On refine error, return to review with the previous result instead of showing InputPhase
+      if (isRefineRequest && previousResult) {
+        setScopeAssistState({
+          phase: "review",
+          input: normalizedInput,
+          result: previousResult,
+          refineError: resolveScopeAssistDisplayError(
+            error?.assistSafeMessage || error?.message || String(error || ""),
+            Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+          ),
+          runtime: runtimeMeta,
+        });
+      } else {
+        setScopeAssistState({
+          phase: "error",
+          input: normalizedInput,
+          error: resolveScopeAssistDisplayError(
+            error?.assistSafeMessage || error?.message || String(error || ""),
+            Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+          ),
+          runtime: runtimeMeta,
+        });
+      }
+      return undefined;
+    } finally {
+      if (shouldCaptureScopeRuntime && originalFetch) {
+        window.fetch = originalFetch;
+      }
+    }
+    }; // end runScopeAssist
+
+    const promise = runScopeAssist().finally(() => {
+      if (isBrowserDevelopmentRuntime()) console.log("[SCOPE_AMEND_REQUEST_SETTLED]", { isRefine: isRefineRequest, chip: userInput, willClearRef: scopeRefineInFlightRef.current === promise, ts: Date.now() });
+      if (scopeRefineInFlightRef.current === promise) {
+        scopeRefineInFlightRef.current = null;
+      }
+    });
+    if (isRefineRequest) {
+      scopeRefineInFlightRef.current = promise;
+    }
+    return promise;
+  }, [state]);
+
+  useEffect(() => {
+    if (!homeLaunchId) {
+      lastHomeLaunchIdRef.current = "";
+      return;
+    }
+    if (isEditMode) return;
+    if (lastHomeLaunchIdRef.current === homeLaunchId) return;
+    lastHomeLaunchIdRef.current = homeLaunchId;
+    if (homeLaunchMode === "open_only") {
+      setScopeAssistState({ phase: "open", input: "" });
+      try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+      return;
+    }
+    if (!homeLaunchPrompt) {
+      try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+      return;
+    }
+    try {
+      submitScopeAssist(homeLaunchPrompt, {
+        mode: "initial",
+        sourcePrompt: homeLaunchPrompt,
+        ignoreCurrentScope: true,
+      });
+    } catch {}
+    try { onHomeEstimateLaunchConsumed && onHomeEstimateLaunchConsumed(homeLaunchId); } catch {}
+  }, [
+    homeLaunchId,
+    homeLaunchMode,
+    homeLaunchPrompt,
+    isEditMode,
+    onHomeEstimateLaunchConsumed,
+    submitScopeAssist,
+  ]);
+
+  function maybeAutoPopulateProjectName({ scopeNotesValue = "", sourceInput = "" } = {}) {
+    if (String(state?.projectId || "").trim()) return;
+    const derivedProjectName = deriveProjectNameFromScopeFlow({
+      scopeNotes: scopeNotesValue,
+      userInput: sourceInput,
+    });
+    if (!derivedProjectName) return;
+
+    const currentProjectName = String(state?.customer?.projectName || "").trim();
+    const autoProjectName = String(projectNameAutoStateRef.current.auto || "").trim();
+    const manualProjectNameTouched = Boolean(projectNameAutoStateRef.current.manual);
+    const canAutoFill = !manualProjectNameTouched && (!currentProjectName || currentProjectName === autoProjectName);
+    if (!canAutoFill) return;
+    if (currentProjectName !== derivedProjectName) {
+      patch("customer.projectName", derivedProjectName);
+    }
+    projectNameAutoStateRef.current.auto = derivedProjectName;
+  }
+
+  useEffect(() => {
+    if (isEditMode) return;
+    const hasAnyContent = Boolean(
+      String(state?.customer?.projectName || "").trim()
+      || String(state?.customer?.name || "").trim()
+      || String(state?.customer?.companyName || "").trim()
+      || String(scopeNotes || "").trim()
+      || String(additionalNotes || "").trim()
+      || (Array.isArray(state?.labor?.lines) && state.labor.lines.some((line) => {
+        return Boolean(
+          String(line?.role || "").trim()
+          || String(line?.qty || "").trim()
+          || String(line?.hours || "").trim()
+          || String(line?.rate || "").trim()
+        );
+      }))
+      || (Array.isArray(state?.materials?.items) && state.materials.items.some((item) => {
+        return Boolean(
+          String(item?.desc || "").trim()
+          || String(item?.qty || "").trim()
+          || String(item?.priceEach || item?.charge || "").trim()
+        );
+      }))
+    );
+    if (hasAnyContent) return;
+    projectNameAutoStateRef.current.manual = false;
+    projectNameAutoStateRef.current.auto = "";
+  }, [
+    additionalNotes,
+    isEditMode,
+    scopeNotes,
+    state?.customer?.companyName,
+    state?.customer?.name,
+    state?.customer?.projectName,
+    state?.labor?.lines,
+    state?.materials?.items,
   ]);
 
   useEffect(() => {
@@ -1190,10 +3173,17 @@ export default function EstimateForm(props) {
         const c = payload?.customer;
         if (!c || typeof c !== "object") return;
         const sid = String(payload?.id || c?.id || "");
+        clearStaleProjectIdForCustomerBoundary({
+          id: sid,
+          name: String(c.name || c.fullName || c.companyName || "").trim(),
+        });
         if (sid) setSelectedCustomerId(sid);
         setSelectedCustomerProfile(c);
         const display = customerDisplayName(c) || String(c.name || "").trim();
-        if (display) setSearchCustomerText(display);
+        if (display) {
+          setSearchCustomerText(display);
+          setCustomerSearchQuery("");
+        }
         patch("customer.id", sid);
         if (String(c.name || "").trim()) patch("customer.name", String(c.name || "").trim());
         if (String(c.attn || "").trim()) patch("customer.attn", String(c.attn || "").trim());
@@ -1216,15 +3206,55 @@ export default function EstimateForm(props) {
     return () => window.removeEventListener("estipaid:customer-use", apply);
   // patch is stable (setState-based), safe to omit from deps per React docs
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [clearStaleProjectIdForCustomerBoundary]);
 
-  // Sync customer list when storage changes (other tabs)
+  // Sync customer list when storage changes or same-tab customer flows update it
   useEffect(() => {
+    const refreshCustomers = () => setAllCustomers(readSavedCustomers());
     const onStorage = (e) => {
-      if (e.key === CUSTOMERS_KEY) setAllCustomers(readSavedCustomers());
+      if (e.key === CUSTOMERS_KEY) refreshCustomers();
+    };
+    const onLocalStorage = (e) => {
+      if (e?.detail?.key === CUSTOMERS_KEY) refreshCustomers();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshCustomers();
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customer-use", refreshCustomers);
+    window.addEventListener("focus", refreshCustomers);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customer-use", refreshCustomers);
+      window.removeEventListener("focus", refreshCustomers);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshProjects = () => setAllProjects(readStoredProjects());
+    const onStorage = (e) => {
+      if (e.key === STORAGE_KEYS.PROJECTS) refreshProjects();
+    };
+    const onLocalStorage = (e) => {
+      if (e?.detail?.key === STORAGE_KEYS.PROJECTS) refreshProjects();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshProjects();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("focus", refreshProjects);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("focus", refreshProjects);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   // Allow shell-level navigation to force a draft save before tab switches.
@@ -1258,6 +3288,26 @@ export default function EstimateForm(props) {
   }, [dropdownOpen]);
 
   useEffect(() => {
+    if (!dropdownOpen) return;
+    function handlePointerDown(e) {
+      if (
+        customerNameRef.current?.contains(e.target) ||
+        customerDropdownPortalRef.current?.contains(e.target)
+      ) return;
+      setDropdownOpen(false);
+    }
+    function handleKeyDown(e) {
+      if (e.key === "Escape") setDropdownOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [dropdownOpen]);
+
+  useEffect(() => {
     const updateActionBarHeight = () => {
       const h = actionBarRef.current?.getBoundingClientRect?.().height;
       if (!h) return;
@@ -1282,9 +3332,21 @@ export default function EstimateForm(props) {
     return () => mobileQuery.removeEventListener("change", syncViewportMode);
   }, []);
 
+  const actionBarChromeVisible = typeof shellBottomChromeVisible === "boolean"
+    ? shellBottomChromeVisible
+    : mobileBottomChromeVisible;
+  // embeddedInShell is never passed true by the real app shell — the actual
+  // signal that we're paired with shell bottom chrome (mobile bottom nav) is
+  // shellBottomChromeVisible being supplied at all. Without this, the action
+  // bar's scroll-reactive hide/reveal transform never applied.
   const shouldSyncActionBarWithBottomChrome =
-    embeddedInShell
-    && isMobileActionBarViewport;
+    embeddedInShell || typeof shellBottomChromeVisible === "boolean";
+  const scopeTemplateSourceId = String(state?.meta?.savedDocId || editingRecordId || "").trim();
+  const scopeTemplateSourceNumber = String(
+    state?.job?.docNumber
+    || openedDocNumberRef.current
+    || ""
+  ).trim();
 
   function autoResizeScopeNotes(el) {
     if (!el) return;
@@ -1310,6 +3372,21 @@ export default function EstimateForm(props) {
     };
   }, [notesOpen, scopeNotes]);
 
+  // Sync external scopeNotes writes (AI Assist accept, template apply) into the contenteditable div.
+  // Skipped when the div's text already matches, preserving cursor position during normal typing.
+  useEffect(() => {
+    const el = scopeNotesRef.current;
+    if (!el || el.tagName === "TEXTAREA") return;
+    const current = extractScopeTextFromElement(el).replace(/\n+$/, "");
+    if (current === scopeNotes) return;
+    el.innerText = scopeNotes;
+    if (!scopeNotes.trim()) {
+      el.setAttribute("data-empty", "true");
+    } else {
+      el.removeAttribute("data-empty");
+    }
+  }, [scopeNotes]);
+
   useLayoutEffect(() => {
     const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
       ? window.requestAnimationFrame(() => autoResizeScopeNotes(additionalNotesRef.current))
@@ -1327,6 +3404,700 @@ export default function EstimateForm(props) {
     const ok = window.confirm("Unsaved notes will be lost. Clear notes?");
     if (!ok) return;
     patch("scopeNotes", "");
+    patch("scopeImages", []);
+  }
+
+  function hasMeaningfulTemplateLaborContent(lines) {
+    return Array.isArray(lines) && lines.some((line) => Boolean(
+      String(line?.role || line?.label || "").trim()
+      || String(line?.hours ?? "").trim()
+      || String(line?.rate ?? "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+    ));
+  }
+
+  function hasMeaningfulTemplateMaterialContent(items, blanketFields = {}) {
+    const hasItemizedContent = Array.isArray(items) && items.some((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.note || "").trim()
+      || String(item?.cost ?? "").trim()
+      || String(item?.unitCostInternal ?? item?.costInternal ?? "").trim()
+      || String(item?.charge ?? item?.priceEach ?? "").trim()
+    ));
+    if (hasItemizedContent) return true;
+    return Boolean(
+      String(blanketFields?.materialsBlanketDescription || "").trim()
+      || String(blanketFields?.materialsBlanketCost ?? "").trim()
+      || String(blanketFields?.materialsBlanketInternalCost ?? "").trim()
+    );
+  }
+
+  function hasMeaningfulTemplateAdditionalChargeContent(items) {
+    return Array.isArray(items) && items.some((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.qty ?? "").trim()
+      || String(item?.priceEach ?? "").trim()
+    ));
+  }
+
+  function hasMeaningfulTemplateWorkPackageContent(candidate = {}) {
+    return Boolean(
+      String(candidate?.scopeText ?? candidate?.scopeNotes ?? "").trim()
+      || String(candidate?.additionalNotes || "").trim()
+      || hasMeaningfulTemplateLaborContent(candidate?.laborItems ?? candidate?.labor?.lines)
+      || hasMeaningfulTemplateMaterialContent(
+        candidate?.materialItems ?? candidate?.materials?.items,
+        {
+          materialsBlanketDescription: candidate?.materialsBlanketDescription ?? candidate?.materials?.materialsBlanketDescription,
+          materialsBlanketCost: candidate?.materialsBlanketCost ?? candidate?.materials?.blanketCost,
+          materialsBlanketInternalCost: candidate?.materialsBlanketInternalCost ?? candidate?.materials?.blanketInternalCost,
+          materialsMarkupPct: candidate?.materialsMarkupPct ?? candidate?.materials?.markupPct,
+        }
+      )
+      || hasMeaningfulTemplateAdditionalChargeContent(candidate?.additionalChargeItems ?? candidate?.additionalCharges?.items)
+      || (Array.isArray(candidate?.scopeImages) && candidate.scopeImages.length > 0)
+    );
+  }
+
+  function buildTemplateLaborItemsForSave() {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    return lines.filter((line) => Boolean(
+      String(line?.role || line?.label || "").trim()
+      || String(line?.hours ?? "").trim()
+      || String(line?.rate ?? "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+    )).map((line) => ({
+      id: String(line?.id || "").trim() || `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      role: String(line?.role || "").trim(),
+      label: String(line?.label || "").trim(),
+      hours: line?.hours ?? "",
+      rate: line?.rate ?? "",
+      trueRateInternal: line?.trueRateInternal ?? line?.internalRate ?? "",
+      internalRate: line?.internalRate ?? line?.trueRateInternal ?? "",
+      qty: line?.qty ?? 1,
+      ...(String(line?.markupPct ?? "").trim() !== "" ? { markupPct: line.markupPct } : {}),
+    }));
+  }
+
+  function buildTemplateMaterialItemsForSave() {
+    const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
+    return items.filter((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.note || "").trim()
+      || String(item?.cost ?? "").trim()
+      || String(item?.unitCostInternal ?? item?.costInternal ?? "").trim()
+      || String(item?.charge ?? item?.priceEach ?? "").trim()
+    )).map((item) => ({
+      id: String(item?.id || "").trim() || `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      desc: String(item?.desc || "").trim(),
+      note: String(item?.note || "").trim(),
+      qty: item?.qty ?? 1,
+      cost: item?.cost ?? "",
+      unitCostInternal: item?.unitCostInternal ?? "",
+      costInternal: item?.costInternal ?? "",
+      charge: item?.charge ?? "",
+      priceEach: item?.priceEach ?? "",
+      ...(String(item?.markupPct ?? "").trim() !== "" ? { markupPct: item.markupPct } : {}),
+    }));
+  }
+
+  function buildTemplateAdditionalChargeItemsForSave() {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items : [];
+    return items.filter((item) => Boolean(
+      String(item?.desc || "").trim()
+      || String(item?.qty ?? "").trim()
+      || String(item?.priceEach ?? "").trim()
+    )).map((item) => ({
+      id: String(item?.id || "").trim() || `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      desc: String(item?.desc || "").trim(),
+      qty: item?.qty ?? "",
+      priceEach: item?.priceEach ?? "",
+    }));
+  }
+
+  function buildTemplateScopeImagesForSave() {
+    return (Array.isArray(scopeImages) ? scopeImages : []).map((image) => {
+      const id = String(image?.id || "").trim();
+      const dataUrl = String(image?.dataUrl || "").trim();
+      if (!id || !dataUrl) return null;
+      const storedWidth = Number(image?.storedWidth || 0);
+      const storedHeight = Number(image?.storedHeight || 0);
+      const storedSizeBytes = Number(image?.storedSizeBytes || 0);
+      const originalWidth = Number(image?.originalWidth || 0);
+      const originalHeight = Number(image?.originalHeight || 0);
+      const originalSizeBytes = Number(image?.originalSizeBytes || 0);
+      const createdAt = Number(image?.createdAt || 0);
+      const layout = image?.layout && typeof image.layout === "object"
+        ? {
+            size: ["small", "medium", "large"].includes(String(image.layout.size || "").trim().toLowerCase())
+              ? String(image.layout.size).trim().toLowerCase()
+              : "medium",
+            align: ["left", "center", "right"].includes(String(image.layout.align || "").trim().toLowerCase())
+              ? String(image.layout.align).trim().toLowerCase()
+              : "center",
+            caption: Boolean(image.layout.caption),
+          }
+        : null;
+
+      return {
+        id,
+        name: String(image?.name || id).trim() || id,
+        ...(String(image?.mimeType || "").trim() ? { mimeType: String(image.mimeType).trim().toLowerCase() } : {}),
+        dataUrl,
+        ...(Number.isFinite(storedWidth) && storedWidth > 0 ? { storedWidth } : {}),
+        ...(Number.isFinite(storedHeight) && storedHeight > 0 ? { storedHeight } : {}),
+        ...(Number.isFinite(storedSizeBytes) && storedSizeBytes > 0 ? { storedSizeBytes } : {}),
+        ...(layout ? { layout } : {}),
+        ...(Number.isFinite(originalWidth) && originalWidth > 0 ? { originalWidth } : {}),
+        ...(Number.isFinite(originalHeight) && originalHeight > 0 ? { originalHeight } : {}),
+        ...(Number.isFinite(originalSizeBytes) && originalSizeBytes > 0 ? { originalSizeBytes } : {}),
+        ...(Number.isFinite(createdAt) && createdAt > 0 ? { createdAt } : {}),
+      };
+    }).filter(Boolean);
+  }
+
+  function buildAppliedTemplateScopeImages(templateScopeImages, templateScopeText) {
+    const templateImages = Array.isArray(templateScopeImages) ? templateScopeImages.filter(Boolean) : [];
+    if (templateImages.length === 0) {
+      return {
+        nextScopeImages: null,
+        nextScopeText: String(templateScopeText || ""),
+      };
+    }
+
+    if (templateImages.length > MAX_SCOPE_IMAGES_PER_DOCUMENT) {
+      throw new Error("This template has too many photos for this document. Remove some photos and try again.");
+    }
+
+    const remappedImages = [];
+    const remappedIds = new Map();
+    for (const templateImage of templateImages) {
+      const nextId = getNextScopeImageId(remappedImages);
+      const sourceId = String(templateImage?.id || "").trim();
+      if (sourceId) remappedIds.set(sourceId, nextId);
+      remappedImages.push({
+        ...templateImage,
+        id: nextId,
+        name: String(templateImage?.name || nextId).trim() || nextId,
+      });
+    }
+
+    const nextScopeText = String(templateScopeText || "").replace(
+      SCOPE_IMAGE_MARKER_PATTERN,
+      (fullMatch, imageId) => {
+        const nextId = remappedIds.get(String(imageId || "").trim());
+        return nextId ? `[scope-image:${nextId}]` : fullMatch;
+      }
+    );
+
+    return {
+      nextScopeImages: remappedImages,
+      nextScopeText,
+    };
+  }
+
+  function cloneTemplateLaborItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [createBlankTemplateLaborLine()];
+    }
+    return items.map((line) => ({
+      ...createBlankTemplateLaborLine(),
+      ...line,
+      id: `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
+  function cloneTemplateMaterialItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [createBlankMaterialItem(undefined, globalDefaultMarkupPct)];
+    }
+    return items.map((item) => ({
+      ...createBlankMaterialItem(undefined, globalDefaultMarkupPct),
+      ...item,
+      id: `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
+  function cloneTemplateAdditionalChargeItemsForApply(items) {
+    if (!Array.isArray(items) || items.length === 0) return [];
+    return items.map((item) => ({
+      ...createBlankAdditionalChargeItem(),
+      ...item,
+      id: `charge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    }));
+  }
+
+  function handleSaveScopeTemplate(event) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    try {
+      const currentScopeText = String(scopeNotes || "").trim();
+      const currentAdditionalNotes = String(additionalNotes || "").trim();
+      const currentMaterialsMode = state?.ui?.materialsMode === "blanket" ? "blanket" : "itemized";
+      const laborItems = buildTemplateLaborItemsForSave();
+      const materialItems = buildTemplateMaterialItemsForSave();
+      const additionalChargeItems = buildTemplateAdditionalChargeItemsForSave();
+      const templateScopeImages = buildTemplateScopeImagesForSave();
+      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
+      const materialsBlanketCost = state?.materials?.blanketCost ?? "";
+      const materialsBlanketInternalCost = state?.materials?.blanketInternalCost ?? "";
+      const materialsMarkupPct = state?.materials?.markupPct ?? "";
+      const hasTemplateContent = hasMeaningfulTemplateWorkPackageContent({
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        materialsBlanketDescription,
+        materialsBlanketCost,
+        materialsBlanketInternalCost,
+        materialsMarkupPct,
+        scopeImages: templateScopeImages,
+      });
+      if (!hasTemplateContent) {
+        window.alert("Add scope, labor, materials, additional charges, or notes before saving a template.");
+        return;
+      }
+
+      const defaultName = createScopeTemplate({
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        scopeImages: templateScopeImages,
+        ...(currentMaterialsMode === "blanket"
+          ? {
+            materialsMode: "blanket",
+            materialsBlanketDescription,
+            materialsBlanketCost,
+            materialsBlanketInternalCost,
+            materialsMarkupPct,
+          }
+          : {
+            materialsMode: "itemized",
+          }),
+      })?.name || "Untitled work template";
+      const enteredName = window.prompt("Name this work template:", defaultName);
+      if (enteredName === null) return;
+
+      const template = createScopeTemplate({
+        name: String(enteredName || "").trim() || defaultName,
+        scopeText: currentScopeText,
+        laborItems,
+        materialItems,
+        additionalChargeItems,
+        additionalNotes: currentAdditionalNotes,
+        scopeImages: templateScopeImages,
+        ...(currentMaterialsMode === "blanket"
+          ? {
+            materialsMode: "blanket",
+            materialsBlanketDescription,
+            materialsBlanketCost,
+            materialsBlanketInternalCost,
+            materialsMarkupPct,
+          }
+          : {
+            materialsMode: "itemized",
+          }),
+        ...(scopeTemplateSourceId ? { sourceEstimateId: scopeTemplateSourceId } : {}),
+        ...(scopeTemplateSourceNumber ? { sourceEstimateNumber: scopeTemplateSourceNumber } : {}),
+      });
+      if (!template) return;
+
+      const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates], { throwOnError: true });
+      setScopeTemplates(nextTemplates);
+      setSavePrompt({ tone: "success", message: "Template saved" });
+      try {
+        window.dispatchEvent(new CustomEvent("pe-localstorage", {
+          detail: {
+            key: STORAGE_KEYS.SCOPE_TEMPLATES,
+            value: JSON.stringify(nextTemplates),
+          },
+        }));
+      } catch {}
+    } catch (error) {
+      setSavePrompt({
+        tone: "error",
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again.",
+      });
+    }
+  }
+
+  function handleApplyScopeTemplate(templateId) {
+    const nextId = String(templateId || "").trim();
+    if (!nextId) return;
+    const template = scopeTemplates.find((entry) => String(entry?.id || "").trim() === nextId);
+    if (!template) return;
+    const isLegacyScopeTemplate = isLegacyScopeTemplateRecord(template);
+    const templateScopeText = String(template.scopeText || "");
+    if (isLegacyScopeTemplate) {
+      const currentScopeText = String(scopeNotes || "");
+      if (currentScopeText.trim() && currentScopeText.trim() !== templateScopeText.trim()) {
+        const ok = window.confirm("Replace current scope text with this template? Customer, project, line items, and totals will stay as-is.");
+        if (!ok) return;
+      }
+      patch("scopeNotes", templateScopeText);
+      return;
+    }
+
+    if (hasMeaningfulTemplateWorkPackageContent({
+      scopeNotes,
+      labor: state?.labor,
+      materials: state?.materials,
+      additionalCharges: state?.additionalCharges,
+      additionalNotes,
+    })) {
+      const ok = window.confirm("Apply this template and replace the current scope, labor, materials, additional charges, and notes? Customer, project, and job details will stay as-is.");
+      if (!ok) return;
+    }
+
+    let nextScopeImages = null;
+    let nextScopeText = templateScopeText;
+    try {
+      const appliedTemplateImages = buildAppliedTemplateScopeImages(
+        template?.scopeImages,
+        templateScopeText
+      );
+      nextScopeImages = appliedTemplateImages.nextScopeImages;
+      nextScopeText = appliedTemplateImages.nextScopeText;
+    } catch (error) {
+      window.alert(error?.message || "This template has too many photos for this document. Remove some photos and try again.");
+      return;
+    }
+    const templateMaterialsMode = template?.materialsMode === "blanket" ? "blanket" : "itemized";
+    patch("scopeNotes", nextScopeText);
+    if (Array.isArray(nextScopeImages)) {
+      patch("scopeImages", nextScopeImages);
+    }
+    patch("labor.lines", cloneTemplateLaborItemsForApply(template?.laborItems));
+    patch("ui.materialsMode", templateMaterialsMode);
+    patch("materials.items", cloneTemplateMaterialItemsForApply(template?.materialItems));
+    patch("materials.materialsBlanketDescription", templateMaterialsMode === "blanket" ? String(template?.materialsBlanketDescription || "") : "");
+    patch("materials.blanketCost", templateMaterialsMode === "blanket" ? (template?.materialsBlanketCost ?? "") : "");
+    patch("materials.blanketInternalCost", templateMaterialsMode === "blanket" ? (template?.materialsBlanketInternalCost ?? "") : "");
+    if (templateMaterialsMode === "blanket" && String(template?.materialsMarkupPct ?? "").trim() !== "") {
+      patch("materials.markupPct", template.materialsMarkupPct);
+    }
+    patch("additionalCharges.items", cloneTemplateAdditionalChargeItemsForApply(template?.additionalChargeItems));
+    patch("additionalNotes", String(template?.additionalNotes || ""));
+  }
+
+  function getNextScopeImageId(existingImages = scopeImages) {
+    const used = new Set(
+      (Array.isArray(existingImages) ? existingImages : [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+    );
+    let index = 1;
+    while (used.has(`scope-image-${index}`)) index += 1;
+    return `scope-image-${index}`;
+  }
+
+  function updateScopeNotesEmptyFlag(el, text) {
+    if (!el) return;
+    if (String(text || "").trim()) el.removeAttribute("data-empty");
+    else el.setAttribute("data-empty", "true");
+  }
+
+  function cacheScopeImageSelection() {
+    const el = scopeNotesRef.current;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!el || !sel || sel.rangeCount < 1) {
+      scopeImageSelectionRef.current = null;
+      return;
+    }
+    try {
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) {
+        scopeImageSelectionRef.current = null;
+        return;
+      }
+      scopeImageSelectionRef.current = range.cloneRange();
+    } catch {
+      scopeImageSelectionRef.current = null;
+    }
+  }
+
+  function focusScopeImageUpload() {
+    cacheScopeImageSelection();
+    if (scopeImageInputRef.current?.click) {
+      scopeImageInputRef.current.click();
+    }
+  }
+
+  async function handleScopeImageFileSelected(event) {
+    const input = event?.currentTarget || event?.target || null;
+    const file = input?.files?.[0] || null;
+    if (input) input.value = "";
+    if (!file) return;
+
+    try {
+      if (scopeImages.length >= MAX_SCOPE_IMAGES_PER_DOCUMENT) {
+        window.alert(`This document already has ${MAX_SCOPE_IMAGES_PER_DOCUMENT} scope photos. Remove one before adding another.`);
+        return;
+      }
+
+      const normalized = await normalizeScopeImageForStorage(file);
+
+      if (normalized.storedSizeBytes > MAX_SCOPE_IMAGE_STORED_BYTES) {
+        window.alert("This photo is still too large after compression. Try a smaller image.");
+        return;
+      }
+
+      const currentTotalBytes = scopeImages.reduce((sum, img) => {
+        const bytes = Number(img?.storedSizeBytes || 0) || estimateDataUrlBytes(String(img?.dataUrl || ""));
+        return sum + bytes;
+      }, 0);
+      if (currentTotalBytes + normalized.storedSizeBytes > MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES) {
+        window.alert("Scope photos are at the document storage limit. Remove a photo before adding another.");
+        return;
+      }
+
+      const imageId = getNextScopeImageId();
+      const marker = `[scope-image:${imageId}]`;
+      const createdAt = Date.now();
+      const imageRecord = {
+        id: imageId,
+        name: String(file.name || imageId).trim() || imageId,
+        mimeType: normalized.mimeType,
+        dataUrl: normalized.dataUrl,
+        createdAt,
+        layout: { size: "medium", align: "center", caption: false },
+        originalSizeBytes: normalized.originalSizeBytes,
+        storedSizeBytes: normalized.storedSizeBytes,
+        originalWidth: normalized.originalWidth,
+        originalHeight: normalized.originalHeight,
+        storedWidth: normalized.storedWidth,
+        storedHeight: normalized.storedHeight,
+      };
+
+      const el = scopeNotesRef.current;
+      const savedRange = scopeImageSelectionRef.current;
+      const selection = typeof window !== "undefined" ? window.getSelection() : null;
+      let insertedAtCursor = false;
+
+      if (el && savedRange && el.contains(savedRange.commonAncestorContainer)) {
+        try {
+          const range = savedRange.cloneRange();
+          range.deleteContents();
+          const textNode = document.createTextNode(marker);
+          range.insertNode(textNode);
+          range.setStartAfter(textNode);
+          range.collapse(true);
+          if (selection) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          const nextText = extractScopeTextFromElement(el);
+          patch("scopeNotes", nextText);
+          updateScopeNotesEmptyFlag(el, nextText);
+          autoResizeScopeNotes(el);
+          insertedAtCursor = true;
+        } catch {}
+      }
+
+      if (!insertedAtCursor) {
+        const currentText = el ? extractScopeTextFromElement(el) : String(scopeNotes || "");
+        const trimmedCurrent = String(currentText || "").trim();
+        const nextText = trimmedCurrent
+          ? `${String(currentText || "").replace(/\s+$/, "")}\n\n${marker}`
+          : marker;
+        if (el) {
+          el.innerText = nextText;
+          updateScopeNotesEmptyFlag(el, nextText);
+          autoResizeScopeNotes(el);
+        }
+        patch("scopeNotes", nextText);
+      }
+
+      const nextImages = [...scopeImages, imageRecord];
+      patch("scopeImages", nextImages);
+      scopeImageSelectionRef.current = null;
+    } catch (error) {
+      window.alert(error?.message || "Unable to process that image.");
+    }
+  }
+
+  function handleRemoveScopeImage(imageId) {
+    const nextId = String(imageId || "").trim();
+    if (!nextId) return;
+    const nextImages = scopeImages.filter((item) => String(item?.id || "").trim() !== nextId);
+    patch("scopeImages", nextImages);
+  }
+
+  function handleUpdateScopeImageLayout(imageId, key, value) {
+    const nextId = String(imageId || "").trim();
+    if (!nextId) return;
+    const nextImages = scopeImages.map((item) => {
+      if (String(item?.id || "").trim() !== nextId) return item;
+      const prevLayout = (item?.layout && typeof item.layout === "object") ? item.layout : {};
+      return { ...item, layout: { size: "medium", align: "center", caption: false, ...prevLayout, [key]: value } };
+    });
+    patch("scopeImages", nextImages);
+  }
+
+  function isMeaningfulLaborLine(line) {
+    if (!line || typeof line !== "object") return false;
+    const qty = normalizeLaborQtyValue(line?.qty);
+    const markup = normalizePercentInput(String(line?.markupPct ?? ""));
+    const normalizedDefaultMarkup = normalizePercentInput(String(globalDefaultMarkupPct ?? ""));
+    return Boolean(
+      String(line?.role || "").trim()
+      || String(line?.label || "").trim()
+      || String(line?.hours || "").trim()
+      || String(line?.rate || "").trim()
+      || String(line?.trueRateInternal ?? line?.internalRate ?? "").trim()
+      || qty !== 1
+      || (markup && markup !== normalizedDefaultMarkup)
+    );
+  }
+
+  function normalizeLaborAssistLines(lines = []) {
+    return (Array.isArray(lines) ? lines : [])
+      .map((line, index) => {
+        const label = String(line?.label || "").trim();
+        const role = String(line?.role || "").trim();
+        const hours = normalizeHoursInput(String(line?.hours ?? ""));
+        const rate = normalizeMoneyInput(String(line?.rate ?? ""));
+        const trueRateInternal = normalizeMoneyInput(String(line?.trueRateInternal ?? line?.internalRate ?? ""));
+        const qty = String(normalizeLaborQtyValue(line?.qty ?? line?.headcount ?? 1));
+        const markupPct = normalizePercentInput(String(line?.markupPct ?? globalDefaultMarkupPct));
+        if (!label || !hours || !rate) return null;
+        return {
+          id: `labor_ai_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+          role,
+          label,
+          hours,
+          rate,
+          trueRateInternal,
+          internalRate: trueRateInternal,
+          qty,
+          markupPct,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function applyAcceptedLaborAssist(writes = {}, action = null) {
+    const incomingLines = normalizeLaborAssistLines(writes?.laborLines);
+    if (!incomingLines.length) return;
+
+    const existingLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const hasMeaningfulExistingLines = existingLines.some((line) => isMeaningfulLaborLine(line));
+    const shouldReplace = action?.type === "replace" || !hasMeaningfulExistingLines;
+    const nextLines = shouldReplace ? incomingLines : [...existingLines, ...incomingLines];
+
+    patch("labor.lines", nextLines);
+    setLaborOpen(true);
+    laborAssist.close();
+  }
+
+  function handleScopeFormat(command) {
+    const el = scopeNotesRef.current;
+    if (!el) return;
+    // Save selection before focus() — calling focus() on an already-focused
+    // contentEditable drops the range in Safari/Chrome, breaking repeated commands.
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    const savedRanges = [];
+    if (sel && sel.rangeCount > 0) {
+      for (let i = 0; i < sel.rangeCount; i++) {
+        savedRanges.push(sel.getRangeAt(i).cloneRange());
+      }
+    }
+    el.focus();
+    if (sel && savedRanges.length > 0) {
+      sel.removeAllRanges();
+      savedRanges.forEach((range) => sel.addRange(range));
+    }
+    // eslint-disable-next-line no-fallthrough
+    switch (command) {
+      case "bold": document.execCommand("bold", false, null); break;
+      case "italic": document.execCommand("italic", false, null); break;
+      case "underline": document.execCommand("underline", false, null); break;
+      case "bullet": document.execCommand("insertUnorderedList", false, null); break;
+      case "numbered": document.execCommand("insertOrderedList", false, null); break;
+      case "undo": document.execCommand("undo", false, null); break;
+      case "redo": document.execCommand("redo", false, null); break;
+      case "divider": document.execCommand("insertHorizontalRule", false, null); break;
+      case "heading": document.execCommand("formatBlock", false, "h2"); break;
+      case "normal": document.execCommand("formatBlock", false, "div"); break;
+      default: break;
+    }
+    const nextText = extractScopeTextFromElement(el);
+    patch("scopeNotes", nextText);
+    autoResizeScopeNotes(el);
+    updateScopeFormatState();
+  }
+
+  function updateScopeFormatState() {
+    if (typeof document === "undefined") return;
+    try {
+      setScopeFormatState({
+        bold: document.queryCommandState("bold"),
+        italic: document.queryCommandState("italic"),
+        underline: document.queryCommandState("underline"),
+        bullet: document.queryCommandState("insertUnorderedList"),
+        numbered: document.queryCommandState("insertOrderedList"),
+        heading: String(document.queryCommandValue("formatBlock") || "").toLowerCase() === "h2",
+      });
+    } catch {}
+  }
+
+  function extractScopeTextFromElement(el) {
+    if (!el) return "";
+    const parts = [];
+    function getInlineText(node) {
+      if (node.nodeType === 3) return node.textContent;
+      if (node.nodeType !== 1) return "";
+      if (node.tagName.toLowerCase() === "br") return "\n";
+      return Array.from(node.childNodes).map(getInlineText).join("");
+    }
+    function walk(node) {
+      if (node.nodeType === 3) { const t = node.textContent; if (t) parts.push(t); return; }
+      if (node.nodeType !== 1) return;
+      const tag = node.tagName.toLowerCase();
+      switch (tag) {
+        case "h1": case "h2": case "h3": {
+          const text = getInlineText(node).replace(/\n/g, " ").trim();
+          if (text) parts.push("## " + text + "\n");
+          break;
+        }
+        case "ul": {
+          for (const li of node.children) {
+            if (li.tagName.toLowerCase() === "li") {
+              const text = getInlineText(li).replace(/\n/g, " ").trim();
+              if (text) parts.push("• " + text + "\n");
+            }
+          }
+          break;
+        }
+        case "ol": {
+          let idx = 1;
+          for (const li of node.children) {
+            if (li.tagName.toLowerCase() === "li") {
+              const text = getInlineText(li).replace(/\n/g, " ").trim();
+              if (text) { parts.push(idx + ". " + text + "\n"); idx++; }
+            }
+          }
+          break;
+        }
+        case "hr": { parts.push("---\n"); break; }
+        case "br": { parts.push("\n"); break; }
+        case "div": case "p": {
+          if (!node.textContent.trim() && !node.querySelector("hr")) { parts.push("\n"); return; }
+          const hasBlockChildren = Array.from(node.children).some((c) =>
+            ["h1", "h2", "h3", "ul", "ol", "hr", "div", "p"].includes(c.tagName.toLowerCase())
+          );
+          if (hasBlockChildren) { for (const c of node.childNodes) walk(c); }
+          else { const text = getInlineText(node).trim(); if (text) parts.push(text + "\n"); else parts.push("\n"); }
+          break;
+        }
+        default: for (const c of node.childNodes) walk(c); break;
+      }
+    }
+    for (const child of el.childNodes) walk(child);
+    return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   const recentCustomerIds = useMemo(() => readCustomerRecents(), [selectedCustomerId]);
@@ -1335,17 +4106,35 @@ export default function EstimateForm(props) {
     [allCustomers, recentCustomerIds]
   );
   const filteredCustomers = useMemo(() => {
-    const q = searchCustomerText.trim().toLowerCase();
-    if (!q) return [];
-    return allCustomers.filter((c) => {
+    const q = customerSearchQuery.trim().toLowerCase();
+    const matches = allCustomers.filter((c) => {
       const name = customerDisplayName(c).toLowerCase();
       const company = String(c.companyName || "").toLowerCase();
+      const fullName = String(c.fullName || c.contactName || c.name || "").toLowerCase();
       const email = String(c.comEmail || c.resEmail || c.email || "").toLowerCase();
       const phone = String(c.comPhone || c.resPhone || c.phone || "").toLowerCase();
-      return name.includes(q) || company.includes(q) || email.includes(q) || phone.includes(q);
-    }).slice(0, MAX_SEARCH_RESULTS);
-  }, [allCustomers, searchCustomerText]);
-  const dropdownCustomers = searchCustomerText.trim() ? filteredCustomers : recentCustomers;
+      if (!q) return true;
+      return (
+        name.includes(q)
+        || company.includes(q)
+        || fullName.includes(q)
+        || email.includes(q)
+        || phone.includes(q)
+      );
+    });
+    return matches.slice(0, MAX_SEARCH_RESULTS);
+  }, [allCustomers, customerSearchQuery]);
+  const dropdownCustomers = useMemo(() => {
+    if (customerSearchQuery.trim()) return filteredCustomers;
+    const seen = new Set();
+    return [...recentCustomers, ...filteredCustomers].filter((customer) => {
+      const id = String(customer?.id || "").trim();
+      const key = id || customerDisplayName(customer).toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [customerSearchQuery, filteredCustomers, recentCustomers]);
   const selectedProfile = useMemo(() => {
     if (!selectedCustomerId || !selectedCustomerProfile) return null;
     const c = selectedCustomerProfile;
@@ -1368,6 +4157,115 @@ export default function EstimateForm(props) {
     const poRequired = !!c?.poRequired;
     return { displayName, fullName, companyName, phone, email, billingAddress, projectAddress, showProjectAddress, notes, netTermsLabel, netTermsDays, customerType: type, poRequired };
   }, [selectedCustomerId, selectedCustomerProfile]);
+  const showExistingProjectSelector = !projectSeedSummary
+    && !hasLinkedSourceEstimate;
+  const availableExistingProjects = useMemo(() => {
+    if (!showExistingProjectSelector) return [];
+
+    const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
+    const normalize = (s) => String(s || "").trim().toLowerCase();
+    const selectedNameKey = normalize(
+      selectedProfile?.displayName
+      || selectedProfile?.companyName
+      || selectedProfile?.fullName
+      || state?.customer?.name
+      || ""
+    );
+
+    // No customer context — show nothing to avoid cross-customer pollution
+    if (!selectedId && !selectedNameKey) return [];
+
+    const seenIds = new Set();
+    return (Array.isArray(allProjects) ? allProjects : [])
+      .filter((project) => {
+        const projectId = String(project?.id || "").trim();
+        if (!projectId) return false;
+        if (seenIds.has(projectId)) return false;
+
+        const projectCustomerIds = [
+          String(project?.customerId || "").trim(),
+          String(project?.customer?.id || "").trim(),
+          String(project?.clientId || "").trim(),
+        ].filter(Boolean);
+        const projectCustomerNames = [
+          project?.customerName,
+          project?.customer?.name,
+          project?.customer?.companyName,
+          project?.customer?.fullName,
+          project?.customer?.displayName,
+          project?.billingCustomerName,
+          project?.billing?.customerName,
+          project?.billing?.customer?.name,
+          project?.billing?.customer?.companyName,
+          project?.billing?.customer?.fullName,
+          project?.billing?.customer?.displayName,
+        ]
+          .map(normalize)
+          .filter(Boolean);
+
+        const matchesById = !!selectedId && projectCustomerIds.some((id) => id === selectedId);
+        const matchesByName = !!selectedNameKey && projectCustomerNames.some((name) => name === selectedNameKey);
+        const isUnassigned = projectCustomerIds.length === 0 && projectCustomerNames.length === 0;
+        if (!matchesById && !matchesByName && !isUnassigned) return false;
+
+        seenIds.add(projectId);
+        return true;
+      })
+      .slice()
+      .sort((a, b) => {
+        const tsDiff = Number(b?.updatedAt || b?.createdAt || 0) - Number(a?.updatedAt || a?.createdAt || 0);
+        if (tsDiff !== 0) return tsDiff;
+        return String(a?.projectName || "").localeCompare(String(b?.projectName || ""));
+      });
+  }, [allProjects, selectedCustomerId, selectedProfile, showExistingProjectSelector, state?.customer?.id, state?.customer?.name]);
+  const selectedExistingProjectId = showExistingProjectSelector ? String(state?.projectId || "").trim() : "";
+  const selectedExistingProject = useMemo(() => {
+    if (!selectedExistingProjectId) return null;
+    return availableExistingProjects.find((project) => String(project?.id || "").trim() === selectedExistingProjectId)
+      || (Array.isArray(allProjects)
+        ? allProjects.find((project) => String(project?.id || "").trim() === selectedExistingProjectId) || null
+        : null);
+  }, [allProjects, availableExistingProjects, selectedExistingProjectId]);
+  const isEstimateProjectReassignment = isEditMode && !isInvoiceEditMode && showExistingProjectSelector;
+  const currentLinkedProjectId = isEstimateProjectReassignment ? String(state?.projectId || "").trim() : "";
+  const currentLinkedProject = useMemo(() => {
+    if (!currentLinkedProjectId) return null;
+    return (Array.isArray(allProjects) ? allProjects : []).find(
+      (project) => String(project?.id || "").trim() === currentLinkedProjectId
+    ) || null;
+  }, [allProjects, currentLinkedProjectId]);
+  const guidedBuildContext = useMemo(() => ({
+    customers: allCustomers,
+    selectedCustomer: selectedCustomerProfile,
+    globalDefaultMarkupPct: globalDefaultMarkupPctNumber,
+    lockMarkupToGlobal,
+    showInternalCostFields,
+    tradeInsertTextByKey: TRADE_INSERT_TEXT_BY_KEY,
+  }), [
+    allCustomers,
+    globalDefaultMarkupPctNumber,
+    lockMarkupToGlobal,
+    selectedCustomerProfile,
+    showInternalCostFields,
+  ]);
+
+  const {
+    guided,
+    closeGuided,
+    submitAnswer: submitGuidedAnswer,
+    selectChoice: selectGuidedChoice,
+    skipCurrent: skipGuidedQuestion,
+    openReview: openGuidedReview,
+    jumpToSection: jumpGuidedSection,
+    confirmPending: confirmGuidedPending,
+    rejectPending: rejectGuidedPending,
+  } = useGuidedBuild({
+    state,
+    patch,
+    mode: guidedDocType,
+    context: guidedBuildContext,
+    onSelectCustomer: handleSelectCustomer,
+  });
   const hasSelectedNetTerms = useMemo(() => getNetTermsDays(selectedCustomerProfile) !== null, [selectedCustomerProfile]);
   const isCommercialJob = selectedProfile?.customerType === "commercial";
   const effectivePoRequired = !!selectedProfile?.poRequired;
@@ -1456,8 +4354,10 @@ export default function EstimateForm(props) {
 
   function handleSelectCustomer(id) {
     if (id === CREATE_NEW_CUSTOMER_VALUE) {
+      clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
+      setCustomerSearchQuery("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
       patch("customer.id", "");
@@ -1472,14 +4372,20 @@ export default function EstimateForm(props) {
       patch("customer.billingDiff", false);
       try { localStorage.removeItem(PENDING_CUSTOMER_USE_KEY); } catch {}
       try {
-        localStorage.setItem(PENDING_CUSTOMER_CREATE_KEY, JSON.stringify({ ts: Date.now(), source: "estimator" }));
+        localStorage.setItem(PENDING_CUSTOMER_CREATE_KEY, JSON.stringify({
+          ts: Date.now(),
+          source: "estimator",
+          builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+        }));
       } catch {}
       try { window.dispatchEvent(new Event("estipaid:navigate-customers")); } catch {}
       return;
     }
     if (!id) {
+      clearStaleProjectIdForCustomerBoundary(null);
       setSelectedCustomerId("");
       setSearchCustomerText("");
+      setCustomerSearchQuery("");
       setSelectedCustomerProfile(null);
       setDropdownOpen(false);
       patch("customer.id", "");
@@ -1492,17 +4398,119 @@ export default function EstimateForm(props) {
     if (!c) return;
     setSelectedCustomerId(id);
     setSearchCustomerText(customerDisplayName(c));
+    setCustomerSearchQuery("");
     const flat = flattenCustomerForEstimator(c);
     const payloadCustomer = { ...c, ...flat };
+    clearStaleProjectIdForCustomerBoundary({
+      id,
+      name: customerDisplayName(c),
+    });
     setSelectedCustomerProfile(payloadCustomer);
     setDropdownOpen(false);
     patch("customer.id", id);
     try {
-      const payload = { id, customer: payloadCustomer, ts: Date.now() };
+      const payload = {
+        id,
+        customer: payloadCustomer,
+        ts: Date.now(),
+        builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+      };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
       window.dispatchEvent(new Event("estipaid:customer-use"));
       addToCustomerRecents(id);
     } catch {}
+  }
+
+  function handleSelectExistingProject(projectId) {
+    const nextProjectId = String(projectId || "").trim();
+    if (!nextProjectId) {
+      clearSelectedExistingProjectLink();
+      return;
+    }
+
+    const project = (Array.isArray(allProjects) ? allProjects : []).find(
+      (entry) => String(entry?.id || "").trim() === nextProjectId
+    );
+    if (!project) return;
+
+    const selectedId = String(selectedCustomerId || state?.customer?.id || "").trim();
+    const normalize = (s) => String(s || "").trim().toLowerCase();
+    const selectedNameKey = normalize(
+      selectedProfile?.displayName
+      || selectedProfile?.companyName
+      || selectedProfile?.fullName
+      || state?.customer?.name
+      || ""
+    );
+    const projectCustomerIds = [
+      String(project?.customerId || "").trim(),
+      String(project?.customer?.id || "").trim(),
+      String(project?.clientId || "").trim(),
+    ].filter(Boolean);
+    const projectCustomerNames = [
+      project?.customerName,
+      project?.customer?.name,
+      project?.customer?.companyName,
+      project?.customer?.fullName,
+      project?.customer?.displayName,
+      project?.billingCustomerName,
+      project?.billing?.customerName,
+      project?.billing?.customer?.name,
+      project?.billing?.customer?.companyName,
+      project?.billing?.customer?.fullName,
+      project?.billing?.customer?.displayName,
+    ]
+      .map(normalize)
+      .filter(Boolean);
+    const matchesById = !!selectedId && projectCustomerIds.some((id) => id === selectedId);
+    const matchesByName = !!selectedNameKey && projectCustomerNames.some((name) => name === selectedNameKey);
+    const isUnassigned = projectCustomerIds.length === 0 && projectCustomerNames.length === 0;
+    const matchesSelectedCustomer = matchesById || matchesByName || isUnassigned;
+    if (!matchesSelectedCustomer) return;
+
+    const projectCustomerId = projectCustomerIds[0] || "";
+    const nextContext = {
+      projectId: nextProjectId,
+      customerId: projectCustomerId || selectedId,
+      customerName: String(project?.customerName || selectedProfile?.displayName || state?.customer?.name || "").trim(),
+      autofilledProjectName: "",
+      autofilledProjectNumber: "",
+      autofilledProjectAddress: "",
+    };
+
+    patch("projectId", nextProjectId);
+    selectedLinkedProjectContextRef.current = nextContext;
+  }
+
+  function handleCustomerDropdownOptionInteraction(event, id) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
+    handleSelectCustomer(id);
+  }
+
+  function handleCustomerDropdownPointerDown(event, id) {
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function handleCustomerDropdownTouchStart(event, id) {
+    if (typeof window !== "undefined" && "PointerEvent" in window) return;
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function handleCustomerDropdownMouseDown(event, id) {
+    if (typeof window !== "undefined" && "PointerEvent" in window) return;
+    handleCustomerDropdownOptionInteraction(event, id);
+  }
+
+  function consumeCustomerDropdownOptionClick(event) {
+    if (event?.preventDefault) event.preventDefault();
+    if (event?.stopPropagation) event.stopPropagation();
+    if (event?.nativeEvent?.stopImmediatePropagation) {
+      event.nativeEvent.stopImmediatePropagation();
+    }
   }
 
   function decrementLaborQty(id) {
@@ -1515,6 +4523,7 @@ export default function EstimateForm(props) {
 
   function handleAddLaborLine(e) {
     e?.preventDefault?.();
+    e?.stopPropagation?.();
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines.slice() : [];
     const newId = `labor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     lines.push({
@@ -1535,6 +4544,7 @@ export default function EstimateForm(props) {
 
   function handleLaborPrimary(e) {
     e?.preventDefault?.();
+    e?.stopPropagation?.();
     if (!laborOpen) {
       setLaborOpen(true);
       return;
@@ -1546,11 +4556,72 @@ export default function EstimateForm(props) {
     const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     const ln = lines[i];
     if (!ln) return;
-    const preset = LABOR_PRESETS.find((p) => p.label === label);
+    const preset = findLaborPresetByLabel(label);
     patchLineByIndex(i, {
-      label: label || "",
+      label: preset?.label || label || "",
       role: preset?.key || "",
     });
+  }
+
+  function buildLaborRoleOptions(lineLabel = "") {
+    const legacyLabel = getLegacyLaborRoleLabel(lineLabel, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
+    const options = [];
+    if (legacyLabel) {
+      options.push({ value: legacyLabel, label: legacyLabel });
+    }
+    LABOR_PRESETS.forEach((preset) => {
+      options.push({ value: preset.label, label: preset.label });
+    });
+    customLaborRoles.forEach((savedLabel) => {
+      if (findLaborPresetByLabel(savedLabel)) return;
+      options.push({ value: savedLabel, label: savedLabel });
+    });
+    options.push({
+      value: CREATE_NEW_LABOR_ROLE_VALUE,
+      label: lang === "es" ? "Crear nuevo rol…" : "Create new role…",
+    });
+    return options;
+  }
+
+  function handleCreateCustomLaborRole(i) {
+    const lines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
+    const currentLabel = lines[i]?.label;
+    const defaultLabel = getLegacyLaborRoleLabel(currentLabel, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS) || normalizeLaborRoleLabel(currentLabel);
+    const enteredLabel = window.prompt(
+      lang === "es" ? "Nombra este rol de mano de obra:" : "Name this labor role:",
+      defaultLabel
+    );
+    if (enteredLabel === null) return;
+
+    const nextLabel = normalizeLaborRoleLabel(enteredLabel);
+    if (!nextLabel) {
+      window.alert(lang === "es" ? "Ingresa un nombre de rol antes de guardarlo." : "Enter a role name before saving it.");
+      return;
+    }
+
+    const preset = findLaborPresetByLabel(nextLabel);
+    if (preset) {
+      applyLaborPresetByLabel(i, preset.label);
+      return;
+    }
+
+    const existingCustomLabel = findSavedCustomLaborRoleLabel(nextLabel, customLaborRoles);
+    if (existingCustomLabel) {
+      applyLaborPresetByLabel(i, existingCustomLabel);
+      return;
+    }
+
+    const nextCustomLaborRoles = writeStoredCustomLaborRoles([...customLaborRoles, nextLabel], CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
+    setCustomLaborRoles(nextCustomLaborRoles);
+    applyLaborPresetByLabel(i, findSavedCustomLaborRoleLabel(nextLabel, nextCustomLaborRoles) || nextLabel);
+  }
+
+  function handleLaborRoleSelection(i, label) {
+    if (label === CREATE_NEW_LABOR_ROLE_VALUE) {
+      handleCreateCustomLaborRole(i);
+      return;
+    }
+    applyLaborPresetByLabel(i, label);
   }
 
   function patchLineByIndex(i, patchObj) {
@@ -1702,7 +4773,9 @@ export default function EstimateForm(props) {
     totalPulseTimerRef.current = { ...timers };
   }
 
-  function addMaterialItem() {
+  function addMaterialItem(e) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     const items = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
     const newItem = createBlankMaterialItem(undefined, globalDefaultMarkupPct);
     items.push(newItem);
@@ -1746,7 +4819,71 @@ export default function EstimateForm(props) {
     patch("materials.items", items.filter((_, idx) => idx !== i));
   }
 
+  function addAdditionalChargeItem(e) {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    items.push(createBlankAdditionalChargeItem());
+    patch("additionalCharges.items", items);
+  }
+
+  function updateAdditionalChargeItem(i, key, value) {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    const current = { ...(items[i] || {}) };
+    if (key === "qty") {
+      current.qty = value;
+    } else if (key === "priceEach") {
+      current.priceEach = value;
+    } else {
+      current[key] = value;
+    }
+    items[i] = current;
+    patch("additionalCharges.items", items);
+  }
+
+  function removeAdditionalChargeItem(i) {
+    const items = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items.slice() : [];
+    if (i < 0 || i >= items.length) return;
+    patch("additionalCharges.items", items.filter((_, idx) => idx !== i));
+  }
+
+  function applySuggestedMaterialLines(proposedLines) {
+    const existingItems = Array.isArray(state?.materials?.items) ? state.materials.items.slice() : [];
+    const nextDraft = dedupeProposedMaterialLines(proposedLines, existingItems);
+    if (!nextDraft.proposedLines.length) return [];
+
+    const hasMeaningfulExistingItems = existingItems.some((item) => !isBlankMaterialItem(item));
+    const nextItems = hasMeaningfulExistingItems
+      ? [...existingItems, ...nextDraft.proposedLines]
+      : nextDraft.proposedLines;
+
+    patch("materials.items", nextItems);
+    nextDraft.proposedLines.forEach((line) => markRowEnter("materials", line.id));
+    return nextDraft.proposedLines;
+  }
+
   const computed = useMemo(() => computeTotals(state, { settings: settingsSnapshot }), [settingsSnapshot, state]);
+  const cockpitSnapshot = useMemo(() => buildEstimateCockpitSnapshot({
+    state,
+    computed,
+    source: "live",
+    editTargetId: editingRecordId,
+    isEditMode,
+  }), [computed, editingRecordId, isEditMode, state]);
+
+  useEffect(() => {
+    if (typeof onCockpitSnapshotChange !== "function") return undefined;
+    onCockpitSnapshotChange(cockpitSnapshot);
+    return undefined;
+  }, [cockpitSnapshot, onCockpitSnapshotChange]);
+
+  useEffect(() => {
+    if (typeof onCockpitSnapshotChange !== "function") return undefined;
+    return () => {
+      onCockpitSnapshotChange(null);
+    };
+  }, [onCockpitSnapshotChange]);
 
   const laborTotalsById = useMemo(() => {
     const map = new Map();
@@ -1762,6 +4899,15 @@ export default function EstimateForm(props) {
     try {
       const arr = computed?.materials?.normalized || [];
       for (const it of arr) map.set(String(it?.id), Number(it?.charge || 0));
+    } catch {}
+    return map;
+  }, [computed]);
+
+  const additionalChargeLineTotalsById = useMemo(() => {
+    const map = new Map();
+    try {
+      const arr = computed?.additionalCharges?.normalized || [];
+      for (const item of arr) map.set(String(item?.id), Number(item?.lineTotal || 0));
     } catch {}
     return map;
   }, [computed]);
@@ -1784,6 +4930,24 @@ export default function EstimateForm(props) {
   const onClearAll = () => {
     if (!window.confirm("Clear everything and start fresh?")) return;
     clearAll();
+    // clearAll() resets the underlying draft state, but the customer/project
+    // picker keeps its own local selection state (search text, selected id,
+    // selected profile, seeded project context) independent of state.customer.
+    // Without resetting these too, the customer visually stays "selected" in
+    // the builder even though the draft itself was cleared.
+    setSearchCustomerText("");
+    setCustomerSearchQuery("");
+    setSelectedCustomerId("");
+    setSelectedCustomerProfile(null);
+    setProjectSeedSummary(null);
+    editProjectContextRef.current = null;
+    selectedLinkedProjectContextRef.current = null;
+    projectNameAutoStateRef.current = { manual: false, auto: "" };
+    try {
+      localStorage.removeItem(PENDING_CUSTOMER_USE_KEY);
+      localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
+      localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
+    } catch {}
     setSpecialConditionsOpen(false);
     setActiveSpecialConditionsCustomField("");
     setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
@@ -1794,7 +4958,28 @@ export default function EstimateForm(props) {
     if (!isEditMode) return;
     const ok = window.confirm(`Discard changes to this ${isInvoiceEditMode ? "invoice" : "estimate"}?`);
     if (!ok) return;
+    if (isInvoiceEditMode && state?.meta?.ephemeralDraft) {
+      try {
+        const existingInvoices = readStoredInvoices();
+        const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
+        if (nextInvoices.length !== existingInvoices.length) {
+          writeStoredInvoices(nextInvoices);
+          try {
+            window.dispatchEvent(new Event("estipaid:invoices-changed"));
+          } catch {}
+        }
+      } catch {}
+      try {
+        const existingEstimates = readSavedDocList(ESTIMATES_KEY);
+        const nextEstimates = existingEstimates.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
+        if (nextEstimates.length !== existingEstimates.length) {
+          writeStoredEstimatesLocal(nextEstimates);
+        }
+      } catch {}
+    }
     clearPendingEditTarget(editingTargetType);
+    restoreLiveDraftFromEditSessionStash();
+    stashedLiveDraftForEditIdRef.current = "";
     openedEditIdRef.current = "";
     openedDocNumberRef.current = "";
     setEditTarget(null);
@@ -1860,6 +5045,7 @@ export default function EstimateForm(props) {
   };
 
   const onSaveNow = () => {
+    if (guided?.enabled) return;
     try {
       triggerHaptic();
       const customerName = String(state?.customer?.name || selectedProfile?.displayName || "").trim();
@@ -1877,7 +5063,12 @@ export default function EstimateForm(props) {
       }
 
       const now = Date.now();
-      const docNumber = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      const liveScopeNotes = (() => {
+        if (saveDocType !== "invoice") return String(state?.scopeNotes || "");
+        const editorText = extractScopeTextFromElement(scopeNotesRef.current).replace(/\n+$/, "");
+        return String(editorText || state?.scopeNotes || "");
+      })();
       const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
       const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
       const openedEditId = String(openedEditIdRef.current || "").trim();
@@ -1895,7 +5086,17 @@ export default function EstimateForm(props) {
       }
       const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
       const existingEstimates = readSavedDocList(ESTIMATES_KEY);
-      const existingInvoices = readSavedDocList(INVOICES_KEY);
+      const existingInvoices = readStoredInvoices();
+      const docNumberRaw = String(
+        state?.job?.docNumber
+        || state?.invoiceNumber
+        || state?.estimateNumber
+        || state?.customer?.projectNumber
+        || ""
+      ).trim();
+      const docNumber = saveDocType === "invoice"
+        ? (docNumberRaw || generateNextInvoiceNumber(existingInvoices))
+        : (docNumberRaw || generateNextEstimateNumber(existingEstimates));
 
       const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
       const existingById = savedDocId
@@ -1941,26 +5142,254 @@ export default function EstimateForm(props) {
         const raw = localStorage.getItem(STORAGE_KEY);
         persistedState = raw ? JSON.parse(raw) : null;
       }
+      if (saveDocType === "invoice" && persistedState && typeof persistedState === "object") {
+        persistedState = {
+          ...persistedState,
+          scopeNotes: liveScopeNotes,
+          tradeInsert: {
+            ...(persistedState?.tradeInsert || {}),
+            ...(state?.tradeInsert || {}),
+          },
+          ui: {
+            ...(persistedState?.ui || {}),
+            ...(state?.ui || {}),
+            docType: "invoice",
+            includeInvoiceScopeNotes: Boolean(state?.ui?.includeInvoiceScopeNotes),
+          },
+        };
+      }
       if (!persistedState || typeof persistedState !== "object") {
         setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
         return;
       }
+      if (!isEditMode) {
+        let persistedDraftRaw = "";
+        try {
+          persistedDraftRaw = String(localStorage.getItem(STORAGE_KEY) || "");
+        } catch {
+          persistedDraftRaw = "";
+        }
+        if (persistedDraftRaw !== JSON.stringify(persistedState)) {
+          setSavePrompt({ tone: "error", message: STORAGE_FULL_MESSAGE });
+          return;
+        }
+      }
 
-      const saveDocType = isInvoiceEditMode ? "invoice" : uiDocType;
+      if (saveDocType === "invoice" && Number(totalRevenue || 0) <= 0) {
+        setSavePrompt({ tone: "warn", message: "Cannot save invoice yet. Invoice total must be greater than $0.00." });
+        return;
+      }
+
       const updatedAt = Date.now();
       const estimateNumber = saveDocType === "estimate"
         ? docNumber
-        : String(existingMatch?.estimateNumber || "").trim();
+        : String(
+          persistedState?.estimateNumber
+          || existingMatch?.estimateNumber
+          || persistedState?.sourceEstimateSnapshot?.estimateNumber
+          || ""
+        ).trim();
       const invoiceNumber = saveDocType === "invoice" ? docNumber : "";
-      const projectName = String(state?.customer?.projectName || "").trim();
-      const projectNumber = String(state?.customer?.projectNumber || "").trim();
-      const savedRecord = {
-        ...persistedState,
-        id: recordId,
-        docType: saveDocType,
-        customerId: String(selectedCustomerId || state?.customer?.id || "").trim(),
+      let projectName = String(state?.customer?.projectName || "").trim();
+      let projectNumber = String(state?.customer?.projectNumber || "").trim();
+      const linkedEstimateSnapshot = saveDocType === "invoice"
+        ? (
+          persistedState?.sourceEstimateSnapshot
+          || existingMatch?.sourceEstimateSnapshot
+          || null
+        )
+        : null;
+      const linkedEstimateId = saveDocType === "invoice"
+        ? String(
+          persistedState?.sourceEstimateId
+          || existingMatch?.sourceEstimateId
+          || linkedEstimateSnapshot?.estimateId
+          || ""
+        ).trim()
+        : "";
+      projectName = String(
+        projectName
+        || persistedState?.projectName
+        || existingMatch?.projectName
+        || linkedEstimateSnapshot?.projectName
+        || ""
+      ).trim();
+      const workTitle = String(
+        state?.customer?.projectName
+        || persistedState?.workTitle
+        || persistedState?.jobTitle
+        || persistedState?.jobName
+        || persistedState?.job?.title
+        || persistedState?.title
+        || existingMatch?.workTitle
+        || existingMatch?.jobTitle
+        || existingMatch?.jobName
+        || existingMatch?.job?.title
+        || existingMatch?.title
+        || linkedEstimateSnapshot?.workTitle
+        || linkedEstimateSnapshot?.jobTitle
+        || linkedEstimateSnapshot?.jobName
+        || linkedEstimateSnapshot?.job?.title
+        || linkedEstimateSnapshot?.title
+        || projectName
+      ).trim();
+      projectNumber = String(
+        projectNumber
+        || persistedState?.projectNumber
+        || existingMatch?.projectNumber
+        || linkedEstimateSnapshot?.projectNumber
+        || ""
+      ).trim();
+      const invoiceApprovedTotal = saveDocType === "invoice"
+        ? Number(
+          persistedState?.invoiceMeta?.approvedTotalAtCreation
+          || existingMatch?.invoiceMeta?.approvedTotalAtCreation
+          || linkedEstimateSnapshot?.approvedTotal
+          || totalRevenue
+        ) || Number(totalRevenue || 0)
+        : Number(totalRevenue || 0);
+      const selectedCustomerKey = String(selectedCustomerId || "").trim();
+      const draftCustomerKey = String(state?.customer?.id || "").trim();
+      const liveSelectedCustomer = Array.isArray(allCustomers)
+        ? allCustomers.find((customer) => {
+          const id = String(customer?.id || "").trim();
+          return id && (id === selectedCustomerKey || id === draftCustomerKey);
+        }) || null
+        : null;
+      const liveCustomerId = String(liveSelectedCustomer?.id || "").trim();
+      const existingMatchCustomerId = String(existingMatch?.customerId || existingMatch?.customer?.id || "").trim();
+      const existingMatchCustomerName = String(
+        existingMatch?.customerName
+        || existingMatch?.customer?.name
+        || existingMatch?.customer?.companyName
+        || existingMatch?.customer?.fullName
+        || ""
+      ).trim().toLowerCase();
+      const linkedEstimateCustomerId = String(
+        linkedEstimateSnapshot?.customerId
+        || linkedEstimateSnapshot?.customer?.id
+        || ""
+      ).trim();
+      const linkedEstimateCustomerName = String(
+        linkedEstimateSnapshot?.customerName
+        || linkedEstimateSnapshot?.customer?.name
+        || linkedEstimateSnapshot?.customer?.companyName
+        || linkedEstimateSnapshot?.customer?.fullName
+        || ""
+      ).trim().toLowerCase();
+      const currentCustomerNameKey = String(customerName || "").trim().toLowerCase();
+      const shouldUseExistingMatchProjectId = !existingMatch?.projectId
+        ? false
+        : (
+          existingMatchCustomerId
+            ? liveCustomerId === existingMatchCustomerId
+            : (!!currentCustomerNameKey && currentCustomerNameKey === existingMatchCustomerName)
+        );
+      const shouldUseLinkedEstimateProjectId = !linkedEstimateSnapshot?.projectId
+        ? false
+        : (
+          linkedEstimateCustomerId
+            ? liveCustomerId === linkedEstimateCustomerId
+            : (!!currentCustomerNameKey && currentCustomerNameKey === linkedEstimateCustomerName)
+        );
+      const projectContext = {
+        projectId: String(
+          persistedState?.projectId
+          || state?.projectId
+          || (shouldUseExistingMatchProjectId ? existingMatch?.projectId : "")
+          || (shouldUseLinkedEstimateProjectId ? linkedEstimateSnapshot?.projectId : "")
+          || ""
+        ).trim(),
+        customerId: liveCustomerId,
         customerName,
         projectName,
+        projectNumber,
+        customer: {
+          ...(persistedState?.customer || {}),
+          ...(state?.customer || {}),
+          id: liveCustomerId,
+          name: customerName,
+          projectName,
+          projectNumber,
+        },
+        siteAddress: String(
+          resolvedProjectAddress
+          || state?.customer?.projectAddress
+          || state?.customer?.address
+          || linkedEstimateSnapshot?.siteAddress
+          || linkedEstimateSnapshot?.customer?.projectAddress
+          || ""
+        ).trim(),
+        status: "active",
+        notes: String(persistedState?.additionalNotes || state?.additionalNotes || "").trim(),
+        scopeSummary: String(persistedState?.scopeNotes || persistedState?.additionalNotes || state?.scopeNotes || "").trim(),
+        createdAt,
+        updatedAt,
+      };
+      const currentProjects = readStoredProjects();
+      const explicitProjectId = String(projectContext?.projectId || "").trim();
+      const existingExplicitProject = explicitProjectId
+        ? currentProjects.find((project) => String(project?.id || "").trim() === explicitProjectId) || null
+        : null;
+      const { project: resolvedProject } = existingExplicitProject
+        ? { project: existingExplicitProject }
+        : resolveProjectPersistenceTarget(projectContext, currentProjects, { nowTs: updatedAt });
+      const projectRecord = resolvedProject && typeof resolvedProject === "object" ? resolvedProject : null;
+      if (!projectRecord || !String(projectRecord.id || "").trim()) {
+        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+        return;
+      }
+      const resolvedCustomerId = liveCustomerId;
+      const previousEstimateProjectId = saveDocType === "estimate"
+        ? String(existingMatch?.projectId || "").trim()
+        : "";
+      const targetEstimateProjectId = String(projectRecord?.id || "").trim();
+      if (
+        saveDocType === "estimate"
+        && isEditMode
+        && previousEstimateProjectId
+        && previousEstimateProjectId !== targetEstimateProjectId
+      ) {
+        const targetExistingProject = currentProjects.find(
+          (project) => String(project?.id || "").trim() === targetEstimateProjectId
+        );
+        if (targetExistingProject) {
+          const confirmed = window.confirm(
+            "Move this estimate to an existing project?\n\nEmpty auto-created project will be removed.\nOriginal project will remain."
+          );
+          if (!confirmed) return;
+        }
+      }
+      const nextProjects = existingExplicitProject
+        ? currentProjects
+        : upsertProject(currentProjects, projectRecord);
+      const shouldUseLinkedInvoiceFinancials = (
+        saveDocType === "invoice"
+        && !!linkedEstimateId
+        && !hasExplicitInternalCostInputs(persistedState)
+      );
+      const financialSummary = shouldUseLinkedInvoiceFinancials
+        ? allocateFinancialSummaryFromSource(
+          linkedEstimateSnapshot,
+          Number(totalRevenue || 0),
+          invoiceApprovedTotal
+        )
+        : buildFinancialSummaryFromComputed(
+          computed,
+          saveDocType === "invoice" ? invoiceApprovedTotal : Number(totalRevenue || 0)
+        );
+      const baseRecord = {
+        ...persistedState,
+        ...financialSummary,
+        id: recordId,
+        docType: saveDocType,
+        projectId: projectRecord.id,
+        customerId: resolvedCustomerId,
+        customerName,
+        projectName,
+        workTitle,
+        jobTitle: workTitle,
+        jobName: workTitle,
         projectNumber,
         estimateNumber,
         invoiceNumber,
@@ -1972,22 +5401,145 @@ export default function EstimateForm(props) {
         ts: updatedAt,
         createdAt,
         updatedAt,
+        financials: {
+          ...(persistedState?.financials || {}),
+          ...(financialSummary?.financials || {}),
+        },
+        totals: {
+          ...(persistedState?.totals || {}),
+          ...(financialSummary?.totals || {}),
+        },
+        customer: {
+          ...(persistedState?.customer || {}),
+          ...(state?.customer || {}),
+          id: resolvedCustomerId,
+          name: customerName,
+          projectName,
+          projectNumber,
+        },
+        job: {
+          ...(persistedState?.job || {}),
+          ...(state?.job || {}),
+          title: String(state?.job?.title || workTitle).trim(),
+          date: String(state?.job?.date || "").trim(),
+          due: String(state?.job?.due || "").trim(),
+          poNumber: String(state?.job?.poNumber || "").trim(),
+          docNumber,
+        },
+        meta: {
+          ...(persistedState?.meta || {}),
+          savedDocId: recordId,
+          savedDocCreatedAt: createdAt,
+          lastSavedAt: updatedAt,
+          ephemeralDraft: false,
+        },
       };
 
-      const nextEstimates = upsertSavedDoc(
-        existingEstimates,
-        savedRecord,
-        saveDocType === "invoice" ? "invoiceNumber" : "estimateNumber"
-      );
-      localStorage.setItem(ESTIMATES_KEY, JSON.stringify(nextEstimates));
-
       if (saveDocType === "invoice") {
-        const nextInvoices = upsertSavedDoc(existingInvoices, savedRecord, "invoiceNumber");
-        localStorage.setItem(INVOICES_KEY, JSON.stringify(nextInvoices));
+        const savedInvoice = normalizeInvoiceRecord({
+          ...baseRecord,
+          projectId: projectRecord.id,
+          customerId: resolvedCustomerId,
+          invoiceNumber,
+          estimateNumber,
+          invoiceTotal: Number(totalRevenue || 0),
+          total: Number(totalRevenue || 0),
+          dueDate: String(state?.job?.due || "").trim(),
+          date: String(state?.job?.date || "").trim(),
+        });
+        const linkedEstimate = savedInvoice.sourceEstimateId
+          ? existingEstimates.find((entry) => String(entry?.id || "").trim() === savedInvoice.sourceEstimateId)
+          : null;
+        const invoiceValidation = validateInvoiceAgainstEstimate({
+          invoice: savedInvoice,
+          estimate: linkedEstimate,
+          invoices: existingInvoices,
+          ignoreInvoiceId: recordId,
+        });
+        if (!invoiceValidation.ok) {
+          setSavePrompt({ tone: "error", message: invoiceValidation.message || "Invoice exceeds the remaining amount to invoice." });
+          return;
+        }
+
+        writeStoredProjects(nextProjects);
+        const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
+        writeStoredInvoices(nextInvoices);
+        captureDocumentSave({
+          docType: "invoice",
+          mode: isEditMode ? "edit" : "create",
+          saveDocType: "invoice",
+          saveMode: isEditMode ? "update" : "create",
+          isEditMode,
+          isProjectSeeded: Boolean(projectSeedSummary || seededProjectContextRef.current),
+          hasLinkedEstimate: Boolean(linkedEstimateId),
+          isInvoiceFromEstimate: Boolean(linkedEstimateId || linkedEstimateSnapshot),
+          hasSourceEstimateSnapshot: Boolean(linkedEstimateSnapshot),
+          projectId: String(projectRecord?.id || "").trim() || null,
+          linkedEstimateId: linkedEstimateId || null,
+          documentId: String(savedInvoice?.id || recordId).trim(),
+          documentNumber: String(savedInvoice?.invoiceNumber || invoiceNumber || "").trim(),
+          status: String(savedInvoice?.invoiceStatus || savedInvoice?.status || "").trim(),
+          scopeTextLength: String(savedInvoice?.scopeNotes || "").length,
+          laborLineCount: Array.isArray(savedInvoice?.labor?.lines) ? savedInvoice.labor.lines.length : 0,
+          materialItemCount: Array.isArray(savedInvoice?.materials?.items) ? savedInvoice.materials.items.length : 0,
+        });
+        try {
+          window.dispatchEvent(new Event("estipaid:invoices-changed"));
+        } catch {}
+
+        const filteredEstimates = existingEstimates.filter((entry) => {
+          if (String(entry?.id || "").trim() === recordId) return false;
+          if (!invoiceNumber) return true;
+          return String(entry?.invoiceNumber || "").trim() !== invoiceNumber;
+        });
+        if (filteredEstimates.length !== existingEstimates.length) {
+          writeStoredEstimatesLocal(filteredEstimates);
+        }
       } else {
+        const savedEstimate = {
+          ...baseRecord,
+          projectId: projectRecord.id,
+          estimateNumber,
+          invoiceNumber: "",
+        };
+        const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
+        const reassignmentCleanup = {
+          projects: nextProjects,
+          removed: false,
+          removedProjectId: "",
+          reason: "orphan-cleanup-disabled-safety",
+        };
+        writeStoredProjects(reassignmentCleanup.projects);
+        try {
+          window.dispatchEvent(new Event("estipaid:projects-changed"));
+        } catch {}
+        writeStoredEstimatesLocal(nextEstimates);
+        captureDocumentSave({
+          docType: "estimate",
+          mode: isEditMode ? "edit" : "create",
+          saveDocType: "estimate",
+          saveMode: isEditMode ? "update" : "create",
+          isEditMode,
+          isProjectSeeded: Boolean(projectSeedSummary || seededProjectContextRef.current),
+          hasLinkedEstimate: false,
+          isInvoiceFromEstimate: false,
+          hasSourceEstimateSnapshot: false,
+          projectId: String(projectRecord?.id || "").trim() || null,
+          linkedEstimateId: null,
+          documentId: String(savedEstimate?.id || recordId).trim(),
+          documentNumber: String(savedEstimate?.estimateNumber || estimateNumber || "").trim(),
+          status: String(savedEstimate?.status || "").trim(),
+          scopeTextLength: String(savedEstimate?.scopeNotes || "").length,
+          laborLineCount: Array.isArray(savedEstimate?.labor?.lines) ? savedEstimate.labor.lines.length : 0,
+          materialItemCount: Array.isArray(savedEstimate?.materials?.items) ? savedEstimate.materials.items.length : 0,
+        });
+
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
-          localStorage.setItem(INVOICES_KEY, JSON.stringify(filteredInvoices));
+          writeStoredInvoices(filteredInvoices);
+          try {
+            window.dispatchEvent(new Event("estipaid:invoices-changed"));
+          } catch {}
         }
       }
 
@@ -1995,24 +5547,48 @@ export default function EstimateForm(props) {
         ? `${saveDocType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`
         : (projectName || customerName);
       setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
-
-      if (isEditMode) {
-        clearPendingEditTarget(editingTargetType);
-        openedEditIdRef.current = "";
-        openedDocNumberRef.current = "";
-        setEditTarget(null);
+      const shouldClearCreateDraftAfterSave = !isEditMode && saveDocType === "estimate";
+      if (shouldClearCreateDraftAfterSave) {
+        setSuppressDraftPersistenceUntilUnmount(true);
+        clearSuccessfulCreateDraftChamber();
       }
 
+      // Keep the edit-session target (and persistDraft:false) active for the
+      // entire success-toast delay below. Clearing it earlier flips this
+      // component's live-draft autosave back on while it is still mounted and
+      // still holding the just-saved record's data, racing the deferred
+      // navigate-away below and risking clobbering the shared live Create
+      // draft with the saved record. Clearing it in the same tick as the
+      // navigate dispatch (like onCancelEdit does) removes that window.
       setTimeout(() => {
         try {
           const navEvent = isEditMode
             ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
             : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
-          window.dispatchEvent(new Event(navEvent));
+          if (isEditMode) {
+            clearPendingEditTarget(editingTargetType);
+            // Authoritative restore: force the live Create draft slot back to
+            // whatever it held before this edit session opened, regardless of
+            // any autosave/timing path that may have touched it in between.
+            restoreLiveDraftFromEditSessionStash();
+            stashedLiveDraftForEditIdRef.current = "";
+            openedEditIdRef.current = "";
+            openedDocNumberRef.current = "";
+            setEditTarget(null);
+          }
+          if (shouldClearCreateDraftAfterSave) {
+            clearSuccessfulCreateDraftChamber();
+          }
+          window.dispatchEvent(new CustomEvent(navEvent, {
+            detail: { skipCreateDraftSave: shouldClearCreateDraftAfterSave },
+          }));
         } catch {}
       }, 180);
-    } catch {
-      setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
+    } catch (error) {
+      setSavePrompt({
+        tone: "error",
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again.",
+      });
     }
   };
 
@@ -2021,7 +5597,7 @@ export default function EstimateForm(props) {
 
     const companyGate = requireCompanyProfile({
       profile: loadCompanyProfile(),
-      message: "User Profile required. Open User Profile?",
+      message: "Company Profile required. Open Company Profile?",
       onRequireProfile: () => {
         writeProfileReturnTarget({
           route: ROUTES.CREATE,
@@ -2050,27 +5626,58 @@ export default function EstimateForm(props) {
     const companyProfile = companyGate.profile || loadCompanyProfile();
 
     try {
-      const docNoRaw = String(state?.job?.docNumber || state?.customer?.projectNumber || "").trim();
+      const savedInvoiceExportRecord = uiDocType === "invoice"
+        ? findStoredInvoiceForExport(editingRecordId, state)
+        : null;
+      const liveInvoiceLooksIncomplete = uiDocType === "invoice"
+        && !hasMeaningfulInvoiceExportData(state, computed);
+      const exportState = savedInvoiceExportRecord && liveInvoiceLooksIncomplete
+        ? savedInvoiceExportRecord
+        : state;
+      const exportComputed = exportState === state
+        ? computed
+        : computeTotals(exportState, { settings: settingsSnapshot });
+      const exportMaterialsMode = exportState === state
+        ? materialsMode
+        : resolveExportMaterialsMode(exportState, "blanket");
+      const exportResolvedProjectAddress = exportState === state
+        ? String(resolvedProjectAddress || "").trim()
+        : String(
+          exportState?.job?.projectAddress
+          || exportState?.customer?.projectAddress
+          || exportState?.customer?.address
+          || ""
+        ).trim();
+      const docNoRaw = String(exportState?.job?.docNumber || exportState?.customer?.projectNumber || "").trim();
       const documentNumber = sanitizePdfToken(docNoRaw, "Draft");
       const filename = `${uiDocType === "invoice" ? "Invoice" : "Estimate"}-${documentNumber}.pdf`;
 
-      const customerName = String(state?.customer?.name || "").trim() || "-";
-      const customerAttn = String(state?.customer?.attn || "").trim();
-      const customerAddress = String(state?.customer?.address || "").trim();
-      const billingAddress = state?.customer?.billingDiff
-        ? String(state?.customer?.billingAddress || "").trim()
+      const customerName = String(exportState?.customer?.name || "").trim() || "-";
+      const customerAttn = String(exportState?.customer?.attn || "").trim();
+      const customerAddress = String(exportState?.customer?.address || "").trim();
+      const billingAddress = exportState?.customer?.billingDiff
+        ? String(exportState?.customer?.billingAddress || "").trim()
         : customerAddress;
-      const resolvedProject = String(resolvedProjectAddress || "").trim();
-      const projectName = String(state?.customer?.projectName || "").trim();
-      const projectNumber = String(state?.customer?.projectNumber || "").trim();
-      const poNumber = String(state?.job?.poNumber || "").trim();
-      const docDate = String(state?.job?.date || "").trim();
-      const includeNotes = uiDocType === "estimate";
-      const additionalNotesText = String(state?.additionalNotes || "").trim();
-      const materialsBlanketDescription = String(state?.materials?.materialsBlanketDescription || "").trim();
-      const tradeBlocks = extractTradeInsertBlocksForPdf(state?.scopeNotes, state?.tradeInsert?.text);
-      const tradeRawForPdf = includeNotes ? tradeBlocks.join("\n\n") : "";
-      const scopeWithoutTrade = includeNotes ? stripTradeInsertBlocksFromScope(state?.scopeNotes, tradeBlocks) : "";
+      const resolvedProject = exportResolvedProjectAddress;
+      const projectName = String(exportState?.customer?.projectName || "").trim();
+      const projectNumber = String(exportState?.customer?.projectNumber || "").trim();
+      const poNumber = String(exportState?.job?.poNumber || "").trim();
+      const docDate = String(exportState?.job?.date || "").trim();
+      const invoiceScopeNotesEnabled = uiDocType === "invoice" && Boolean(exportState?.ui?.includeInvoiceScopeNotes);
+      const includeNotes = uiDocType === "estimate" || invoiceScopeNotesEnabled;
+      const additionalNotesText = String(exportState?.additionalNotes || "").trim();
+      const materialsBlanketDescription = String(exportState?.materials?.materialsBlanketDescription || "").trim();
+      const tradeBlocks = uiDocType === "estimate"
+        ? extractTradeInsertBlocksForPdf(exportState?.scopeNotes, exportState?.tradeInsert?.text, SCOPE_TRADE_INSERTS)
+        : [];
+      const scopeWithoutTrade = includeNotes
+        ? (
+            uiDocType === "estimate"
+              ? stripTradeInsertBlocksFromScope(exportState?.scopeNotes, tradeBlocks)
+              : String(exportState?.scopeNotes || "")
+          )
+        : "";
+      const printableScopeNotes = String(scopeWithoutTrade || "").trim();
       const companyAddressLine1 = String(companyProfile?.addressLine1 || "").trim();
       const companyAddressLine2 = String(companyProfile?.addressLine2 || "").trim();
       const companyCity = String(companyProfile?.city || "").trim();
@@ -2083,7 +5690,7 @@ export default function EstimateForm(props) {
         ? companyAddressLines.join("\n")
         : String(companyProfile?.address || "").trim();
 
-      const laborRows = (computed?.labor?.normalized || []).map((ln) => {
+      const laborRows = (exportComputed?.labor?.normalized || []).map((ln) => {
         const roleLabel = LABOR_PRESETS.find((p) => p.key === ln?.role)?.label || "";
         const label = String(ln?.label || roleLabel || "").trim() || "-";
         const qty = Math.max(1, Number(ln?.qty) || 1);
@@ -2094,14 +5701,14 @@ export default function EstimateForm(props) {
       });
 
       const materialsRows = (() => {
-        if (materialsMode === "itemized") {
+        if (exportMaterialsMode === "itemized") {
           const materialNotesById = new Map(
-            (Array.isArray(state?.materials?.items) ? state.materials.items : []).map((item, index) => [
+            (Array.isArray(exportState?.materials?.items) ? exportState.materials.items : []).map((item, index) => [
               String(item?.id || `idx_${index}`),
               String(item?.note || "").trim(),
             ])
           );
-          const rows = (computed?.materials?.normalized || [])
+          const rows = (exportComputed?.materials?.normalized || [])
             .filter((it) => String(it?.desc || "").trim())
             .map((it) => {
               const desc = String(it?.desc || "").trim();
@@ -2122,19 +5729,43 @@ export default function EstimateForm(props) {
         return [[
           "Blanket Materials",
           "1",
-          money.format(Number(materialsBilled) || 0),
-          money.format(Number(materialsBilled) || 0),
+          money.format(Number(exportComputed?.materials?.totalCharge) || 0),
+          money.format(Number(exportComputed?.materials?.totalCharge) || 0),
         ]];
       })();
+      const additionalChargeRows = ((exportComputed?.additionalCharges?.normalized || []))
+        .filter((item) => Number(item?.lineTotal || 0) > 0)
+        .map((item) => ({
+          desc: String(item?.desc || "Additional Charge").trim() || "Additional Charge",
+          qty: String(Number(item?.qty || 0)),
+          each: money.format(Number(item?.priceEach || 0)),
+          total: money.format(Number(item?.lineTotal || 0)),
+        }));
 
-      const summarySubtotal = Number(totalRevenue) - Number(hazardFee || 0) - Number(riskFee || 0);
+      const adjustedLabor = Number(exportComputed?.laborAfterMultiplier) || 0;
+      const materialsBilled = Number(exportComputed?.materials?.totalCharge) || 0;
+      const additionalChargesBilled = Number(exportComputed?.additionalCharges?.totalRevenue) || 0;
+      const hazardPctNormalized = Number(normalizePercentInput(exportComputed?.hazardPct ?? exportState?.labor?.hazardPct));
+      const riskPctNormalized = Number(normalizePercentInput(exportComputed?.riskPct ?? exportState?.labor?.riskPct));
+      const hazardFee = Number(exportComputed?.hazardAmount) || 0;
+      const riskFee = Number(exportComputed?.riskAmount) || 0;
+      const totalRevenue = Number(exportComputed?.grandTotal) || 0;
+      const summarySubtotal = totalRevenue - hazardFee - riskFee;
       const summaryRows = [
-        ["Labor", money.format(Number(adjustedLabor) || 0)],
-        ["Materials", money.format(Number(materialsBilled) || 0)],
-        ["Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
-        [`Hazard (${Number(hazardPctNormalized) || 0}%)`, money.format(Number(hazardFee) || 0)],
-        [`Risk (${Number(riskPctNormalized) || 0}%)`, money.format(Number(riskFee) || 0)],
-        ["Grand Total", money.format(Number(totalRevenue) || 0)],
+        ...(additionalChargesBilled > 0
+          ? [
+            ["Labor", money.format(adjustedLabor)],
+            ["Materials", money.format(materialsBilled)],
+            ["Additional Charges", money.format(additionalChargesBilled)],
+          ]
+          : [
+            ["Labor", money.format(adjustedLabor)],
+            ["Materials", money.format(materialsBilled)],
+          ]),
+        [additionalChargesBilled > 0 ? "Total" : "Subtotal", money.format(Number.isFinite(summarySubtotal) ? summarySubtotal : 0)],
+        [`Hazard (${hazardPctNormalized}%)`, money.format(hazardFee)],
+        [`Risk (${riskPctNormalized}%)`, money.format(riskFee)],
+        ["Grand Total", money.format(totalRevenue)],
       ];
       await exportPdf({
         docType: uiDocType,
@@ -2151,12 +5782,12 @@ export default function EstimateForm(props) {
           attn: customerAttn,
           address: customerAddress,
           billingAddress,
-          netTermsType: String(state?.customer?.netTermsType || "").trim(),
+          netTermsType: String(exportState?.customer?.netTermsType || "").trim(),
           netTermsDays:
-            state?.customer?.netTermsDays === null || state?.customer?.netTermsDays === undefined
+            exportState?.customer?.netTermsDays === null || exportState?.customer?.netTermsDays === undefined
               ? ""
-              : String(state?.customer?.netTermsDays),
-          netTermsLabel: String(selectedProfile?.netTermsLabel || "").trim(),
+              : String(exportState?.customer?.netTermsDays),
+          netTermsLabel: String(getNetTermsLabel(exportState?.customer || {}) || selectedProfile?.netTermsLabel || "").trim(),
         },
         job: {
           date: docDate,
@@ -2174,13 +5805,17 @@ export default function EstimateForm(props) {
           ["Project Address", resolvedProject || customerAddress || "-"],
           ["PO #", poNumber || "-"],
         ],
-        tradeInsertText: tradeRawForPdf,
+        scopeImages: Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
         laborRows,
         materialRows: materialsRows,
-        materialsMode,
-        materialsBlanketDescription: materialsMode === "blanket" ? materialsBlanketDescription : "",
+        additionalChargeRows,
+        materialsMode: exportMaterialsMode,
+        materialsBlanketDescription: exportMaterialsMode === "blanket" ? materialsBlanketDescription : "",
+        invoiceStatus: uiDocType === "invoice" ? String(exportState?.status || "").trim() : "",
+        paymentStatus: uiDocType === "invoice" ? String(exportState?.paymentStatus || "").trim() : "",
         summaryRows,
-        scopeNotes: includeNotes ? scopeWithoutTrade : "",
+        scopeNotes: printableScopeNotes,
+        includeInvoiceScopeNotes: invoiceScopeNotesEnabled,
         additionalNotes: additionalNotesText,
       }, mode);
     } catch (err) {
@@ -2195,7 +5830,7 @@ export default function EstimateForm(props) {
   };
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
-  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimator Builder";
+  const builderTitle = uiDocType === "invoice" ? "Invoice Builder" : "Estimate Builder";
   const editPrimaryTitle = isInvoiceEditMode ? "EDIT INVOICE" : "EDIT ESTIMATE";
   const editDocNumberRaw = String(
     state?.estimateNumber
@@ -2212,10 +5847,7 @@ export default function EstimateForm(props) {
   const editUpdatedTs = getMostRecentSavedTimestamp(state);
   const editUpdatedLabel = editUpdatedTs > 0 ? `Last updated ${formatSavedTimestamp(editUpdatedTs)}` : "";
   const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
-  const setDocType = (nextDocType) => {
-    const next = nextDocType === "invoice" ? "invoice" : "estimate";
-    patch("ui.docType", next);
-  };
+  const materialsAssistMode = resolveMaterialsAssistMode(state?.ui?.materialsMode);
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
     const nextMode = mode === "itemized" ? "itemized" : "blanket";
@@ -2227,6 +5859,14 @@ export default function EstimateForm(props) {
       }
     }
   };
+  useEffect(() => {
+    const pending = pendingMaterialsModeSwitchRequestRef.current;
+    if (!pending) return;
+    if (materialsAssist.assistState.phase !== "idle") return;
+    if (materialsMode !== pending.mode) return;
+    pendingMaterialsModeSwitchRequestRef.current = null;
+    materialsAssist.submit(pending.input);
+  }, [materialsAssist, materialsAssist.assistState.phase, materialsMode]);
   const materialsCost = String(state?.materials?.blanketCost ?? "");
   const setMaterialsCost = (v) => patch("materials.blanketCost", v);
   const materialsMarkupPct = String(state?.materials?.markupPct ?? "");
@@ -2244,6 +5884,15 @@ export default function EstimateForm(props) {
       markupPct: it?.markupPct ?? "",
     }));
   }, [state?.materials?.items]);
+  const additionalChargeItems = useMemo(() => {
+    const arr = Array.isArray(state?.additionalCharges?.items) ? state.additionalCharges.items : [];
+    return arr.map((item) => ({
+      ...item,
+      desc: String(item?.desc || ""),
+      qty: item?.qty ?? "",
+      priceEach: item?.priceEach ?? "",
+    }));
+  }, [state?.additionalCharges?.items]);
   useEffect(() => {
     if (materialsMode !== "itemized") return;
     const items = Array.isArray(state?.materials?.items) ? state.materials.items : [];
@@ -2269,6 +5918,12 @@ export default function EstimateForm(props) {
     : 0;
   const itemizedMaterialsTotal = Number(computed?.materials?.totalCharge || 0);
   const itemizedMaterialsCount = useMemo(() => (materialItems || []).length, [materialItems]);
+  const additionalChargesSubtotal = Number(computed?.additionalCharges?.totalRevenue || 0);
+  const additionalChargesCount = useMemo(() => additionalChargeItems.filter((item) => {
+    const qty = Number(item?.qty);
+    const priceEach = Number(item?.priceEach);
+    return (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(priceEach) ? priceEach : 0) > 0;
+  }).length, [additionalChargeItems]);
   const normalizedMarkupPct = Number(normalizePercentInput(materialsMarkupPct));
   const materialsBilled = materialsMode === "itemized"
     ? itemizedMaterialsTotal
@@ -2282,7 +5937,8 @@ export default function EstimateForm(props) {
     : (Number(state?.materials?.blanketInternalCost) || 0);
   const fallbackLaborRevenue = Number(computed?.laborAfterAdjustments ?? computed?.labor?.subtotal ?? 0);
   const fallbackLaborCost = Number(computed?.labor?.internalCost || computed?.labor?.cost || 0);
-  const totalRevenue = Number((computed?.totalRevenue ?? (fallbackLaborRevenue + fallbackMaterialRevenue)) || 0);
+  const fallbackAdditionalChargesRevenue = Number(computed?.additionalCharges?.totalRevenue || 0);
+  const totalRevenue = Number((computed?.totalRevenue ?? (fallbackLaborRevenue + fallbackMaterialRevenue + fallbackAdditionalChargesRevenue)) || 0);
   const totalCost = Number((computed?.totalCost ?? (fallbackLaborCost + fallbackMaterialCost)) || 0);
   const totalGrossProfit = Number(computed?.grossProfit || 0);
   const grossMarginPct = Number(computed?.grossMarginPct || 0);
@@ -2321,7 +5977,75 @@ export default function EstimateForm(props) {
     + (materialsMode === "blanket" && Number.isFinite(normalizedMarkupPct) ? ` • ${normalizedMarkupPct}${t("materialsMeta")}` : "")
     + (materialsMode === "itemized"
       ? ` • ${itemizedMaterialsCount}x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
-      : " • Blanket materials");
+      : " • Blanket materials")
+    + (additionalChargesCount > 0
+      ? ` • ${additionalChargesCount}x ${t("additionalCharges").toLowerCase()} • ${money.format(additionalChargesSubtotal)}`
+      : "");
+  const guidedSummary = useMemo(() => {
+    const documentNumber = String(
+      state?.job?.docNumber
+      || state?.document?.number
+      || state?.doc?.number
+      || ""
+    ).trim();
+    const customerName = String(selectedProfile?.displayName || state?.customer?.name || "").trim();
+    const projectAddress = summarizeGuidedShellText(String(resolvedProjectAddress || "").replace(/\n+/g, ", "));
+    const laborSummary = laborLineCount
+      ? `${laborLineCount} ${laborLineCount === 1 ? "line" : "lines"} • ${money.format(laborBase)}`
+      : "No labor lines yet";
+    const materialsSummary = materialsMode === "itemized"
+      ? `${itemizedMaterialsCount} ${itemizedMaterialsCount === 1 ? "item" : "items"} • ${money.format(itemizedMaterialsTotal)}`
+      : `Blanket • ${money.format(displayedMaterialsTotal)}`;
+    const additionalChargesSummary = additionalChargesCount > 0
+      ? `${additionalChargesCount} ${additionalChargesCount === 1 ? "item" : "items"} • ${money.format(additionalChargesSubtotal)}`
+      : "None";
+
+    return {
+      title: totalLabel,
+      value: money.format(totalRevenue),
+      detail: totalRevenue > 0
+        ? `Gross profit ${money.format(totalGrossProfit)} • ${grossMarginLabel} margin`
+        : "Live builder totals will update here as guided answers apply.",
+      items: [
+        { label: guidedDocType === "invoice" ? "Invoice" : "Estimate", value: documentNumber ? `#${documentNumber}` : "Draft" },
+        { label: "Customer", value: customerName || "Customer not selected" },
+        { label: "Project", value: projectAddress || "Project location not set" },
+        { label: "Labor", value: laborSummary },
+        { label: "Materials", value: materialsSummary },
+        { label: "Additional Charges", value: additionalChargesSummary },
+      ],
+      highlights: [
+        scopeNotes
+          ? { label: "Scope", value: summarizeGuidedShellText(scopeNotes, 160) }
+          : null,
+        additionalNotes
+          ? { label: "Notes", value: summarizeGuidedShellText(additionalNotes, 160) }
+          : null,
+      ].filter(Boolean),
+    };
+  }, [
+    additionalNotes,
+    additionalChargesCount,
+    additionalChargesSubtotal,
+    displayedMaterialsTotal,
+    grossMarginLabel,
+    guidedDocType,
+    itemizedMaterialsCount,
+    itemizedMaterialsTotal,
+    laborBase,
+    laborLineCount,
+    materialsMode,
+    resolvedProjectAddress,
+    scopeNotes,
+    selectedProfile?.displayName,
+    state?.customer?.name,
+    state?.doc?.number,
+    state?.document?.number,
+    state?.job?.docNumber,
+    totalGrossProfit,
+    totalLabel,
+    totalRevenue,
+  ]);
 
   useEffect(() => {
     const prev = previousTotalsRef.current;
@@ -2352,7 +6076,7 @@ export default function EstimateForm(props) {
     setSpecialConditionsOpen(false);
   }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
 
-  const dockHeight = embeddedInShell ? SHELL_DOCK_HEIGHT : 0;
+  const dockHeight = shouldSyncActionBarWithBottomChrome ? (isMobileActionBarViewport ? SHELL_DOCK_HEIGHT_MOBILE : SHELL_DOCK_HEIGHT) : 0;
   const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
   const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
   const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
@@ -2367,15 +6091,125 @@ export default function EstimateForm(props) {
         bottom: actionBarBottom,
         paddingLeft: "max(10px, env(safe-area-inset-left, 0px))",
         paddingRight: "max(10px, env(safe-area-inset-right, 0px))",
-        transform: mobileBottomChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
-        opacity: mobileBottomChromeVisible ? 1 : 0,
+        transform: actionBarChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
+        opacity: actionBarChromeVisible ? 1 : 0,
         transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
         willChange: "transform, opacity",
       }
     : { ...styles.estimatorActionBar, bottom: actionBarBottom };
-  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !mobileBottomChromeVisible
+  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !actionBarChromeVisible
     ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
     : styles.estimatorActionBarInner;
+  const sectionBottomActionsStyle = styles.sectionFooterActions;
+  const builderOverlayOpen = shellOverlayOpen || !!guided?.enabled;
+  const canonicalBlankGuidedDisplay = useMemo(() => {
+    if (!estimatorCoreIsBlank) return null;
+    return buildCanonicalBlankDisplayState({
+      mode: guidedDocType,
+      state,
+      context: guidedBuildContext,
+      enabled: true,
+    });
+  }, [estimatorCoreIsBlank, guidedBuildContext, guidedDocType, state]);
+  const shouldForceCanonicalBlankGuidedDisplay = useMemo(() => {
+    if (!guided?.enabled) return false;
+    if (!estimatorCoreIsBlank) return false;
+    if (!canonicalBlankGuidedDisplay) return false;
+    if (guided?.isCanonicalBlankDisplay === true) return false;
+
+    const rawCounts = guided?.completionAudit?.counts || {};
+    const canonicalCounts = canonicalBlankGuidedDisplay?.completionAudit?.counts || {};
+    const rawCovered = Number(rawCounts?.complete || 0)
+      + Number(rawCounts?.inferred || 0)
+      + Number(rawCounts?.needs_confirmation || 0);
+    const canonicalCovered = Number(canonicalCounts?.complete || 0)
+      + Number(canonicalCounts?.inferred || 0)
+      + Number(canonicalCounts?.needs_confirmation || 0);
+    const promptText = String(guided?.assistantMessage || guided?.activeStepPrompt || "").trim();
+    const canonicalPromptText = String(
+      canonicalBlankGuidedDisplay?.assistantMessage || canonicalBlankGuidedDisplay?.activeStepPrompt || ""
+    ).trim();
+    const progressLeaked = rawCovered > canonicalCovered || Number(guided?.reviewReadiness?.score || 0) > Number(canonicalBlankGuidedDisplay?.reviewReadiness?.score || 0);
+    const blockerMismatch = String(guided?.currentSection || "") !== String(canonicalBlankGuidedDisplay?.currentSection || "")
+      || String(guided?.currentQuestion || "") !== String(canonicalBlankGuidedDisplay?.currentQuestion || "")
+      || String(guided?.activeStepId || "") !== String(canonicalBlankGuidedDisplay?.activeStepId || "")
+      || promptText !== canonicalPromptText;
+    const staleResidue = hasGuidedRuntimeResidue(guided)
+      || Object.keys(guided?.plannerState || {}).length > 0
+      || Object.keys(guided?.fieldMeta || {}).length > 0
+      || (Array.isArray(guided?.answeredPrompts) && guided.answeredPrompts.length > 0)
+      || (Array.isArray(guided?.pendingConfirmations) && guided.pendingConfirmations.length > 0)
+      || (Array.isArray(guided?.unresolvedRequiredFields) && guided.unresolvedRequiredFields.some((fieldKey) => !canonicalBlankGuidedDisplay?.unresolvedRequiredFields?.includes(fieldKey)));
+    return blockerMismatch || progressLeaked || staleResidue || guided?.reviewOpen === true;
+  }, [canonicalBlankGuidedDisplay, estimatorCoreIsBlank, guided]);
+  const guidedDisplay = useMemo(() => {
+    if (!shouldForceCanonicalBlankGuidedDisplay || !canonicalBlankGuidedDisplay) return guided;
+    return {
+      ...canonicalBlankGuidedDisplay,
+      enabled: true,
+      isCanonicalBlankDisplay: true,
+      failClosedBlankDisplayGuard: true,
+      headerProgressMode: "canonicalBlank",
+      headerProgressPercent: 0,
+      headerProgressLocked: true,
+    };
+  }, [canonicalBlankGuidedDisplay, guided, shouldForceCanonicalBlankGuidedDisplay]);
+  const guidedOverlayTraceKeyRef = useRef("");
+
+  useEffect(() => {
+    const payload = {
+      fileMarker: "src/EstimateForm.js",
+      activeHookImport: "./estimator/guided/useGuidedBuild",
+      activeOverlayImport: "./estimator/guided/GuidedBuildOverlay",
+      estimatorCoreIsBlank,
+      failClosedBlankDisplayGuard: shouldForceCanonicalBlankGuidedDisplay,
+      rawGuided: {
+        guidedEnabled: guided?.enabled === true,
+        isCanonicalBlankDisplay: guided?.isCanonicalBlankDisplay === true,
+        currentSection: guided?.currentSection || "",
+        currentQuestion: guided?.currentQuestion || "",
+        activeStepId: guided?.activeStepId || "",
+        assistantMessage: guided?.assistantMessage || "",
+        completionAuditCounts: guided?.completionAudit?.counts || null,
+        reviewReadiness: guided?.reviewReadiness || null,
+        unresolvedRequiredFields: Array.isArray(guided?.unresolvedRequiredFields) ? guided.unresolvedRequiredFields : [],
+      },
+      guidedForOverlay: {
+        guidedEnabled: guidedDisplay?.enabled === true,
+        isCanonicalBlankDisplay: guidedDisplay?.isCanonicalBlankDisplay === true,
+        currentSection: guidedDisplay?.currentSection || "",
+        currentQuestion: guidedDisplay?.currentQuestion || "",
+        activeStepId: guidedDisplay?.activeStepId || "",
+        assistantMessage: guidedDisplay?.assistantMessage || "",
+        completionAuditCounts: guidedDisplay?.completionAudit?.counts || null,
+        reviewReadiness: guidedDisplay?.reviewReadiness || null,
+        unresolvedRequiredFields: Array.isArray(guidedDisplay?.unresolvedRequiredFields) ? guidedDisplay.unresolvedRequiredFields : [],
+      },
+      pendingSectionKey: guidedDisplay?.pendingSectionKey || "",
+      pendingStepKey: guidedDisplay?.pendingStepKey || "",
+      guidedSummary: guidedSummary || null,
+      builderOverlayOpen,
+    };
+    const key = JSON.stringify(payload);
+    if (key === guidedOverlayTraceKeyRef.current) return;
+    guidedOverlayTraceKeyRef.current = key;
+    traceEstiPaidGuidedRuntime("EstimateForm.js", "overlay-props", payload);
+  }, [
+    builderOverlayOpen,
+    estimatorCoreIsBlank,
+    guided,
+    guidedDisplay,
+    guidedSummary,
+    shouldForceCanonicalBlankGuidedDisplay,
+  ]);
+
+  useEffect(() => {
+    if (typeof onGuidedOverlayOpenChange !== "function") return undefined;
+    onGuidedOverlayOpenChange(!!guided?.enabled);
+    return () => {
+      onGuidedOverlayOpenChange(false);
+    };
+  }, [guided?.enabled, onGuidedOverlayOpenChange]);
   const actionBarNode = (
     <div style={actionBarStyle}>
       <div ref={actionBarRef} style={actionBarInnerStyle}>
@@ -2399,23 +6233,69 @@ export default function EstimateForm(props) {
           >
             {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
           </button>
-          {isEditMode ? (
-            <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
-              Cancel Edit
+          <div style={styles.estimatorActionSecondary}>
+            {isEditMode ? (
+              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
+                Cancel Edit
+              </button>
+            ) : (
+              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
+                Clear
+              </button>
+            )}
+            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
+              Export PDF
             </button>
-          ) : null}
-          {!isEditMode ? (
-            <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
-              Clear
-            </button>
-          ) : null}
-          <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
-            Export PDF
-          </button>
+          </div>
         </div>
+        <CloudBackupInlineStatus style={{ marginTop: 6, textAlign: "center" }} />
       </div>
     </div>
   );
+
+  const scopeAssistDisplayError = scopeAssistState.phase === "error"
+    ? resolveScopeAssistDisplayError(
+      scopeAssistState.error,
+      Date.now() - Number(scopeAssistRequestStartedAtRef.current || Date.now())
+    )
+    : "";
+  const scopeAssistPanelState = scopeAssistDisplayError
+    ? { ...scopeAssistState, error: scopeAssistDisplayError }
+    : scopeAssistState;
+
+  useEffect(() => {
+    if (!isBrowserDevelopmentRuntime()) return undefined;
+    if (typeof document === "undefined") return undefined;
+    const dialog = document.querySelector('[role="dialog"][aria-label="AI Assist — Scope Notes"]');
+    if (!dialog) return undefined;
+
+    const runtime = scopeAssistState?.runtime || {};
+    if (scopeAssistState.phase === "idle") {
+      const stale = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+      if (stale?.parentNode) stale.parentNode.removeChild(stale);
+      return undefined;
+    }
+
+    let row = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+    if (!row) {
+      row = document.createElement("div");
+      row.setAttribute("data-scope-runtime-dev", "1");
+      row.style.marginTop = "8px";
+      row.style.padding = "6px 10px";
+      row.style.fontSize = "11px";
+      row.style.lineHeight = "1.35";
+      row.style.opacity = "0.72";
+      row.style.borderTop = "1px solid rgba(255,255,255,0.12)";
+      row.style.fontFamily = "var(--pe-mono, monospace)";
+      dialog.appendChild(row);
+    }
+    row.textContent = `dev: ${runtime.build || "missing"} · ${runtime.path || "missing"} · ${runtime.parseSource || "missing"}`;
+
+    return () => {
+      const current = dialog.querySelector?.('[data-scope-runtime-dev="1"]');
+      if (current?.parentNode) current.parentNode.removeChild(current);
+    };
+  }, [scopeAssistState.phase, scopeAssistState.runtime?.build, scopeAssistState.runtime?.path, scopeAssistState.runtime?.parseSource]);
 
   return (
     <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
@@ -2432,39 +6312,135 @@ export default function EstimateForm(props) {
                   <div style={styles.editHeaderSecondary}>{editSecondaryTitle}</div>
                   {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
                 </div>
-                <div style={styles.editModeBadge}>EDIT MODE</div>
-              </>
-            ) : (
-              <>
-                <h1 className="pe-title pe-builder-title screenTitle">
-                  <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
-                </h1>
-                <div className="pe-builder-mode" style={styles.builderModeSegmented}>
-                  <button
-                    type="button"
-                    className={uiDocType === "estimate" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("estimate")}
-                    style={uiDocType === "estimate" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Estimate
-                  </button>
-                  <button
-                    type="button"
-                    className={uiDocType === "invoice" ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                    onClick={() => setDocType("invoice")}
-                    style={uiDocType === "invoice" ? styles.builderModeSegmentActive : styles.builderModeSegment}
-                  >
-                    Invoice
-                  </button>
+                <div style={styles.builderHeaderActionGroup}>
+                  <div style={styles.editModeBadge}>EDIT MODE</div>
                 </div>
               </>
+            ) : (
+              <h1 className="pe-title pe-builder-title screenTitle">
+                <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+              </h1>
             )}
           </div>
 
           <div ref={customerTopRef} className="pe-card pe-estimator-shell">
+        {projectSeedSummary ? (
+          <div style={styles.seedBanner}>
+            <div style={styles.seedBannerLabel}>{uiDocType === "invoice" ? "New invoice for" : "New estimate for"}</div>
+            <div style={styles.seedBannerName}>{projectSeedSummary.projectName || "Untitled Project"}</div>
+            {projectSeedSummary.customerName ? (
+              <div style={styles.seedBannerCustomer}>{projectSeedSummary.customerName}</div>
+            ) : null}
+            {projectSeedSummary.siteAddress ? (
+              <div style={styles.seedBannerAddr}>{projectSeedSummary.siteAddress}</div>
+            ) : null}
+          </div>
+        ) : null}
+        {((!isInvoiceEditMode) && (!projectSeedSummary || uiDocType === "estimate")) ? (() => {
+          const hasCustomer = Boolean(selectedCustomerId || String(state?.customer?.name || "").trim());
+          const hasProject = Boolean(String(state?.projectId || "").trim());
+          const hasProjectOrJobContext = hasProject || Boolean(
+            String(
+              state?.projectName
+              || state?.customer?.projectName
+              || state?.job?.location
+              || ""
+            ).trim()
+          );
+          const hasScope = String(state?.scopeNotes || "").trim().length > 0;
+          const hasCosts = totalRevenue > 0 || laborBase > 0 || Number(materialsBilled || 0) > 0;
+          const canExport = hasCustomer && hasCosts;
+          const readyTone = { color: "rgba(52,211,153,0.92)", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.18)" };
+          const warnTone = { color: "rgba(245,158,11,0.92)", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.18)" };
+          const infoTone = { color: "rgba(99,179,237,0.92)", bg: "rgba(99,179,237,0.08)", border: "rgba(99,179,237,0.18)" };
+          const neutralTone = { color: "rgba(229,231,235,0.28)", bg: "rgba(255,255,255,0.025)", border: "rgba(255,255,255,0.07)" };
+          const reviewTone = canExport
+            ? { color: "rgba(34,211,238,0.92)", bg: "rgba(34,211,238,0.08)", border: "rgba(34,211,238,0.18)" }
+            : neutralTone;
+          const buildChip = (label, status, tone) => ({ label, status, ...tone });
+          const chips = uiDocType === "invoice"
+            ? [
+                buildChip(
+                  lang === "es" ? "Cliente" : "Customer",
+                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCustomer ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Proyecto / trabajo" : "Project / Job",
+                  hasProject
+                    ? (lang === "es" ? "Vinculado" : "Linked")
+                    : (hasProjectOrJobContext ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Opcional" : "Optional")),
+                  hasProjectOrJobContext ? infoTone : neutralTone
+                ),
+                buildChip(
+                  lang === "es" ? "Montos / líneas" : "Amounts / Lines",
+                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCosts ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
+                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  reviewTone
+                ),
+              ]
+            : [
+                buildChip(
+                  lang === "es" ? "Cliente" : "Customer",
+                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCustomer ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Proyecto" : "Project",
+                  hasProject ? (lang === "es" ? "Vinculado" : "Linked") : (lang === "es" ? "Opcional" : "Optional"),
+                  hasProject ? infoTone : neutralTone
+                ),
+                buildChip(
+                  lang === "es" ? "Alcance" : "Scope",
+                  hasScope ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasScope ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Costos" : "Costs",
+                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  hasCosts ? readyTone : warnTone
+                ),
+                buildChip(
+                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
+                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  reviewTone
+                ),
+              ];
+          return (
+            <div style={{ margin: "0 0 14px", padding: "12px 14px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(229,231,235,0.28)", marginBottom: 9 }}>
+                {lang === "es" ? "Por dónde empezar" : "Start here"}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {chips.map(({ label, status, color, bg, border }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 999, background: bg, border: `1px solid ${border}` }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(229,231,235,0.55)" }}>{label}</span>
+                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", color }}>{status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })() : null}
         {/* Customer */}
         <section className="pe-card" style={styles.sectionBlock}>
-        <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} />
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          {projectSeedSummary ? (
+            <span style={{ marginTop: 4, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(99,179,237,0.8)", background: "rgba(99,179,237,0.10)", borderRadius: 999, padding: "2px 8px", border: "1px solid rgba(99,179,237,0.22)", whiteSpace: "nowrap" }}>
+              Linked
+            </span>
+          ) : null}
+        </div>
+        <div style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
+          {lang === "es"
+            ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Proyecto."
+            : "Who you're billing — select an existing customer or create one. Job site details go in Project Info."}
+        </div>
 
         {/* Combo search/dropdown + Edit button */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2477,10 +6453,16 @@ export default function EstimateForm(props) {
               autoComplete="off"
               onFocus={() => setDropdownOpen(true)}
               onBlur={() => setTimeout(() => setDropdownOpen(false), DROPDOWN_BLUR_DELAY)}
-              onChange={(e) => { setSearchCustomerText(e.target.value); setDropdownOpen(true); }}
+              onKeyDown={(e) => { if (e.key === "Escape") setDropdownOpen(false); }}
+              onChange={(e) => {
+                const nextValue = e.target.value;
+                setSearchCustomerText(nextValue);
+                setCustomerSearchQuery(nextValue);
+                setDropdownOpen(true);
+              }}
             />
             {dropdownOpen && dropdownRect.width > 0 && typeof document !== "undefined" && createPortal(
-              <div style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
+              <div ref={customerDropdownPortalRef} style={{ ...styles.dropdownPortal, top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}>
                 <div
                   key={CREATE_NEW_CUSTOMER_VALUE}
                   style={{
@@ -2488,7 +6470,10 @@ export default function EstimateForm(props) {
                     ...styles.dropdownCreateOption,
                     ...(dropdownHoverKey === CREATE_NEW_CUSTOMER_VALUE ? styles.dropdownOptionHover : null),
                   }}
-                  onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(CREATE_NEW_CUSTOMER_VALUE); }}
+                  onPointerDown={(e) => handleCustomerDropdownPointerDown(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onTouchStart={(e) => handleCustomerDropdownTouchStart(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onMouseDown={(e) => handleCustomerDropdownMouseDown(e, CREATE_NEW_CUSTOMER_VALUE)}
+                  onClick={consumeCustomerDropdownOptionClick}
                   onMouseEnter={() => setDropdownHoverKey(CREATE_NEW_CUSTOMER_VALUE)}
                   onMouseLeave={() => setDropdownHoverKey("")}
                 >
@@ -2502,7 +6487,10 @@ export default function EstimateForm(props) {
                       ...(String(selectedCustomerId || "") === String(c.id) ? styles.dropdownOptionSelected : null),
                       ...(dropdownHoverKey === String(c.id) ? styles.dropdownOptionHover : null),
                     }}
-                    onMouseDown={(e) => { e.preventDefault(); handleSelectCustomer(String(c.id)); }}
+                    onPointerDown={(e) => handleCustomerDropdownPointerDown(e, String(c.id))}
+                    onTouchStart={(e) => handleCustomerDropdownTouchStart(e, String(c.id))}
+                    onMouseDown={(e) => handleCustomerDropdownMouseDown(e, String(c.id))}
+                    onClick={consumeCustomerDropdownOptionClick}
                     onMouseEnter={() => setDropdownHoverKey(String(c.id))}
                     onMouseLeave={() => setDropdownHoverKey("")}
                   >
@@ -2522,7 +6510,11 @@ export default function EstimateForm(props) {
             disabled={!selectedCustomerId}
             onClick={() => {
               try {
-                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({ id: selectedCustomerId, returnTo: "estimator" }));
+                localStorage.setItem(CUSTOMER_EDIT_TARGET_KEY, JSON.stringify({
+                  id: selectedCustomerId,
+                  returnTo: "estimator",
+                  builderIntent: uiDocType === "invoice" ? BUILDER_INTENTS.INVOICE : BUILDER_INTENTS.ESTIMATE,
+                }));
                 window.dispatchEvent(new Event("estipaid:navigate-customers"));
               } catch {}
             }}
@@ -2531,7 +6523,7 @@ export default function EstimateForm(props) {
           </button>
         </div>
         <div style={styles.selectedCustomerText}>
-          Selected: {selectedProfile?.displayName ? (
+          {projectSeedSummary ? "Linked customer: " : "Selected: "}{selectedProfile?.displayName ? (
             <>
               <span style={{ fontWeight: 800 }}>{selectedProfile.displayName}</span>
               {selectedProfile.companyName && selectedProfile.companyName !== selectedProfile.displayName ? ` • ${selectedProfile.companyName}` : ""}
@@ -2599,14 +6591,106 @@ export default function EstimateForm(props) {
 
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconJobInfo />} title="Job Info" styles={styles} />
+        <SectionTitleWithIcon icon={<IconJobInfo />} title="Project Info" styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <div style={styles.scopeSubtitle}>
+          {lang === "es"
+            ? "Nombre del trabajo, dirección del sitio y fecha — aparece en el encabezado del estimado, por separado del cliente."
+            : "Job name, site address, and date — goes on your estimate header, separate from who you're billing."}
+        </div>
+
+        {projectSeedSummary ? (
+          <div style={{ margin: "0 0 10px", padding: "6px 10px", background: "rgba(99,179,237,0.06)", borderRadius: 8, borderLeft: "2px solid rgba(99,179,237,0.32)", fontSize: 12, color: "rgba(220,235,245,0.65)", lineHeight: 1.6 }}>
+            <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.82)" }}>{projectSeedSummary.projectName || "Untitled Project"}</span>
+            {projectSeedSummary.siteAddress ? <> &mdash; {projectSeedSummary.siteAddress}</> : null}
+          </div>
+        ) : null}
 
         <div style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
+            {showExistingProjectSelector ? (
+              <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+                <label style={styles.label}>{isEstimateProjectReassignment ? "Move to Project" : "Link existing project"}</label>
+                {isEstimateProjectReassignment && currentLinkedProject ? (
+                  <div style={{ margin: "0 0 4px", padding: "6px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", fontSize: 12, color: "rgba(230,241,248,0.72)", lineHeight: 1.55 }}>
+                    <span style={{ color: "rgba(230,241,248,0.46)" }}>Current linked project: </span>
+                    <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.88)" }}>
+                      {String(currentLinkedProject?.projectName || "").trim() || "Untitled Project"}
+                    </span>
+                    {String(currentLinkedProject?.projectNumber || "").trim()
+                      ? ` • ${String(currentLinkedProject?.projectNumber || "").trim()}`
+                      : ""}
+                  </div>
+                ) : null}
+                <select
+                  className="pe-input"
+                  value={selectedExistingProjectId}
+                  onChange={(e) => handleSelectExistingProject(e.target.value)}
+                  disabled={availableExistingProjects.length === 0}
+                >
+                  <option value="">
+                    {(!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                      ? "Select customer first"
+                      : availableExistingProjects.length === 0
+                      ? "No saved projects yet"
+                      : "No linked project"}
+                  </option>
+                  {availableExistingProjects.map((project) => {
+                    const optionParts = [
+                      String(project?.projectName || "").trim() || "Untitled Project",
+                      String(project?.projectNumber || "").trim(),
+                      String(project?.siteAddress || "").trim(),
+                    ].filter(Boolean);
+                    return (
+                      <option key={String(project?.id || "")} value={String(project?.id || "")}>
+                        {optionParts.join(" • ")}
+                      </option>
+                    );
+                  })}
+                </select>
+                <div className="pe-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  {isEstimateProjectReassignment
+                    ? (
+                      selectedExistingProject
+                        ? "Move this estimate to the selected existing project when you save."
+                        : (!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                          ? "Select a customer first to choose a project."
+                        : availableExistingProjects.length === 0
+                          ? "No saved projects yet."
+                          : "Select an existing project to move this estimate."
+                    )
+                    : selectedExistingProject
+                      ? "This document will stay linked to the selected existing project when you save."
+                      : (!selectedCustomerId && !String(state?.customer?.name || "").trim())
+                        ? "Select a customer first to choose a project."
+                      : availableExistingProjects.length === 0
+                        ? "No saved projects yet."
+                        : "Optional: link this document to an existing project."}
+                </div>
+              </div>
+            ) : null}
+
+            {showExistingProjectSelector && selectedExistingProject ? (
+              <div style={{ margin: "0 0 10px", padding: "6px 10px", background: "rgba(99,179,237,0.06)", borderRadius: 8, borderLeft: "2px solid rgba(99,179,237,0.32)", fontSize: 12, color: "rgba(220,235,245,0.65)", lineHeight: 1.6 }}>
+                <span style={{ fontWeight: 700, color: "rgba(99,179,237,0.82)" }}>
+                  {String(selectedExistingProject?.projectName || "").trim() || "Untitled Project"}
+                </span>
+                {String(selectedExistingProject?.projectNumber || "").trim()
+                  ? ` • ${String(selectedExistingProject?.projectNumber || "").trim()}`
+                  : ""}
+                {String(selectedExistingProject?.siteAddress || "").trim()
+                  ? ` • ${String(selectedExistingProject?.siteAddress || "").trim()}`
+                  : ""}
+              </div>
+            ) : null}
+
             <div className={jobInfoTopGridClassName}>
               <div>
-                <label style={styles.label}>Project name</label>
-                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => patch("customer.projectName", e.target.value)} placeholder="Project name (optional)" />
+                <label style={styles.label}>Job / Work Title{projectSeedSummary ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: "rgba(99,179,237,0.55)" }}>from project</span> : null}</label>
+                <input className="pe-input" value={state.customer.projectName || ""} onChange={(e) => {
+                  projectNameAutoStateRef.current.manual = true;
+                  projectNameAutoStateRef.current.auto = "";
+                  patch("customer.projectName", e.target.value);
+                }} placeholder="Job / Work Title (optional)" />
               </div>
               {isCommercialJob ? (
                 <div>
@@ -2633,7 +6717,7 @@ export default function EstimateForm(props) {
                   checked={projectLocationSame}
                   onChange={(e) => patch("customer.projectSameAsCustomer", !!e.target.checked)}
                 />
-                <span>Project location (use customer address)</span>
+                <span>Same as customer address</span>
               </label>
             </div>
 
@@ -2704,71 +6788,343 @@ export default function EstimateForm(props) {
         </div>
         </section>
 
-        {uiDocType === "estimate" ? (
+        {uiDocType === "estimate" || uiDocType === "invoice" ? (
         <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.scopeHeaderRow}>
-          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Scope / Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <div style={{ display: "grid", gap: 2 }}>
+            <SectionTitleWithIcon
+              icon={<IconSpecialConditions />}
+              title={uiDocType === "invoice" ? "Scope Notes" : "Scope of Work"}
+              styles={styles}
+              stackStyle={{ marginBottom: 0 }}
+            />
+            <div style={styles.scopeSubtitle}>
+              {uiDocType === "invoice"
+                ? "Optional work notes."
+                : "Describe the job — what you're doing, where, and roughly how much."}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {uiDocType === "invoice" ? (
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 12px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(148,163,184,0.2)",
+                  background: invoiceScopeNotesEnabled ? "rgba(59,130,246,0.14)" : "rgba(15,23,42,0.32)",
+                  color: "rgba(230,241,248,0.92)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={invoiceScopeNotesEnabled}
+                  onChange={(e) => {
+                    const checked = Boolean(e.target.checked);
+                    patch("ui.includeInvoiceScopeNotes", checked);
+                    if (checked) setNotesOpen(true);
+                  }}
+                />
+                Include on Invoice
+              </label>
+            ) : null}
+            {showScopeNotesEditor ? (
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                style={styles.aiAssistBtn}
+                onClick={openScopeAssist}
+                title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
+              >
+                ✦ AI Assist
+              </button>
+            ) : null}
+          </div>
         </div>
+        {showScopeNotesEditor ? (
+        <>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
           style={{ ...styles.notesCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
           <div className="pe-scope-insert-grid">
-            <select
-              className="pe-input"
-              defaultValue=""
-              style={{ width: "100%" }}
-              onChange={(e) => {
-                const key = e.target.value;
-                if (!key) return;
-                const tmpl = SCOPE_MASTER_TEMPLATES.find((t) => t.key === key);
-                if (!tmpl) return;
-                const existing = scopeNotes;
-                const sep = existing.trim().length > 0 ? "\n\n" : "";
-                patch("scopeNotes", existing + sep + tmpl.text);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Insert template…</option>
-              {SCOPE_MASTER_TEMPLATES.map((t) => (
-                <option key={t.key} value={t.key}>{t.label}</option>
-              ))}
-            </select>
-            <select
-              className="pe-input"
-              defaultValue=""
-              style={{ width: "100%" }}
-              onChange={(e) => {
-                const key = e.target.value;
-                if (!key) return;
-                const insert = SCOPE_TRADE_INSERTS.find((t) => t.key === key);
-                if (!insert) return;
-                const existing = scopeNotes;
-                const sep = existing.trim().length > 0 ? "\n\n" : "";
-                patch("scopeNotes", existing + sep + insert.text);
-                patch("tradeInsert.key", insert.key);
-                patch("tradeInsert.text", insert.text);
-                e.target.value = "";
-              }}
-            >
-              <option value="">Insert trade…</option>
-              {SCOPE_TRADE_INSERTS.map((t) => (
-                <option key={t.key} value={t.key}>{t.label}</option>
-              ))}
-            </select>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
+                {lang === "es" ? "Mis plantillas" : "Your saved templates"}
+              </div>
+              <select
+                className="pe-input"
+                defaultValue=""
+                style={{ width: "100%" }}
+                onChange={(e) => {
+                  handleApplyScopeTemplate(e.target.value);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">
+                  {scopeTemplates.length === 0
+                    ? (lang === "es" ? "Ninguna guardada — usa Guardar plantilla abajo" : "None saved — use Save as Template below")
+                    : (lang === "es" ? "Aplicar plantilla guardada…" : "Apply a saved template…")}
+                </option>
+                {scopeTemplates.map((tmpl) => (
+                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <textarea
-            ref={scopeNotesRef}
-            className="pe-input pe-textarea"
-            value={scopeNotes}
-            onChange={(e) => {
-              patch("scopeNotes", e.target.value);
-              autoResizeScopeNotes(e.target);
-            }}
-            placeholder="Scope / notes…"
-            style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
-          />
+          <div className="pe-scope-editor">
+            <div className="pe-scope-toolbar" role="toolbar" aria-label="Scope text formatting">
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.bold ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Bold" aria-pressed={scopeFormatState.bold}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bold"); }}
+                title="Bold"
+              ><strong>B</strong></button>
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.italic ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Italic" aria-pressed={scopeFormatState.italic}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("italic"); }}
+                title="Italic"
+              ><em>I</em></button>
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.underline ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Underline" aria-pressed={scopeFormatState.underline}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("underline"); }}
+                title="Underline"
+              ><u>U</u></button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.bullet ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Bullet list" aria-pressed={scopeFormatState.bullet}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("bullet"); }}
+                title="Bullet list"
+              >• List</button>
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.numbered ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Numbered list" aria-pressed={scopeFormatState.numbered}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("numbered"); }}
+                title="Numbered list"
+              >1. List</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className={`pe-scope-toolbar-btn${scopeFormatState.heading ? " pe-scope-toolbar-btn--active" : ""}`}
+                aria-label="Heading 2" aria-pressed={scopeFormatState.heading}
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("heading"); }}
+                title="Heading"
+              >H2</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Normal text"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("normal"); }}
+                title="Normal text"
+              >Aa</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Insert horizontal rule"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("divider"); }}
+                title="Horizontal rule"
+              >—</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Undo"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("undo"); }}
+                title="Undo"
+              >↩</button>
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Redo"
+                onMouseDown={(e) => { e.preventDefault(); handleScopeFormat("redo"); }}
+                title="Redo"
+              >↪</button>
+              <span className="pe-scope-toolbar-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="pe-scope-toolbar-btn"
+                aria-label="Insert scope image"
+                onMouseDown={(e) => { e.preventDefault(); cacheScopeImageSelection(); }}
+                onClick={focusScopeImageUpload}
+                title="Insert image"
+              >Img</button>
+              <input
+                ref={scopeImageInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                style={{ display: "none" }}
+                onChange={handleScopeImageFileSelected}
+              />
+            </div>
+            <div
+              ref={scopeNotesRef}
+              contentEditable
+              suppressContentEditableWarning
+              className="pe-input pe-textarea pe-scope-textarea"
+              onInput={(e) => {
+                const nextText = extractScopeTextFromElement(e.currentTarget);
+                if (!nextText.trim()) {
+                  e.currentTarget.setAttribute("data-empty", "true");
+                } else {
+                  e.currentTarget.removeAttribute("data-empty");
+                }
+                patch("scopeNotes", nextText);
+                autoResizeScopeNotes(e.currentTarget);
+              }}
+              onMouseUp={updateScopeFormatState}
+              onKeyUp={updateScopeFormatState}
+              onSelect={updateScopeFormatState}
+              onPaste={(e) => {
+                e.preventDefault();
+                const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+                document.execCommand("insertText", false, text);
+              }}
+              data-placeholder="What work is being done? e.g. Tear off existing roof, install 30-yr architectural shingles, replace flashing and vents…"
+              {...(!scopeNotes.trim() ? { "data-empty": "true" } : {})}
+              style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none", whiteSpace: "pre-wrap", outline: "none" }}
+            />
+          </div>
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            <div style={{
+              display: "grid",
+              gap: 3,
+              padding: "2px 0 1px",
+              color: scopeImageUsage.isAtCountLimit
+                ? "rgba(180,83,9,0.95)"
+                : scopeImageUsage.isNearCountLimit || scopeImageUsage.isNearStorageLimit
+                  ? "rgba(180,83,9,0.78)"
+                  : "rgba(71,85,105,0.84)",
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>
+                {scopeImageUsage.countLabel}
+              </div>
+              {scopeImageUsage.storageLabel ? (
+                <div style={{ fontSize: 11, lineHeight: 1.35, color: scopeImageUsage.isNearStorageLimit ? "rgba(180,83,9,0.82)" : "rgba(71,85,105,0.7)" }}>
+                  {scopeImageUsage.storageLabel}
+                </div>
+              ) : null}
+            </div>
+            <div style={{ fontSize: 11, lineHeight: 1.35, color: "rgba(71,85,105,0.68)" }}>
+              Photos appear in the PDF and may increase file size.
+            </div>
+            {scopeImages.length ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                {scopeImages.map((img) => {
+                  const imgLayout = (img?.layout && typeof img.layout === "object")
+                    ? img.layout
+                    : { size: "medium", align: "center", caption: false };
+                  const imgSize = String(imgLayout.size || "medium");
+                  const imgAlign = String(imgLayout.align || "center");
+                  const imgCaption = Boolean(imgLayout.caption);
+                  const layoutBtnBase = {
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    padding: "2px 6px",
+                    borderRadius: 5,
+                    border: "1px solid rgba(148,163,184,0.32)",
+                    background: "rgba(255,255,255,0.7)",
+                    cursor: "pointer",
+                    lineHeight: 1.4,
+                    color: "rgba(30,41,59,0.75)",
+                    flex: "0 0 auto",
+                  };
+                  const layoutBtnActive = {
+                    ...layoutBtnBase,
+                    background: "rgba(59,130,246,0.12)",
+                    border: "1px solid rgba(59,130,246,0.36)",
+                    color: "rgba(30,58,138,0.92)",
+                    fontWeight: 700,
+                  };
+                  return (
+                  <div
+                    key={String(img?.id || "")}
+                    style={{
+                      width: 168,
+                      border: "1px solid rgba(148,163,184,0.34)",
+                      borderRadius: 10,
+                      padding: 8,
+                      background: "rgba(255,255,255,0.75)",
+                      boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "100%",
+                        minHeight: 96,
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        background: "rgba(248,250,252,0.96)",
+                        border: "1px solid rgba(148,163,184,0.24)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <img
+                        src={String(img?.dataUrl || "")}
+                        alt={String(img?.name || img?.id || "Scope image")}
+                        style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+                      />
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.35, wordBreak: "break-word" }}>
+                      {String(img?.name || img?.id || "Scope image")}
+                    </div>
+                    <div style={{ marginTop: 7, display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Size</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {["small", "medium", "large"].map((sz) => (
+                          <button key={sz} type="button" style={imgSize === sz ? layoutBtnActive : layoutBtnBase}
+                            onClick={() => handleUpdateScopeImageLayout(img?.id, "size", sz)}>
+                            {sz.charAt(0).toUpperCase() + sz.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Align</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {["left", "center", "right"].map((al) => (
+                          <button key={al} type="button" style={imgAlign === al ? layoutBtnActive : layoutBtnBase}
+                            onClick={() => handleUpdateScopeImageLayout(img?.id, "align", al)}>
+                            {al.charAt(0).toUpperCase() + al.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(71,85,105,0.72)", letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Caption</div>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button type="button" style={imgCaption ? layoutBtnActive : layoutBtnBase}
+                          onClick={() => handleUpdateScopeImageLayout(img?.id, "caption", true)}>On</button>
+                        <button type="button" style={!imgCaption ? layoutBtnActive : layoutBtnBase}
+                          onClick={() => handleUpdateScopeImageLayout(img?.id, "caption", false)}>Off</button>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="pe-btn pe-btn-ghost"
+                      style={{ marginTop: 8, width: "100%" }}
+                      onClick={() => handleRemoveScopeImage(img?.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div
           className={`pe-collapse ${notesOpen ? "" : "pe-open"}`}
@@ -2777,16 +7133,16 @@ export default function EstimateForm(props) {
           <div className="pe-muted" style={styles.scopeCollapsedPreview}>
             {scopeNotes.trim()
               ? `${scopeNotes.replace(/\s+/g, " ").trim().slice(0, 120)}${scopeNotes.replace(/\s+/g, " ").trim().length > 120 ? "…" : ""}`
-              : "No notes"}
+              : "No scope entered yet — describe the work to get started"}
           </div>
         </div>
-        <div style={styles.scopeCollapseRow}>
+        <div style={styles.sectionFooterActions}>
           {notesOpen ? (
             <>
               <button
                 className="pe-btn pe-btn-ghost"
                 type="button"
-                style={styles.scopeCollapseBtn}
+                style={styles.sectionFooterBtn}
                 onClick={() => setNotesOpen(false)}
                 title="Collapse notes"
               >
@@ -2795,10 +7151,23 @@ export default function EstimateForm(props) {
               <button
                 className="pe-btn pe-btn-ghost"
                 type="button"
-                style={styles.scopeClearBtn}
+                style={styles.sectionFooterBtn}
                 onClick={handleClearScopeNotes}
               >
                 Clear Notes
+              </button>
+              <button
+                className="pe-btn pe-btn-ghost"
+                type="button"
+                style={styles.sectionFooterBtn}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={handleSaveScopeTemplate}
+                title="Save the current work package as a reusable template"
+              >
+                {lang === "es" ? "Guardar plantilla" : "Save as Template"}
               </button>
             </>
           ) : (
@@ -2813,6 +7182,8 @@ export default function EstimateForm(props) {
             </button>
           )}
         </div>
+        </>
+        ) : null}
         </section>
         ) : null}
 
@@ -2831,26 +7202,42 @@ export default function EstimateForm(props) {
               {money.format(Number(laborAdjusted) || 0)}
             </div>
           )}
-          {!laborOpen && (
+          <div style={styles.sectionHeaderControls}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
-              onClick={() => setLaborOpen(true)}
-              title={lang === "es" ? "Expandir" : "Expand"}
-              style={{ ...styles.scopeCollapseBtn, marginLeft: "auto" }}
+              style={styles.aiAssistBtn}
+              onClick={handleSuggestLaborFromScope}
+              title="Suggest labor lines from the current scope and job context"
             >
-              {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+              AI Assist
             </button>
-          )}
+            {!laborOpen && (
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => setLaborOpen(true)}
+                title={lang === "es" ? "Expandir" : "Expand"}
+                style={styles.scopeCollapseBtn}
+              >
+                {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+              </button>
+            )}
+          </div>
         </div>
 
         <div
           className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
           style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
+          <div className="pe-muted" style={{ marginTop: 10, marginBottom: 6 }}>
+            {lang === "es"
+              ? "Usa \"AI Assist\" para generar líneas automáticamente desde tu alcance. También puedes agregar líneas manualmente: selecciona un rol para cargar tarifas de referencia, luego ingresa las horas."
+              : "Use \"AI Assist\" to auto-draft rows from your current scope. You can also add lines manually: select a preset to load reference rates, then enter hours."}
+          </div>
           {laborLines.map((l, i) => {
-            const presetLabels = LABOR_PRESETS.map((p) => p.label);
-            const hasLegacyLabel = l.label && !presetLabels.includes(l.label);
+            const roleOptions = buildLaborRoleOptions(l.label);
+            const selectedRoleValue = resolveLaborRoleSelectValue(l.label, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS);
 
               return (
                 <div
@@ -2863,16 +7250,15 @@ export default function EstimateForm(props) {
                     <div style={styles.label}>{lang === "es" ? "Rol" : "Role"}</div>
                     <select
                       className="pe-input"
-                      value={l.label || ""}
-                      onChange={(e) => applyLaborPresetByLabel(i, e.target.value)}
+                      value={selectedRoleValue}
+                      onChange={(e) => handleLaborRoleSelection(i, e.target.value)}
                       title={lang === "es" ? "Rol" : "Role"}
                       style={{ width: "100%" }}
                     >
                       <option value="">{t("selectRole")}</option>
-                      {hasLegacyLabel && <option value={l.label}>{l.label}</option>}
-                      {LABOR_PRESETS.map((p) => (
-                        <option key={p.key} value={p.label}>
-                          {p.label}
+                      {roleOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
                     </select>
@@ -3012,17 +7398,23 @@ export default function EstimateForm(props) {
         </div>
 
         {laborOpen && (
-          <div style={styles.laborBottomActions}>
+          <div style={sectionBottomActionsStyle}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
               onClick={() => setLaborOpen(false)}
               title={lang === "es" ? "Colapsar" : "Collapse"}
-              style={{ padding: "6px 10px" }}
+              style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterSecondaryBtn }}
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro pe-shortcut-tip" data-shortcut="+" onClick={handleLaborPrimary} type="button">
+            <button
+              className="pe-btn pe-btn-micro pe-shortcut-tip"
+              data-shortcut="+"
+              onClick={handleLaborPrimary}
+              type="button"
+              style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterPrimaryBtn }}
+            >
               {lang === "es" ? "+ Mano de obra" : "+ Labor"}
             </button>
           </div>
@@ -3032,14 +7424,21 @@ export default function EstimateForm(props) {
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <div style={styles.sectionHeaderRow}>
-          <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Special Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <div style={{ display: "grid", gap: 2 }}>
+            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Job Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
+            <div style={styles.scopeSubtitle}>
+              {lang === "es"
+                ? "Costo adicional de mano de obra por condiciones del sitio o riesgos del trabajo — se aplica sobre el total de mano de obra, no sobre el alcance ni los materiales."
+                : "Extra labor cost driven by site conditions or job risk — applies on top of your base labor total. Not scope, not materials, not crew hours."}
+            </div>
+          </div>
           {!specialConditionsOpen ? (
             <button
               className="pe-btn pe-btn-ghost"
               type="button"
               style={styles.scopeCollapseBtn}
               onClick={() => setSpecialConditionsOpen(true)}
-              title="Expand special conditions"
+              title="Expand job conditions"
             >
               Expand ▾
             </button>
@@ -3055,7 +7454,9 @@ export default function EstimateForm(props) {
               <div style={styles.fieldStack}>
                 <div style={styles.label}>Hazard / Site Conditions</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  Physical/site constraints & safety burden.
+                  {lang === "es"
+                    ? "Acceso difícil, EPP requerido o peligros conocidos en el sitio — agrega un % a tu total de mano de obra."
+                    : "Tight access, required PPE, or known site hazards — adds a % to your labor total."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.hazardPct ?? "")}
@@ -3090,7 +7491,9 @@ export default function EstimateForm(props) {
               <div style={styles.fieldStack}>
                 <div style={styles.label}>Risk / Uncertainty Buffer</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  Unknowns & contingency for scope/schedule.
+                  {lang === "es"
+                    ? "Condiciones ocultas, planos incompletos o incertidumbre de cronograma — agrega un % a tu total de mano de obra."
+                    : "Hidden conditions, incomplete drawings, or schedule uncertainty — adds a % to your labor total."}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.riskPct ?? "")}
@@ -3124,20 +7527,20 @@ export default function EstimateForm(props) {
             </div>
 
             <div className="pe-row pe-row-slim">
-              <div className="pe-muted">Adjusted labor</div>
+              <div className="pe-muted">Your labor total</div>
               <div className="pe-value">{money.format(adjustedLabor)}</div>
             </div>
 
             {hazardEnabled && (
               <div className="pe-row pe-row-slim">
-                <div className="pe-muted">{`Hazard fee (${hazardPctNormalized}% of labor)`}</div>
+                <div className="pe-muted">{`Hazard add-on (${hazardPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(hazardFee)}</div>
               </div>
             )}
 
             {riskEnabled && (
               <div className="pe-row pe-row-slim">
-                <div className="pe-muted">{`Risk fee (${riskPctNormalized}% of labor)`}</div>
+                <div className="pe-muted">{`Risk buffer (${riskPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(riskFee)}</div>
               </div>
             )}
@@ -3152,13 +7555,13 @@ export default function EstimateForm(props) {
           </div>
         </div>
         {specialConditionsOpen ? (
-          <div style={styles.scopeCollapseRow}>
+          <div style={styles.sectionFooterActions}>
             <button
               className="pe-btn pe-btn-ghost"
               type="button"
-              style={styles.scopeCollapseBtn}
+              style={styles.sectionFooterBtn}
               onClick={() => setSpecialConditionsOpen(false)}
-              title="Collapse special conditions"
+              title="Collapse job conditions"
             >
               Collapse ▴
             </button>
@@ -3171,10 +7574,14 @@ export default function EstimateForm(props) {
         t={t}
         lang={lang}
         styles={styles}
+        bottomActionsStyle={sectionBottomActionsStyle}
         headerIcon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M12 4.8 5.8 8.1 12 11.4l6.2-3.3L12 4.8Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /><path d="M5.8 12 12 15.3l6.2-3.3M5.8 15.9 12 19.2l6.2-3.3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /></svg>}
         money={money}
         collapseMs={COLLAPSE_MS}
         triggerHaptic={triggerHaptic}
+        onAiAssistOpen={() => {
+          materialsAssist.submit(resolveMaterialsFromScopePrompt(materialsAssistMode));
+        }}
         materialsMode={materialsMode}
         setMaterialsMode={setMaterialsMode}
         materialsOpen={materialsOpen}
@@ -3206,6 +7613,107 @@ export default function EstimateForm(props) {
         requireExplicitPickerCommit={isMobileActionBarViewport}
       />
 
+      <section className="pe-card" style={styles.sectionBlock}>
+        <div className="pe-divider" style={styles.sectionHeaderDivider} />
+        <SectionTitleWithIcon
+          icon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M6 6.5h12M6 12h12M6 17.5h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><path d="M16.5 4.8v14.4M12 9.6v7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>}
+          title={t("additionalCharges")}
+          styles={styles}
+        />
+        <div style={styles.scopeSubtitle}>
+          {t("additionalChargesHelp")}
+        </div>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          {additionalChargeItems.length ? additionalChargeItems.map((item, index) => {
+            const lineTotal = Number(additionalChargeLineTotalsById.get(String(item?.id)) || 0);
+            return (
+              <div
+                key={String(item?.id || `charge_${index}`)}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 14,
+                  padding: "12px 12px 10px",
+                  background: "rgba(255,255,255,0.02)",
+                  display: "grid",
+                  gap: 10,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start" }}>
+                  <div style={{ flex: "2 1 220px", minWidth: 180 }}>
+                    <div style={styles.label}>{t("chargeDesc")}</div>
+                    <input
+                      className="pe-input"
+                      value={String(item?.desc || "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "desc", e.target.value)}
+                      placeholder="Emergency Sunday Call"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 92px", minWidth: 88 }}>
+                    <div style={styles.label}>{t("chargeQty")}</div>
+                    <input
+                      className="pe-input"
+                      inputMode="decimal"
+                      value={String(item?.qty ?? "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "qty", e.target.value)}
+                      onBlur={(e) => updateAdditionalChargeItem(index, "qty", normalizeHoursInput(e.target.value))}
+                      placeholder="1"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 128px", minWidth: 116 }}>
+                    <div style={styles.label}>{t("chargeUnitPrice")}</div>
+                    <input
+                      className="pe-input"
+                      inputMode="decimal"
+                      value={String(item?.priceEach ?? "")}
+                      onChange={(e) => updateAdditionalChargeItem(index, "priceEach", e.target.value)}
+                      onBlur={(e) => updateAdditionalChargeItem(index, "priceEach", normalizeMoneyInput(e.target.value))}
+                      placeholder="350"
+                    />
+                  </div>
+                  <div style={{ flex: "0 1 132px", minWidth: 120 }}>
+                    <div style={styles.label}>{t("chargeLineTotal")}</div>
+                    <div className="pe-input" style={{ display: "flex", alignItems: "center", minHeight: 42, fontWeight: 700 }}>
+                      {money.format(lineTotal)}
+                    </div>
+                  </div>
+                  <div style={{ flex: "0 0 auto", paddingTop: 24 }}>
+                    <button
+                      className="pe-btn pe-btn-ghost"
+                      type="button"
+                      style={styles.sectionFooterBtn}
+                      onClick={() => removeAdditionalChargeItem(index)}
+                      aria-label={`Remove ${t("additionalCharges")} line ${index + 1}`}
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="pe-muted" style={{ fontSize: 13 }}>
+              {lang === "es"
+                ? "Todavia no hay cargos adicionales. Agrega una linea para recargos, permisos, renta de equipo o servicio fuera de horario."
+                : "No additional charges yet. Add a line for rush work, permits, rentals, trip fees, or after-hours service."}
+            </div>
+          )}
+        </div>
+        <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
+          <div className="pe-muted">{t("additionalChargesSubtotal")}</div>
+          <div className="pe-value">{money.format(additionalChargesSubtotal)}</div>
+        </div>
+        <div style={styles.sectionFooterActions}>
+          <button
+            className="pe-btn pe-btn-ghost"
+            type="button"
+            style={styles.sectionFooterBtn}
+            onClick={addAdditionalChargeItem}
+          >
+            {t("addChargeItem")}
+          </button>
+        </div>
+      </section>
+
       {/* TOTAL */}
       <section className="pe-section">
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
@@ -3223,18 +7731,29 @@ export default function EstimateForm(props) {
             {money.format(totalRevenue)}
           </div>
         </div>
+        <div style={{ ...styles.scopeSubtitle, marginTop: 6 }}>
+          {lang === "es"
+            ? "Mano de obra, condiciones del trabajo y materiales — revisa antes de agregar términos o exportar."
+            : "Labor, job conditions, and materials — review before adding terms or exporting."}
+        </div>
       </section>
 
-      {/* Additional Notes */}
+      {/* Terms & Notes */}
       <section className="pe-card" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Additional Notes" styles={styles} />
-        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Terms & Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <div style={styles.scopeSubtitle}>
+          {lang === "es"
+            ? "Exclusiones, condiciones de pago y términos de cronograma — aparecen al final de tu estimado. Usa los accesos rápidos o escribe los tuyos."
+            : "Exclusions, payment terms, and schedule conditions — these print at the bottom of your estimate. Use the quick-inserts or write your own."}
+        </div>
+        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
               className="pe-btn pe-btn-ghost"
               type="button"
+              style={styles.additionalNotesSnippetBtn}
               onClick={() => {
                 const existing = state.additionalNotes || "";
                 const sep = existing.trim().length > 0 ? "\n\n" : "";
@@ -3247,6 +7766,7 @@ export default function EstimateForm(props) {
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
+            style={styles.additionalNotesClearBtn}
             onClick={() => patch("additionalNotes", "")}
           >
             Clear Notes
@@ -3260,16 +7780,17 @@ export default function EstimateForm(props) {
             patch("additionalNotes", e.target.value);
             autoResizeScopeNotes(e.target);
           }}
-          placeholder="Additional notes, terms, exclusions…"
+          placeholder="Payment terms, exclusions, schedule conditions, warranty — anything the client needs to know about how this job runs…"
           style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
       </section>
+      <CustomerPortalSharePanel documentType={uiDocType} />
 
       </div>
         </div>
       </div>
 
-      {savePrompt ? (
+      {savePrompt && !builderOverlayOpen ? (
         <div style={{ ...styles.saveToastWrap, bottom: saveToastBottom }}>
           <div role="status" aria-live="polite" style={{ ...styles.saveToast, ...saveToastToneStyle }}>
             {String(savePrompt?.message || "Saved")}
@@ -3277,7 +7798,124 @@ export default function EstimateForm(props) {
         </div>
       ) : null}
 
-      {actionBarNode}
+      {!builderOverlayOpen ? actionBarNode : null}
+
+      {scopeAssistState.phase !== "idle" && scopeAssistConfig && (
+        <SectionAssistPanel
+          config={scopeAssistConfig}
+          assistState={scopeAssistPanelState}
+          onSubmit={submitScopeAssist}
+          onAccept={(writes) => {
+            const assistCaptureMeta = scopeAssistLatestCaptureMetaRef.current;
+            captureAssistAccept({
+              sectionKey: "scope",
+              docType: uiDocType,
+              mode: isEditMode ? "edit" : "create",
+              ...(assistCaptureMeta ? {
+                assistTraceId: assistCaptureMeta.assistTraceId,
+                assistSequenceIndex: assistCaptureMeta.assistSequenceIndex,
+                assistSectionKey: assistCaptureMeta.assistSectionKey,
+                assistDocType: assistCaptureMeta.assistDocType,
+                assistMode: assistCaptureMeta.assistMode,
+              } : {}),
+              acceptedWriteKeys: Object.keys(writes || {}),
+              scopeTextLength: String(writes?.scopeNotes || "").length,
+            });
+            maybeAutoPopulateProjectName({
+              scopeNotesValue: String(writes?.scopeNotes || ""),
+              sourceInput: String(scopeAssistState?.input || homeLaunchPrompt || ""),
+            });
+            patch("scopeNotes", writes.scopeNotes);
+            closeScopeAssist();
+          }}
+          onClose={closeScopeAssist}
+        />
+      )}
+
+      {laborAssist.assistState.phase !== "idle" && laborAssistConfig && (!laborAssist.assistState.fromScopeDirect || laborAssist.assistState.phase === "review") && (
+        <SectionAssistPanel
+          config={laborAssistConfig}
+          assistState={laborAssist.assistState}
+          onSubmit={laborAssist.submit}
+          onAccept={(writes, action) => {
+            captureAssistAccept({
+              sectionKey: "labor",
+              docType: uiDocType,
+              mode: isEditMode ? "edit" : "create",
+              acceptedWriteKeys: Object.keys(writes || {}),
+              laborLineCount: Array.isArray(writes?.laborLines) ? writes.laborLines.length : 0,
+              actionType: String(action?.type || "").trim(),
+            });
+            applyAcceptedLaborAssist(writes, action);
+          }}
+          onClose={laborAssist.close}
+        />
+      )}
+
+      {materialsAssist.assistState.phase !== "idle" && materialsAssistConfig && (!materialsAssist.assistState.fromScopeDirect || materialsAssist.assistState.phase === "review") && (
+        <SectionAssistPanel
+          config={materialsAssistConfig}
+          assistState={materialsAssist.assistState}
+          onSubmit={materialsAssist.submit}
+          onAccept={(writes, action) => {
+            if (action?.type === "switchMode") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "switchMode",
+                nextMode: action.mode === "itemized" ? "itemized" : "blanket",
+                materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+              });
+              pendingMaterialsModeSwitchRequestRef.current = {
+                mode: action.mode === "itemized" ? "itemized" : "blanket",
+                input: String(materialsAssist.assistState?.input || ""),
+              };
+              setMaterialsMode(action.mode);
+              if (action.mode === "itemized") setMaterialsOpen(true);
+              materialsAssist.close();
+              return;
+            }
+
+            if (writes?.mode === "blanket" && action?.type === "applyBlanketSuggestion") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "applyBlanketSuggestion",
+                nextMode: "blanket",
+                materialItemCount: Array.isArray(state?.materials?.items) ? state.materials.items.length : 0,
+              });
+              setMaterialsMode("blanket");
+              setMaterialsCost(normalizeMoneyInput(String(writes?.blanketSuggestion?.suggestedAmount || "")));
+              materialsAssist.close();
+              return;
+            }
+
+            if (writes?.mode === "itemized" && action?.type === "applyItemizedSuggestion") {
+              captureAssistAccept({
+                sectionKey: "materials",
+                docType: uiDocType,
+                mode: isEditMode ? "edit" : "create",
+                acceptedWriteKeys: Object.keys(writes || {}),
+                actionType: "applyItemizedSuggestion",
+                nextMode: "itemized",
+                materialItemCount: Array.isArray(writes?.itemizedSuggestion?.proposedLines)
+                  ? writes.itemizedSuggestion.proposedLines.length
+                  : 0,
+              });
+              setMaterialsMode("itemized");
+              setMaterialsOpen(true);
+              applySuggestedMaterialLines(writes?.itemizedSuggestion?.proposedLines || []);
+              materialsAssist.close();
+            }
+          }}
+          onClose={materialsAssist.close}
+        />
+      )}
+
 
       <PdfPromptModal
         open={pdfPromptOpen}
@@ -3309,30 +7947,49 @@ export default function EstimateForm(props) {
 }
 
 const styles = {
-  builderModeSegmented: {
+  builderHeaderActionGroup: {
     display: "inline-flex",
     alignItems: "center",
-    gap: 6,
-    padding: 3,
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.04)",
-    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.06)",
-    flexShrink: 0,
+    gap: 10,
+    marginLeft: "auto",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
   },
-  builderModeSegment: {
-    minWidth: 118,
-    borderRadius: 999,
-    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+
+  seedBanner: {
+    margin: "0 0 14px",
+    padding: "14px 16px 12px",
+    borderRadius: 12,
+    background: "rgba(99,179,237,0.06)",
+    border: "1px solid rgba(99,179,237,0.16)",
+    display: "grid",
+    gap: 3,
   },
-  builderModeSegmentActive: {
-    minWidth: 118,
-    borderRadius: 999,
-    background: "linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.05))",
-    borderColor: "rgba(34,197,94,0.34)",
-    boxShadow: "0 0 0 1px rgba(34,197,94,0.16), 0 6px 16px rgba(0,0,0,0.25)",
-    transform: "translateZ(0)",
-    transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease",
+  seedBannerLabel: {
+    fontSize: 10.5,
+    fontWeight: 700,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "rgba(99,179,237,0.58)",
+    marginBottom: 2,
+  },
+  seedBannerName: {
+    fontSize: 15,
+    fontWeight: 800,
+    letterSpacing: 0.2,
+    color: "rgba(230,241,248,0.96)",
+    lineHeight: 1.3,
+  },
+  seedBannerCustomer: {
+    fontSize: 12.5,
+    fontWeight: 500,
+    color: "rgba(99,179,237,0.78)",
+    lineHeight: 1.3,
+  },
+  seedBannerAddr: {
+    fontSize: 11.5,
+    color: "rgba(230,241,248,0.38)",
+    lineHeight: 1.3,
   },
   editHeaderStack: {
     minWidth: 0,
@@ -3381,6 +8038,7 @@ const styles = {
   jobInfoAddressWrap: { display: "grid", gap: 10, marginTop: 10 },
   sectionHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 },
   sectionHeaderControls: { display: "inline-flex", alignItems: "center", gap: 8, marginLeft: "auto" },
+  aiAssistBtn: { fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", color: "rgba(99,179,237,0.85)", border: "1px solid rgba(99,179,237,0.28)", borderRadius: 7, padding: "4px 10px", background: "rgba(99,179,237,0.07)" },
   sectionDividerWrap: { maxWidth: 720, margin: "0 auto" },
   fieldStack: { display: "grid", gap: 4 },
   cardShell: {
@@ -3480,6 +8138,19 @@ const styles = {
     "--collapse-max": "180px",
     willChange: "max-height, opacity, transform",
   },
+  additionalNotesSnippetBtn: {
+    fontWeight: 700,
+    background: "rgba(99,179,237,0.08)",
+    borderColor: "rgba(99,179,237,0.18)",
+    boxShadow: "0 8px 18px rgba(0,0,0,0.1)",
+  },
+  additionalNotesClearBtn: {
+    fontWeight: 700,
+    color: "rgba(248,113,113,0.96)",
+    background: "rgba(248,113,113,0.06)",
+    borderColor: "rgba(248,113,113,0.18)",
+    opacity: 0.94,
+  },
   laborLineFieldStack: { display: "grid", gap: 4 },
   laborLineGrid: { gap: 10 },
   laborLineOptional: { marginLeft: 6, fontSize: "inherit", fontWeight: "inherit", lineHeight: "inherit", letterSpacing: "normal", textTransform: "none", opacity: 0.74 },
@@ -3530,16 +8201,36 @@ const styles = {
   },
   laborBaseRow: { marginTop: 10 },
   laborBottomActions: {
-    position: "sticky",
-    bottom: 0,
     display: "flex",
     justifyContent: "flex-end",
     gap: 8,
     marginTop: 10,
     paddingTop: 10,
-    background: "linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,0.46) 45%, rgba(11,15,20,0.72) 100%)",
-    backdropFilter: "blur(4px)",
-    WebkitBackdropFilter: "blur(4px)",
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  sectionFooterActions: {
+    position: "static",
+    display: "flex",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+  },
+  sectionFooterBtn: { padding: "8px 12px", minHeight: 36, borderRadius: 12 },
+  sectionFooterPrimaryBtn: {
+    fontWeight: 800,
+    borderColor: "rgba(99,179,237,0.34)",
+    background: "linear-gradient(180deg, rgba(99,179,237,0.16), rgba(99,179,237,0.08))",
+    boxShadow: "0 10px 22px rgba(0,0,0,0.14)",
+  },
+  sectionFooterSecondaryBtn: {
+    opacity: 0.92,
+    background: "rgba(255,255,255,0.03)",
+    borderColor: "rgba(255,255,255,0.1)",
   },
   laborHeaderToggleBtn: { width: 36, minWidth: 36, height: 36, padding: 0, display: "grid", placeItems: "center", lineHeight: 1, fontSize: 14 },
   laborCornerWrap: { display: "flex", justifyContent: "flex-end", marginTop: 8 },
@@ -3609,7 +8300,8 @@ const styles = {
   grid3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 10 },
   label: { display: "block", fontSize: 12.5, fontWeight: 800, letterSpacing: "0.2px", textTransform: "none", opacity: 0.82, marginBottom: 6 },
   small: { fontSize: 12, fontWeight: 800, letterSpacing: "0.6px", opacity: 0.78, textTransform: "uppercase" },
-  scopeHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 },
+  scopeHeaderRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 8 },
+  scopeSubtitle: { fontSize: 11.5, fontWeight: 500, color: "rgba(230,241,248,0.38)", lineHeight: 1.35, maxWidth: 320, marginTop: 4 },
   scopeClearBtn: { padding: "8px 12px", minHeight: 36 },
   scopeCollapseRow: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 },
   scopeCollapseBtn: { padding: "6px 10px", minHeight: 32 },
@@ -3753,8 +8445,9 @@ const styles = {
     borderRadius: 18,
     padding: 10,
   },
-  estimatorActionButtons: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
-  estimatorActionButtonsEdit: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 },
+  estimatorActionButtons: { display: "flex", flexDirection: "column", gap: 8 },
+  estimatorActionButtonsEdit: { display: "flex", flexDirection: "column", gap: 8 },
+  estimatorActionSecondary: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
   estimatorActionButton: { width: "100%" },
   estimatorActionButtonCompact: {
     fontSize: 13,

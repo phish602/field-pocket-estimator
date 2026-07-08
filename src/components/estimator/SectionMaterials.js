@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import InlineCustomNumberField from "./InlineCustomNumberField";
 
 const BLANKET_DESCRIPTION_MIN_HEIGHT = 100;
@@ -111,10 +111,12 @@ export default function SectionMaterials(props) {
     t,
     lang,
     styles,
+    bottomActionsStyle,
     headerIcon,
     money,
     collapseMs,
     triggerHaptic,
+    onAiAssistOpen,
     materialsMode,
     setMaterialsMode,
     materialsOpen,
@@ -149,16 +151,27 @@ export default function SectionMaterials(props) {
   const noteInputRefs = useRef({});
   const [noteOpenById, setNoteOpenById] = useState({});
   const blanketDescriptionValue = String(materialsBlanketDescription || "");
+  const materialsBottomActionsStyle = bottomActionsStyle || styles.sectionFooterActions;
+  const materialNoteSeed = useMemo(() => {
+    const entries = (Array.isArray(materialItems) ? materialItems : []).map((item, index) => ({
+      id: String(item?.id ?? index),
+      hasNote: !!String(item?.note || "").trim(),
+    }));
+    return {
+      entries,
+      signature: entries.map((entry) => `${entry.id}:${entry.hasNote ? "1" : "0"}`).join("|"),
+    };
+  }, [materialItems]);
 
   useEffect(() => {
     setNoteOpenById((prev) => {
       const next = {};
-      for (let i = 0; i < materialItems.length; i += 1) {
-        const item = materialItems[i];
-        const id = String(item?.id ?? i);
+      for (let i = 0; i < materialNoteSeed.entries.length; i += 1) {
+        const entry = materialNoteSeed.entries[i];
+        const id = entry.id;
         next[id] = Object.prototype.hasOwnProperty.call(prev, id)
           ? prev[id]
-          : !!String(item?.note || "").trim();
+          : entry.hasNote;
       }
 
       const prevKeys = Object.keys(prev);
@@ -169,7 +182,7 @@ export default function SectionMaterials(props) {
       }
       return prev;
     });
-  }, [materialItems]);
+  }, [materialNoteSeed.signature]);
 
   function openMaterialNote(materialNoteId) {
     setNoteOpenById((prev) => ({ ...prev, [materialNoteId]: true }));
@@ -213,23 +226,37 @@ export default function SectionMaterials(props) {
             <div style={styles.sectionAccentLine} />
           </div>
         </div>
-        {materialsMode === "itemized" && !materialsOpen && (
-          <div className="pe-muted" style={styles.laborCollapsedMeta}>
-            {itemizedCollapsedSummary}
-          </div>
-        )}
-        {materialsMode === "itemized" && !materialsOpen && (
-          <button
-            type="button"
-            className="pe-btn pe-btn-ghost"
-            onClick={() => setMaterialsOpen(true)}
-            title={lang === "es" ? "Expandir" : "Expand"}
-            style={{ ...styles.scopeCollapseBtn, marginLeft: "auto" }}
-          >
-            {lang === "es" ? "Expandir ▾" : "Expand ▾"}
-          </button>
-        )}
+        <div style={styles.sectionHeaderControls}>
+          {typeof onAiAssistOpen === "function" ? (
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              style={styles.aiAssistBtn}
+              onClick={onAiAssistOpen}
+              title="AI Assist — suggest materials for the current mode"
+            >
+              ✦ AI Assist
+            </button>
+          ) : null}
+          {materialsMode === "itemized" && !materialsOpen && (
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost"
+              onClick={() => setMaterialsOpen(true)}
+              title={lang === "es" ? "Expandir" : "Expand"}
+              style={styles.scopeCollapseBtn}
+            >
+              {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {materialsMode === "itemized" && !materialsOpen && (
+        <div className="pe-muted" style={{ ...styles.laborCollapsedMeta, marginBottom: 8 }}>
+          {itemizedCollapsedSummary}
+        </div>
+      )}
 
       <div style={{ marginTop: 0, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -290,6 +317,11 @@ export default function SectionMaterials(props) {
 
       {materialsMode === "blanket" && (
         <>
+          <div className="pe-muted" style={{ marginTop: 10 }}>
+            {lang === "es"
+              ? "Total global — ingresa un monto para todos los materiales del trabajo. Costo + margen = monto facturado."
+              : "One total covering all materials for this job — cost + markup = billed amount on the document."}
+          </div>
           <div
             className="pe-grid"
             style={{
@@ -564,17 +596,17 @@ export default function SectionMaterials(props) {
             <div className="pe-muted">{t("materialsItemizedTotal")}</div>
             <div className={`pe-value ${animateMaterialsTotal ? "value-pulse" : ""}`}>{money.format(itemizedMaterialsTotal)}</div>
           </div>
-          <div style={styles.laborBottomActions}>
+          <div style={materialsBottomActionsStyle}>
             <button
               type="button"
               className="pe-btn pe-btn-ghost"
               onClick={() => setMaterialsOpen(false)}
               title={lang === "es" ? "Colapsar" : "Collapse"}
-              style={{ padding: "6px 10px" }}
+              style={styles.sectionFooterBtn}
             >
               {lang === "es" ? "Colapsar" : "Collapse"} ▴
             </button>
-            <button className="pe-btn pe-btn-micro" type="button" onClick={addMaterialItem}>
+            <button className="pe-btn pe-btn-micro" type="button" onClick={(e) => addMaterialItem?.(e)} style={styles.sectionFooterBtn}>
               {t("addMaterialItem")}
             </button>
           </div>

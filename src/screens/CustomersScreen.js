@@ -5,6 +5,10 @@ import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
+import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
+import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -14,6 +18,15 @@ const CUSTOMER_EDIT_TARGET_KEY = STORAGE_KEYS.CUSTOMER_EDIT_TARGET;
 
 // ===== Customer KPI (live-compute) =====
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const INVOICES_KEY = STORAGE_KEYS.INVOICES;
+
+const CUST_PROJECT_STATUS_COLORS = {
+  draft: { color: "rgba(230,241,248,0.5)" },
+  estimating: { color: "rgba(245,158,11,0.84)" },
+  active: { color: "rgba(72,187,120,0.82)" },
+  completed: { color: "rgba(99,179,237,0.84)" },
+  archived: { color: "rgba(230,241,248,0.35)" },
+};
 
 function toNum(v) {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.-]/g, ""));
@@ -36,9 +49,25 @@ function moneyUSD(v) {
 
 function readSavedDocs() {
   try {
-    const raw = localStorage.getItem(ESTIMATES_KEY);
-    const arr = raw ? safeParse(raw, []) : [];
-    return (Array.isArray(arr) ? arr : []).filter(Boolean);
+    const estimateRaw = localStorage.getItem(ESTIMATES_KEY);
+    const estimates = estimateRaw ? safeParse(estimateRaw, []) : [];
+    const invoices = readStoredInvoices();
+    const estimateRecords = Array.isArray(estimates)
+      ? estimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice")
+      : [];
+    const merged = [
+      ...estimateRecords,
+      ...(Array.isArray(invoices) ? invoices : []),
+    ].filter(Boolean);
+    const deduped = [];
+    const seen = new Set();
+    merged.forEach((entry) => {
+      const key = String(entry?.id || entry?.invoiceNumber || entry?.estimateNumber || "").trim();
+      if (key && seen.has(key)) return;
+      if (key) seen.add(key);
+      deduped.push(entry);
+    });
+    return deduped;
   } catch {
     return [];
   }
@@ -131,6 +160,12 @@ function persistCustomers(list) {
   const safe = Array.isArray(list) ? list : [];
   try {
     localStorage.setItem(CUSTOMERS_KEY, JSON.stringify(safe));
+    markCloudBackupDirty({
+      reason: "customer_data_saved",
+      domains: ["customers"],
+      severity: "normal",
+      source: "persistCustomers",
+    });
   } catch {}
 }
 
@@ -140,6 +175,69 @@ function buildId() {
 
 function norm(s) {
   return String(s || "").trim().toLowerCase();
+}
+
+function normalizeCustomerLookupName(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeBuilderIntent(value) {
+  return String(value || "").trim().toLowerCase() === "invoice" ? "invoice" : "estimate";
+}
+
+function collectCustomerLookupNames(customer) {
+  const rawNames = [
+    customer?.name,
+    customer?.companyName,
+    customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
+function collectDocCustomerLookupNames(doc) {
+  const rawNames = [
+    doc?.customerName,
+    doc?.customer?.name,
+    doc?.customer?.companyName,
+    doc?.customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
+function collectProjectLookupNames(project, view) {
+  const rawNames = [
+    project?.customerName,
+    project?.customer?.name,
+    project?.customer?.companyName,
+    project?.customer?.fullName,
+    view?.customer?.name,
+    view?.customer?.companyName,
+    view?.customer?.fullName,
+  ];
+  return [...new Set(rawNames.map(normalizeCustomerLookupName).filter(Boolean))];
+}
+
+function findLinkedProjectsForCustomer(customer, allProjects = [], allCustomers = [], allEstimates = [], allInvoices = []) {
+  const customerId = String(customer?.id || "").trim();
+  const projectList = Array.isArray(allProjects) ? allProjects.filter(Boolean) : [];
+  const exactMatches = customerId
+    ? projectList.filter((project) => String(project?.customerId || project?.customer?.id || "").trim() === customerId)
+    : [];
+  if (exactMatches.length > 0) return exactMatches;
+
+  const targetNames = new Set(collectCustomerLookupNames(customer));
+  if (!targetNames.size) return [];
+
+  return projectList.filter((project) => {
+    const view = buildNormalizedProjectView({
+      project,
+      projects: projectList,
+      customers: Array.isArray(allCustomers) ? allCustomers : [],
+      estimates: Array.isArray(allEstimates) ? allEstimates : [],
+      invoices: Array.isArray(allInvoices) ? allInvoices : [],
+    });
+    return collectProjectLookupNames(project, view).some((name) => targetNames.has(name));
+  });
 }
 
 function joinAddr(a) {
@@ -296,10 +394,10 @@ const stickyListHeaderStyle = {
   zIndex: 12,
   paddingTop: 6,
   paddingBottom: 8,
-  background: "linear-gradient(180deg, rgba(8,18,28,0.9), rgba(8,18,28,0.62))",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  borderBottom: "1px solid rgba(255,255,255,0.08)",
+  background: "transparent",
+  backdropFilter: "none",
+  WebkitBackdropFilter: "none",
+  borderBottom: "0",
 };
 
 const NET_TERMS_OPTIONS = [
@@ -405,6 +503,37 @@ function mainAddressText(c) {
   return joinAddr(a);
 }
 
+function deriveCustomerNextAction(account) {
+  if ((account?.overdueInvoiceCount || 0) > 0) {
+    return {
+      key: "resolve-overdue",
+      tone: "danger",
+    };
+  }
+  if ((account?.balanceDue || 0) > 0) {
+    return {
+      key: "collect-balance",
+      tone: "warning",
+    };
+  }
+  if ((account?.activeProjectCount || 0) > 0) {
+    return {
+      key: "review-active-work",
+      tone: "info",
+    };
+  }
+  if ((account?.openDocumentCount || 0) > 0) {
+    return {
+      key: "review-open-docs",
+      tone: "success",
+    };
+  }
+  return {
+    key: "update-account",
+    tone: "neutral",
+  };
+}
+
 export default function CustomersScreen({
   lang = "en",
   t = (k) => k,
@@ -413,8 +542,12 @@ export default function CustomersScreen({
   selectedCustomerId,
   setSelectedCustomerId,
   onDone,
+  onOpenProjectDetail,
 }) {
   const label = (en, es) => labelOf(lang, en, es);
+
+  const [projectChooser, setProjectChooser] = useState(null);
+  // projectChooser: null | { customerId, projects: [] } | { customerId, empty: true }
 
   const [settingsSnapshot, setSettingsSnapshot] = useState(() => loadSettings());
   const customerSettings = settingsSnapshot?.customer || DEFAULT_SETTINGS.customer;
@@ -430,7 +563,9 @@ export default function CustomersScreen({
   const [draft, setDraft] = useState(() => emptyDraft(defaultCustomerType));
   const [returnToEstimator, setReturnToEstimator] = useState(false);
   const [autoUseOnSave, setAutoUseOnSave] = useState(false);
+  const [builderReturnIntent, setBuilderReturnIntent] = useState("estimate");
   const [missingRequired, setMissingRequired] = useState({});
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   const phoneFieldMissing = !!missingRequired.phone;
   const emailFieldMissing = !!missingRequired.email;
@@ -444,24 +579,84 @@ export default function CustomersScreen({
       if (e?.key && e.key !== STORAGE_KEYS.SETTINGS) return;
       setSettingsSnapshot(loadSettings());
     };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SETTINGS) {
+        setSettingsSnapshot(loadSettings());
+      }
+    };
     window.addEventListener("estipaid:settings-changed", refresh);
     window.addEventListener("storage", refresh);
+    window.addEventListener("pe-localstorage", onLocalStorage);
     return () => {
       window.removeEventListener("estipaid:settings-changed", refresh);
       window.removeEventListener("storage", refresh);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
     };
   }, []);
 
   useEffect(() => {
+    const refresh = () => {
+      if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
+      setRefreshSeq((value) => value + 1);
+    };
     const onStorage = (e) => {
       if (!e) return;
-      if (e.key === CUSTOMERS_KEY) {
-        if (!Array.isArray(customers)) setLocalCustomers(readCustomers());
-      }
+      if (e.key === CUSTOMERS_KEY) refresh();
+    };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === CUSTOMERS_KEY) refresh();
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("estipaid:customers-changed", refresh);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("estipaid:customers-changed", refresh);
+    };
   }, [customers]);
+
+  useEffect(() => {
+    const relevantStorageKeys = new Set([
+      STORAGE_KEYS.PROJECTS,
+      STORAGE_KEYS.ESTIMATES,
+      STORAGE_KEYS.INVOICES,
+    ]);
+    const refresh = () => setRefreshSeq((value) => value + 1);
+    const onStorage = (event) => {
+      if (!event || event.key == null || relevantStorageKeys.has(event.key)) {
+        refresh();
+      }
+    };
+    const onLocalStorage = (event) => {
+      if (
+        !event?.detail?.key
+        || relevantStorageKeys.has(event.detail.key)
+      ) {
+        refresh();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const appEvents = [
+      "estipaid:estimates-changed",
+      "estipaid:invoices-changed",
+    ];
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    window.addEventListener("focus", refresh);
+    appEvents.forEach((name) => window.addEventListener(name, refresh));
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+      window.removeEventListener("focus", refresh);
+      appEvents.forEach((name) => window.removeEventListener(name, refresh));
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowListSkeleton(false), 260);
@@ -482,12 +677,14 @@ export default function CustomersScreen({
     try {
       const rawEditTarget = localStorage.getItem(CUSTOMER_EDIT_TARGET_KEY);
       if (rawEditTarget) {
-        localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
         const payload = JSON.parse(rawEditTarget);
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id || String(x?.customerId) === id);
-          if (c) { startEdit(c, { returnToEstimator: true, autoUseOnSave: true }); }
+          if (c) {
+            startEdit(c, { returnToEstimator: true, autoUseOnSave: true, builderIntent: payload?.builderIntent || payload?.intent });
+            localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY);
+          }
         }
       }
     } catch {}
@@ -500,9 +697,11 @@ export default function CustomersScreen({
         const id = String(payload?.id || "");
         if (id) {
           const c = (list || []).find((x) => String(x?.id) === id);
-          if (c) startEdit(c);
+          if (c) {
+            startEdit(c);
+            localStorage.removeItem(PENDING_CUSTOMER_EDIT_KEY);
+          }
         }
-        localStorage.removeItem(PENDING_CUSTOMER_EDIT_KEY);
       }
     } catch {}
 
@@ -516,6 +715,7 @@ export default function CustomersScreen({
           if (fromEstimator) {
             setReturnToEstimator(true);
             setAutoUseOnSave(true);
+            setBuilderReturnIntent(normalizeBuilderIntent(payload2?.builderIntent || payload2?.intent));
           }
         } catch {}
         setDraft(emptyDraft(defaultCustomerType));
@@ -529,8 +729,18 @@ export default function CustomersScreen({
   const customerKpis = useMemo(() => {
     const docs = readSavedDocs();
     const byId = {};
+    const customerList = Array.isArray(list) ? list.filter(Boolean) : [];
+    const customerById = new Map(customerList.map((customer) => [String(customer?.id || "").trim(), customer]));
+    const customerNameEntries = customerList.flatMap((customer) => (
+      collectCustomerLookupNames(customer).map((name) => [name, customer])
+    ));
     for (const d of docs) {
-      const cid = String(d?.customerId || "");
+      const docCustomerId = String(d?.customerId || d?.customer?.id || "").trim();
+      const matchedCustomer = (docCustomerId ? customerById.get(docCustomerId) : null)
+        || collectDocCustomerLookupNames(d).reduce((found, name) => (
+          found || customerNameEntries.find(([customerName]) => customerName === name)?.[1] || null
+        ), null);
+      const cid = String(matchedCustomer?.id || "").trim();
       if (!cid) continue;
       const b = calcBreakdown(d || {});
       const isInvoice = String(d?.docType || "").toLowerCase() === "invoice";
@@ -541,14 +751,35 @@ export default function CustomersScreen({
           profit: 0,
           estimateCount: 0,
           invoiceCount: 0,
+          openInvoiceCount: 0,
+          overdueInvoiceCount: 0,
+          balanceDue: 0,
+          amountPaid: 0,
           lastDate: "",
         };
       }
-      byId[cid].revenue += toNum(b.revenue);
+      const fallbackRevenue = toNum(d?.total || d?.invoiceTotal || d?.approvedTotal || d?.estimateTotal);
+      byId[cid].revenue += toNum(b.revenue) > 0 ? toNum(b.revenue) : fallbackRevenue;
       byId[cid].internal += toNum(b.internal);
       byId[cid].profit += toNum(b.profit);
-      if (isInvoice) byId[cid].invoiceCount += 1;
-      else byId[cid].estimateCount += 1;
+      if (isInvoice) {
+        const balanceRemaining = Math.max(
+          0,
+          toNum(
+            d?.balanceRemaining != null
+              ? d.balanceRemaining
+              : (toNum(d?.invoiceTotal || d?.total) - toNum(d?.amountPaid))
+          )
+        );
+        const paidAmount = Math.max(0, toNum(d?.amountPaid));
+        byId[cid].invoiceCount += 1;
+        byId[cid].balanceDue += balanceRemaining;
+        byId[cid].amountPaid += paidAmount;
+        if (balanceRemaining > 0) byId[cid].openInvoiceCount += 1;
+        if (deriveInvoiceStatus(d) === INVOICE_STATUSES.OVERDUE) byId[cid].overdueInvoiceCount += 1;
+      } else {
+        byId[cid].estimateCount += 1;
+      }
 
       const dt = String(d?.date || "").trim();
       if (dt) {
@@ -562,8 +793,65 @@ export default function CustomersScreen({
       byId[cid].margin = safeDiv(prof, rev);
     }
     return byId;
-  }, [customers, localCustomers, q, mode]);
+  }, [customers, localCustomers, q, mode, refreshSeq]);
 
+  const customerProjectMeta = useMemo(() => {
+    const allProjects = readStoredProjects();
+    let allEstimates = [];
+    let allInvoices = [];
+    try {
+      const eRaw = localStorage.getItem(ESTIMATES_KEY);
+      allEstimates = eRaw ? safeParse(eRaw, []) : [];
+      if (!Array.isArray(allEstimates)) allEstimates = [];
+      allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
+    } catch {}
+    try {
+      allInvoices = readStoredInvoices();
+    } catch {}
+    const byId = {};
+    for (const customer of list || []) {
+      const cid = String(customer?.id || "");
+      if (!cid) continue;
+      const linkedProjects = findLinkedProjectsForCustomer(customer, allProjects, list, allEstimates, allInvoices);
+      if (!linkedProjects.length) continue;
+      if (!byId[cid]) {
+        byId[cid] = {
+          projectCount: 0,
+          activeProjectCount: 0,
+          estimatingProjectCount: 0,
+          latestProjectName: "",
+          latestProjectDisplayStatus: null,
+          _archName: "",
+          _archStatus: null,
+        };
+      }
+      byId[cid].projectCount = linkedProjects.length;
+      for (const p of linkedProjects) {
+        const pName = String(p?.projectName || "").trim();
+        if (!pName) continue;
+        const view = buildNormalizedProjectView({ project: p, projects: allProjects, estimates: allEstimates, invoices: allInvoices });
+        const ds = deriveProjectDisplayStatus(view);
+        if (ds.key === "active") byId[cid].activeProjectCount += 1;
+        if (ds.key === "estimating") byId[cid].estimatingProjectCount += 1;
+        if (ds.key === "archived") {
+          if (!byId[cid]._archName) { byId[cid]._archName = pName; byId[cid]._archStatus = ds; }
+        } else {
+          if (!byId[cid].latestProjectName) { byId[cid].latestProjectName = pName; byId[cid].latestProjectDisplayStatus = ds; }
+        }
+      }
+    }
+    // Fall back to archived context if customer has only archived projects
+    for (const cid of Object.keys(byId)) {
+      const entry = byId[cid];
+      if (!entry.latestProjectName && entry._archName) {
+        entry.latestProjectName = entry._archName;
+        entry.latestProjectDisplayStatus = entry._archStatus;
+      }
+      delete entry._archName;
+      delete entry._archStatus;
+    }
+    return byId;
+  }, [mode, list, refreshSeq]);
 
   const filtered = useMemo(() => {
   const qq = norm(q);
@@ -604,6 +892,47 @@ export default function CustomersScreen({
   });
 }, [list, q]);
 
+  const customerPortfolioSummary = useMemo(() => {
+    const visible = filtered || [];
+    const totalCustomers = visible.length;
+    const activeAccounts = visible.filter((customer) => {
+      const cid = String(customer?.id || "");
+      return toNum(customerProjectMeta?.[cid]?.activeProjectCount || 0) > 0;
+    }).length;
+    const balanceDue = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerKpis?.[cid]?.balanceDue || 0);
+    }, 0);
+    const linkedProjects = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerProjectMeta?.[cid]?.projectCount || 0);
+    }, 0);
+    const openDocs = visible.reduce((sum, customer) => {
+      const cid = String(customer?.id || "");
+      return sum + toNum(customerKpis?.[cid]?.estimateCount || 0) + toNum(customerKpis?.[cid]?.openInvoiceCount || 0);
+    }, 0);
+    const overdueAccounts = visible.filter((customer) => {
+      const cid = String(customer?.id || "");
+      return toNum(customerKpis?.[cid]?.overdueInvoiceCount || 0) > 0;
+    }).length;
+    const topAttentionCustomer = visible
+      .slice()
+      .sort((left, right) => {
+        const leftId = String(left?.id || "");
+        const rightId = String(right?.id || "");
+        return toNum(customerKpis?.[rightId]?.balanceDue || 0) - toNum(customerKpis?.[leftId]?.balanceDue || 0);
+      })[0] || null;
+    return {
+      totalCustomers,
+      activeAccounts,
+      balanceDue,
+      linkedProjects,
+      openDocs,
+      overdueAccounts,
+      topAttentionCustomer,
+    };
+  }, [filtered, customerProjectMeta, customerKpis]);
+
   function clearMissingRequiredField(field) {
     setMissingRequired((prev) => {
       if (!prev?.[field]) return prev;
@@ -616,6 +945,7 @@ export default function CustomersScreen({
   function startNew(type = defaultCustomerType) {
     setReturnToEstimator(false);
     setAutoUseOnSave(false);
+    setBuilderReturnIntent("estimate");
     setDraft(emptyDraft(type));
     setMissingRequired({});
     setMode("edit");
@@ -626,6 +956,7 @@ export default function CustomersScreen({
     const useAutoOnSave = !!opts?.autoUseOnSave;
     setReturnToEstimator(useEstimatorReturn);
     setAutoUseOnSave(useAutoOnSave);
+    setBuilderReturnIntent(useEstimatorReturn ? normalizeBuilderIntent(opts?.builderIntent) : "estimate");
     const type = String(c?.type || "residential");
     const base = emptyDraft(type);
     setDraft({ ...base, ...(c || {}) });
@@ -637,7 +968,11 @@ export default function CustomersScreen({
     try { localStorage.removeItem(CUSTOMER_EDIT_TARGET_KEY); } catch {}
     setAutoUseOnSave(false);
     setReturnToEstimator(false);
-    try { window.dispatchEvent(new Event("estipaid:navigate-estimator")); } catch {}
+    try {
+      window.dispatchEvent(new CustomEvent("estipaid:navigate-estimator", {
+        detail: { builderIntent: builderReturnIntent },
+      }));
+    } catch {}
   }
 
   function saveDraft() {
@@ -735,10 +1070,15 @@ export default function CustomersScreen({
     if (autoUseOnSave && typeof onDone === "function") {
       try {
         const payloadCustomer = { ...nextItem, ...toEstimatorFlat(nextItem) };
-        localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify({ id, customer: payloadCustomer, ts: Date.now() }));
+        localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify({
+          id,
+          customer: payloadCustomer,
+          ts: Date.now(),
+          builderIntent: builderReturnIntent,
+        }));
         window.dispatchEvent(new Event("estipaid:customer-use"));
       } catch {}
-      try { onDone({ id, customer: nextItem }); } catch {}
+      try { onDone({ id, customer: nextItem, builderIntent: builderReturnIntent }); } catch {}
       setAutoUseOnSave(false);
     }
   }
@@ -747,6 +1087,39 @@ export default function CustomersScreen({
     const sid = String(id || "");
     const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
     const nm = target ? displayName(target) : sid;
+
+    if (target) {
+      const currentList = Array.isArray(list) ? list : [];
+      const allProjects = readStoredProjects();
+      const allDocs = readSavedDocs();
+      const allEstimates = allDocs.filter((d) => String(d?.docType || "estimate").toLowerCase() !== "invoice");
+      const allInvoices = allDocs.filter((d) => String(d?.docType || "").toLowerCase() === "invoice");
+
+      const linkedProjects = findLinkedProjectsForCustomer(target, allProjects, currentList, allEstimates, allInvoices);
+
+      const custId = String(target?.id || "").trim();
+      const targetNames = new Set(collectCustomerLookupNames(target));
+      const isDocLinked = (d) => {
+        const docCustId = String(d?.customerId || d?.customer?.id || "").trim();
+        if (custId && docCustId === custId) return true;
+        return collectDocCustomerLookupNames(d).some((name) => targetNames.has(name));
+      };
+      const linkedEstimates = allEstimates.filter(isDocLinked);
+      const linkedInvoices = allInvoices.filter(isDocLinked);
+
+      if (linkedProjects.length > 0 || linkedEstimates.length > 0 || linkedInvoices.length > 0) {
+        const parts = [];
+        if (linkedProjects.length > 0) parts.push(`${linkedProjects.length} project${linkedProjects.length === 1 ? "" : "s"}`);
+        if (linkedEstimates.length > 0) parts.push(`${linkedEstimates.length} estimate${linkedEstimates.length === 1 ? "" : "s"}`);
+        if (linkedInvoices.length > 0) parts.push(`${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"}`);
+        window.alert(label(
+          `Cannot delete ${nm}. This customer is linked to ${parts.join(", ")} and cannot be removed.`,
+          `No se puede eliminar ${nm}. Este cliente está vinculado a ${parts.join(", ")} y no se puede eliminar.`,
+        ));
+        return;
+      }
+    }
+
     const ok = window.confirm(label(`Delete customer: ${nm}? This cannot be undone.`, `¿Eliminar cliente: ${nm}? Esto no se puede deshacer.`));
     if (!ok) return;
     const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
@@ -754,6 +1127,7 @@ export default function CustomersScreen({
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
+    window.dispatchEvent(new Event("estipaid:customers-changed"));
   }
 
   function useCustomer(c) {
@@ -767,12 +1141,12 @@ export default function CustomersScreen({
 
     // Handoff to EstimateForm (same-tab; storage event won't fire)
     try {
-      const payload = { id, customer: { ...c, ...toEstimatorFlat(c) }, ts: Date.now() };
+      const payload = { id, customer: { ...c, ...toEstimatorFlat(c) }, ts: Date.now(), builderIntent: builderReturnIntent };
       localStorage.setItem(PENDING_CUSTOMER_USE_KEY, JSON.stringify(payload));
       window.dispatchEvent(new Event("estipaid:customer-use"));
     } catch {}
 
-    if (typeof onDone === "function") onDone({ id, customer: c });
+    if (typeof onDone === "function") onDone({ id, customer: c, builderIntent: builderReturnIntent });
   }
 
   return (
@@ -789,7 +1163,7 @@ export default function CustomersScreen({
       )}
       {mode === "list" ? (
         <div className="pe-card">
-          <div className="pe-company-profile-header" style={stickyListHeaderStyle}>
+          <div className="pe-company-profile-header pe-utility-panel-header" style={stickyListHeaderStyle}>
             <div className="pe-company-header-title">
               <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
             </div>
@@ -811,6 +1185,85 @@ export default function CustomersScreen({
                   onChange={(e) => setQ(e.target.value)}
                   style={{ flex: "1 1 280px" }}
                 />
+              </div>
+            </div>
+
+            <div
+              className="pe-card pe-card-content"
+              style={{
+                ...cardBaseStyle,
+                display: "grid",
+                gap: 12,
+                borderRadius: 18,
+                border: "1px solid rgba(168,184,195,0.14)",
+                background: customerPortfolioSummary.overdueAccounts > 0
+                  ? "linear-gradient(135deg, rgba(239,68,68,0.08), rgba(59,130,246,0.07) 48%, rgba(34,197,94,0.05)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))"
+                  : "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08) 48%, rgba(245,158,11,0.06)), linear-gradient(180deg, rgba(24,34,44,0.4), rgba(7,10,15,0.94))",
+                boxShadow: "0 24px 54px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05)",
+              }}
+            >
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
+                  {label("Client account book", "Libro de cuentas de clientes")}
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
+                  {label("Account Priority", "Clientes priorizados por atención de cuenta")}
+                </div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
+                  {customerPortfolioSummary.topAttentionCustomer
+                    ? `${displayName(customerPortfolioSummary.topAttentionCustomer)} ${label("currently carries the highest visible balance due.", "actualmente tiene el mayor saldo visible pendiente.")}`
+                    : label("Use this view to scan account activity, project context, and next account action quickly.", "Usa esta vista para revisar actividad de cuentas, contexto de proyectos y la siguiente acción rápidamente.")}
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                {[
+                  {
+                    key: "total-customers",
+                    labelText: label("Visible customers", "Clientes visibles"),
+                    value: String(customerPortfolioSummary.totalCustomers),
+                    detail: `${customerPortfolioSummary.activeAccounts} ${label("active accounts", "cuentas activas")}`,
+                    color: "rgba(96,165,250,0.86)",
+                    border: "rgba(59,130,246,0.2)",
+                  },
+                  {
+                    key: "balance-due",
+                    labelText: label("Open balance due", "Saldo pendiente"),
+                    value: moneyUSD(customerPortfolioSummary.balanceDue),
+                    detail: customerPortfolioSummary.overdueAccounts > 0
+                      ? `${customerPortfolioSummary.overdueAccounts} ${label("accounts overdue", "cuentas vencidas")}`
+                      : label("No overdue accounts in view", "No hay cuentas vencidas en vista"),
+                    color: customerPortfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.9)" : "rgba(203,213,225,0.78)",
+                    border: customerPortfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
+                  },
+                  {
+                    key: "projects",
+                    labelText: label("Linked projects", "Proyectos vinculados"),
+                    value: String(customerPortfolioSummary.linkedProjects),
+                    detail: label("Across visible customer accounts", "En cuentas visibles de clientes"),
+                    color: "rgba(74,222,128,0.86)",
+                    border: "rgba(34,197,94,0.2)",
+                  },
+                  {
+                    key: "open-docs",
+                    labelText: label("Open document activity", "Actividad de documentos"),
+                    value: String(customerPortfolioSummary.openDocs),
+                    detail: label("Estimates + unpaid invoices", "Estimados + facturas no pagadas"),
+                    color: "rgba(191,219,254,0.84)",
+                    border: "rgba(148,163,184,0.18)",
+                  },
+                ].map((item) => (
+                  <div key={item.key} style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${item.border}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                      {item.labelText}
+                    </div>
+                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                      {item.value}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                      {item.detail}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -837,82 +1290,214 @@ export default function CustomersScreen({
                 <div style={{ display: "grid", placeItems: "center", marginBottom: 8, opacity: 0.68 }}>
                   <EmptyCustomersIcon />
                 </div>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet. Add your first customer to begin.</div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet</div>
+                <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45, marginBottom: 6 }}>Add your first customer so estimates, invoices, and projects have a billing contact.</div>
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
                   {label("Add Customer", "Agregar cliente")}
                 </button>
               </div>
+            ) : String(q || "").trim() && filtered.length === 0 ? (
+              <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                  {label("No matching customers", "No hay clientes que coincidan")}
+                </div>
+                <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45 }}>
+                  {label("Try a different name, phone number, email, or project.", "Prueba con otro nombre, teléfono, correo o proyecto.")}
+                </div>
+              </div>
             ) : (
-              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
+              <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(min(340px, 100%), 1fr))" }}>
               {filtered.map((c) => {
                 const id = String(c?.id || "");
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
+                const kpi = customerKpis?.[id] || {};
+                const meta = customerProjectMeta?.[id] || {};
+                const accountAction = deriveCustomerNextAction({
+                  overdueInvoiceCount: toNum(kpi.overdueInvoiceCount || 0),
+                  balanceDue: toNum(kpi.balanceDue || 0),
+                  activeProjectCount: toNum(meta.activeProjectCount || 0),
+                  openDocumentCount: toNum(kpi.estimateCount || 0) + toNum(kpi.openInvoiceCount || 0),
+                });
+                const actionTone = accountAction.tone === "danger"
+                  ? { color: "rgba(248,113,113,0.9)", border: "rgba(239,68,68,0.22)", background: "rgba(239,68,68,0.08)" }
+                  : accountAction.tone === "warning"
+                    ? { color: "rgba(251,191,36,0.9)", border: "rgba(245,158,11,0.22)", background: "rgba(245,158,11,0.08)" }
+                    : accountAction.tone === "success"
+                      ? { color: "rgba(74,222,128,0.88)", border: "rgba(34,197,94,0.22)", background: "rgba(34,197,94,0.08)" }
+                      : { color: "rgba(96,165,250,0.9)", border: "rgba(59,130,246,0.22)", background: "rgba(59,130,246,0.08)" };
+                const actionLabel = accountAction.key === "resolve-overdue"
+                  ? label("Resolve Overdue", "Siguiente acción: resolver vencidos")
+                  : accountAction.key === "collect-balance"
+                    ? label("Collect Balance", "Siguiente acción: cobrar saldo")
+                    : accountAction.key === "review-active-work"
+                      ? label("Active Work", "Siguiente acción: revisar trabajo activo")
+                      : accountAction.key === "review-open-docs"
+                        ? label("Open Docs", "Siguiente acción: revisar documentos abiertos")
+                        : label("Update Account", "Siguiente acción: actualizar cuenta");
 
                 return (
-                  <div className="pe-card pe-card-content ep-glass-tile" key={id || Math.random()} style={{ ...cardBaseStyle, ...(active ? cardActiveStyle : null), display: "grid", gap: 10, cursor: "pointer" }}>
+                  <div
+                    className="pe-card pe-card-content ep-glass-tile"
+                    key={id || Math.random()}
+                    style={{
+                      ...cardBaseStyle,
+                      ...(active ? cardActiveStyle : null),
+                      display: "grid",
+                      gap: 12,
+                      cursor: "pointer",
+                      borderRadius: 16,
+                      border: active
+                        ? cardActiveStyle.border
+                        : toNum(kpi.overdueInvoiceCount || 0) > 0
+                          ? "1px solid rgba(239,68,68,0.16)"
+                          : toNum(kpi.balanceDue || 0) > 0
+                            ? "1px solid rgba(245,158,11,0.16)"
+                            : "1px solid rgba(255,255,255,0.08)",
+                      background: toNum(kpi.overdueInvoiceCount || 0) > 0
+                        ? "linear-gradient(180deg, rgba(239,68,68,0.06), rgba(255,255,255,0.03))"
+                        : toNum(kpi.balanceDue || 0) > 0
+                          ? "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))"
+                          : "linear-gradient(180deg, rgba(59,130,246,0.05), rgba(255,255,255,0.03))",
+                      boxShadow: "0 14px 30px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03)",
+                    }}
+                  >
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>
-                      <div style={{ display: "grid", gap: 6, minWidth: 240, flex: "1 1 320px" }}>
+                      <div style={{ display: "grid", gap: 6, minWidth: 0, flex: "1 1 200px" }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-                          <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: 0.2 }}>{displayName(c)}</div>
-                          <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
+                          <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", lineHeight: 1.15 }}>{displayName(c)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75 }}>
                             {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
                           </div>
-                          {active ? <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+                          {active ? <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
                         </div>
 
                         {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
                         {phoneEmailLine(c) ? <TextLine>{phoneEmailLine(c)}</TextLine> : null}
                         {mainAddressText(c) ? <TextLine>{mainAddressText(c)}</TextLine> : null}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+                          <span style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${actionTone.border}`, background: actionTone.background, color: actionTone.color, fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                            {actionLabel}
+                          </span>
+                          {toNum(kpi.amountPaid || 0) > 0 ? (
+                            <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.2)", background: "rgba(34,197,94,0.08)", color: "rgba(74,222,128,0.88)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+                              {moneyUSD(kpi.amountPaid)} {label("paid", "pagado")}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {(toNum(kpi.overdueInvoiceCount || 0) > 0 || toNum(kpi.balanceDue || 0) > 0 || toNum(meta.activeProjectCount || 0) > 0) ? (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
+                            {toNum(kpi.overdueInvoiceCount || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
+                                {toNum(kpi.overdueInvoiceCount || 0) === 1 ? label("1 overdue", "1 vencida") : `${toNum(kpi.overdueInvoiceCount || 0)} ${label("overdue", "vencidas")}`}
+                              </span>
+                            ) : null}
+                            {toNum(kpi.balanceDue || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
+                                {moneyUSD(kpi.balanceDue)} {label("due", "pendiente")}
+                              </span>
+                            ) : null}
+                            {toNum(meta.activeProjectCount || 0) > 0 ? (
+                              <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
+                                {toNum(meta.activeProjectCount || 0)} {toNum(meta.activeProjectCount || 0) === 1 ? label("active project", "proyecto activo") : label("active projects", "proyectos activos")}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {/* Project context */}
+                        {id && customerProjectMeta[id]?.projectCount > 0 ? (
+                          <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.07)", display: "grid", gap: 4 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                              <span style={{ fontSize: 11, fontWeight: 800, opacity: 0.48, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                                {customerProjectMeta[id].projectCount === 1
+                                  ? label("1 project", "1 proyecto")
+                                  : `${customerProjectMeta[id].projectCount} ${label("projects", "proyectos")}`}
+                              </span>
+                              {customerProjectMeta[id].latestProjectDisplayStatus ? (
+                                <span style={{
+                                  display: "inline-block",
+                                  padding: "2px 7px",
+                                  borderRadius: 999,
+                                  fontSize: 10,
+                                  fontWeight: 800,
+                                  letterSpacing: "0.04em",
+                                  textTransform: "uppercase",
+                                  color: CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.5)",
+                                  background: "rgba(255,255,255,0.05)",
+                                  border: `1px solid ${CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.12)"}`,
+                                  borderColor: (CUST_PROJECT_STATUS_COLORS[customerProjectMeta[id].latestProjectDisplayStatus.key]?.color || "rgba(230,241,248,0.12)").replace(/[\d.]+\)$/, "0.28)"),
+                                }}>
+                                  {customerProjectMeta[id].latestProjectDisplayStatus.label}
+                                </span>
+                              ) : null}
+                            </div>
+                            {customerProjectMeta[id].latestProjectName ? (
+                              <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.88, lineHeight: 1.25 }}>
+                                {customerProjectMeta[id].latestProjectName}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
 
                         {/* KPIs (live computed from saved estimates/invoices) */}
-                        {customerKpis && id ? (
+                        {customerKpis && id && customerKpis[id] ? (
                           <div
+                            className="pe-customer-kpi-grid"
                             style={{
                               marginTop: 6,
                               paddingTop: 10,
                               borderTop: "1px solid rgba(255,255,255,0.10)",
                               display: "grid",
-                              gridTemplateColumns: "1fr 1fr",
+                              gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))",
                               gap: 10,
                             }}
                           >
-                            <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
                                 {label("Revenue", "Ingresos")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.revenue || 0)}
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Avg margin", "Margen prom.")}
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Balance", "Saldo")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
+                                {moneyUSD(customerKpis[id]?.balanceDue || 0)}
+                              </div>
+                            </div>
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Margin", "Margen")}
+                              </div>
+                              <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
                                 {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Jobs", "Trabajos")}
+                            <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
+                                {label("Docs", "Docs")}
                               </div>
-                              <div style={{ fontSize: 14, fontWeight: 900, opacity: 0.95 }}>
-                                {toNum(customerKpis[id]?.estimateCount || 0) + toNum(customerKpis[id]?.invoiceCount || 0)}
+                              <div style={{ fontSize: 13, fontWeight: 800, opacity: 0.88, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {toNum(customerKpis[id]?.estimateCount || 0) > 0 ? (
+                                  <span>{toNum(customerKpis[id].estimateCount)} {label("est", "est")}</span>
+                                ) : null}
+                                {toNum(customerKpis[id]?.invoiceCount || 0) > 0 ? (
+                                  <span>{toNum(customerKpis[id].invoiceCount)} {label("inv", "fac")}</span>
+                                ) : null}
+                                {toNum(customerKpis[id]?.estimateCount || 0) === 0 && toNum(customerKpis[id]?.invoiceCount || 0) === 0 ? (
+                                  <span style={{ opacity: 0.5 }}>—</span>
+                                ) : null}
                               </div>
                             </div>
-                            <div style={{ display: "grid", gap: 2 }}>
-                              <div style={{ fontSize: 11, fontWeight: 900, opacity: 0.65, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Last", "Último")}
-                              </div>
-                              <div style={{ fontSize: 13, fontWeight: 900, opacity: 0.85 }}>
-                                {String(customerKpis[id]?.lastDate || "—") || "—"}
-                              </div>
                             </div>
-                          </div>
                         ) : null}
                       </div>
 
-                      <div style={{ display: "grid", gap: 8, minWidth: 220, justifyItems: "stretch" }}>
+                        <div style={{ display: "grid", gap: 8, minWidth: 0, justifyItems: "stretch" }}>
                         <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
                           {label("Use", "Usar")}
                         </button>
@@ -924,6 +1509,73 @@ export default function CustomersScreen({
                             {label("Delete", "Eliminar")}
                           </button>
                         </div>
+                        {onOpenProjectDetail ? (
+                          <button
+                            className="pe-btn"
+                            type="button"
+                            style={{ width: "100%", background: "rgba(99,179,237,0.12)", border: "1px solid rgba(99,179,237,0.28)", color: "rgba(99,179,237,0.94)" }}
+                            onClick={() => {
+                              const custId = String(c?.id || "");
+                              const allProjects = readStoredProjects();
+                              let allEstimates = [];
+                              let allInvoices = [];
+                              try {
+                                const eRaw = localStorage.getItem(ESTIMATES_KEY);
+                                allEstimates = eRaw ? safeParse(eRaw, []) : [];
+                                if (!Array.isArray(allEstimates)) allEstimates = [];
+                                allEstimates = allEstimates.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
+                              } catch {}
+                              try {
+                                allInvoices = readStoredInvoices();
+                              } catch {}
+                              const matched = findLinkedProjectsForCustomer(c, allProjects, list, allEstimates, allInvoices);
+                              if (matched.length === 1) {
+                                setProjectChooser(null);
+                                onOpenProjectDetail(String(matched[0].id || ""));
+                              } else if (matched.length > 1) {
+                                setProjectChooser({ customerId: custId, projects: matched });
+                              } else {
+                                setProjectChooser({ customerId: custId, empty: true });
+                              }
+                            }}
+                          >
+                            {label("Projects", "Proyectos")}
+                          </button>
+                        ) : null}
+                        {projectChooser && projectChooser.customerId === id && projectChooser.empty ? (
+                          <div style={{ fontSize: 12, color: "rgba(230,241,248,0.5)", padding: "4px 0" }}>
+                            {label("No linked projects yet.", "Aún no hay proyectos vinculados.")}
+                          </div>
+                        ) : null}
+                        {projectChooser && projectChooser.customerId === id && projectChooser.projects?.length > 1 ? (
+                          <div style={{ display: "grid", gap: 4, padding: "6px 0 0" }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                              {label("Choose project", "Elegir proyecto")}
+                            </div>
+                            {projectChooser.projects.map((proj) => (
+                              <button
+                                key={String(proj.id)}
+                                className="pe-btn pe-btn-ghost"
+                                type="button"
+                                style={{ width: "100%", textAlign: "left", fontSize: 13, padding: "6px 10px" }}
+                                onClick={() => {
+                                  setProjectChooser(null);
+                                  onOpenProjectDetail(String(proj.id || ""));
+                                }}
+                              >
+                                {String(proj.projectName || proj.siteAddress || proj.projectNumber || proj.id || "Untitled")}
+                              </button>
+                            ))}
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              style={{ width: "100%", fontSize: 11, opacity: 0.5, padding: "4px 10px" }}
+                              onClick={() => setProjectChooser(null)}
+                            >
+                              {label("Cancel", "Cancelar")}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -959,6 +1611,7 @@ export default function CustomersScreen({
               </button>
             </div>
           </div>
+          <CloudBackupInlineStatus style={{ margin: "-6px 0 8px" }} />
 
             <div className="pe-company-form-inner pe-customer-edit-form">
             <div className="pe-company-form-section">

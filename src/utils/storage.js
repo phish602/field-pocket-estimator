@@ -4,6 +4,41 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { sanitizePhoneDigits } from "./sanitize";
 
+// ---------------------------------------------------------------------------
+// In-memory write failure buffer — never written to localStorage
+// ---------------------------------------------------------------------------
+const _writeErrors = [];
+const MAX_WRITE_ERRORS = 10;
+
+function _recordWriteFailure(key, operation, error) {
+  const record = {
+    ok: false,
+    key,
+    operation,
+    errorName: error && error.name ? error.name : "UnknownError",
+    errorMessage: error && error.message ? error.message : String(error || ""),
+    timestamp: Date.now(),
+  };
+  _writeErrors.push(record);
+  if (_writeErrors.length > MAX_WRITE_ERRORS) {
+    _writeErrors.shift();
+  }
+}
+
+export function getLastStorageWriteError() {
+  return _writeErrors.length > 0 ? _writeErrors[_writeErrors.length - 1] : null;
+}
+
+export function getStorageWriteErrors() {
+  return _writeErrors.slice();
+}
+
+export function clearStorageWriteErrors() {
+  _writeErrors.length = 0;
+}
+
+// ---------------------------------------------------------------------------
+
 export const DEFAULT_COMPANY_PROFILE = {
   companyName: "",
   phone: "",
@@ -20,6 +55,7 @@ export const DEFAULT_COMPANY_PROFILE = {
   website: "",
   ein: "",
   terms: "",
+  stripeAccountId: "",
 };
 
 const STATE_ZIP_PATTERN = /^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/;
@@ -79,7 +115,12 @@ function migrateLegacyArray(legacyKey, canonicalKey) {
     }
     const parsed = safeParseJSON(legacyRaw);
     if (!Array.isArray(parsed)) return false;
-    localStorage.setItem(canonicalKey, JSON.stringify(parsed));
+    try {
+      localStorage.setItem(canonicalKey, JSON.stringify(parsed));
+    } catch (err) {
+      _recordWriteFailure(canonicalKey, "migrateLegacyArray", err);
+      return false;
+    }
     removeLegacyKey(legacyKey);
     return true;
   } catch {
@@ -98,7 +139,12 @@ function migrateLegacyObject(legacyKey, canonicalKey, normalizer) {
     const parsed = safeParseJSON(legacyRaw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
     const next = typeof normalizer === "function" ? normalizer(parsed) : parsed;
-    localStorage.setItem(canonicalKey, JSON.stringify(next));
+    try {
+      localStorage.setItem(canonicalKey, JSON.stringify(next));
+    } catch (err) {
+      _recordWriteFailure(canonicalKey, "migrateLegacyObject", err);
+      return false;
+    }
     removeLegacyKey(legacyKey);
     return true;
   } catch {
@@ -127,7 +173,11 @@ export function migrateLegacyStorageNamespace() {
     if (legacyLang !== null && !hasCanonicalLang) {
       const lang = String(legacyLang || "").trim().toLowerCase();
       if (lang === "en" || lang === "es") {
-        localStorage.setItem(STORAGE_KEYS.LANG, lang);
+        try {
+          localStorage.setItem(STORAGE_KEYS.LANG, lang);
+        } catch (err) {
+          _recordWriteFailure(STORAGE_KEYS.LANG, "migrateLegacyStorageNamespace:lang", err);
+        }
         migratedAny = true;
       }
     }
@@ -142,10 +192,14 @@ export function migrateLegacyStorageNamespace() {
     if (legacyShowCosts !== null && !hasCanonicalSettings) {
       const parsedShowCosts = parseLegacyBool(legacyShowCosts);
       if (parsedShowCosts !== null) {
-        localStorage.setItem(
-          STORAGE_KEYS.SETTINGS,
-          JSON.stringify({ internal: { showInternalCostFields: parsedShowCosts } })
-        );
+        try {
+          localStorage.setItem(
+            STORAGE_KEYS.SETTINGS,
+            JSON.stringify({ internal: { showInternalCostFields: parsedShowCosts } })
+          );
+        } catch (err) {
+          _recordWriteFailure(STORAGE_KEYS.SETTINGS, "migrateLegacyStorageNamespace:settings", err);
+        }
         migratedAny = true;
       }
     }
@@ -279,7 +333,8 @@ export function writeJsonStorage(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
     return true;
-  } catch {
+  } catch (err) {
+    _recordWriteFailure(key, "writeJsonStorage", err);
     return false;
   }
 }
