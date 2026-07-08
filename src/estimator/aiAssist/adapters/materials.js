@@ -2,6 +2,8 @@
 /* eslint-disable */
 
 const VALID_MATERIALS_MODES = new Set(["blanket", "itemized"]);
+const ITEMIZED_RESPONSE_TYPES = new Set(["itemizedsuggestion"]);
+const BLANKET_RESPONSE_TYPES = new Set(["blanketsuggestion"]);
 
 function asText(value) {
   return String(value ?? "").trim();
@@ -51,6 +53,34 @@ function uniqueTextList(values) {
       seen.add(key);
       return true;
     });
+}
+
+function isObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeResponseType(value) {
+  return asText(value).toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function firstDefinedValue(source, keys) {
+  const input = isObject(source) ? source : null;
+  if (!input) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined && input[key] !== null) {
+      return input[key];
+    }
+  }
+  return undefined;
+}
+
+function firstArrayValue(source, keys) {
+  const input = isObject(source) ? source : null;
+  if (!input) return [];
+  for (const key of keys) {
+    if (Array.isArray(input[key])) return input[key];
+  }
+  return [];
 }
 
 function buildAiMaterialId(index) {
@@ -317,9 +347,9 @@ export const materialsAssistConfig = {
 
   localAdapter(rawResponse, state) {
     const activeMode = normalizeMaterialsAssistMode(state?.ui?.materialsMode);
-    const responseType = asText(rawResponse?.responseType || rawResponse?.type).toLowerCase();
+    const responseType = normalizeResponseType(rawResponse?.responseType || rawResponse?.type);
 
-    if (responseType === "needs_mode") {
+    if (responseType === "needsmode") {
       return {
         kind: "materials",
         modeChoiceRequired: true,
@@ -328,7 +358,7 @@ export const materialsAssistConfig = {
       };
     }
 
-    if (responseType === "mode_mismatch") {
+    if (responseType === "modemismatch") {
       const recommendedMode = normalizeMaterialsAssistMode(rawResponse?.recommendedMode);
       return recommendedMode
         ? {
@@ -343,25 +373,34 @@ export const materialsAssistConfig = {
         : null;
     }
 
-    if (responseType === "blanketsuggestion" || activeMode === "blanket") {
-      const source = rawResponse?.blanketSuggestion && typeof rawResponse.blanketSuggestion === "object"
+    if (BLANKET_RESPONSE_TYPES.has(responseType) || activeMode === "blanket") {
+      const source = isObject(rawResponse?.blanketSuggestion)
         ? rawResponse.blanketSuggestion
         : rawResponse;
       const suggestedAmount = toPositiveMoney(
-        source?.suggestedAmount
-        ?? source?.amount
-        ?? source?.blanketAmount
+        firstDefinedValue(source, [
+          "suggestedAmount",
+          "amount",
+          "blanketAmount",
+          "allowance",
+          "total",
+          "materialsTotal",
+          "estimatedMaterials",
+        ])
       );
       const assumptionsSummary = trimText(
-        source?.assumptionsSummary
-        || source?.assumptions
-        || source?.summary,
+        firstDefinedValue(source, [
+          "assumptionsSummary",
+          "assumptions",
+          "summary",
+        ]),
         280
       );
       const includedCategories = uniqueTextList(
-        source?.includedCategories
-        || source?.categories
-        || []
+        firstArrayValue(source, [
+          "includedCategories",
+          "categories",
+        ])
       );
       if (!suggestedAmount) return null;
       return {
@@ -375,13 +414,18 @@ export const materialsAssistConfig = {
       };
     }
 
-    if (responseType === "itemizedsuggestion" || activeMode === "itemized") {
-      const source = rawResponse?.itemizedSuggestion && typeof rawResponse.itemizedSuggestion === "object"
+    if (ITEMIZED_RESPONSE_TYPES.has(responseType) || activeMode === "itemized") {
+      const source = isObject(rawResponse?.itemizedSuggestion)
         ? rawResponse.itemizedSuggestion
         : rawResponse;
-      const rawLines = Array.isArray(source?.proposedLines)
-        ? source.proposedLines
-        : (Array.isArray(source?.lines) ? source.lines : []);
+      const rawLines = firstArrayValue(source, [
+        "proposedLines",
+        "lines",
+        "items",
+        "materials",
+        "proposedMaterials",
+        "materialLines",
+      ]);
       const normalizedLines = rawLines
         .map((line, index) => normalizeProposedMaterialLine(line, index))
         .filter(Boolean);
@@ -392,13 +436,15 @@ export const materialsAssistConfig = {
         itemizedSuggestion: {
           proposedLines: deduped.proposedLines,
           assumptionsSummary: trimText(
-            source?.assumptionsSummary
-            || source?.assumptions
-            || source?.summary,
+            firstDefinedValue(source, [
+              "assumptionsSummary",
+              "assumptions",
+              "summary",
+            ]),
             280
           ),
           duplicateWarnings: [
-            ...uniqueTextList(source?.duplicateWarnings || []),
+            ...uniqueTextList(firstArrayValue(source, ["duplicateWarnings"])),
             ...deduped.duplicateWarnings,
           ],
         },

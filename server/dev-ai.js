@@ -417,6 +417,149 @@ function extractJsonPayload(text) {
   return null;
 }
 
+function firstDefinedValue(source, keys = []) {
+  const input = source && typeof source === "object" ? source : null;
+  if (!input) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined && input[key] !== null) {
+      return input[key];
+    }
+  }
+  return undefined;
+}
+
+function firstArrayValue(source, keys = []) {
+  const input = source && typeof source === "object" ? source : null;
+  if (!input) return [];
+  for (const key of keys) {
+    if (Array.isArray(input[key])) return input[key];
+  }
+  return [];
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeMaterialsResponseType(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function normalizeMaterialsAssistPayload(source) {
+  if (!isPlainObject(source)) return null;
+
+  const responseType = normalizeMaterialsResponseType(source.responseType || source.type);
+  if (responseType === "needsmode") {
+    return {
+      responseType: "needs_mode",
+      message: asText(source.message),
+    };
+  }
+
+  if (responseType === "modemismatch") {
+    return {
+      responseType: "mode_mismatch",
+      currentMode: asText(source.currentMode),
+      recommendedMode: asText(source.recommendedMode),
+      message: asText(source.message),
+    };
+  }
+
+  const itemizedSource = isPlainObject(source.itemizedSuggestion) ? source.itemizedSuggestion : source;
+  const blanketSource = isPlainObject(source.blanketSuggestion) ? source.blanketSuggestion : source;
+  const proposedLines = firstArrayValue(itemizedSource, [
+    "proposedLines",
+    "lines",
+    "items",
+    "materials",
+    "proposedMaterials",
+    "materialLines",
+  ]);
+  const suggestedAmount = firstDefinedValue(blanketSource, [
+    "suggestedAmount",
+    "amount",
+    "blanketAmount",
+    "allowance",
+    "total",
+    "materialsTotal",
+    "estimatedMaterials",
+  ]);
+
+  const explicitlyItemized = responseType === "itemizedsuggestion";
+  const explicitlyBlanket = responseType === "blanketsuggestion";
+
+  if (explicitlyItemized || (!explicitlyBlanket && proposedLines.length > 0)) {
+    return {
+      responseType: "itemizedSuggestion",
+      assumptionsSummary: asText(
+        firstDefinedValue(itemizedSource, [
+          "assumptionsSummary",
+          "assumptions",
+          "summary",
+        ])
+      ),
+      proposedLines,
+      duplicateWarnings: firstArrayValue(itemizedSource, ["duplicateWarnings"]),
+    };
+  }
+
+  if (explicitlyBlanket || (!explicitlyItemized && suggestedAmount !== undefined)) {
+    return {
+      responseType: "blanketSuggestion",
+      suggestedAmount,
+      assumptionsSummary: asText(
+        firstDefinedValue(blanketSource, [
+          "assumptionsSummary",
+          "assumptions",
+          "summary",
+        ])
+      ),
+      includedCategories: firstArrayValue(blanketSource, [
+        "includedCategories",
+        "categories",
+      ]),
+    };
+  }
+
+  return source;
+}
+
+function parseMaterialsAssistResponse(raw) {
+  const queue = [
+    String(raw || "").trim(),
+    stripOuterCodeFences(String(raw || "").trim()),
+    unwrapQuotedText(String(raw || "").trim()),
+    stripOuterCodeFences(unwrapQuotedText(String(raw || "").trim())),
+    extractFirstBalancedJsonObject(String(raw || "").trim()),
+  ].filter(Boolean);
+  const seen = new Set();
+
+  while (queue.length) {
+    const candidate = String(queue.shift() || "").trim();
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+
+    const parsed = extractJsonPayload(candidate);
+    if (typeof parsed === "string") {
+      queue.push(parsed);
+      queue.push(stripOuterCodeFences(parsed));
+      queue.push(unwrapQuotedText(parsed));
+      queue.push(extractFirstBalancedJsonObject(parsed));
+      continue;
+    }
+
+    const normalized = normalizeMaterialsAssistPayload(parsed);
+    if (normalized && typeof normalized === "object" && !Array.isArray(normalized)) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
 function unwrapQuotedText(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return "";
@@ -7856,6 +7999,9 @@ const AI_ASSIST_SECTIONS = {
       if (context?.materialsStateSummary) parts.push(`Current materials state: ${context.materialsStateSummary}`);
       parts.push(`User request: ${userInput || "(none provided — use the estimate context only)"}`);
       return parts.join("\n");
+    },
+    parseResponse(raw) {
+      return parseMaterialsAssistResponse(raw);
     },
     fallback(reason) {
       return buildSectionAssistFailure(reason, { responseType: "materialsError" });
