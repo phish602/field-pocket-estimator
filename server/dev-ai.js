@@ -12637,4 +12637,10 @@ function bootstrapDevAiServer() {
   devAiServer.listen(DEV_AI_SERVER_PORT);
 }
 
-bootstrapDevAiServer();
+if (require.main === module) {
+  bootstrapDevAiServer();
+}
+
+module.exports = app;
+module.exports.app = app;
+module.exports.bootstrapDevAiServer = bootstrapDevAiServer;
