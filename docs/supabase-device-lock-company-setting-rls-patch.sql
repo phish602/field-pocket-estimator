@@ -6,6 +6,9 @@
 -- - Limit the broader write expansion strictly to setting_key =
 --   'active_device_lock' so other company-scoped settings remain unchanged.
 
+drop policy if exists app_settings_insert_company_scope_device_lock_members
+on public.app_settings;
+
 create policy app_settings_insert_company_scope_device_lock_members
 on public.app_settings
 for insert
@@ -16,6 +19,9 @@ with check (
   and setting_key = 'active_device_lock'
   and can_write_company_records(company_id)
 );
+
+drop policy if exists app_settings_update_company_scope_device_lock_members
+on public.app_settings;
 
 create policy app_settings_update_company_scope_device_lock_members
 on public.app_settings
