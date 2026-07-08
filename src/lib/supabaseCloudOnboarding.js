@@ -11,6 +11,7 @@ import {
   ESTIMATE_PAYLOAD_PROTECTION_STATUS,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
 } from "./supabaseEstimateRestorePayload";
+import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
 
 export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 
@@ -652,6 +653,15 @@ export async function runSupabaseCloudOnboardingBackup({
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildBackupResult(gated);
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  if (!deviceAccess.ok) {
+    return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+      error: deviceAccess.error,
+      technicalDetail: deviceAccess.access?.reason || deviceAccess.error,
+      noWritesPerformed: true,
+    });
+  }
 
   const context = buildHelperContext({ storageSnapshot, configured, user, company, role });
   const explicitPreservedSkippedEstimateLegacyIds = normalizeLegacyIds(preservedSkippedEstimateLegacyIds);

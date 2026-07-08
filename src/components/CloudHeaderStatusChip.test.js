@@ -18,6 +18,11 @@ jest.mock("../lib/useSupabaseAccount", () => ({
   default: jest.fn(),
 }));
 
+jest.mock("../lib/useDeviceLockStatus", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 jest.mock("../lib/supabaseCloudOnboarding", () => ({
   __esModule: true,
   checkSupabaseCloudOnboardingStatus: jest.fn(),
@@ -45,6 +50,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
 
 const useSupabaseAuth = require("../lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
+const useDeviceLockStatus = require("../lib/useDeviceLockStatus").default;
 const { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } = require("../lib/supabaseCloudOnboarding");
 const { previewSupabaseCloudRestore } = require("../lib/supabaseCloudRestore");
 
@@ -77,6 +83,13 @@ beforeEach(() => {
   localStorage.clear();
   setViewportWidth(1024);
   signInWithCompany();
+  useDeviceLockStatus.mockReturnValue({
+    loading: false,
+    ready: true,
+    isLocked: false,
+    isActive: true,
+    activeDeviceState: null,
+  });
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.ALREADY_BACKED_UP });
   previewSupabaseCloudRestore.mockResolvedValue({ eligible: true, partial: false });
 });
@@ -89,6 +102,25 @@ test("shows Cloud OK when verification confirms cloud current", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
+});
+
+test("shows Device locked and explains it on click when this device is locked", async () => {
+  useDeviceLockStatus.mockReturnValue({
+    loading: false,
+    ready: true,
+    isLocked: true,
+    isActive: false,
+    activeDeviceState: { activeDeviceName: "Chrome on Mac" },
+  });
+  const alertSpy = jest.spyOn(window, "alert").mockImplementation(() => {});
+
+  await renderAndSettle();
+  fireEvent.click(screen.getByTestId("cloud-header-status-chip"));
+
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Device locked");
+  expect(alertSpy).toHaveBeenCalledTimes(1);
+
+  alertSpy.mockRestore();
 });
 
 test("shows Backup pending when the queue is dirty", async () => {

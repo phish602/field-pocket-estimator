@@ -7,6 +7,7 @@ import {
   buildLocalSnapshotFromArtifact,
   repairStoredLocalDataIntegrity,
 } from "./localDataIntegrity";
+import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -871,6 +872,18 @@ export async function runSupabaseMigrationWrite({
       blocked: true,
       reason: "Supabase is not configured.",
       notices: [buildNotice("error", "supabase_not_configured", "Supabase is not configured.")],
+      tableResults,
+      noLocalDeletes: true,
+    };
+  }
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  if (!deviceAccess.ok) {
+    return {
+      ok: false,
+      blocked: true,
+      reason: deviceAccess.error,
+      notices: [buildNotice("error", "device_locked", deviceAccess.error)],
       tableResults,
       noLocalDeletes: true,
     };

@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
+import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
 
 export const SUPABASE_ESTIMATE_RESTORE_PAYLOAD_VERSION = "supabase-estimate-restore-payload-v1";
 export const ESTIMATE_RESTORE_PAYLOAD_SCHEMA = "estipaid.estimate.restore_payload";
@@ -191,6 +192,13 @@ export async function updateEstimateRestorePayloads({
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildResult(gated);
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  if (!deviceAccess.ok) {
+    return buildResult(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR, {
+      error: deviceAccess.error,
+    });
+  }
 
   const client = getSupabaseClient();
   if (!client?.from) {

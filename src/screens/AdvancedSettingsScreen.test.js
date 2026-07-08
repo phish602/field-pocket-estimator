@@ -4,6 +4,7 @@ import AdvancedSettingsScreen from "./AdvancedSettingsScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
+import useDeviceLockStatus from "../lib/useDeviceLockStatus";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
@@ -42,6 +43,11 @@ jest.mock("../lib/useSupabaseAuth", () => ({
 }));
 
 jest.mock("../lib/useSupabaseAccount", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock("../lib/useDeviceLockStatus", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
@@ -175,6 +181,16 @@ function buildWorkspaceBootstrapState(overrides = {}) {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  useDeviceLockStatus.mockReturnValue({
+    loading: false,
+    ready: true,
+    isLocked: false,
+    isActive: true,
+    activeDeviceState: null,
+  });
+});
 
 describe("AdvancedSettingsScreen diagnostics export", () => {
   let createObjectURLSpy;
@@ -2784,5 +2800,130 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       expect.objectContaining({ id: "legacy_cust_1" }),
     ]);
     expect(alertSpy).toHaveBeenCalledWith("Imported backup: 1 customers, 1 projects, 0 estimates, 0 invoices.");
+  });
+
+  test("locked device blocks cloud backup confirmation before any backup write runs", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      session: { user: { id: "user_1" } },
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    useDeviceLockStatus.mockReturnValue({
+      loading: false,
+      ready: true,
+      isLocked: true,
+      isActive: false,
+      activeDeviceState: { activeDeviceName: "Chrome on Mac" },
+    });
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+
+    render(<AdvancedSettingsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Back Up This Device" }));
+
+    expect(screen.queryByRole("dialog", { name: "Back up this device to cloud?" })).not.toBeInTheDocument();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  });
+
+  test("locked device blocks restore confirmation before any restore runs", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      session: { user: { id: "user_1" } },
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    useDeviceLockStatus.mockReturnValue({
+      loading: false,
+      ready: true,
+      isLocked: true,
+      isActive: false,
+      activeDeviceState: { activeDeviceName: "Chrome on Mac" },
+    });
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      notices: [],
+      noWritesPerformed: true,
+    });
+
+    render(<AdvancedSettingsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restore Cloud Data to This Device" }));
+
+    expect(screen.queryByRole("dialog", { name: "Restore cloud data to this device?" })).not.toBeInTheDocument();
+    expect(executeSupabaseCloudRestore).not.toHaveBeenCalled();
+  });
+
+  test("locked device blocks replace-cloud confirmation before any replace write runs", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      session: { user: { id: "user_1" } },
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    useDeviceLockStatus.mockReturnValue({
+      loading: false,
+      ready: true,
+      isLocked: true,
+      isActive: false,
+      activeDeviceState: { activeDeviceName: "Chrome on Mac" },
+    });
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      preview: null,
+      verification: { allMatched: false, tableResults: [] },
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+
+    render(<AdvancedSettingsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "Replace Cloud Backup With This Device" }));
+
+    expect(screen.queryByRole("dialog", { name: "Replace cloud backup with this device?" })).not.toBeInTheDocument();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
   });
 });

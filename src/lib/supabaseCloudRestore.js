@@ -4,6 +4,7 @@ import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
+import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
@@ -673,6 +674,16 @@ export async function executeSupabaseCloudRestore({
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildExecuteResult(gated);
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage });
+  if (!deviceAccess.ok) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
+      error: deviceAccess.error,
+      noWritesPerformed: true,
+      noCloudDataDeleted: true,
+      noExistingLocalDataOverwritten: true,
+    });
+  }
 
   const client = getSupabaseClient();
   if (!client?.from) {

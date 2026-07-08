@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
 
 export const SUPABASE_APP_RESTORE_BUNDLE_SCHEMA = "estipaid.app.restore_bundle";
 export const SUPABASE_APP_RESTORE_BUNDLE_VERSION = 1;
@@ -361,6 +362,23 @@ export async function updateSupabaseAppRestoreBundle({
       },
       notices: [],
       error: "Only owner or admin roles can update the app restore bundle.",
+    };
+  }
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  if (!deviceAccess.ok) {
+    return {
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      noLocalDataChanged: true,
+      captureSummary: {
+        companyProfileCaptured: false,
+        logoDataUrlCaptured: false,
+        settingsCaptured: false,
+        scopeTemplatesCaptured: false,
+      },
+      notices: [],
+      error: deviceAccess.error,
     };
   }
 

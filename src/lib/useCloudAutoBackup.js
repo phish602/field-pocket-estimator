@@ -28,8 +28,8 @@ export const CLOUD_AUTO_BACKUP_NORMAL_DELAY_MS = 45000;
 
 export const CLOUD_AUTO_BACKUP_RUNNING_EVENT = "estipaid:cloud-auto-backup-running";
 
-function canRunAutomatically({ enabled, configured, user, company }) {
-  return Boolean(enabled && configured && user?.id && company?.id);
+function canRunAutomatically({ enabled, configured, user, company, deviceLocked }) {
+  return Boolean(enabled && configured && user?.id && company?.id && !deviceLocked);
 }
 
 function isEligibleQueueState(queueState) {
@@ -46,12 +46,13 @@ export default function useCloudAutoBackup({
   user = null,
   company = null,
   role = "",
+  deviceLocked = false,
   immediateDelayMs = CLOUD_AUTO_BACKUP_IMMEDIATE_DELAY_MS,
   normalDelayMs = CLOUD_AUTO_BACKUP_NORMAL_DELAY_MS,
 } = {}) {
   const [running, setRunning] = useState(false);
-  const paramsRef = useRef({ enabled, configured, user, company, role });
-  paramsRef.current = { enabled, configured, user, company, role };
+  const paramsRef = useRef({ enabled, configured, user, company, role, deviceLocked });
+  paramsRef.current = { enabled, configured, user, company, role, deviceLocked };
 
   useEffect(() => {
     let disposed = false;
@@ -174,7 +175,7 @@ export default function useCloudAutoBackup({
         window.removeEventListener("pagehide", onPageHide);
       } catch {}
     };
-  }, [enabled, configured, user?.id, company?.id, role, immediateDelayMs, normalDelayMs]);
+  }, [enabled, configured, user?.id, company?.id, role, deviceLocked, immediateDelayMs, normalDelayMs]);
 
   return { running };
 }

@@ -12,6 +12,7 @@ import {
 import { checkSupabaseCloudOnboardingStatus } from "./supabaseCloudOnboarding";
 import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
+import useDeviceLockStatus from "./useDeviceLockStatus";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   buildLocalSnapshotFromStorage,
@@ -44,6 +45,12 @@ function hasPartialLocalSnapshotBlocker(integrity) {
 export default function useCloudBackupStatus() {
   const { configured: isSupabaseReady, user, userEmail } = useSupabaseAuth();
   const { company, role, hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
+  const deviceLock = useDeviceLockStatus({
+    configured: isSupabaseReady,
+    user,
+    company,
+    enabled: Boolean(isSupabaseReady && user?.id && company?.id),
+  });
   const [queueState, setQueueState] = useState(() => readCloudBackupQueueState());
   const [workerRunning, setWorkerRunning] = useState(false);
   const [restoredRecently, setRestoredRecently] = useState(isRestoreRecent);
@@ -198,6 +205,26 @@ export default function useCloudBackupStatus() {
     restoredRecently,
   });
 
+  if (deviceLock.isLocked) {
+    return {
+      isSupabaseReady,
+      hasCompany,
+      userEmail,
+      queueState,
+      displayState: "failed",
+      chipState: "device_locked",
+      chipAction: "device_locked",
+      restoredRecently,
+      onboardingStatus,
+      restorePreview,
+      restorePreviewLoading,
+      localIntegrity,
+      decision,
+      refreshCloudStatus,
+      deviceLock,
+    };
+  }
+
   const displayState = decision.chipState === "restored"
     ? "current"
     : decision.chipState === "backup_running"
@@ -225,5 +252,6 @@ export default function useCloudBackupStatus() {
     localIntegrity,
     decision,
     refreshCloudStatus,
+    deviceLock,
   };
 }

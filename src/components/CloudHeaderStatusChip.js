@@ -4,6 +4,7 @@
 import useCloudBackupStatus from "../lib/useCloudBackupStatus";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import useIsNarrowViewport from "../lib/useIsNarrowViewport";
+import { DEVICE_LOCK_EXPLANATION } from "../lib/supabaseDeviceLock";
 
 function reopenRestorePrompt() {
   try {
@@ -14,6 +15,12 @@ function reopenRestorePrompt() {
 function openCloudSettings() {
   try {
     window.dispatchEvent(new CustomEvent("estipaid:navigate-cloud-settings"));
+  } catch {}
+}
+
+function showDeviceLockExplanation() {
+  try {
+    window.alert(DEVICE_LOCK_EXPLANATION);
   } catch {}
 }
 
@@ -32,6 +39,12 @@ export default function CloudHeaderStatusChip({ style } = {}) {
     label = isNarrow ? "Backing up" : "Backing up...";
     color = "rgba(99,179,237,0.95)";
     narrowMaxWidth = 96;
+  } else if (chipState === "device_locked") {
+    label = "Device locked";
+    color = "rgba(253,224,71,0.95)";
+    background = "rgba(245,158,11,0.09)";
+    border = "1px solid rgba(245,158,11,0.28)";
+    narrowMaxWidth = 132;
   } else if (chipState === "backup_pending") {
     label = isNarrow ? "Pending" : "Backup pending";
     color = "rgba(191,214,235,0.92)";
@@ -66,7 +79,9 @@ export default function CloudHeaderStatusChip({ style } = {}) {
     <button
       type="button"
       data-testid="cloud-header-status-chip"
-      onClick={chipAction === "open_settings" ? openCloudSettings : reopenRestorePrompt}
+      onClick={chipAction === "device_locked"
+        ? showDeviceLockExplanation
+        : (chipAction === "open_settings" ? openCloudSettings : reopenRestorePrompt)}
       style={{
         display: "inline-flex",
         alignItems: "center",

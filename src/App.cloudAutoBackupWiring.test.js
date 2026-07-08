@@ -16,6 +16,16 @@ jest.mock("./lib/useCloudAutoBackup", () => ({
   default: jest.fn(() => ({ running: false })),
 }));
 
+jest.mock("./components/CloudHeaderStatusChip", () => ({
+  __esModule: true,
+  default: jest.fn(() => null),
+}));
+
+jest.mock("./lib/useDeviceLockStatus", () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 // Gate 13F: Home now also runs the cloud-restore-prompt onboarding check.
 // Resolve it immediately here so this file's assertions (which finish
 // synchronously after render) aren't racing an unmocked async Supabase call.
@@ -40,6 +50,7 @@ jest.mock("./lib/supabaseCloudOnboarding", () => ({
 const useSupabaseAuth = require("./lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
+const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 function buildAuthState(overrides = {}) {
@@ -77,6 +88,13 @@ function buildAccountState(overrides = {}) {
 beforeEach(() => {
   useSupabaseAccount.mockReturnValue(buildAccountState());
   useCloudAutoBackup.mockReturnValue({ running: false });
+  useDeviceLockStatus.mockReturnValue({
+    loading: false,
+    ready: true,
+    isLocked: false,
+    isActive: true,
+    activeDeviceState: null,
+  });
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
 });
 
@@ -128,4 +146,38 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
     })
   );
   expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+});
+
+test("worker is disabled when the signed-in device is locked", () => {
+  const user = { id: "user_1", email: "owner@example.com" };
+  useSupabaseAuth.mockReturnValue(buildAuthState({
+    configured: true,
+    user,
+    userEmail: user.email,
+    session: { user },
+  }));
+  useSupabaseAccount.mockReturnValue(buildAccountState({
+    configured: true,
+    user,
+    company: { id: "company_1" },
+    role: "owner",
+    hasCompany: true,
+  }));
+  useDeviceLockStatus.mockReturnValue({
+    loading: false,
+    ready: true,
+    isLocked: true,
+    isActive: false,
+    activeDeviceState: { activeDeviceName: "Chrome on Mac" },
+  });
+
+  render(<App />);
+
+  expect(useCloudAutoBackup).toHaveBeenCalledWith(
+    expect.objectContaining({
+      enabled: false,
+      deviceLocked: true,
+    })
+  );
+  expect(screen.getByText("This Device Is Locked")).toBeInTheDocument();
 });

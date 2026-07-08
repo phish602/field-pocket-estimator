@@ -29,8 +29,10 @@ import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "./lib/useCloudRestorePrompt";
 import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
 import CloudHomeRestorePrompt from "./components/CloudHomeRestorePrompt";
 import CloudHeaderStatusChip from "./components/CloudHeaderStatusChip";
+import DeviceLockGate from "./components/DeviceLockGate";
 import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
+import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -2489,7 +2491,7 @@ const styles = {
   stepLabel: { fontWeight: 800, fontSize: 12, letterSpacing: "0.2px" },
 };
 
-function EstiPaidAppShell() {
+function EstiPaidAppShell({ auth = null, account = null, deviceLock = null } = {}) {
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return undefined;
     installDevJobLearningConsole();
@@ -2552,16 +2554,27 @@ function EstiPaidAppShell() {
     };
   }, []);
 
-  // Patch localStorage.setItem so we can detect language selection inside EstimateForm (same tab)
+  // Patch localStorage writes so same-tab listeners fire.
   useEffect(() => {
     try {
       const orig = localStorage.setItem.bind(localStorage);
+      const origRemove = localStorage.removeItem.bind(localStorage);
       if (!localStorage.__pePatched) {
         localStorage.setItem = (k, v) => {
           orig(k, v);
           try {
             window.dispatchEvent(
               new CustomEvent("pe-localstorage", { detail: { key: k, value: v } })
+            );
+          } catch {
+            // ignore
+          }
+        };
+        localStorage.removeItem = (k) => {
+          origRemove(k);
+          try {
+            window.dispatchEvent(
+              new CustomEvent("pe-localstorage", { detail: { key: k, value: null } })
             );
           } catch {
             // ignore
@@ -3706,7 +3719,16 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       // ignore
     }
   }, [createIntent]);
-const gated = false;
+  const deviceLockReady = deviceLock ? Boolean(deviceLock.ready) : true;
+  const gated = Boolean(deviceLock?.isLocked);
+  const navigationLocked = Boolean(deviceLock) && (gated || !deviceLockReady);
+
+  useEffect(() => {
+    if (!navigationLocked) return;
+    setDrawerOpen(false);
+    setQuickOpen(false);
+    setCreateLauncherOpen(false);
+  }, [navigationLocked]);
   const topRightLogoMeta = useMemo(() => {
     const DEFAULT = DEFAULT_LOGO;
     try {
@@ -3750,6 +3772,16 @@ const gated = false;
   const mobileFooterChromeVisible = mobileFooterSwipeEnabled ? chromeVisible : true;
 
   const renderScreen = () => {
+    if (deviceLock && (!deviceLockReady || gated)) {
+      return (
+        <DeviceLockGate
+          deviceLock={deviceLock}
+          onSignOut={() => auth?.signOut?.()}
+          onRestoreCloudData={() => navigateTo(ROUTES.ADVANCED)}
+          onOpenAdvancedSettings={() => navigateTo(ROUTES.ADVANCED)}
+        />
+      );
+    }
     if (activeTab === ROUTES.HOME) return (
         <HomeScreen
         spinTick={spinTick}
@@ -4179,10 +4211,15 @@ const gated = false;
           navigateTo(ROUTES.HOME);
         }}
         onHeaderSpinLongPress={() => {
+          if (navigationLocked) return;
           setQuickOpen(true);
         }}
-        onMenu={() => setDrawerOpen(true)}
+        onMenu={() => {
+          if (navigationLocked) return;
+          setDrawerOpen(true);
+        }}
         onProfile={() => {
+          if (navigationLocked) return;
           setDrawerOpen(false);
           if (activeTab !== ROUTES.COMPANY_PROFILE) navigateToCompanyProfile();
         }}
@@ -4191,7 +4228,7 @@ const gated = false;
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onSelect={onDrawerSelect}
-        disabled={gated}
+        disabled={navigationLocked}
       />
 
       
@@ -4431,7 +4468,7 @@ const gated = false;
             navigateTo(key);
           }}
           onQuickOpen={() => setQuickOpen(true)}
-          disabled={gated || (activeTab === ROUTES.CREATE && guidedOverlayOpen)}
+          disabled={navigationLocked || (activeTab === ROUTES.CREATE && guidedOverlayOpen)}
         />
       ) : null}
     </div>
@@ -4476,16 +4513,23 @@ function AuthLoadingScreen() {
 export default function App() {
   const auth = useSupabaseAuth();
   const account = useSupabaseAccount({ configured: auth.configured, user: auth.user });
+  const deviceLock = useDeviceLockStatus({
+    configured: auth.configured,
+    user: auth.user,
+    company: account.company,
+    enabled: Boolean(auth.configured && auth.session),
+  });
 
   // Gate 13B: background automatic cloud backup worker. Called unconditionally
   // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
   // Supabase is configured, and a workspace exists.
   useCloudAutoBackup({
-    enabled: Boolean(auth.configured && auth.session),
+    enabled: Boolean(auth.configured && auth.session && !deviceLock.isLocked),
     configured: auth.configured,
     user: auth.user,
     company: account.company,
     role: account.role,
+    deviceLocked: Boolean(deviceLock.isLocked),
   });
 
   if (!auth.configured) {
@@ -4500,5 +4544,5 @@ export default function App() {
     return <AuthScreen auth={auth} />;
   }
 
-  return <EstiPaidAppShell />;
+  return <EstiPaidAppShell auth={auth} account={account} deviceLock={deviceLock} />;
 }

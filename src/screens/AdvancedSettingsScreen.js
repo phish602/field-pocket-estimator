@@ -7,6 +7,7 @@ import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
+import useDeviceLockStatus from "../lib/useDeviceLockStatus";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
@@ -354,6 +355,13 @@ export default function AdvancedSettingsScreen({
     hasMembership: Boolean(companyUser),
     onCreated: refreshAccountStatus,
   });
+  const deviceLock = useDeviceLockStatus({
+    configured: isSupabaseReady,
+    user,
+    company,
+    enabled: Boolean(isSupabaseReady && user?.id && company?.id),
+  });
+  const lockedDeviceMessage = "This device is locked because EstiPaid is active on another device. Switch EstiPaid to this device before editing or using cloud actions here.";
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -407,6 +415,10 @@ export default function AdvancedSettingsScreen({
 
   const writeSettings = (updater) => {
     setSettings((prev) => {
+      if (deviceLock.isLocked) {
+        setCloudStatusMessage(lockedDeviceMessage);
+        return prev;
+      }
       const base = normalizeSettings(prev);
       const nextRaw = typeof updater === "function" ? updater(base) : updater;
       const merged = mergeSettingsSafe(base, asObject(nextRaw));
@@ -508,6 +520,11 @@ export default function AdvancedSettingsScreen({
   };
 
   const authPending = authBusy || Boolean(authAction);
+  const ensureUnlockedForWrite = useCallback((message = lockedDeviceMessage) => {
+    if (!deviceLock.isLocked) return true;
+    setCloudStatusMessage(message);
+    return false;
+  }, [deviceLock.isLocked]);
 
   const submitWorkspaceCreate = async () => {
     const response = await createWorkspace(workspaceName);
@@ -557,6 +574,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const executeMigrationWrite = async () => {
+    if (!ensureUnlockedForWrite()) return;
     try {
       setMigrationBusy(true);
       const result = await runSupabaseMigrationWrite({
@@ -666,6 +684,7 @@ export default function AdvancedSettingsScreen({
   }, [isSupabaseReady, user, company, accountRole]);
 
   const runCloudBackup = async () => {
+    if (!ensureUnlockedForWrite()) return;
     // Shared with the Gate 13B automatic background worker so a manual click
     // and an automatic run never execute a cloud backup at the same time.
     if (!acquireCloudBackupRunLock()) return;
@@ -700,6 +719,7 @@ export default function AdvancedSettingsScreen({
   // Device" confirmation below. Shares the normal backup's run lock so it
   // can never race the Gate 13B automatic background worker.
   const runReplaceCloudBackup = async () => {
+    if (!ensureUnlockedForWrite()) return;
     if (!acquireCloudBackupRunLock()) return;
     try {
       setReplaceCloudBusy(true);
@@ -870,6 +890,7 @@ export default function AdvancedSettingsScreen({
   }, [shouldCheckRestorePreview, partialLocalSnapshotState, loadRestorePreview]);
 
   const runCloudRestore = async () => {
+    if (!ensureUnlockedForWrite()) return;
     try {
       setRestoreBusy(true);
       setCloudStatusMessage("");
@@ -1012,6 +1033,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const requestCloudBackupConfirmation = () => {
+    if (!ensureUnlockedForWrite()) return;
     setCloudConfirmDialog({
       action: "backup",
       title: "Back up this device to cloud?",
@@ -1027,6 +1049,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const requestCloudRestoreConfirmation = () => {
+    if (!ensureUnlockedForWrite()) return;
     setCloudConfirmDialog({
       action: "restore",
       ...buildCloudRestoreConfirmationDialog({ partialLocalSnapshot: partialLocalSnapshotState }),
@@ -1034,6 +1057,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const requestReplaceCloudConfirmation = () => {
+    if (!ensureUnlockedForWrite()) return;
     setReplaceConfirmChecked(false);
     setCloudConfirmDialog({
       action: "replace_cloud",
@@ -1067,6 +1091,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const runUpdateAppRestoreBundle = async () => {
+    if (!ensureUnlockedForWrite()) return;
     try {
       setAppBundleBusy(true);
       const result = await updateSupabaseAppRestoreBundle({
@@ -1100,6 +1125,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const runUpdateEstimateRestorePayloads = async () => {
+    if (!ensureUnlockedForWrite()) return;
     try {
       setEstimatePayloadBusy(true);
       const result = await updateEstimateRestorePayloads({
