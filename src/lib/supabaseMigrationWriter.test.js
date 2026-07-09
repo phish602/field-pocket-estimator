@@ -1,7 +1,12 @@
 const mockGetSupabaseClient = jest.fn();
+const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+jest.mock("./supabaseDeviceLock", () => ({
+  ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
 const {
@@ -204,6 +209,8 @@ describe("supabaseMigrationWriter", () => {
   beforeEach(() => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   test("preview readiness requires a successful preview", () => {
@@ -230,6 +237,30 @@ describe("supabaseMigrationWriter", () => {
     expect(result.ok).toBe(false);
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/Run a successful migration preview/i);
+  });
+
+  test("blocks migration when a fresh device-lock check says this device is locked", async () => {
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({
+      ok: false,
+      access: { isLocked: true, isActive: false },
+      error: "This device is locked because EstiPaid is active on another device.",
+    });
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toMatch(/locked/i);
   });
 
   test("blocks migration when cloud rows exist that are not present on this device", async () => {

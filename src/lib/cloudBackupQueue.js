@@ -154,6 +154,51 @@ function normalizeQueueState(raw) {
   };
 }
 
+function readAutoBackupPauseSnapshot() {
+  if (!canUseStorage()) return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      paused: Boolean(parsed.paused),
+      reason: String(parsed.reason || "").trim(),
+      pausedAt: Number.isFinite(Number(parsed.pausedAt)) && Number(parsed.pausedAt) > 0
+        ? Number(parsed.pausedAt)
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeAutoBackupPauseSnapshot(snapshot) {
+  if (!canUseStorage()) return snapshot;
+  try {
+    if (!snapshot?.paused) {
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+      try {
+        window.dispatchEvent(new CustomEvent("pe-localstorage", {
+          detail: { key: STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, value: null },
+        }));
+      } catch {}
+      return null;
+    }
+
+    const serialized = JSON.stringify(snapshot);
+    localStorage.setItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, serialized);
+    try {
+      window.dispatchEvent(new CustomEvent("pe-localstorage", {
+        detail: { key: STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, value: serialized },
+      }));
+    } catch {}
+    return snapshot;
+  } catch {
+    return snapshot;
+  }
+}
+
 /**
  * Reads the persisted cloud-backup queue state. Always returns a
  * fully-shaped object, even if nothing has been written yet or localStorage
@@ -168,6 +213,19 @@ export function readCloudBackupQueueState() {
   } catch {
     return defaultQueueState();
   }
+}
+
+export function readCloudAutoBackupPauseState() {
+  const snapshot = readAutoBackupPauseSnapshot();
+  return {
+    paused: Boolean(snapshot?.paused),
+    reason: String(snapshot?.reason || "").trim(),
+    pausedAt: snapshot?.pausedAt || null,
+  };
+}
+
+export function isCloudAutoBackupPaused() {
+  return Boolean(readAutoBackupPauseSnapshot()?.paused);
 }
 
 function writeQueueState(state) {
@@ -229,6 +287,7 @@ export function markCloudBackupDirty(event) {
       documentId: normalizedEvent.documentId || current.documentId,
     };
 
+    writeAutoBackupPauseSnapshot(null);
     return writeQueueState(next);
   } catch {
     // A queue-marking failure must never interrupt the caller's local save.
@@ -265,6 +324,7 @@ export function clearCloudBackupDirty(reason) {
       source: normalizedReason || current.source,
     };
 
+    writeAutoBackupPauseSnapshot(null);
     return writeQueueState(next);
   } catch {
     try {
@@ -302,4 +362,12 @@ export function recordCloudBackupAttemptFailure(errorMessage) {
       return defaultQueueState();
     }
   }
+}
+
+export function pauseCloudAutoBackup(reason = "manual_pause") {
+  return writeAutoBackupPauseSnapshot({
+    paused: true,
+    reason: String(reason || "").trim() || "manual_pause",
+    pausedAt: nowTs(),
+  });
 }

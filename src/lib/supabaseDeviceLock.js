@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "./supabaseClient";
+import { pauseCloudAutoBackup } from "./cloudBackupQueue";
 
 export const DEVICE_LOCK_ROW_KEY = "active_device_lock";
 export const DEVICE_LOCK_SCHEMA = "estipaid.device_lock";
@@ -409,6 +410,10 @@ export async function claimActiveDevice({
     action: force && activeDeviceId && activeDeviceId !== deviceId ? "takeover" : "claim",
   });
 
+  if (force && activeDeviceId && activeDeviceId !== deviceId) {
+    pauseCloudAutoBackup("device_takeover");
+  }
+
   return {
     ok: true,
     claimed: true,
@@ -435,6 +440,7 @@ export async function heartbeatActiveDevice({
     return {
       ok: false,
       active: false,
+      activeDeviceState: readResult.value || null,
       error: readResult.error || "This device is not active.",
     };
   }
@@ -570,6 +576,20 @@ export async function checkCurrentDeviceAccess({
         company,
         storage,
       });
+      const latestActiveDeviceId = asText(heartbeatResult.activeDeviceState?.activeDeviceId);
+      if (!heartbeatResult.ok && latestActiveDeviceId && latestActiveDeviceId !== localDeviceId) {
+        return {
+          ready: true,
+          status: "locked",
+          isLocked: true,
+          isActive: false,
+          localDeviceId,
+          localDeviceName,
+          activeDeviceState: heartbeatResult.activeDeviceState || readResult.value,
+          reason: DEVICE_LOCK_EXPLANATION,
+          error: "",
+        };
+      }
       return {
         ready: true,
         status: heartbeatResult.ok ? "active" : "error",
@@ -625,6 +645,12 @@ export async function ensureCurrentDeviceCanWriteCloud({
   });
 
   if (access.isLocked || !access.isActive) {
+    dispatchDeviceLockChanged({
+      companyId: asText(company?.id),
+      activeDeviceId: asText(access.activeDeviceState?.activeDeviceId),
+      action: "write_blocked",
+      locked: true,
+    });
     return {
       ok: false,
       access,

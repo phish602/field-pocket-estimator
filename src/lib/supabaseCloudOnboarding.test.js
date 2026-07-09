@@ -7,6 +7,7 @@ const mockUpdateEstimateRestorePayloads = jest.fn();
 const mockRepairStoredLocalDataIntegrity = jest.fn();
 const mockBuildLocalSnapshotFromStorage = jest.fn();
 const mockGetSupabaseClient = jest.fn();
+const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 
 jest.mock("./supabaseMigrationPreview", () => ({
   __esModule: true,
@@ -27,6 +28,11 @@ jest.mock("./supabaseCloudVerification", () => ({
 jest.mock("./supabaseClient", () => ({
   __esModule: true,
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+jest.mock("./supabaseDeviceLock", () => ({
+  __esModule: true,
+  ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
 jest.mock("./supabaseEstimateRestorePayload", () => ({
@@ -274,6 +280,7 @@ describe("supabaseCloudOnboarding", () => {
     mockRepairStoredLocalDataIntegrity.mockReset();
     mockBuildLocalSnapshotFromStorage.mockReset();
     mockGetSupabaseClient.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
     mockCheckEstimateRestorePayloadProtection.mockResolvedValue(buildPayloadProtection());
     mockUpdateEstimateRestorePayloads.mockResolvedValue(buildPayloadRepairResult());
     mockRepairStoredLocalDataIntegrity.mockReturnValue({
@@ -291,6 +298,7 @@ describe("supabaseCloudOnboarding", () => {
       },
     });
     mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   describe("checkSupabaseCloudOnboardingStatus", () => {
@@ -493,6 +501,22 @@ describe("supabaseCloudOnboarding", () => {
       expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
       expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
       expect(result.noLocalDeletes).toBe(true);
+    });
+
+    test("rejects when a fresh device-lock check says this device is locked", async () => {
+      mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({
+        ok: false,
+        access: { isLocked: true, isActive: false },
+        error: "This device is locked because EstiPaid is active on another device.",
+      });
+
+      const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(result.error).toMatch(/locked/i);
+      expect(mockCreateSupabaseMigrationPreview).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
     });
 
     test("runs preview, then migration write, then verification, in that order", async () => {

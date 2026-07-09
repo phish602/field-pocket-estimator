@@ -1,7 +1,12 @@
 const mockGetSupabaseClient = jest.fn();
+const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+jest.mock("./supabaseDeviceLock", () => ({
+  ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
 const { STORAGE_KEYS } = require("../constants/storageKeys");
@@ -82,6 +87,8 @@ describe("supabaseAppRestoreBundle", () => {
   beforeEach(() => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   test("bundle builder reads only company profile, settings, and scope templates keys", () => {
@@ -163,6 +170,26 @@ describe("supabaseAppRestoreBundle", () => {
 
     expect(result.status).toBe(APP_RESTORE_BUNDLE_STATUS.COMPLETED);
     expect(snapshot.setItem).not.toHaveBeenCalled();
+  });
+
+  test("bundle update rejects when a fresh device-lock check says this device is locked", async () => {
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({
+      ok: false,
+      access: { isLocked: true, isActive: false },
+      error: "This device is locked because EstiPaid is active on another device.",
+    });
+
+    const result = await updateSupabaseAppRestoreBundle({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      role: "owner",
+    });
+
+    expect(result.status).toBe(APP_RESTORE_BUNDLE_STATUS.ERROR);
+    expect(result.error).toMatch(/locked/i);
+    expect(mockGetSupabaseClient).not.toHaveBeenCalled();
   });
 
   test("bundle update writes only the app restore bundle to Supabase and does not touch business tables", async () => {

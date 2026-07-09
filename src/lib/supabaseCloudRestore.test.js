@@ -1,7 +1,12 @@
 const mockGetSupabaseClient = jest.fn();
+const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+jest.mock("./supabaseDeviceLock", () => ({
+  ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
 const {
@@ -302,6 +307,8 @@ describe("supabaseCloudRestore", () => {
   beforeEach(() => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   describe("previewSupabaseCloudRestore", () => {
@@ -547,6 +554,25 @@ describe("supabaseCloudRestore", () => {
 
       expect(result.status).toBe(CLOUD_RESTORE_STATUS.SIGNED_OUT);
       expect(result.restored).toBe(false);
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
+      expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("rejects when a fresh device-lock check says this device is locked", async () => {
+      mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({
+        ok: false,
+        access: { isLocked: true, isActive: false },
+        error: "This device is locked because EstiPaid is active on another device.",
+      });
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({
+        storage,
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.ERROR);
+      expect(result.error).toMatch(/locked/i);
       expect(mockGetSupabaseClient).not.toHaveBeenCalled();
       expect(storage.setItem).not.toHaveBeenCalled();
     });

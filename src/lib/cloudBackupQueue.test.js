@@ -5,6 +5,9 @@ import {
   clearCloudBackupDirty,
   buildBackupDirtyEvent,
   recordCloudBackupAttemptFailure,
+  pauseCloudAutoBackup,
+  readCloudAutoBackupPauseState,
+  isCloudAutoBackupPaused,
   CLOUD_BACKUP_SEVERITY,
   CLOUD_BACKUP_PRIORITY,
   CLOUD_BACKUP_STATUS,
@@ -156,6 +159,19 @@ describe("markCloudBackupDirty", () => {
     setItemSpy.mockRestore();
   });
 
+  test("a fresh local change clears a takeover auto-backup pause", () => {
+    pauseCloudAutoBackup("device_takeover");
+
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"] });
+
+    expect(isCloudAutoBackupPaused()).toBe(false);
+    expect(readCloudAutoBackupPauseState()).toEqual({
+      paused: false,
+      reason: "",
+      pausedAt: null,
+    });
+  });
+
   test("is safe to call repeatedly when localStorage is entirely unavailable", () => {
     const originalDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
     Object.defineProperty(window, "localStorage", {
@@ -225,6 +241,29 @@ describe("clearCloudBackupDirty", () => {
     expect(() => clearCloudBackupDirty("manual_backup_success")).not.toThrow();
 
     setItemSpy.mockRestore();
+  });
+
+  test("successful backup clears any takeover auto-backup pause", () => {
+    pauseCloudAutoBackup("device_takeover");
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"] });
+
+    pauseCloudAutoBackup("device_takeover");
+    clearCloudBackupDirty("manual_backup_success");
+
+    expect(isCloudAutoBackupPaused()).toBe(false);
+  });
+});
+
+describe("pauseCloudAutoBackup", () => {
+  test("persists a takeover pause with reason metadata", () => {
+    pauseCloudAutoBackup("device_takeover");
+
+    expect(isCloudAutoBackupPaused()).toBe(true);
+    expect(readCloudAutoBackupPauseState()).toEqual(expect.objectContaining({
+      paused: true,
+      reason: "device_takeover",
+      pausedAt: expect.any(Number),
+    }));
   });
 });
 

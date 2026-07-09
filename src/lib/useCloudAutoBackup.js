@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  isCloudAutoBackupPaused,
   readCloudBackupQueueState,
   recordCloudBackupAttemptFailure,
   CLOUD_BACKUP_PRIORITY,
@@ -29,7 +30,14 @@ export const CLOUD_AUTO_BACKUP_NORMAL_DELAY_MS = 45000;
 export const CLOUD_AUTO_BACKUP_RUNNING_EVENT = "estipaid:cloud-auto-backup-running";
 
 function canRunAutomatically({ enabled, configured, user, company, deviceLocked }) {
-  return Boolean(enabled && configured && user?.id && company?.id && !deviceLocked);
+  return Boolean(
+    enabled
+    && configured
+    && user?.id
+    && company?.id
+    && !deviceLocked
+    && !isCloudAutoBackupPaused()
+  );
 }
 
 function isEligibleQueueState(queueState) {

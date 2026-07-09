@@ -1,7 +1,12 @@
 const mockGetSupabaseClient = jest.fn();
+const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
+}));
+
+jest.mock("./supabaseDeviceLock", () => ({
+  ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
 const {
@@ -119,6 +124,8 @@ describe("supabaseEstimateRestorePayload", () => {
   beforeEach(() => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   describe("buildEstimateRestorePayload", () => {
@@ -232,6 +239,23 @@ describe("supabaseEstimateRestorePayload", () => {
 
       expect(result.status).toBe(ESTIMATE_PAYLOAD_UPDATE_STATUS.NO_LOCAL_ESTIMATES);
       expect(mockClient.from).not.toHaveBeenCalled();
+    });
+
+    test("rejects when a fresh device-lock check says this device is locked", async () => {
+      mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({
+        ok: false,
+        access: { isLocked: true, isActive: false },
+        error: "This device is locked because EstiPaid is active on another device.",
+      });
+
+      const result = await updateEstimateRestorePayloads({
+        storageSnapshot: buildStorageSnapshot({ estimates: [localEstimateFixture()] }),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR);
+      expect(result.error).toMatch(/locked/i);
+      expect(mockGetSupabaseClient).not.toHaveBeenCalled();
     });
 
     test("validates local estimates have ids and reports missing cloud rows separately", async () => {

@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
+  pauseCloudAutoBackup,
   readCloudBackupQueueState,
   CLOUD_BACKUP_STATUS,
 } from "./cloudBackupQueue";
@@ -219,4 +220,19 @@ test("does not run while a manual backup already holds the shared run lock", asy
 
   releaseCloudBackupRunLock();
   unmount();
+});
+
+test("takeover pause blocks automatic backup until a fresh local change re-dirties the queue", async () => {
+  markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
+  pauseCloudAutoBackup("device_takeover");
+
+  const hook = renderHook(() => useCloudAutoBackup(baseProps()));
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+
+  markCloudBackupDirty({ reason: "estimate_saved_after_takeover", severity: "normal" });
+
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+  hook.unmount();
 });

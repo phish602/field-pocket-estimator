@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkCurrentDeviceAccess,
   claimActiveDevice,
@@ -28,8 +28,14 @@ export default function useDeviceLockStatus({
   enabled = true,
 } = {}) {
   const [state, setState] = useState(buildIdleState);
+  const refreshPromiseRef = useRef(null);
+  const mountedRef = useRef(false);
 
   const refresh = useCallback(async ({ claimIfMissing = true, heartbeatIfActive = true } = {}) => {
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current;
+    }
+
     if (!enabled) {
       const idle = buildIdleState();
       const disabledState = { ...idle, ready: true };
@@ -42,20 +48,34 @@ export default function useDeviceLockStatus({
       loading: Boolean(configured && user?.id && company?.id),
     }));
 
-    const next = await checkCurrentDeviceAccess({
-      configured,
-      user,
-      company,
-      storage,
-      claimIfMissing,
-      heartbeatIfActive,
-    });
+    const pendingRefresh = (async () => {
+      const next = await checkCurrentDeviceAccess({
+        configured,
+        user,
+        company,
+        storage,
+        claimIfMissing,
+        heartbeatIfActive,
+      });
 
-    setState({
-      loading: false,
-      ...next,
-    });
-    return next;
+      if (mountedRef.current) {
+        setState({
+          loading: false,
+          ...next,
+        });
+      }
+      return next;
+    })();
+
+    refreshPromiseRef.current = pendingRefresh;
+
+    try {
+      return await pendingRefresh;
+    } finally {
+      if (refreshPromiseRef.current === pendingRefresh) {
+        refreshPromiseRef.current = null;
+      }
+    }
   }, [company, configured, enabled, storage, user]);
 
   const takeover = useCallback(async () => {
@@ -95,6 +115,7 @@ export default function useDeviceLockStatus({
 
   useEffect(() => {
     let active = true;
+    mountedRef.current = true;
 
     refresh();
 
@@ -111,6 +132,10 @@ export default function useDeviceLockStatus({
       if (active) refresh({ claimIfMissing: false, heartbeatIfActive: false });
     };
 
+    const onOnline = () => {
+      if (active) refresh({ claimIfMissing: false, heartbeatIfActive: false });
+    };
+
     const intervalId = setInterval(() => {
       if (active) refresh({ claimIfMissing: false, heartbeatIfActive: true });
     }, 30000);
@@ -118,16 +143,19 @@ export default function useDeviceLockStatus({
     try {
       window.addEventListener("focus", onVisibilityChange);
       window.addEventListener("pageshow", onVisibilityChange);
+      window.addEventListener("online", onOnline);
       window.addEventListener(DEVICE_LOCK_CHANGED_EVENT, onDeviceLockChanged);
       document.addEventListener("visibilitychange", onVisibilityChange);
     } catch {}
 
     return () => {
       active = false;
+      mountedRef.current = false;
       clearInterval(intervalId);
       try {
         window.removeEventListener("focus", onVisibilityChange);
         window.removeEventListener("pageshow", onVisibilityChange);
+        window.removeEventListener("online", onOnline);
         window.removeEventListener(DEVICE_LOCK_CHANGED_EVENT, onDeviceLockChanged);
         document.removeEventListener("visibilitychange", onVisibilityChange);
       } catch {}
