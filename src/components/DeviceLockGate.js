@@ -194,13 +194,13 @@ export default function DeviceLockGate({
                 This Device Is Locked
               </div>
               <div style={{ fontSize: 14, lineHeight: 1.6, color: "rgba(219,229,236,0.8)" }}>
-                Your EstiPaid account is already active on another device.
+                This device is now locked to protect your estimates, invoices, and customer records.
               </div>
               <div style={{ fontSize: 14, lineHeight: 1.6, color: "rgba(219,229,236,0.8)" }}>
-                To protect your estimates, invoices, and customer records, editing and cloud saving are locked on this device.
+                Your EstiPaid account is already active on another device, so editing and cloud saving are locked here.
               </div>
               <div style={{ fontSize: 14, lineHeight: 1.6, color: "rgba(219,229,236,0.8)" }}>
-                To keep working here, switch EstiPaid to this device. Before switching, make sure your latest work was saved to cloud from the other device.
+                To continue here, switch EstiPaid back to this device. Before switching, make sure your latest work was saved to cloud from the other device.
               </div>
             </div>
 

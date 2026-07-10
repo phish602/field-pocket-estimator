@@ -103,6 +103,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     NO_CLOUD_DATA: "no_cloud_data",
     ELIGIBLE: "eligible",
     RESTORED: "restored",
+    DEVICE_LOCKED: "device_locked",
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
     ERROR: "error",
   },
@@ -113,6 +114,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     ERROR: "error",
   },
   CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION: "cloud-backup-export-artifact-v1",
+  CLOUD_RESTORE_STOPPED_MESSAGE: "Recovery stopped because EstiPaid was switched to another device.",
 }));
 
 jest.mock("../lib/supabaseEstimateRestorePayload", () => ({
@@ -1173,6 +1175,48 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       company: expect.objectContaining({ id: "company_1" }),
       allowPartialLocalSnapshot: true,
     }));
+  });
+
+  test("restore lock loss shows the recovery-stopped message instead of generic success or failure copy", async () => {
+    mockSignedInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+    executeSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.DEVICE_LOCKED,
+      restored: false,
+      deviceLockLost: true,
+      error: "Recovery stopped because EstiPaid was switched to another device.",
+      noWritesPerformed: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Cloud Data to This Device" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Restore Data" }));
+    });
+
+    expect(screen.getByText("Recovery stopped because EstiPaid was switched to another device.")).toBeInTheDocument();
+    expect(screen.queryByText("Cloud data restored to this device.")).not.toBeInTheDocument();
   });
 
   test("partial local snapshot recheck keeps the blocker visible and explains that restore is still required", async () => {

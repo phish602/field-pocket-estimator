@@ -9,6 +9,9 @@ const {
   checkCurrentDeviceAccess,
   claimActiveDevice,
   ensureCurrentDeviceCanWriteCloud,
+  ensureCurrentDeviceCanApplyLocalRestore,
+  DEVICE_LOCK_LOST_CODE,
+  DEVICE_LOCK_CHANGED_EVENT,
 } = require("./supabaseDeviceLock");
 const { isCloudAutoBackupPaused } = require("./cloudBackupQueue");
 
@@ -250,6 +253,37 @@ describe("supabaseDeviceLock", () => {
 
     expect(result.ok).toBe(false);
     expect(result.access.isLocked).toBe(true);
+  });
+
+  test("fresh restore guard dispatches lock loss and pauses backup when another device owns the workspace", async () => {
+    const client = createMockClient();
+    client.setRow({
+      id: "device_lock_row_1",
+      setting_value: { activeDeviceId: "device_a", activeDeviceName: "Chrome on Mac" },
+    });
+    mockGetSupabaseClient.mockReturnValue(client);
+    const storage = createStorage({ [LOCAL_DEVICE_ID_KEY]: "device_b" });
+    const onLockChanged = jest.fn();
+    window.addEventListener(DEVICE_LOCK_CHANGED_EVENT, onLockChanged);
+    try {
+      const result = await ensureCurrentDeviceCanApplyLocalRestore({
+        configured,
+        user,
+        company,
+        storage,
+        reason: "before_local_restore_apply",
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.code).toBe(DEVICE_LOCK_LOST_CODE);
+      expect(result.deviceLockLost).toBe(true);
+      expect(isCloudAutoBackupPaused()).toBe(true);
+      expect(onLockChanged).toHaveBeenCalledWith(expect.objectContaining({
+        detail: expect.objectContaining({ action: "restore_blocked", locked: true }),
+      }));
+    } finally {
+      window.removeEventListener(DEVICE_LOCK_CHANGED_EVENT, onLockChanged);
+    }
   });
 
   test("heartbeat race returns locked when another device takes over between reads", async () => {

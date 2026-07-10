@@ -6,6 +6,9 @@ export const DEVICE_LOCK_SCHEMA = "estipaid.device_lock";
 export const DEVICE_LOCK_VERSION = 1;
 export const LOCAL_DEVICE_ID_KEY = "estipaid-device-id-v1";
 export const DEVICE_LOCK_CHANGED_EVENT = "estipaid:device-lock-changed";
+export const DEVICE_LOCK_LOST_CODE = "device_lock_lost";
+export const DEVICE_LOCK_LOST_RESTORE_MESSAGE =
+  "Recovery stopped because EstiPaid was switched to another device.";
 
 export const DEVICE_LOCK_EXPLANATION =
   "This device is locked because EstiPaid is active on another device. To unlock it, switch EstiPaid to this device. The other device will be locked, and you should restore the latest cloud backup here before working.";
@@ -663,4 +666,55 @@ export async function ensureCurrentDeviceCanWriteCloud({
     access,
     error: "",
   };
+}
+
+// Restore must never claim an unowned device while it is mid-flight. Each
+// call is a fresh active-device read and only confirms present ownership.
+export async function ensureCurrentDeviceCanApplyLocalRestore({
+  configured = false,
+  user = null,
+  company = null,
+  storage = localStorage,
+  reason = "cloud_restore",
+} = {}) {
+  const access = await checkCurrentDeviceAccess({
+    configured,
+    user,
+    company,
+    storage,
+    claimIfMissing: false,
+    heartbeatIfActive: false,
+  });
+
+  if (access.isLocked || access.status === "locked") {
+    // A stale auto-backup worker must stay paused while the app shell catches
+    // up to the lock-loss event.
+    pauseCloudAutoBackup("device_lock_lost_during_restore");
+    dispatchDeviceLockChanged({
+      companyId: asText(company?.id),
+      activeDeviceId: asText(access.activeDeviceState?.activeDeviceId),
+      action: "restore_blocked",
+      reason: asText(reason) || "cloud_restore",
+      locked: true,
+    });
+    return {
+      ok: false,
+      code: DEVICE_LOCK_LOST_CODE,
+      deviceLockLost: true,
+      access,
+      error: DEVICE_LOCK_LOST_RESTORE_MESSAGE,
+    };
+  }
+
+  if (!access.isActive) {
+    return {
+      ok: false,
+      code: "device_access_unverified",
+      deviceLockLost: false,
+      access,
+      error: access.error || "Unable to verify that this device is still active before applying restore data.",
+    };
+  }
+
+  return { ok: true, code: "", deviceLockLost: false, access, error: "" };
 }

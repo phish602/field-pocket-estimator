@@ -18,6 +18,7 @@ import {
   exportSupabaseCloudBackupArtifact,
   CLOUD_RESTORE_STATUS,
   CLOUD_BACKUP_EXPORT_STATUS,
+  CLOUD_RESTORE_STOPPED_MESSAGE,
 } from "../lib/supabaseCloudRestore";
 import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
 import { buildBackupJsonImportPlan, applyBackupJsonImportPlan } from "../lib/backupJsonImport";
@@ -902,6 +903,9 @@ export default function AdvancedSettingsScreen({
         allowPartialLocalSnapshot: partialLocalSnapshotState,
       });
       setRestoreResult(result);
+      if (result?.deviceLockLost) {
+        setCloudStatusMessage(CLOUD_RESTORE_STOPPED_MESSAGE);
+      }
       // executeSupabaseCloudRestore never re-verifies on its own, so without
       // this the mismatch state on this screen would never clear after a
       // successful restore -- only the header chip's separate hook refreshes
@@ -1914,7 +1918,9 @@ export default function AdvancedSettingsScreen({
                       <div className="pe-field-helper">Restoring cloud data to this device...</div>
                     ) : restoreResult && restoreResult.status !== CLOUD_RESTORE_STATUS.RESTORED ? (
                       <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                        {restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
+                        {restoreResult.deviceLockLost
+                          ? CLOUD_RESTORE_STOPPED_MESSAGE
+                          : restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
                           ? "This device already has local data. Restore is blocked to prevent overwriting."
                           : "Restore could not be completed on this device."}
                       </div>
@@ -1977,9 +1983,11 @@ export default function AdvancedSettingsScreen({
                       >
                         {restoreResult.status === CLOUD_RESTORE_STATUS.RESTORED
                           ? "Cloud data restored to this device."
-                          : restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
+                          : restoreResult.deviceLockLost
+                            ? CLOUD_RESTORE_STOPPED_MESSAGE
+                            : restoreResult.status === CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY
                             ? "This device already has local data. Restore is blocked to prevent overwriting."
-                          : "Restore could not be completed on this device."}
+                            : "Restore could not be completed on this device."}
                       </div>
                     ) : null}
                     <div className="pe-field-helper">

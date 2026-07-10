@@ -4,7 +4,12 @@ import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
-import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+import {
+  ensureCurrentDeviceCanWriteCloud,
+  ensureCurrentDeviceCanApplyLocalRestore,
+  DEVICE_LOCK_LOST_CODE,
+  DEVICE_LOCK_LOST_RESTORE_MESSAGE,
+} from "./supabaseDeviceLock";
 
 export const SUPABASE_CLOUD_RESTORE_VERSION = "supabase-cloud-restore-v1";
 
@@ -45,9 +50,12 @@ export const CLOUD_RESTORE_STATUS = {
   NO_CLOUD_DATA: "no_cloud_data",
   ELIGIBLE: "eligible",
   RESTORED: "restored",
+  DEVICE_LOCKED: "device_locked",
   BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
   ERROR: "error",
 };
+
+export const CLOUD_RESTORE_STOPPED_MESSAGE = DEVICE_LOCK_LOST_RESTORE_MESSAGE;
 
 // customers/projects/invoices(+payments/line items) carry enough cloud
 // columns to faithfully rebuild the local record shape; estimates do not
@@ -652,6 +660,15 @@ function buildExecuteResult(status, extra = {}) {
   };
 }
 
+function buildDeviceLockRestoreResult(extra = {}) {
+  return buildExecuteResult(CLOUD_RESTORE_STATUS.DEVICE_LOCKED, {
+    error: CLOUD_RESTORE_STOPPED_MESSAGE,
+    code: DEVICE_LOCK_LOST_CODE,
+    deviceLockLost: true,
+    ...extra,
+  });
+}
+
 // Phase B: explicit restore. Only call this from a direct user click after
 // the user has typed the confirmation phrase. Rechecks local emptiness both
 // before fetching cloud data and again immediately before writing, builds
@@ -677,6 +694,9 @@ export async function executeSupabaseCloudRestore({
 
   const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage });
   if (!deviceAccess.ok) {
+    if (deviceAccess.code === DEVICE_LOCK_LOST_CODE || deviceAccess.deviceLockLost) {
+      return buildDeviceLockRestoreResult();
+    }
     return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, {
       error: deviceAccess.error,
       noWritesPerformed: true,
@@ -770,6 +790,21 @@ export async function executeSupabaseCloudRestore({
     return buildExecuteResult(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY, { localCounts: finalLocalCounts });
   }
 
+  // All cloud reads and validation are complete. The following localStorage
+  // batch is synchronous, so a fresh ownership read directly before it closes
+  // the takeover window without risking a partial restore batch.
+  const applyAccess = await ensureCurrentDeviceCanApplyLocalRestore({
+    configured,
+    user,
+    company,
+    storage,
+    reason: "before_local_restore_apply",
+  });
+  if (!applyAccess.ok) {
+    if (applyAccess.deviceLockLost) return buildDeviceLockRestoreResult();
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: applyAccess.error });
+  }
+
   try {
     storage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(payload.customers));
     storage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(payload.projects));
@@ -808,7 +843,40 @@ export async function executeSupabaseCloudRestore({
 
   // A successful restore makes local data equal to cloud by definition --
   // there is nothing dirty to back up, so clear (not mark) the queue.
+  const queueAccess = await ensureCurrentDeviceCanApplyLocalRestore({
+    configured,
+    user,
+    company,
+    storage,
+    reason: "before_restore_queue_clear",
+  });
+  if (!queueAccess.ok) {
+    const extra = {
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+    };
+    return queueAccess.deviceLockLost
+      ? buildDeviceLockRestoreResult(extra)
+      : buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: queueAccess.error, ...extra });
+  }
   clearCloudBackupDirty("cloud_restore_success");
+
+  const completionAccess = await ensureCurrentDeviceCanApplyLocalRestore({
+    configured,
+    user,
+    company,
+    storage,
+    reason: "before_restore_complete",
+  });
+  if (!completionAccess.ok) {
+    const extra = {
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+    };
+    return completionAccess.deviceLockLost
+      ? buildDeviceLockRestoreResult(extra)
+      : buildExecuteResult(CLOUD_RESTORE_STATUS.ERROR, { error: completionAccess.error, ...extra });
+  }
 
   try {
     lastRestoreCompleteAt = Date.now();

@@ -29,6 +29,8 @@ test("locked device renders the takeover screen and hides normal app content", (
   );
 
   expect(screen.getByText("This Device Is Locked")).toBeInTheDocument();
+  expect(screen.getByText("This device is now locked to protect your estimates, invoices, and customer records.")).toBeInTheDocument();
+  expect(screen.getByText(/To continue here, switch EstiPaid back to this device\./)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Switch to This Device" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign Out" })).toBeInTheDocument();
   expect(screen.queryByText("Normal App Content")).not.toBeInTheDocument();

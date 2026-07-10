@@ -1,5 +1,6 @@
 const mockGetSupabaseClient = jest.fn();
 const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
+const mockEnsureCurrentDeviceCanApplyLocalRestore = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
@@ -7,6 +8,9 @@ jest.mock("./supabaseClient", () => ({
 
 jest.mock("./supabaseDeviceLock", () => ({
   ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
+  ensureCurrentDeviceCanApplyLocalRestore: (...args) => mockEnsureCurrentDeviceCanApplyLocalRestore(...args),
+  DEVICE_LOCK_LOST_CODE: "device_lock_lost",
+  DEVICE_LOCK_LOST_RESTORE_MESSAGE: "Recovery stopped because EstiPaid was switched to another device.",
 }));
 
 const {
@@ -309,6 +313,8 @@ describe("supabaseCloudRestore", () => {
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
     mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
   });
 
   describe("previewSupabaseCloudRestore", () => {
@@ -575,6 +581,60 @@ describe("supabaseCloudRestore", () => {
       expect(result.error).toMatch(/locked/i);
       expect(mockGetSupabaseClient).not.toHaveBeenCalled();
       expect(storage.setItem).not.toHaveBeenCalled();
+    });
+
+    test("aborts after cloud fetch when a takeover is detected before the local restore batch", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "restore_pending_before_takeover", domains: ["customers"], severity: "normal" });
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows({ estimates: [cloudEstimateRow()] }) });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+      mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValueOnce({
+        ok: false,
+        code: "device_lock_lost",
+        deviceLockLost: true,
+        error: "Recovery stopped because EstiPaid was switched to another device.",
+      });
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+      expect(result.deviceLockLost).toBe(true);
+      expect(result.error).toBe("Recovery stopped because EstiPaid was switched to another device.");
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(readCloudBackupQueueState().pending).toBe(true);
+      expect(mockEnsureCurrentDeviceCanApplyLocalRestore).toHaveBeenCalledWith(expect.objectContaining({
+        reason: "before_local_restore_apply",
+      }));
+    });
+
+    test("does not clear the backup queue or mark restore complete if ownership is lost after the local batch", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "restore_pending_after_takeover", domains: ["customers"], severity: "normal" });
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+      mockEnsureCurrentDeviceCanApplyLocalRestore
+        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce({
+          ok: false,
+          code: "device_lock_lost",
+          deviceLockLost: true,
+          error: "Recovery stopped because EstiPaid was switched to another device.",
+        });
+
+      const onComplete = jest.fn();
+      window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      try {
+        const storage = buildWritableStorage();
+        const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+        expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+        expect(result.noWritesPerformed).toBe(false);
+        expect(readCloudBackupQueueState().pending).toBe(true);
+        expect(onComplete).not.toHaveBeenCalled();
+      } finally {
+        window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+      }
     });
 
     test("rechecks local emptiness immediately before writing and blocks if data appeared in between", async () => {
