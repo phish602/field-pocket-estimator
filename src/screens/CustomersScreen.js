@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
@@ -559,6 +559,9 @@ export default function CustomersScreen({
   const [localCustomers, setLocalCustomers] = useState(() => (Array.isArray(customers) ? [] : readCustomers()));
   const [q, setQ] = useState("");
   const [typeaheadHidden, setTypeaheadHidden] = useState(false);
+  const [highlightCustomerId, setHighlightCustomerId] = useState("");
+  const cardRefs = useRef({});
+  const highlightTimerRef = useRef(null);
   const [mode, setMode] = useState("list"); // list | edit
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [toastMessage, setToastMessage] = useState("");
@@ -1167,6 +1170,36 @@ export default function CustomersScreen({
     if (typeof onDone === "function") onDone({ id, customer: c, builderIntent: builderReturnIntent });
   }
 
+  // Dropdown selection: keep the user on the Customers list, narrow the search
+  // to the chosen customer, then scroll to and briefly highlight the matching
+  // lower card. This intentionally does NOT call useCustomer() -- the dropdown
+  // is a find-and-view aid, not a "use customer" shortcut.
+  function selectTypeaheadCustomer(c) {
+    const cid = String(c?.id || "");
+    if (!cid) return;
+    setQ(displayName(c));
+    setTypeaheadHidden(true);
+    setHighlightCustomerId(cid);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightCustomerId(""), 2000);
+  }
+
+  useEffect(() => {
+    if (!highlightCustomerId) return;
+    const node = cardRefs.current?.[highlightCustomerId];
+    if (node && typeof node.scrollIntoView === "function") {
+      try {
+        node.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch {
+        try { node.scrollIntoView(); } catch {}
+      }
+    }
+  }, [highlightCustomerId]);
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
+
   const typeaheadQuery = String(q || "").trim();
   const typeaheadMatches = typeaheadQuery ? (filtered || []).slice(0, 5) : [];
   const showTypeahead = mode === "list" && !!typeaheadQuery && !typeaheadHidden;
@@ -1205,7 +1238,7 @@ export default function CustomersScreen({
                     className="pe-input"
                     placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
                     value={q}
-                    onChange={(e) => { setQ(e.target.value); setTypeaheadHidden(false); }}
+                    onChange={(e) => { setQ(e.target.value); setTypeaheadHidden(false); setHighlightCustomerId(""); }}
                     onKeyDown={(e) => { if (e.key === "Escape") setTypeaheadHidden(true); }}
                     style={{ width: "100%" }}
                     role="combobox"
@@ -1247,7 +1280,7 @@ export default function CustomersScreen({
                             type="button"
                             role="option"
                             aria-selected="false"
-                            onClick={() => useCustomer(c)}
+                            onClick={() => selectTypeaheadCustomer(c)}
                             style={{
                               display: "grid",
                               gap: 2,
@@ -1416,6 +1449,7 @@ export default function CustomersScreen({
               {filtered.map((c) => {
                 const id = String(c?.id || "");
                 const active = String(selectedCustomerId || "") && String(selectedCustomerId) === id;
+                const highlighted = String(highlightCustomerId || "") && String(highlightCustomerId) === id;
                 const kpi = customerKpis?.[id] || {};
                 const meta = customerProjectMeta?.[id] || {};
                 const accountAction = deriveCustomerNextAction({
@@ -1445,6 +1479,12 @@ export default function CustomersScreen({
                   <div
                     className="pe-card pe-card-content ep-glass-tile"
                     key={id || Math.random()}
+                    ref={(node) => {
+                      if (node) cardRefs.current[id] = node;
+                      else delete cardRefs.current[id];
+                    }}
+                    data-customer-card-id={id}
+                    data-customer-card-highlighted={highlighted ? "true" : undefined}
                     style={{
                       ...cardBaseStyle,
                       ...(active ? cardActiveStyle : null),
@@ -1465,6 +1505,12 @@ export default function CustomersScreen({
                           ? "linear-gradient(180deg, rgba(245,158,11,0.06), rgba(255,255,255,0.03))"
                           : "linear-gradient(180deg, rgba(59,130,246,0.05), rgba(255,255,255,0.03))",
                       boxShadow: "0 14px 30px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03)",
+                      transition: "box-shadow 220ms ease, border-color 220ms ease",
+                      ...(highlighted ? {
+                        border: "1px solid rgba(74,222,128,0.85)",
+                        background: "linear-gradient(180deg, rgba(34,197,94,0.12), rgba(255,255,255,0.03))",
+                        boxShadow: "0 0 0 3px rgba(74,222,128,0.35), 0 18px 40px rgba(0,0,0,0.3)",
+                      } : null),
                     }}
                   >
                     <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap" }}>

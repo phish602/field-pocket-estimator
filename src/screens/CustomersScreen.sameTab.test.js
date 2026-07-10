@@ -212,20 +212,49 @@ describe("CustomersScreen typeahead dropdown", () => {
     expect(screen.queryByRole("listbox", { name: /Matching customers/i })).not.toBeInTheDocument();
   });
 
-  test("clicking a dropdown customer row triggers the existing use handoff", async () => {
+  test("clicking a dropdown customer stays on the list, does not use/navigate, closes the dropdown, and filters + highlights the selected card", async () => {
     seedThreeCustomers();
     const onDone = jest.fn();
-    render(<CustomersScreen lang="en" t={(k) => k} onDone={onDone} />);
-    await typeSearch("Jose");
+    const scrollIntoView = jest.fn();
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
 
-    const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
-    const row = within(listbox).getByRole("option", { name: /Jose Martinez/i });
-    await act(async () => {
-      fireEvent.click(row);
-    });
+    try {
+      render(<CustomersScreen lang="en" t={(k) => k} onDone={onDone} />);
 
-    await waitFor(() => {
-      expect(onDone).toHaveBeenCalled();
-    });
+      // Wait for the lower card list to render (skeleton cleared).
+      await screen.findByText("Jose Martinez");
+
+      await typeSearch("Jose");
+
+      const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
+      const row = within(listbox).getByRole("option", { name: /Jose Martinez/i });
+      await act(async () => {
+        fireEvent.click(row);
+      });
+
+      // Stays on the Customers list (does NOT navigate to the estimate builder):
+      // the search input is still present.
+      expect(screen.getByPlaceholderText(/Search name, phone, email/i)).toBeInTheDocument();
+
+      // Does NOT call the use-customer handoff.
+      expect(onDone).not.toHaveBeenCalled();
+
+      // Dropdown closes.
+      await waitFor(() => {
+        expect(screen.queryByRole("listbox", { name: /Matching customers/i })).not.toBeInTheDocument();
+      });
+
+      // Lower list is filtered down to the selected customer card.
+      const cards = document.querySelectorAll("[data-customer-card-id]");
+      expect(cards.length).toBe(1);
+      expect(cards[0].getAttribute("data-customer-card-id")).toBe("c2");
+
+      // Selected card is highlighted and scrolled into view.
+      expect(cards[0].getAttribute("data-customer-card-highlighted")).toBe("true");
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+    }
   });
 });
