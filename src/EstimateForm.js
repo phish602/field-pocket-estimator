@@ -4961,11 +4961,16 @@ export default function EstimateForm(props) {
     pendingSpecialConditionsAutoCollapseRef.current = false;
   };
 
-  const onCancelEdit = () => {
+  const onCancelEdit = async () => {
     if (!isEditMode) return;
     const ok = window.confirm(`Discard changes to this ${isInvoiceEditMode ? "invoice" : "estimate"}?`);
     if (!ok) return;
     if (isInvoiceEditMode && state?.meta?.ephemeralDraft) {
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        setSavePrompt({ tone: "error", message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device." });
+        return;
+      }
       try {
         const existingInvoices = readStoredInvoices();
         const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);

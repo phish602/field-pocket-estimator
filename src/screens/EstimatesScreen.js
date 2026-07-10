@@ -3002,11 +3002,16 @@ export default function EstimatesScreen({
                           type="button"
                           onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "project")}
                           onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "project")}
-                          onClick={(evt) => runEstimateCardAction(evt, id, "project", () => {
+                          onClick={(evt) => runEstimateCardAction(evt, id, "project", async () => {
                             const currentProjects = readStoredProjects();
                             const target = resolveProjectNavigationTarget(e, currentProjects);
                             if (target?.needsBackfill && target?.project) {
                               const nextProjects = upsertProject(currentProjects, target.project);
+                              const mutationAccess = await ensureCanMutateBusinessData("local_save");
+                              if (!mutationAccess?.ok) {
+                                window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+                                return;
+                              }
                               writeStoredProjects(nextProjects);
                               window.dispatchEvent(new Event("estipaid:projects-changed"));
                             }

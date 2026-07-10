@@ -3205,11 +3205,16 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               type="button"
                               onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
                               onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "project")}
-                              onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "project", () => {
+                              onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "project", async () => {
                                 const currentProjects = readStoredProjects();
                                 const target = resolveProjectNavigationTarget(invoice, currentProjects);
                                 if (target?.needsBackfill && target?.project) {
                                   const nextProjects = upsertProject(currentProjects, target.project);
+                                  const mutationAccess = await ensureCanMutateBusinessData("local_save");
+                                  if (!mutationAccess?.ok) {
+                                    window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+                                    return;
+                                  }
                                   writeStoredProjects(nextProjects);
                                   window.dispatchEvent(new Event("estipaid:projects-changed"));
                                 }
