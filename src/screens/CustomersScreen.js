@@ -241,6 +241,50 @@ function findLinkedProjectsForCustomer(customer, allProjects = [], allCustomers 
   });
 }
 
+// Narrow read-only summary of a customer's linked business history. Used to
+// decide whether a customer may be hard deleted (no history) or must be
+// archived instead (has history). Matching mirrors del()/KPI logic: direct
+// customer-id first, then exact normalized name fallback only (no fuzzy match).
+// Invoices carry amountPaid/payments/status, so linked invoices represent
+// payment history.
+function getCustomerBusinessHistory(customer, allCustomers = []) {
+  const allProjects = readStoredProjects();
+  const allDocs = readSavedDocs();
+  const allEstimates = allDocs.filter((d) => String(d?.docType || "estimate").toLowerCase() !== "invoice");
+  const allInvoices = allDocs.filter((d) => String(d?.docType || "").toLowerCase() === "invoice");
+
+  const linkedProjects = findLinkedProjectsForCustomer(
+    customer,
+    allProjects,
+    Array.isArray(allCustomers) ? allCustomers : [],
+    allEstimates,
+    allInvoices,
+  );
+
+  const custId = String(customer?.id || "").trim();
+  const targetNames = new Set(collectCustomerLookupNames(customer));
+  const isDocLinked = (d) => {
+    const docCustId = String(d?.customerId || d?.customer?.id || "").trim();
+    if (custId && docCustId === custId) return true;
+    return collectDocCustomerLookupNames(d).some((name) => targetNames.has(name));
+  };
+  const linkedEstimates = allEstimates.filter(isDocLinked);
+  const linkedInvoices = allInvoices.filter(isDocLinked);
+
+  const parts = [];
+  if (linkedProjects.length > 0) parts.push(`${linkedProjects.length} project${linkedProjects.length === 1 ? "" : "s"}`);
+  if (linkedEstimates.length > 0) parts.push(`${linkedEstimates.length} estimate${linkedEstimates.length === 1 ? "" : "s"}`);
+  if (linkedInvoices.length > 0) parts.push(`${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"}`);
+
+  return {
+    linkedProjects,
+    linkedEstimates,
+    linkedInvoices,
+    hasHistory: linkedProjects.length > 0 || linkedEstimates.length > 0 || linkedInvoices.length > 0,
+    parts,
+  };
+}
+
 function joinAddr(a) {
   const street = String(a?.street || "").trim();
   const city = String(a?.city || "").trim();
@@ -560,6 +604,7 @@ export default function CustomersScreen({
   const [q, setQ] = useState("");
   const [typeaheadHidden, setTypeaheadHidden] = useState(false);
   const [highlightCustomerId, setHighlightCustomerId] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const cardRefs = useRef({});
   const highlightTimerRef = useRef(null);
   const [mode, setMode] = useState("list"); // list | edit
@@ -859,9 +904,20 @@ export default function CustomersScreen({
     return byId;
   }, [mode, list, refreshSeq]);
 
+  // Archived customers stay in localStorage (and in `list` for KPI/history), but
+  // are hidden from the active list and dropdown unless "Show archived" is on.
+  const archivedCount = useMemo(
+    () => (Array.isArray(list) ? list.filter((c) => c?.archived).length : 0),
+    [list],
+  );
+  const visibleList = useMemo(() => {
+    const arr = Array.isArray(list) ? list : [];
+    return showArchived ? arr : arr.filter((c) => !c?.archived);
+  }, [list, showArchived]);
+
   const filtered = useMemo(() => {
   const qq = norm(q);
-  const arr = list || [];
+  const arr = visibleList || [];
   if (!qq) return arr;
 
   const vals = [];
@@ -896,7 +952,7 @@ export default function CustomersScreen({
     const blob = norm(vals.join(" "));
     return blob.includes(qq);
   });
-}, [list, q]);
+}, [visibleList, q]);
 
   const customerPortfolioSummary = useMemo(() => {
     const visible = filtered || [];
@@ -1094,56 +1150,100 @@ export default function CustomersScreen({
     }
   }
 
+  // Hard delete is allowed ONLY for customers with no linked business history.
+  // If history exists, we never remove the record -- we archive it instead so
+  // estimates/invoices/projects/payments stay connected to past work.
   async function del(id) {
     const sid = String(id || "");
     const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
-    const nm = target ? displayName(target) : sid;
+    if (!target) return;
+    const nm = displayName(target);
 
-    if (target) {
-      const currentList = Array.isArray(list) ? list : [];
-      const allProjects = readStoredProjects();
-      const allDocs = readSavedDocs();
-      const allEstimates = allDocs.filter((d) => String(d?.docType || "estimate").toLowerCase() !== "invoice");
-      const allInvoices = allDocs.filter((d) => String(d?.docType || "").toLowerCase() === "invoice");
-
-      const linkedProjects = findLinkedProjectsForCustomer(target, allProjects, currentList, allEstimates, allInvoices);
-
-      const custId = String(target?.id || "").trim();
-      const targetNames = new Set(collectCustomerLookupNames(target));
-      const isDocLinked = (d) => {
-        const docCustId = String(d?.customerId || d?.customer?.id || "").trim();
-        if (custId && docCustId === custId) return true;
-        return collectDocCustomerLookupNames(d).some((name) => targetNames.has(name));
-      };
-      const linkedEstimates = allEstimates.filter(isDocLinked);
-      const linkedInvoices = allInvoices.filter(isDocLinked);
-
-      if (linkedProjects.length > 0 || linkedEstimates.length > 0 || linkedInvoices.length > 0) {
-        const parts = [];
-        if (linkedProjects.length > 0) parts.push(`${linkedProjects.length} project${linkedProjects.length === 1 ? "" : "s"}`);
-        if (linkedEstimates.length > 0) parts.push(`${linkedEstimates.length} estimate${linkedEstimates.length === 1 ? "" : "s"}`);
-        if (linkedInvoices.length > 0) parts.push(`${linkedInvoices.length} invoice${linkedInvoices.length === 1 ? "" : "s"}`);
-        window.alert(label(
-          `Cannot delete ${nm}. This customer is linked to ${parts.join(", ")} and cannot be removed.`,
-          `No se puede eliminar ${nm}. Este cliente está vinculado a ${parts.join(", ")} y no se puede eliminar.`,
-        ));
-        return;
-      }
+    // Safety: re-check history at action time. If the customer has any linked
+    // records, redirect to the archive flow rather than hard deleting.
+    const history = getCustomerBusinessHistory(target, Array.isArray(list) ? list : []);
+    if (history.hasHistory) {
+      await archiveCustomer(id);
+      return;
     }
 
-    const ok = window.confirm(label(`Delete customer: ${nm}? This cannot be undone.`, `¿Eliminar cliente: ${nm}? Esto no se puede deshacer.`));
+    const ok = window.confirm(label(
+      `Delete Customer?\n\nThis customer has no estimates, invoices, projects, or payments attached.\n\nDeleting removes ${nm} from your customer list.`,
+      `¿Eliminar cliente?\n\nEste cliente no tiene estimados, facturas, proyectos ni pagos asociados.\n\nEliminar quita a ${nm} de tu lista de clientes.`,
+    ));
     if (!ok) return;
-    const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
+    const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
     persistCustomers(next);
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
     window.dispatchEvent(new Event("estipaid:customers-changed"));
+  }
+
+  // Archive a customer with business history. The record stays in localStorage
+  // with the same id and all fields; only archived/archivedAt are added.
+  // Estimates, invoices, projects, and payments are never touched.
+  async function archiveCustomer(id) {
+    const sid = String(id || "");
+    const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
+    if (!target) return;
+    const nm = displayName(target);
+
+    const ok = window.confirm(label(
+      "This Customer Has Business History\n\nThis customer is connected to estimates, invoices, projects, or payments.\n\nTo protect your records, EstiPaid will archive this customer instead of deleting it.\n\nArchived customers are hidden from the active customer list but remain connected to past work.",
+      "Este cliente tiene historial comercial\n\nEste cliente está conectado a estimados, facturas, proyectos o pagos.\n\nPara proteger tus registros, EstiPaid archivará este cliente en lugar de eliminarlo.\n\nLos clientes archivados se ocultan de la lista activa pero permanecen conectados al trabajo anterior.",
+    ));
+    if (!ok) return;
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
+    const next = (Array.isArray(list) ? list : []).map((c) => (
+      String(c?.id || "") === sid
+        ? { ...c, archived: true, archivedAt: new Date().toISOString() }
+        : c
+    ));
+    persistCustomers(next);
+    if (typeof setCustomers === "function") setCustomers(next);
+    else setLocalCustomers(next);
+    if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
+    window.dispatchEvent(new Event("estipaid:customers-changed"));
+    setToastMessage(label(`${nm} archived`, `${nm} archivado`));
+    setShowToast(true);
+  }
+
+  // Restore an archived customer back into the active list. Clears the
+  // archived/archivedAt flags; all other fields and linked records stay intact.
+  async function restoreCustomer(id) {
+    const sid = String(id || "");
+    const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
+    if (!target) return;
+    const nm = displayName(target);
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
+    const next = (Array.isArray(list) ? list : []).map((c) => {
+      if (String(c?.id || "") !== sid) return c;
+      const clone = { ...c };
+      delete clone.archived;
+      delete clone.archivedAt;
+      return clone;
+    });
+    persistCustomers(next);
+    if (typeof setCustomers === "function") setCustomers(next);
+    else setLocalCustomers(next);
+    window.dispatchEvent(new Event("estipaid:customers-changed"));
+    setToastMessage(label(`${nm} restored`, `${nm} restaurado`));
+    setShowToast(true);
   }
 
   async function useCustomer(c) {
@@ -1325,6 +1425,18 @@ export default function CustomersScreen({
                   ) : null}
                 </div>
               </div>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: "rgba(215,225,233,0.72)", cursor: "pointer", justifySelf: "start" }}>
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                  style={{ width: 15, height: 15, cursor: "pointer" }}
+                />
+                {label("Show archived", "Mostrar archivados")}
+                {archivedCount > 0 ? (
+                  <span style={{ opacity: 0.6, fontWeight: 800 }}>({archivedCount})</span>
+                ) : null}
+              </label>
             </div>
 
             <div
@@ -1452,6 +1564,10 @@ export default function CustomersScreen({
                 const highlighted = String(highlightCustomerId || "") && String(highlightCustomerId) === id;
                 const kpi = customerKpis?.[id] || {};
                 const meta = customerProjectMeta?.[id] || {};
+                const isArchived = !!c?.archived;
+                const hasHistory = toNum(kpi.estimateCount || 0) > 0
+                  || toNum(kpi.invoiceCount || 0) > 0
+                  || toNum(meta.projectCount || 0) > 0;
                 const accountAction = deriveCustomerNextAction({
                   overdueInvoiceCount: toNum(kpi.overdueInvoiceCount || 0),
                   balanceDue: toNum(kpi.balanceDue || 0),
@@ -1521,6 +1637,14 @@ export default function CustomersScreen({
                             {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
                           </div>
                           {active ? <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+                          {isArchived ? (
+                            <span
+                              data-customer-archived-badge={id}
+                              style={{ padding: "3px 9px", borderRadius: 999, border: "1px solid rgba(148,163,184,0.35)", background: "rgba(148,163,184,0.14)", color: "rgba(203,213,225,0.85)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase" }}
+                            >
+                              {label("Archived", "Archivado")}
+                            </span>
+                          ) : null}
                         </div>
 
                         {contactLine(c) ? <TextLine>{contactLine(c)}</TextLine> : null}
@@ -1650,17 +1774,42 @@ export default function CustomersScreen({
                       </div>
 
                         <div style={{ display: "grid", gap: 8, minWidth: 0, justifyItems: "stretch" }}>
-                        <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
-                          {label("Use", "Usar")}
-                        </button>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
-                            {label("Edit", "Editar")}
-                          </button>
-                          <button className="pe-btn pe-btn-ghost" type="button" onClick={() => del(c?.id)} style={{ width: "100%" }}>
-                            {label("Delete", "Eliminar")}
-                          </button>
-                        </div>
+                        {isArchived ? (
+                          <>
+                            <button
+                              className="pe-btn"
+                              type="button"
+                              onClick={() => restoreCustomer(c?.id)}
+                              data-customer-restore={id}
+                              style={{ width: "100%", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.32)", color: "rgba(187,247,208,0.96)" }}
+                            >
+                              {label("Restore Customer", "Restaurar cliente")}
+                            </button>
+                            <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
+                              {label("Edit", "Editar")}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
+                              {label("Use", "Usar")}
+                            </button>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
+                                {label("Edit", "Editar")}
+                              </button>
+                              {hasHistory ? (
+                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => archiveCustomer(c?.id)} data-customer-archive={id} style={{ width: "100%" }}>
+                                  {label("Archive Customer", "Archivar cliente")}
+                                </button>
+                              ) : (
+                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => del(c?.id)} data-customer-delete={id} style={{ width: "100%" }}>
+                                  {label("Delete Customer", "Eliminar cliente")}
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        )}
                         {onOpenProjectDetail ? (
                           <button
                             className="pe-btn"
