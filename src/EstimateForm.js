@@ -5522,6 +5522,10 @@ export default function EstimateForm(props) {
           projectId: projectRecord.id,
           estimateNumber,
           invoiceNumber: "",
+          // New saved estimates start their lifecycle as Draft so they remain
+          // safely deletable until the user marks them Awaiting Response / sent.
+          // Editing an existing estimate preserves whatever status it already had.
+          status: isEditMode ? String(baseRecord?.status || "").trim() : "draft",
         };
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         const reassignmentCleanup = {

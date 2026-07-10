@@ -64,7 +64,7 @@ function expandCard() {
 function clickStatusButton(statusName) {
   const buttonName = statusName === "approved" ? /Mark Approved/i
     : statusName === "lost" ? /Mark Lost/i
-    : /Reset to Pending/i;
+    : /Mark Awaiting Response/i;
   fireEvent.click(screen.getByRole("button", { name: buttonName }));
 }
 

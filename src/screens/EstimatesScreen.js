@@ -26,6 +26,7 @@ const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
+const STATUS_DRAFT = "draft";
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_LOST = "lost";
@@ -38,8 +39,12 @@ const OPEN_ESTIMATE_NAV_GUARD_MS = 800;
 
 function normalizeEstimateStatus(status) {
   const raw = String(status || "").trim().toLowerCase();
+  if (raw === STATUS_DRAFT) return STATUS_DRAFT;
   if (raw === STATUS_APPROVED) return STATUS_APPROVED;
   if (raw === STATUS_LOST) return STATUS_LOST;
+  // Blank / unknown legacy statuses stay pending (Awaiting Response) so old
+  // sent-out records remain protected. New saved estimates are written as
+  // "draft" by EstimateForm, so they preserve their draft status here.
   return STATUS_PENDING;
 }
 
@@ -68,21 +73,37 @@ export function getEstimateDeleteMode(estimate, invoices = [], projects = []) {
   );
   const isPendingLike = status === STATUS_PENDING || status === "sent" || Boolean(estimate?.sentAt || estimate?.sent);
   const isApprovedLike = status === STATUS_APPROVED || status === "accepted";
-  const isDraftSafe = status === "draft" && !isPendingLike && !isApprovedLike && !isConverted && !hasProjectOrCustomerHistory;
+  const isLostLike = status === STATUS_LOST;
+  const isArchived = Boolean(estimate?.archived);
+  // A Draft estimate is safe to hard delete even when it already has a customer
+  // or project attached -- customer/project association alone is NOT business
+  // history. Delete is only blocked once the estimate is customer-facing
+  // (pending/sent), approved/accepted, lost, converted/invoice-linked (incl.
+  // void invoices), or archived.
+  const isDraftSafe = status === STATUS_DRAFT
+    && !isPendingLike
+    && !isApprovedLike
+    && !isLostLike
+    && !isConverted
+    && !isArchived;
   const reasons = [];
-  if (status !== "draft") reasons.push("not_draft");
+  if (status !== STATUS_DRAFT) reasons.push("not_draft");
   if (isPendingLike) reasons.push("pending_or_sent");
   if (isApprovedLike) reasons.push("approved");
+  if (isLostLike) reasons.push("lost");
   if (isConverted) reasons.push("converted_or_invoiced");
-  if (hasProjectOrCustomerHistory) reasons.push("project_or_customer_history");
+  if (isArchived) reasons.push("archived");
   return {
     mode: isDraftSafe ? "delete" : "archive",
     isDraftSafe,
     isSentLike: isPendingLike,
     isPendingLike,
     isApprovedLike,
+    isLostLike,
     isConverted,
+    isArchived,
     hasLinkedInvoices: linkedInvoices.length > 0,
+    // Retained for diagnostics/back-compat only -- no longer blocks Draft delete.
     hasProjectOrCustomerHistory,
     reasons,
   };
@@ -210,7 +231,8 @@ function cloneAsNewEstimate(record, nowTs = Date.now()) {
     updatedAt: now,
     createdAt: now,
     ts: now,
-    status: STATUS_PENDING,
+    // A duplicated estimate is a fresh working copy -> starts as Draft.
+    status: STATUS_DRAFT,
   };
 
   next.estimateNumber = "";
@@ -228,6 +250,20 @@ function cloneAsNewEstimate(record, nowTs = Date.now()) {
     ...(next.customer || {}),
     projectNumber: "",
   };
+
+  // A duplicate is a brand-new Draft: strip conversion / sent / archive markers
+  // so it is not misclassified as protected business history.
+  delete next.convertedInvoiceId;
+  delete next.invoiceId;
+  delete next.sourceInvoiceId;
+  delete next.convertedAt;
+  delete next.conversion;
+  delete next.sourceInvoice;
+  delete next.sourceEstimateId;
+  delete next.sentAt;
+  delete next.sent;
+  delete next.archived;
+  delete next.archivedAt;
 
   const meta = {
     ...(next.meta || {}),
@@ -941,6 +977,8 @@ export default function EstimatesScreen({
   const displayedEstimates = (estimates || []).filter(
     (estimate) => Boolean(estimate?.archived) === showArchived
   );
+  const draftEstimates =
+    displayedEstimates.filter((e) => e?.status === "draft");
   const pendingEstimates =
     displayedEstimates.filter((e) => e?.status === "pending");
   const approvedEstimates =
@@ -950,6 +988,11 @@ export default function EstimatesScreen({
 
   const pipelineSections = useMemo(
     () => [
+      {
+        key: STATUS_DRAFT,
+        title: lang === "es" ? "Borrador" : "Draft",
+        items: draftEstimates,
+      },
       {
         key: STATUS_PENDING,
         title: lang === "es" ? "En espera de respuesta" : "Awaiting Response",
@@ -966,7 +1009,7 @@ export default function EstimatesScreen({
         items: lostEstimates,
       },
     ],
-    [lang, pendingEstimates, approvedEstimates, lostEstimates]
+    [lang, draftEstimates, pendingEstimates, approvedEstimates, lostEstimates]
   );
 
   const estimateDeleteModes = useMemo(() => {
@@ -1075,6 +1118,7 @@ export default function EstimatesScreen({
 
   const revenueForecast = useMemo(() => {
     const totals = {
+      draftRevenue: 0,
       pendingRevenue: 0,
       approvedRevenue: 0,
       lostRevenue: 0,
@@ -1086,6 +1130,7 @@ export default function EstimatesScreen({
       const amount = toNum(estimate?.total);
       if (status === STATUS_APPROVED) totals.approvedRevenue += amount;
       else if (status === STATUS_LOST) totals.lostRevenue += amount;
+      else if (status === STATUS_DRAFT) totals.draftRevenue += amount;
       else totals.pendingRevenue += amount;
     }
 
@@ -1391,6 +1436,38 @@ export default function EstimatesScreen({
       });
       writeStoredEstimatesPreservingLegacy(next);
     } catch {}
+  };
+
+  // Move a customer-facing estimate back to Draft so it becomes deletable again.
+  // Only allowed when the estimate carries no protected business history
+  // (approved/accepted, converted, invoice-linked, or archived) and after an
+  // explicit confirmation. This exists so estimates that were only "Awaiting
+  // Response" because the app lacked a draft stage can be corrected.
+  const moveEstimateToDraft = (estimate) => {
+    const targetIdentity = estimateIdentity(estimate);
+    const targetId = String(estimate?.id || "").trim();
+    const stored = readSavedEstimatesList().find((item) => (
+      targetIdentity
+        ? estimateIdentity(item) === targetIdentity
+        : String(item?.id || "").trim() === targetId
+    )) || estimate;
+
+    if (estimate?.archived || stored?.archived) return;
+
+    const mode = getEstimateDeleteMode(stored, readStoredInvoices(), readStoredProjects());
+    if (mode.isApprovedLike || mode.isConverted || mode.hasLinkedInvoices) {
+      window.alert(lang === "es"
+        ? "Este estimado está conectado a historial comercial y no puede volver a Borrador."
+        : "This estimate is connected to business history and cannot be moved back to Draft.");
+      return;
+    }
+
+    const confirmed = window.confirm(lang === "es"
+      ? "¿Mover estimado de vuelta a Borrador?\n\nHazlo solo si este estimado no fue enviado al cliente.\n\nLos estimados en borrador se pueden eliminar."
+      : "Move Estimate Back to Draft?\n\nOnly do this if this estimate has not been sent to the customer.\n\nDraft estimates can be deleted.");
+    if (!confirmed) return;
+
+    setEstimateStatus(estimate, STATUS_DRAFT);
   };
 
   const shouldShowApprovalInvoicePrompt = (estimate) => {
@@ -2506,12 +2583,16 @@ export default function EstimatesScreen({
                 ? revenueForecast.approvedRevenue
                 : section.key === STATUS_LOST
                   ? revenueForecast.lostRevenue
-                  : revenueForecast.pendingRevenue;
+                  : section.key === STATUS_DRAFT
+                    ? revenueForecast.draftRevenue
+                    : revenueForecast.pendingRevenue;
               const sectionRevenueText = section.key === STATUS_APPROVED
                 ? (lang === "es" ? "de ingresos ganados" : "won revenue")
                 : section.key === STATUS_LOST
                   ? (lang === "es" ? "de ingresos perdidos" : "lost revenue")
-                  : (lang === "es" ? "de ingresos pendientes" : "pending revenue");
+                  : section.key === STATUS_DRAFT
+                    ? (lang === "es" ? "en borrador" : "draft value")
+                    : (lang === "es" ? "de ingresos pendientes" : "pending revenue");
 
               return (
                 <div
@@ -2829,7 +2910,9 @@ export default function EstimatesScreen({
                 ? (lang === "es" ? "Aprobado" : "Approved")
                 : status === STATUS_LOST
                   ? (lang === "es" ? "Perdido" : "Lost")
-                  : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
+                  : status === STATUS_DRAFT
+                    ? (lang === "es" ? "Borrador" : "Draft")
+                    : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
 
               return (
                 <div
@@ -3174,8 +3257,18 @@ export default function EstimatesScreen({
                           disabled={Boolean(e?.archived)}
                           onClick={() => setEstimateStatus(e, STATUS_PENDING)}
                         >
-                          {lang === "es" ? "Restablecer a pendiente" : "Reset to Pending"}
+                          {lang === "es" ? "Marcar en espera de respuesta" : "Mark Awaiting Response"}
                         </button>
+                        {status === STATUS_PENDING ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            disabled={Boolean(e?.archived)}
+                            onClick={() => moveEstimateToDraft(e)}
+                          >
+                            {lang === "es" ? "Mover a Borrador" : "Move to Draft"}
+                          </button>
+                        ) : null}
                         <button
                           className="pe-btn pe-btn-secondary pe-btn-duplicate"
                           type="button"

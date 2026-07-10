@@ -50,14 +50,52 @@ describe("estimate delete safety classification", () => {
     });
   });
 
-  test("project or customer history requires archiving", () => {
-    expect(getEstimateDeleteMode(createEstimate({ customerId: "cust_1" }))).toMatchObject({
-      mode: "archive",
-      hasProjectOrCustomerHistory: true,
+  test("a draft with a customer and project is still deletable (association alone is not business history)", () => {
+    expect(
+      getEstimateDeleteMode(createEstimate({ customerId: "cust_1", customerName: "Acme", projectId: "proj_1", projectName: "Job" }), [], [{ id: "proj_1" }])
+    ).toMatchObject({
+      mode: "delete",
+      isDraftSafe: true,
     });
-    expect(getEstimateDeleteMode(createEstimate({ projectId: "proj_1" }), [], [{ id: "proj_1" }])).toMatchObject({
+    // Diagnostic field still reports the association, but it no longer blocks delete.
+    expect(
+      getEstimateDeleteMode(createEstimate({ customerId: "cust_1" })).hasProjectOrCustomerHistory
+    ).toBe(true);
+    expect(getEstimateDeleteMode(createEstimate({ customerId: "cust_1" }))).toMatchObject({ mode: "delete" });
+  });
+
+  test("lost estimates are archived, not deleted", () => {
+    expect(getEstimateDeleteMode(createEstimate({ status: "lost" }))).toMatchObject({
       mode: "archive",
-      hasProjectOrCustomerHistory: true,
+      isLostLike: true,
+    });
+  });
+
+  test("a draft marked sent (sentAt) is archived, not deleted", () => {
+    expect(getEstimateDeleteMode(createEstimate({ sentAt: 1714694400000 }))).toMatchObject({
+      mode: "archive",
+      isPendingLike: true,
+    });
+  });
+
+  test("an archived draft is archive-only (cannot be hard deleted)", () => {
+    const mode = getEstimateDeleteMode(createEstimate({ archived: true, archivedAt: "2026-01-01T00:00:00.000Z" }));
+    expect(mode).toMatchObject({ mode: "archive", isArchived: true });
+    expect(mode.reasons).toContain("archived");
+  });
+
+  test("a converted draft (invoiceId marker) is archived, not deleted", () => {
+    expect(getEstimateDeleteMode(createEstimate({ invoiceId: "inv_1" }))).toMatchObject({
+      mode: "archive",
+      isConverted: true,
+    });
+  });
+
+  test("an invoice-linked draft is archived even when the linked invoice is void", () => {
+    const linkedInvoice = createLinkedInvoice("est_test", { status: "void", paymentStatus: "void" });
+    expect(getEstimateDeleteMode(createEstimate({ customerId: "cust_1" }), [linkedInvoice])).toMatchObject({
+      mode: "archive",
+      hasLinkedInvoices: true,
     });
   });
 });
