@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import CustomersScreen from "./CustomersScreen";
 
@@ -127,5 +127,105 @@ describe("CustomersScreen same-tab refresh", () => {
       expect(screen.queryByText(/Customer Two/i)).not.toBeInTheDocument();
     });
     expect(screen.getAllByText(/Customer One/i).length).toBeGreaterThan(0);
+  });
+});
+
+describe("CustomersScreen typeahead dropdown", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function seedThreeCustomers() {
+    seedCustomers([
+      createCustomer({ id: "c1", fullName: "John Smith", name: "John Smith" }),
+      createCustomer({ id: "c2", fullName: "Jose Martinez", name: "Jose Martinez" }),
+      createCustomer({
+        id: "c3",
+        type: "commercial",
+        fullName: "",
+        name: "Johnson Painting LLC",
+        companyName: "Johnson Painting LLC",
+      }),
+    ]);
+    seedProjects([]);
+    seedEstimates([]);
+    seedInvoices([]);
+  }
+
+  async function typeSearch(value) {
+    const input = await screen.findByPlaceholderText(/Search name, phone, email/i);
+    act(() => {
+      fireEvent.change(input, { target: { value } });
+    });
+    return input;
+  }
+
+  test("typing shows a dropdown with a matching customer, an Add Customer row, and keeps the lower filtered list", async () => {
+    seedThreeCustomers();
+    render(<CustomersScreen lang="en" t={(k) => k} />);
+
+    // Wait for the existing lower card list to finish loading (skeleton cleared).
+    await screen.findByText("John Smith");
+
+    await typeSearch("Jo");
+
+    const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
+    expect(within(listbox).getByText("John Smith")).toBeInTheDocument();
+    expect(within(listbox).getByText(/\+ Add Customer/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
+
+    // The existing full filtered card list still renders below (name appears in both dropdown and card).
+    await waitFor(() => {
+      expect(screen.getAllByText("John Smith").length).toBeGreaterThan(1);
+    });
+  });
+
+  test("dropdown still offers Add Customer when there are zero matches", async () => {
+    seedThreeCustomers();
+    render(<CustomersScreen lang="en" t={(k) => k} />);
+    await typeSearch("Zzz-no-such-customer");
+
+    const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
+    expect(within(listbox).getByText(/\+ Add Customer/i)).toBeInTheDocument();
+    expect(within(listbox).queryAllByRole("option").length).toBe(0);
+  });
+
+  test("clicking the dropdown Add Customer row opens the add form", async () => {
+    seedThreeCustomers();
+    render(<CustomersScreen lang="en" t={(k) => k} />);
+    await typeSearch("Jo");
+
+    const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
+    const addButton = within(listbox).getByRole("button", { name: /\+ Add Customer/i });
+    act(() => {
+      fireEvent.click(addButton);
+    });
+
+    // Leaving list mode: the search input and dropdown are gone, edit/add form is shown.
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText(/Search name, phone, email/i)).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole("listbox", { name: /Matching customers/i })).not.toBeInTheDocument();
+  });
+
+  test("clicking a dropdown customer row triggers the existing use handoff", async () => {
+    seedThreeCustomers();
+    const onDone = jest.fn();
+    render(<CustomersScreen lang="en" t={(k) => k} onDone={onDone} />);
+    await typeSearch("Jose");
+
+    const listbox = await screen.findByRole("listbox", { name: /Matching customers/i });
+    const row = within(listbox).getByRole("option", { name: /Jose Martinez/i });
+    await act(async () => {
+      fireEvent.click(row);
+    });
+
+    await waitFor(() => {
+      expect(onDone).toHaveBeenCalled();
+    });
   });
 });

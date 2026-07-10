@@ -558,6 +558,7 @@ export default function CustomersScreen({
   const requireEmail = !!customerSettings?.requireEmail;
   const [localCustomers, setLocalCustomers] = useState(() => (Array.isArray(customers) ? [] : readCustomers()));
   const [q, setQ] = useState("");
+  const [typeaheadHidden, setTypeaheadHidden] = useState(false);
   const [mode, setMode] = useState("list"); // list | edit
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [toastMessage, setToastMessage] = useState("");
@@ -1166,6 +1167,10 @@ export default function CustomersScreen({
     if (typeof onDone === "function") onDone({ id, customer: c, builderIntent: builderReturnIntent });
   }
 
+  const typeaheadQuery = String(q || "").trim();
+  const typeaheadMatches = typeaheadQuery ? (filtered || []).slice(0, 5) : [];
+  const showTypeahead = mode === "list" && !!typeaheadQuery && !typeaheadHidden;
+
   return (
     <section className="pe-section">
       {returnToEstimator && (
@@ -1193,15 +1198,99 @@ export default function CustomersScreen({
           </div>
 
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 12 }}>
-            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, display: "grid", gap: 10 }}>
+            <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, display: "grid", gap: 10, position: "relative", zIndex: showTypeahead ? 5 : "auto" }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <input
-                  className="pe-input"
-                  placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  style={{ flex: "1 1 280px" }}
-                />
+                <div style={{ position: "relative", flex: "1 1 280px", minWidth: 0 }}>
+                  <input
+                    className="pe-input"
+                    placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
+                    value={q}
+                    onChange={(e) => { setQ(e.target.value); setTypeaheadHidden(false); }}
+                    onKeyDown={(e) => { if (e.key === "Escape") setTypeaheadHidden(true); }}
+                    style={{ width: "100%" }}
+                    role="combobox"
+                    aria-expanded={showTypeahead}
+                    aria-controls="customer-typeahead-list"
+                    aria-autocomplete="list"
+                  />
+                  {showTypeahead ? (
+                    <div
+                      id="customer-typeahead-list"
+                      role="listbox"
+                      aria-label={label("Matching customers", "Clientes coincidentes")}
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 6px)",
+                        left: 0,
+                        right: 0,
+                        zIndex: 20,
+                        maxHeight: 300,
+                        overflowY: "auto",
+                        display: "grid",
+                        gap: 3,
+                        padding: 6,
+                        borderRadius: 14,
+                        border: "1px solid rgba(168,184,195,0.18)",
+                        background: "linear-gradient(180deg, rgb(21,29,39), rgb(9,13,19))",
+                        boxShadow: "0 24px 54px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)",
+                      }}
+                    >
+                      {typeaheadMatches.map((c) => {
+                        const cid = String(c?.id || "");
+                        const typeText = String(c?.type || "residential") === "commercial"
+                          ? label("Commercial", "Comercial")
+                          : label("Residential", "Residencial");
+                        const contact = phoneEmailLine(c);
+                        return (
+                          <button
+                            key={`typeahead-${cid}`}
+                            type="button"
+                            role="option"
+                            aria-selected="false"
+                            onClick={() => useCustomer(c)}
+                            style={{
+                              display: "grid",
+                              gap: 2,
+                              width: "100%",
+                              textAlign: "left",
+                              padding: "9px 11px",
+                              borderRadius: 10,
+                              border: "1px solid rgba(255,255,255,0.06)",
+                              background: "rgba(255,255,255,0.02)",
+                              color: "rgba(239,245,249,0.95)",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <span style={{ fontWeight: 800, fontSize: 13.5, lineHeight: 1.2 }}>{displayName(c)}</span>
+                            {contact ? (
+                              <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.62)", lineHeight: 1.3 }}>{contact}</span>
+                            ) : null}
+                            <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(148,163,184,0.7)" }}>{typeText}</span>
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => startNew()}
+                        style={{
+                          display: "grid",
+                          gap: 2,
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "9px 11px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(59,130,246,0.28)",
+                          background: "rgba(59,130,246,0.1)",
+                          color: "rgba(219,234,254,0.98)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ fontWeight: 800, fontSize: 13.5, lineHeight: 1.2 }}>+ {label("Add Customer", "Agregar cliente")}</span>
+                        <span style={{ fontSize: 11.5, color: "rgba(191,219,254,0.72)", lineHeight: 1.3 }}>{label("Add a new customer from this search", "Agregar un nuevo cliente desde esta búsqueda")}</span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
