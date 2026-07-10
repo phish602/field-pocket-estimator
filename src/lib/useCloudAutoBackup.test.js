@@ -147,6 +147,25 @@ test("backup failure records the failure and keeps the queue pending", async () 
   unmount();
 });
 
+test("device-lock abort leaves the pending queue untouched instead of recording a backup failure", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+    deviceLockLost: true,
+    error: "Backup stopped because EstiPaid was switched to another device.",
+  });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+
+  expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({
+    pending: true,
+    attempts: 0,
+    lastError: "",
+  }));
+  unmount();
+});
+
 test("does not run a duplicate concurrent backup while one is already in flight", async () => {
   markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
   let resolveBackup;

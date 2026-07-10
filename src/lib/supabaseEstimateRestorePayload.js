@@ -193,7 +193,7 @@ export async function updateEstimateRestorePayloads({
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildResult(gated);
 
-  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot, reason: "backup" });
   if (!deviceAccess.ok) {
     return buildResult(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR, {
       error: deviceAccess.error,
@@ -253,6 +253,28 @@ export async function updateEstimateRestorePayloads({
     }
 
     try {
+      // Payload serialization and the cloud-row lookup may take time. Check
+      // again directly before this estimate's destructive cloud update.
+      const finalDeviceAccess = await ensureCurrentDeviceCanWriteCloud({
+        configured,
+        user,
+        company,
+        storage: storageSnapshot,
+        reason: "backup",
+        claimIfMissing: false,
+      });
+      if (!finalDeviceAccess.ok) {
+        return buildResult(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR, {
+          estimatesChecked,
+          estimatesUpdated,
+          missingCloudRows,
+          skipped,
+          failed,
+          error: finalDeviceAccess.userMessage || finalDeviceAccess.error,
+          code: finalDeviceAccess.code,
+          deviceLockLost: finalDeviceAccess.deviceLockLost,
+        });
+      }
       const response = await client
         .from("estimates")
         .update({

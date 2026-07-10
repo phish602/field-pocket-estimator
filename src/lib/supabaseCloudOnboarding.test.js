@@ -699,6 +699,31 @@ describe("supabaseCloudOnboarding", () => {
       expect(queueState.status).toBe("current");
     });
 
+    test("does not clear the backup queue or claim success when ownership is lost after verification", async () => {
+      localStorage.clear();
+      markCloudBackupDirty({ reason: "stale_device_backup", domains: ["invoices"], severity: "money_critical" });
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview());
+      mockIsSupabaseMigrationPreviewReady.mockReturnValue(true);
+      mockRunSupabaseMigrationWrite.mockResolvedValue(buildWriteResult());
+      mockRunSupabaseCloudVerification.mockResolvedValue(buildVerification({ allMatched: true }));
+      mockEnsureCurrentDeviceCanWriteCloud
+        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce({
+          ok: false,
+          code: "device_lock_lost",
+          deviceLockLost: true,
+          userMessage: "Backup stopped because EstiPaid was switched to another device.",
+          error: "Backup stopped because EstiPaid was switched to another device.",
+        });
+
+      const result = await runSupabaseCloudOnboardingBackup(baseContext);
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(result.deviceLockLost).toBe(true);
+      expect(result.error).toBe("Backup stopped because EstiPaid was switched to another device.");
+      expect(readCloudBackupQueueState().pending).toBe(true);
+    });
+
     test("does not clear the backup dirty queue when verification does not confirm a match", async () => {
       localStorage.clear();
       markCloudBackupDirty({ reason: "pre_backup_stale_marker", domains: ["invoices"], severity: "money_critical" });

@@ -853,6 +853,7 @@ export async function runSupabaseMigrationWrite({
   const normalizedRole = asText(role).toLowerCase();
   const userId = asText(user?.id);
   const companyId = asText(company?.id);
+  const mutationReason = allowCloudOnlyReplacement ? "replace_cloud" : "backup";
   const client = getSupabaseClient();
 
   if (!isSupabaseMigrationPreviewReady(preview)) {
@@ -877,7 +878,13 @@ export async function runSupabaseMigrationWrite({
     };
   }
 
-  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: mutationReason,
+  });
   if (!deviceAccess.ok) {
     return {
       ok: false,
@@ -904,8 +911,45 @@ export async function runSupabaseMigrationWrite({
     };
   }
 
+  // A preview/snapshot can take long enough for another device to take over.
+  // Every destructive cloud call below invokes this non-claiming fresh read
+  // immediately before it mutates a business table.
+  const ensureFreshMutationAccess = () => ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: mutationReason,
+    claimIfMissing: false,
+  });
+  const buildMutationLockResult = (access, extra = {}) => ({
+    ok: false,
+    blocked: true,
+    reason: access.userMessage || access.error,
+    code: access.code,
+    deviceLockLost: access.deviceLockLost,
+    notices: [...notices, buildNotice("error", access.code || "device_locked", access.userMessage || access.error)],
+    tableResults,
+    noLocalDeletes: true,
+    ...extra,
+  });
+
   const artifact = buildLocalStorageExportArtifact(storageSnapshot);
   let localSnapshot = buildLocalSnapshotFromArtifact(artifact);
+  const localRepairAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "local_save",
+    claimIfMissing: false,
+  });
+  if (!localRepairAccess.ok) {
+    return {
+      ...buildMutationLockResult(localRepairAccess),
+      reason: localRepairAccess.userMessage || localRepairAccess.error,
+    };
+  }
   const repairedLocalData = repairStoredLocalDataIntegrity(storageSnapshot);
   localSnapshot = repairedLocalData.snapshot;
   if (repairedLocalData.changed) {
@@ -1052,6 +1096,8 @@ export async function runSupabaseMigrationWrite({
           // mismatched. Harmless no-op if the parent has no children.
           const childTable = CLOUD_ONLY_CHILD_TABLES[replacement.table];
           if (childTable && replacement.cloudRowIds?.length > 0) {
+            const childMutationAccess = await ensureFreshMutationAccess();
+            if (!childMutationAccess.ok) return buildMutationLockResult(childMutationAccess, { cloudCountsBefore: cloudCounts });
             const { error: childError } = await deleteOrphanedChildRows(
               client,
               childTable.table,
@@ -1076,6 +1122,8 @@ export async function runSupabaseMigrationWrite({
             }
           }
 
+          const deleteMutationAccess = await ensureFreshMutationAccess();
+          if (!deleteMutationAccess.ok) return buildMutationLockResult(deleteMutationAccess, { cloudCountsBefore: cloudCounts });
           const { error } = await deleteCloudOnlyRows(client, replacement.table, companyId, replacement.cloudRowIds);
           if (error) {
             return {
@@ -1112,6 +1160,8 @@ export async function runSupabaseMigrationWrite({
 
   if (shouldWriteCustomers) {
     const customerPayloads = mapCustomerPayloads(draft, userId);
+    const customerMutationAccess = await ensureFreshMutationAccess();
+    if (!customerMutationAccess.ok) return buildMutationLockResult(customerMutationAccess, { cloudCountsBefore: cloudCounts });
     const customerResponse = await upsertTableRows(client, "customers", customerPayloads);
     if (customerResponse?.error) {
       tableResults[0] = { ...tableResults[0], status: "failed", failed: customerPayloads.length, error: asText(customerResponse.error?.message) };
@@ -1130,6 +1180,8 @@ export async function runSupabaseMigrationWrite({
   }
 
   const projectPayloads = mapProjectPayloads(draft, customerIdByLegacyId, userId, localSnapshot);
+  const projectMutationAccess = await ensureFreshMutationAccess();
+  if (!projectMutationAccess.ok) return buildMutationLockResult(projectMutationAccess, { cloudCountsBefore: cloudCounts });
   const projectResponse = await upsertTableRows(client, "projects", projectPayloads);
   if (projectResponse?.error) {
     tableResults[1] = { ...tableResults[1], status: "failed", failed: projectPayloads.length, error: asText(projectResponse.error?.message) };
@@ -1147,6 +1199,8 @@ export async function runSupabaseMigrationWrite({
   const projectIdByLegacyId = buildLegacyIdMap(projectResponse?.data);
 
   const estimatePayloads = mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, userId);
+  const estimateMutationAccess = await ensureFreshMutationAccess();
+  if (!estimateMutationAccess.ok) return buildMutationLockResult(estimateMutationAccess, { cloudCountsBefore: cloudCounts });
   const estimateResponse = await upsertTableRows(client, "estimates", estimatePayloads);
   if (estimateResponse?.error) {
     tableResults[2] = { ...tableResults[2], status: "failed", failed: estimatePayloads.length, error: asText(estimateResponse.error?.message) };
@@ -1164,6 +1218,8 @@ export async function runSupabaseMigrationWrite({
   const estimateIdByLegacyId = buildLegacyIdMap(estimateResponse?.data);
 
   const invoicePayloads = mapInvoicePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, estimateIdByLegacyId, userId);
+  const invoiceMutationAccess = await ensureFreshMutationAccess();
+  if (!invoiceMutationAccess.ok) return buildMutationLockResult(invoiceMutationAccess, { cloudCountsBefore: cloudCounts });
   const invoiceResponse = await upsertTableRows(client, "invoices", invoicePayloads);
   if (invoiceResponse?.error) {
     tableResults[4] = { ...tableResults[4], status: "failed", failed: invoicePayloads.length, error: asText(invoiceResponse.error?.message) };
@@ -1197,6 +1253,8 @@ export async function runSupabaseMigrationWrite({
   }
 
   const existingEstimateLineItems = await readExistingRows(client, "estimate_line_items", companyId);
+  const estimateLineItemMutationAccess = await ensureFreshMutationAccess();
+  if (!estimateLineItemMutationAccess.ok) return buildMutationLockResult(estimateLineItemMutationAccess, { cloudCountsBefore: cloudCounts });
   const estimateLineItemSync = await migrateLineItemTable({
     client,
     table: "estimate_line_items",
@@ -1218,6 +1276,8 @@ export async function runSupabaseMigrationWrite({
   }
 
   const existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId);
+  const invoiceLineItemMutationAccess = await ensureFreshMutationAccess();
+  if (!invoiceLineItemMutationAccess.ok) return buildMutationLockResult(invoiceLineItemMutationAccess, { cloudCountsBefore: cloudCounts });
   const invoiceLineItemSync = await migrateLineItemTable({
     client,
     table: "invoice_line_items",
@@ -1239,6 +1299,8 @@ export async function runSupabaseMigrationWrite({
   }
 
   const paymentPayloads = mapInvoicePaymentPayloads(draft, invoiceIdByLegacyId, userId);
+  const paymentMutationAccess = await ensureFreshMutationAccess();
+  if (!paymentMutationAccess.ok) return buildMutationLockResult(paymentMutationAccess, { cloudCountsBefore: cloudCounts });
   const paymentResponse = await upsertTableRows(client, "invoice_payments", paymentPayloads);
   if (paymentResponse?.error) {
     tableResults[6] = { ...tableResults[6], status: "failed", failed: paymentPayloads.length, error: asText(paymentResponse.error?.message) };

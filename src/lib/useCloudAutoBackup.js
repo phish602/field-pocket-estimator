@@ -105,7 +105,7 @@ export default function useCloudAutoBackup({
           role: params.role,
         });
 
-        if (result?.status !== CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
+        if (result?.status !== CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED && !result?.deviceLockLost) {
           recordCloudBackupAttemptFailure(result?.error || result?.status || "automatic_backup_incomplete");
         }
       } catch (error) {

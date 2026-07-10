@@ -7,8 +7,16 @@ export const DEVICE_LOCK_VERSION = 1;
 export const LOCAL_DEVICE_ID_KEY = "estipaid-device-id-v1";
 export const DEVICE_LOCK_CHANGED_EVENT = "estipaid:device-lock-changed";
 export const DEVICE_LOCK_LOST_CODE = "device_lock_lost";
+export const DEVICE_LOCKED_CODE = "device_locked";
 export const DEVICE_LOCK_LOST_RESTORE_MESSAGE =
   "Recovery stopped because EstiPaid was switched to another device.";
+export const DEVICE_LOCK_STOPPED_MESSAGES = {
+  backup: "Backup stopped because EstiPaid was switched to another device.",
+  restore: DEVICE_LOCK_LOST_RESTORE_MESSAGE,
+  replace_cloud: "Cloud replace stopped because EstiPaid was switched to another device.",
+  local_save: "Save stopped because EstiPaid was switched to another device.",
+  cloud_write: "Cloud write stopped because EstiPaid was switched to another device.",
+};
 
 export const DEVICE_LOCK_EXPLANATION =
   "This device is locked because EstiPaid is active on another device. To unlock it, switch EstiPaid to this device. The other device will be locked, and you should restore the latest cloud backup here before working.";
@@ -18,6 +26,10 @@ export const DEVICE_LOCK_POST_SWITCH_WARNING =
 
 function asText(value) {
   return String(value || "").trim();
+}
+
+export function getDeviceLockStoppedMessage(reason = "cloud_write") {
+  return DEVICE_LOCK_STOPPED_MESSAGES[asText(reason)] || DEVICE_LOCK_STOPPED_MESSAGES.cloud_write;
 }
 
 function asIsoString(value) {
@@ -637,33 +649,51 @@ export async function ensureCurrentDeviceCanWriteCloud({
   user = null,
   company = null,
   storage = localStorage,
+  reason = "cloud_write",
+  claimIfMissing = true,
 } = {}) {
   const access = await checkCurrentDeviceAccess({
     configured,
     user,
     company,
     storage,
-    claimIfMissing: true,
+    claimIfMissing,
     heartbeatIfActive: false,
   });
 
   if (access.isLocked || !access.isActive) {
+    const normalizedReason = asText(reason) || "cloud_write";
+    const deviceLockLost = Boolean(access.isLocked || access.status === "locked");
+    if (deviceLockLost) pauseCloudAutoBackup("device_lock_lost_during_mutation");
     dispatchDeviceLockChanged({
       companyId: asText(company?.id),
       activeDeviceId: asText(access.activeDeviceState?.activeDeviceId),
       action: "write_blocked",
+      reason: normalizedReason,
       locked: true,
     });
     return {
       ok: false,
       access,
-      error: "This device is locked because EstiPaid is active on another device.",
+      code: deviceLockLost ? DEVICE_LOCK_LOST_CODE : DEVICE_LOCKED_CODE,
+      reason: normalizedReason,
+      deviceLockLost,
+      userMessage: deviceLockLost
+        ? getDeviceLockStoppedMessage(normalizedReason)
+        : "Unable to verify that this device is active before writing cloud data.",
+      error: deviceLockLost
+        ? getDeviceLockStoppedMessage(normalizedReason)
+        : "Unable to verify that this device is active before writing cloud data.",
     };
   }
 
   return {
     ok: true,
     access,
+    code: "",
+    reason: asText(reason) || "cloud_write",
+    deviceLockLost: false,
+    userMessage: "",
     error: "",
   };
 }
@@ -675,7 +705,7 @@ export async function ensureCurrentDeviceCanApplyLocalRestore({
   user = null,
   company = null,
   storage = localStorage,
-  reason = "cloud_restore",
+  reason = "restore",
 } = {}) {
   const access = await checkCurrentDeviceAccess({
     configured,
@@ -694,7 +724,7 @@ export async function ensureCurrentDeviceCanApplyLocalRestore({
       companyId: asText(company?.id),
       activeDeviceId: asText(access.activeDeviceState?.activeDeviceId),
       action: "restore_blocked",
-      reason: asText(reason) || "cloud_restore",
+      reason: asText(reason) || "restore",
       locked: true,
     });
     return {
@@ -702,7 +732,9 @@ export async function ensureCurrentDeviceCanApplyLocalRestore({
       code: DEVICE_LOCK_LOST_CODE,
       deviceLockLost: true,
       access,
-      error: DEVICE_LOCK_LOST_RESTORE_MESSAGE,
+      reason: asText(reason) || "restore",
+      userMessage: getDeviceLockStoppedMessage(reason),
+      error: getDeviceLockStoppedMessage(reason),
     };
   }
 

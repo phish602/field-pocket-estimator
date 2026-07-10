@@ -192,6 +192,28 @@ describe("supabaseAppRestoreBundle", () => {
     expect(mockGetSupabaseClient).not.toHaveBeenCalled();
   });
 
+  test("bundle update aborts before Supabase insert when a takeover happens after bundle capture", async () => {
+    const client = createMockClient({ existingRows: [] });
+    mockGetSupabaseClient.mockReturnValue(client);
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce({
+        ok: false,
+        code: "device_lock_lost",
+        deviceLockLost: true,
+        userMessage: "Backup stopped because EstiPaid was switched to another device.",
+        error: "Backup stopped because EstiPaid was switched to another device.",
+      });
+
+    const result = await updateSupabaseAppRestoreBundle({
+      storageSnapshot: buildStorageSnapshot(), configured: true, user: { id: "user_1" }, company: { id: "company_1" }, role: "owner",
+    });
+
+    expect(result.status).toBe(APP_RESTORE_BUNDLE_STATUS.ERROR);
+    expect(result.deviceLockLost).toBe(true);
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
   test("bundle update writes only the app restore bundle to Supabase and does not touch business tables", async () => {
     const client = createMockClient({ existingRows: [] });
     mockGetSupabaseClient.mockReturnValue(client);

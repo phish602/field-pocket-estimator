@@ -692,7 +692,7 @@ export async function executeSupabaseCloudRestore({
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildExecuteResult(gated);
 
-  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage });
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage, reason: "restore" });
   if (!deviceAccess.ok) {
     if (deviceAccess.code === DEVICE_LOCK_LOST_CODE || deviceAccess.deviceLockLost) {
       return buildDeviceLockRestoreResult();

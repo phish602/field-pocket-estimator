@@ -258,6 +258,29 @@ describe("supabaseEstimateRestorePayload", () => {
       expect(mockGetSupabaseClient).not.toHaveBeenCalled();
     });
 
+    test("aborts before an estimate payload update when ownership changes after the cloud-row read", async () => {
+      const mockClient = createMockClient({ cloudRows: [{ id: "db_est_1", legacy_local_id: "est_1" }] });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+      mockEnsureCurrentDeviceCanWriteCloud
+        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce({
+          ok: false,
+          code: "device_lock_lost",
+          deviceLockLost: true,
+          userMessage: "Backup stopped because EstiPaid was switched to another device.",
+          error: "Backup stopped because EstiPaid was switched to another device.",
+        });
+
+      const result = await updateEstimateRestorePayloads({
+        storageSnapshot: buildStorageSnapshot({ estimates: [localEstimateFixture()] }),
+        ...baseContext,
+      });
+
+      expect(result.status).toBe(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR);
+      expect(result.deviceLockLost).toBe(true);
+      expect(mockClient.updateCalls).toEqual([]);
+    });
+
     test("validates local estimates have ids and reports missing cloud rows separately", async () => {
       const mockClient = createMockClient({
         cloudRows: [{ id: "db_est_1", legacy_local_id: "est_1" }],

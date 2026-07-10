@@ -365,7 +365,7 @@ export async function updateSupabaseAppRestoreBundle({
     };
   }
 
-  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot, reason: "backup" });
   if (!deviceAccess.ok) {
     return {
       status: APP_RESTORE_BUNDLE_STATUS.ERROR,
@@ -427,6 +427,29 @@ export async function updateSupabaseAppRestoreBundle({
   }
 
   const timestamp = new Date().toISOString();
+  // The bundle was captured and its row was read above. Re-read ownership
+  // immediately before the only Supabase mutation so a takeover during that
+  // work cannot publish this stale device's app settings.
+  const finalDeviceAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "backup",
+    claimIfMissing: false,
+  });
+  if (!finalDeviceAccess.ok) {
+    return {
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      noLocalDataChanged: true,
+      captureSummary,
+      notices,
+      error: finalDeviceAccess.userMessage || finalDeviceAccess.error,
+      code: finalDeviceAccess.code,
+      deviceLockLost: finalDeviceAccess.deviceLockLost,
+    };
+  }
   try {
     if (Array.isArray(rows) && rows.length === 1) {
       const response = await client

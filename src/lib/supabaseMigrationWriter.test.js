@@ -263,6 +263,35 @@ describe("supabaseMigrationWriter", () => {
     expect(result.reason).toMatch(/locked/i);
   });
 
+  test("aborts before the first cloud upsert when ownership changes after snapshot preparation", async () => {
+    const mockClient = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce({
+        ok: false,
+        code: "device_lock_lost",
+        deviceLockLost: true,
+        userMessage: "Backup stopped because EstiPaid was switched to another device.",
+        error: "Backup stopped because EstiPaid was switched to another device.",
+      });
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot(),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.deviceLockLost).toBe(true);
+    expect(mockClient.writeChains.customers.upsert).not.toHaveBeenCalled();
+    expect(mockClient.writeChains.projects.upsert).not.toHaveBeenCalled();
+  });
+
   test("blocks migration when cloud rows exist that are not present on this device", async () => {
     const mockClient = createMockClient({
       counts: { customers: 0, projects: 1, estimates: 0, invoices: 0, invoicePayments: 0 },

@@ -265,6 +265,30 @@ async function runAutomaticSafeRepairAndBackup({
   company,
   role,
 } = {}) {
+  // This path repairs local business metadata before attempting backup, so it
+  // needs the same fresh ownership check as a cloud write. It can run from a
+  // status effect without a visible user click.
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "local_save",
+    claimIfMissing: false,
+  });
+  if (!deviceAccess.ok) {
+    return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+      preview,
+      error: deviceAccess.userMessage || deviceAccess.error,
+      noWritesPerformed: true,
+      automaticSafeRepair: buildAutomaticSafeRepairState({
+        attempted: true,
+        failed: true,
+        technicalDetail: deviceAccess.userMessage || deviceAccess.error,
+      }),
+    });
+  }
+
   let repaired;
   try {
     repaired = repairStoredLocalDataIntegrity(storageSnapshot);
@@ -337,6 +361,22 @@ export async function removePreservedOlderCloudEstimates({
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildPreservedEstimateCleanupResult(gated);
+
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "replace_cloud",
+  });
+  if (!deviceAccess.ok) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: deviceAccess.userMessage || deviceAccess.error,
+      technicalDetail: deviceAccess.userMessage || deviceAccess.error,
+      code: deviceAccess.code,
+      deviceLockLost: deviceAccess.deviceLockLost,
+    });
+  }
 
   const storedRecoveryStatus = readCloudPartialRecoveryStatus(storageSnapshot);
   const preservedEstimateLegacyIds = normalizeLegacyIds(storedRecoveryStatus?.skippedEstimateIds);
@@ -500,6 +540,22 @@ export async function removePreservedOlderCloudEstimates({
   }
 
   const estimateLineItemRows = Array.isArray(lineItemRead.rows) ? lineItemRead.rows : [];
+  const lineItemDeleteAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "replace_cloud",
+    claimIfMissing: false,
+  });
+  if (!lineItemDeleteAccess.ok) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: lineItemDeleteAccess.userMessage || lineItemDeleteAccess.error,
+      technicalDetail: lineItemDeleteAccess.userMessage || lineItemDeleteAccess.error,
+      code: lineItemDeleteAccess.code,
+      deviceLockLost: lineItemDeleteAccess.deviceLockLost,
+    });
+  }
   const deleteLineItems = await deleteCompanyRowsByColumnIn(
     client,
     "estimate_line_items",
@@ -516,6 +572,22 @@ export async function removePreservedOlderCloudEstimates({
     });
   }
 
+  const estimateDeleteAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: "replace_cloud",
+    claimIfMissing: false,
+  });
+  if (!estimateDeleteAccess.ok) {
+    return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
+      error: estimateDeleteAccess.userMessage || estimateDeleteAccess.error,
+      technicalDetail: estimateDeleteAccess.userMessage || estimateDeleteAccess.error,
+      code: estimateDeleteAccess.code,
+      deviceLockLost: estimateDeleteAccess.deviceLockLost,
+    });
+  }
   const deleteEstimates = await deleteCompanyRowsByColumnIn(
     client,
     "estimates",
@@ -654,11 +726,20 @@ export async function runSupabaseCloudOnboardingBackup({
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildBackupResult(gated);
 
-  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot });
+  const mutationReason = allowCloudOnlyReplacement ? "replace_cloud" : "backup";
+  const deviceAccess = await ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage: storageSnapshot,
+    reason: mutationReason,
+  });
   if (!deviceAccess.ok) {
     return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
-      error: deviceAccess.error,
-      technicalDetail: deviceAccess.access?.reason || deviceAccess.error,
+      error: deviceAccess.userMessage || deviceAccess.error,
+      technicalDetail: deviceAccess.access?.reason || deviceAccess.userMessage || deviceAccess.error,
+      code: deviceAccess.code,
+      deviceLockLost: deviceAccess.deviceLockLost,
       noWritesPerformed: true,
     });
   }
@@ -762,6 +843,29 @@ export async function runSupabaseCloudOnboardingBackup({
 
     // Verification confirmed the cloud write actually landed and matches
     // local data -- the queue is current, not just "attempted".
+    // Do not turn a successful cloud write into "Cloud OK" if this device
+    // lost ownership while verification was running. The queue must remain
+    // pending so the newly active device can decide what to do safely.
+    const completionAccess = await ensureCurrentDeviceCanWriteCloud({
+      configured,
+      user,
+      company,
+      storage: storageSnapshot,
+      reason: mutationReason,
+      claimIfMissing: false,
+    });
+    if (!completionAccess.ok) {
+      return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+        preview,
+        writeResult,
+        verification,
+        error: completionAccess.userMessage || completionAccess.error,
+        technicalDetail: completionAccess.access?.reason || completionAccess.userMessage || completionAccess.error,
+        code: completionAccess.code,
+        deviceLockLost: completionAccess.deviceLockLost,
+      });
+    }
+
     clearCloudBackupDirty("manual_backup_success");
 
     return buildBackupResult(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED, { preview, writeResult, verification });
