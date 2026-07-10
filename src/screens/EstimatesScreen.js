@@ -714,6 +714,8 @@ export default function EstimatesScreen({
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [searchQuery, setSearchQuery] = useState("");
+  const [typeaheadHidden, setTypeaheadHidden] = useState(false);
+  const [highlightEstimateId, setHighlightEstimateId] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -726,6 +728,9 @@ export default function EstimatesScreen({
   const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
   const touchStartTimer = useRef(null);
   const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
+  const estimateCardRefs = useRef({});
+  const highlightTimerRef = useRef(null);
+  const typeaheadWrapRef = useRef(null);
   const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
   const openEstimateNavRef = useRef({ estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -1137,6 +1142,53 @@ export default function EstimatesScreen({
     return totals;
   }, [estimates]);
   const visibleEstimates = displayedEstimates.filter(matchesSearch);
+
+  // Search typeahead: reuses `visibleEstimates` (already respects the Show
+  // archived toggle and the search query). Selecting a row is view-only -- it
+  // narrows the search, closes the dropdown, and scrolls/highlights the matching
+  // card. It never opens the builder, creates invoices, or changes status.
+  const estimateTypeaheadQuery = String(searchQuery || "").trim();
+  const estimateTypeaheadMatches = estimateTypeaheadQuery ? (visibleEstimates || []).slice(0, 6) : [];
+  const showEstimateTypeahead = !!estimateTypeaheadQuery && !typeaheadHidden;
+
+  const selectTypeaheadEstimate = (estimate) => {
+    const estId = String(estimate?.id || "").trim();
+    if (!estId) return;
+    const meta = estimateDisplayMeta.get(estId) || {};
+    const numberText = String(estimate?.estimateNumber || "").trim();
+    const nextQuery = numberText || String(meta.customerName || estimate?.customerName || "").trim();
+    setSearchQuery(nextQuery);
+    setTypeaheadHidden(true);
+    setHighlightEstimateId(estId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightEstimateId(""), 2000);
+  };
+
+  useEffect(() => {
+    if (!highlightEstimateId) return;
+    const node = estimateCardRefs.current?.[highlightEstimateId];
+    if (node && typeof node.scrollIntoView === "function") {
+      try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
+      catch { try { node.scrollIntoView(); } catch {} }
+    }
+  }, [highlightEstimateId]);
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!showEstimateTypeahead) return undefined;
+    const handlePointerDown = (event) => {
+      const wrap = typeaheadWrapRef.current;
+      if (wrap && !wrap.contains(event.target)) {
+        setTypeaheadHidden(true);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [showEstimateTypeahead]);
+
   const estimatePipelineSummary = useMemo(() => {
     const approvedVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_APPROVED);
     const pendingVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_PENDING);
@@ -2362,19 +2414,21 @@ export default function EstimatesScreen({
               marginBottom: "18px",
             }}
           >
-            <div className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
+            <div ref={typeaheadWrapRef} className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
               <input
                 type="text"
                 className="pe-input pe-estimates-search-input"
                 placeholder="Search estimates by name, number, or customer..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => { setSearchQuery(e.target.value); setTypeaheadHidden(false); setHighlightEstimateId(""); }}
                 onKeyDown={(evt) => {
                   if (evt.key === "Escape") {
                     evt.preventDefault();
-                    setSearchQuery("");
+                    setTypeaheadHidden(true);
                   }
                 }}
+                aria-expanded={showEstimateTypeahead}
+                aria-controls="estimate-typeahead-list"
                 style={{
                   width: "100%",
                   display: "block",
@@ -2388,7 +2442,7 @@ export default function EstimatesScreen({
                   type="button"
                   className="pe-btn pe-btn-ghost"
                   aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
-                  onClick={() => setSearchQuery("")}
+                  onClick={() => { setSearchQuery(""); setHighlightEstimateId(""); }}
                   style={{
                     position: "absolute",
                     right: 6,
@@ -2407,6 +2461,84 @@ export default function EstimatesScreen({
                 >
                   ×
                 </button>
+              ) : null}
+              {showEstimateTypeahead ? (
+                <div
+                  id="estimate-typeahead-list"
+                  role="listbox"
+                  aria-label={lang === "es" ? "Estimados coincidentes" : "Matching estimates"}
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    left: 0,
+                    right: 0,
+                    zIndex: 30,
+                    maxHeight: 320,
+                    overflowY: "auto",
+                    display: "grid",
+                    gap: 3,
+                    padding: 6,
+                    borderRadius: 14,
+                    border: "1px solid rgba(168,184,195,0.18)",
+                    background: "linear-gradient(180deg, rgb(21,29,39), rgb(9,13,19))",
+                    boxShadow: "0 24px 54px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)",
+                  }}
+                >
+                  {estimateTypeaheadMatches.length === 0 ? (
+                    <div style={{ padding: "9px 11px", fontSize: 12.5, color: "rgba(208,219,228,0.6)" }}>
+                      {lang === "es" ? "Sin estimados coincidentes" : "No matching estimates"}
+                    </div>
+                  ) : estimateTypeaheadMatches.map((estimate) => {
+                    const rowId = String(estimate?.id || "");
+                    const meta = estimateDisplayMeta.get(rowId) || {};
+                    const numberText = String(estimate?.estimateNumber || "").trim();
+                    const rowCustomer = String(meta.customerName || estimate?.customerName || (lang === "es" ? "Sin cliente" : "No customer")).trim();
+                    const rowProject = String(meta.projectName || estimate?.projectName || estimate?.workTitle || estimate?.jobTitle || "").trim();
+                    const rowStatus = normalizeEstimateStatus(estimate?.status);
+                    const rowStatusLabel = estimate?.archived
+                      ? (lang === "es" ? "Archivado" : "Archived")
+                      : rowStatus === STATUS_APPROVED
+                        ? (lang === "es" ? "Aprobado" : "Approved")
+                        : rowStatus === STATUS_LOST
+                          ? (lang === "es" ? "Perdido" : "Lost")
+                          : rowStatus === STATUS_DRAFT
+                            ? (lang === "es" ? "Borrador" : "Draft")
+                            : (lang === "es" ? "En espera de respuesta" : "Awaiting Response");
+                    const rowTotal = money(estimate?.total);
+                    return (
+                      <button
+                        key={`estimate-typeahead-${rowId}`}
+                        type="button"
+                        role="option"
+                        aria-selected="false"
+                        onClick={() => selectTypeaheadEstimate(estimate)}
+                        style={{
+                          display: "grid",
+                          gap: 3,
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "9px 11px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.06)",
+                          background: "rgba(255,255,255,0.02)",
+                          color: "rgba(239,245,249,0.95)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: 800, fontSize: 13.5 }}>
+                            {numberText ? `#${numberText}` : (lang === "es" ? "Estimado sin número" : "Untitled estimate")}
+                          </span>
+                          <span style={{ fontSize: 12.5, color: "rgba(215,225,233,0.82)" }}>{rowCustomer}</span>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(148,163,184,0.85)" }}>{rowStatusLabel}</span>
+                        </span>
+                        <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.68)" }}>
+                          {rowTotal}{rowProject ? ` · ${rowProject}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               ) : null}
             </div>
 
@@ -2705,6 +2837,7 @@ export default function EstimatesScreen({
                       const estimate = entry;
                       const e = estimate;
                       const id = String(e?.id || "");
+                      const isTypeaheadHighlighted = String(highlightEstimateId || "") && String(highlightEstimateId) === id;
                       const displayMeta = estimateDisplayMeta.get(id) || {};
                       const isOpen = Boolean(expanded[id]);
                       const status = normalizeEstimateStatus(e?.status);
@@ -2923,7 +3056,15 @@ export default function EstimatesScreen({
                     || e?.uuid
                     || `${estimateIdentity(e)}:${getMostRecentTimestamp(e)}:${String(e?.projectName || "")}:${String(e?.customerName || "")}`
                   )}
-                  style={card}
+                  ref={(node) => {
+                    if (node) estimateCardRefs.current[id] = node;
+                    else delete estimateCardRefs.current[id];
+                  }}
+                  data-estimate-card-id={id}
+                  data-estimate-card-highlighted={isTypeaheadHighlighted ? "true" : undefined}
+                  style={isTypeaheadHighlighted
+                    ? { ...card, border: "1px solid rgba(74,222,128,0.85)", boxShadow: "0 0 0 3px rgba(74,222,128,0.35), 0 18px 40px rgba(0,0,0,0.3)" }
+                    : card}
                   draggable={!e?.archived}
                   onTouchStart={(e) => {
                     const touch = e.touches?.[0];

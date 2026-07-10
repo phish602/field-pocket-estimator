@@ -257,4 +257,25 @@ describe("CustomersScreen typeahead dropdown", () => {
       Element.prototype.scrollIntoView = prevScrollIntoView;
     }
   });
+
+  test("clicking outside closes the dropdown but keeps the search text and lower list", async () => {
+    seedThreeCustomers();
+    render(<CustomersScreen lang="en" t={(k) => k} />);
+    await screen.findByText("John Smith");
+    const input = await typeSearch("Jo");
+
+    await screen.findByRole("listbox", { name: /Matching customers/i });
+
+    // Click outside the search/dropdown wrapper.
+    act(() => {
+      fireEvent.pointerDown(document.body);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: /Matching customers/i })).not.toBeInTheDocument();
+    });
+    // Search text is preserved; lower filtered list still shows the match.
+    expect(input).toHaveValue("Jo");
+    expect(screen.getAllByText("John Smith").length).toBeGreaterThan(0);
+  });
 });

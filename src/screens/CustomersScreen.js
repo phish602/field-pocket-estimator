@@ -607,6 +607,7 @@ export default function CustomersScreen({
   const [showArchived, setShowArchived] = useState(false);
   const cardRefs = useRef({});
   const highlightTimerRef = useRef(null);
+  const typeaheadWrapRef = useRef(null);
   const [mode, setMode] = useState("list"); // list | edit
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [toastMessage, setToastMessage] = useState("");
@@ -1304,6 +1305,21 @@ export default function CustomersScreen({
   const typeaheadMatches = typeaheadQuery ? (filtered || []).slice(0, 5) : [];
   const showTypeahead = mode === "list" && !!typeaheadQuery && !typeaheadHidden;
 
+  // Close the typeahead dropdown when the user clicks/taps outside the search
+  // input + dropdown wrapper. Only attached while the dropdown is open. This
+  // does not clear the search text or the lower filtered list.
+  useEffect(() => {
+    if (!showTypeahead) return undefined;
+    const handlePointerDown = (event) => {
+      const wrap = typeaheadWrapRef.current;
+      if (wrap && !wrap.contains(event.target)) {
+        setTypeaheadHidden(true);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [showTypeahead]);
+
   return (
     <section className="pe-section">
       {returnToEstimator && (
@@ -1333,7 +1349,7 @@ export default function CustomersScreen({
           <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 12 }}>
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, display: "grid", gap: 10, position: "relative", zIndex: showTypeahead ? 5 : "auto" }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ position: "relative", flex: "1 1 280px", minWidth: 0 }}>
+                <div ref={typeaheadWrapRef} style={{ position: "relative", flex: "1 1 280px", minWidth: 0 }}>
                   <input
                     className="pe-input"
                     placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}

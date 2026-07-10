@@ -1148,6 +1148,8 @@ function getStatusConfirmationContent(nextStatus, lang) {
 export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDetail }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [q, setQ] = useState("");
+  const [typeaheadHidden, setTypeaheadHidden] = useState(false);
+  const [highlightInvoiceId, setHighlightInvoiceId] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const [list, setList] = useState(() => readStoredInvoices());
@@ -1176,6 +1178,9 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   }));
   const prevListCountRef = useRef(0);
   const hasMeasuredListRef = useRef(false);
+  const invoiceCardRefs = useRef({});
+  const highlightTimerRef = useRef(null);
+  const typeaheadWrapRef = useRef(null);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
   const stripeCheckoutCreateLocksRef = useRef(new Set());
@@ -1457,6 +1462,52 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       return searchMatch && statusMatch;
     });
   }, [invoiceDisplayMeta, list, q, showArchived, statusFilter]);
+
+  // Search typeahead: reuses the same `filtered` source (which already respects
+  // the Show archived toggle and status filter). Selecting a row is view-only:
+  // it narrows the search, closes the dropdown, and scrolls/highlights the
+  // matching card -- it never opens payment/archive/status/void/delete flows.
+  const invoiceTypeaheadQuery = String(q || "").trim();
+  const invoiceTypeaheadMatches = invoiceTypeaheadQuery ? (filtered || []).slice(0, 6) : [];
+  const showInvoiceTypeahead = !!invoiceTypeaheadQuery && !typeaheadHidden;
+
+  const selectTypeaheadInvoice = (invoice) => {
+    const invoiceId = String(invoice?.id || "").trim();
+    if (!invoiceId) return;
+    const meta = invoiceDisplayMeta.get(invoiceId) || {};
+    const numberText = String(invoice?.invoiceNumber || "").trim();
+    const nextQuery = numberText || String(meta.customerName || invoice?.customerName || "").trim();
+    setQ(nextQuery);
+    setTypeaheadHidden(true);
+    setHighlightInvoiceId(invoiceId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
+  };
+
+  useEffect(() => {
+    if (!highlightInvoiceId) return;
+    const node = invoiceCardRefs.current?.[highlightInvoiceId];
+    if (node && typeof node.scrollIntoView === "function") {
+      try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
+      catch { try { node.scrollIntoView(); } catch {} }
+    }
+  }, [highlightInvoiceId]);
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!showInvoiceTypeahead) return undefined;
+    const handlePointerDown = (event) => {
+      const wrap = typeaheadWrapRef.current;
+      if (wrap && !wrap.contains(event.target)) {
+        setTypeaheadHidden(true);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [showInvoiceTypeahead]);
 
   const clearCardActionIntent = () => {
     cardActionIntentRef.current = {
@@ -2728,19 +2779,21 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
           </div>
 
           <div className="pe-estimates-search" style={filterPanelStyle}>
-            <div className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
+            <div ref={typeaheadWrapRef} className="pe-estimates-search-container" style={{ position: "relative", width: "100%" }}>
               <input
                 type="text"
                 className="pe-input pe-estimates-search-input"
                 placeholder={lang === "es" ? "Buscar…" : "Search..."}
                 value={q}
-                onChange={(event) => setQ(event.target.value)}
+                onChange={(event) => { setQ(event.target.value); setTypeaheadHidden(false); setHighlightInvoiceId(""); }}
                 onKeyDown={(evt) => {
                   if (evt.key === "Escape") {
                     evt.preventDefault();
-                    setQ("");
+                    setTypeaheadHidden(true);
                   }
                 }}
+                aria-expanded={showInvoiceTypeahead}
+                aria-controls="invoice-typeahead-list"
                 style={searchFieldStyle}
               />
               {q ? (
@@ -2748,7 +2801,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   type="button"
                   className="pe-btn pe-btn-ghost"
                   aria-label={lang === "es" ? "Limpiar búsqueda" : "Clear search"}
-                  onClick={() => setQ("")}
+                  onClick={() => { setQ(""); setHighlightInvoiceId(""); }}
                   style={{
                     position: "absolute",
                     right: 6,
@@ -2767,6 +2820,90 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 >
                   ×
                 </button>
+              ) : null}
+              {showInvoiceTypeahead ? (
+                <div
+                  id="invoice-typeahead-list"
+                  role="listbox"
+                  aria-label={lang === "es" ? "Facturas coincidentes" : "Matching invoices"}
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    left: 0,
+                    right: 0,
+                    zIndex: 30,
+                    maxHeight: 320,
+                    overflowY: "auto",
+                    display: "grid",
+                    gap: 3,
+                    padding: 6,
+                    borderRadius: 14,
+                    border: "1px solid rgba(168,184,195,0.18)",
+                    background: "linear-gradient(180deg, rgb(21,29,39), rgb(9,13,19))",
+                    boxShadow: "0 24px 54px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)",
+                  }}
+                >
+                  {invoiceTypeaheadMatches.length === 0 ? (
+                    <div style={{ padding: "9px 11px", fontSize: 12.5, color: "rgba(208,219,228,0.6)" }}>
+                      {lang === "es" ? "Sin facturas coincidentes" : "No matching invoices"}
+                    </div>
+                  ) : invoiceTypeaheadMatches.map((invoice) => {
+                    const rowId = String(invoice?.id || "");
+                    const meta = invoiceDisplayMeta.get(rowId) || {};
+                    const numberText = String(invoice?.invoiceNumber || "").trim();
+                    const rowCustomer = String(meta.customerName || invoice?.customerName || (lang === "es" ? "Sin cliente" : "No customer")).trim();
+                    const rowProject = String(meta.projectName || invoice?.projectName || "").trim();
+                    const rowTotal = roundCurrency(invoice?.invoiceTotal || 0);
+                    const rowPaid = roundCurrency(invoice?.amountPaid || 0);
+                    const rowBalance = roundCurrency(invoice?.balanceRemaining ?? (rowTotal - rowPaid));
+                    const rowStatus = formatStatusLabel(deriveInvoiceStatus(invoice), lang);
+                    const rowDue = formatDateOnly(invoice?.dueDate) || formatDateOnly(invoice?.invoiceDate || invoice?.date || invoice?.job?.date);
+                    const detailParts = [
+                      `${moneyUSD(rowTotal)} ${lang === "es" ? "total" : "total"}`,
+                      `${moneyUSD(rowPaid)} ${lang === "es" ? "pagado" : "paid"}`,
+                      `${moneyUSD(rowBalance)} ${lang === "es" ? "saldo" : "balance"}`,
+                      rowDue ? `${lang === "es" ? "Vence" : "Due"} ${rowDue}` : "",
+                    ].filter(Boolean);
+                    return (
+                      <button
+                        key={`invoice-typeahead-${rowId}`}
+                        type="button"
+                        role="option"
+                        aria-selected="false"
+                        onClick={() => selectTypeaheadInvoice(invoice)}
+                        style={{
+                          display: "grid",
+                          gap: 3,
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "9px 11px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.06)",
+                          background: "rgba(255,255,255,0.02)",
+                          color: "rgba(239,245,249,0.95)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: 800, fontSize: 13.5 }}>
+                            {numberText ? `#${numberText}` : (lang === "es" ? "Factura sin número" : "Untitled invoice")}
+                          </span>
+                          <span style={{ fontSize: 12.5, color: "rgba(215,225,233,0.82)" }}>{rowCustomer}</span>
+                          <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(148,163,184,0.85)" }}>{rowStatus}</span>
+                          {invoice?.archived ? (
+                            <span style={{ fontSize: 10, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(203,213,225,0.8)", border: "1px solid rgba(148,163,184,0.35)", borderRadius: 999, padding: "1px 7px" }}>
+                              {lang === "es" ? "Archivada" : "Archived"}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.68)" }}>
+                          {detailParts.join(" · ")}
+                          {rowProject ? ` · ${rowProject}` : ""}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               ) : null}
             </div>
 
@@ -2892,6 +3029,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
               filtered.map((invoice) => {
                 const invoiceId = String(invoice?.id || "");
                 const isOpen = !!expanded[invoiceId];
+                const isTypeaheadHighlighted = String(highlightInvoiceId || "") && String(highlightInvoiceId) === invoiceId;
                 const displayMeta = invoiceDisplayMeta.get(invoiceId) || {};
                 const derivedStatus = deriveInvoiceStatus(invoice);
                 const invoiceMarginValue = getExistingInvoiceMarginValue(invoice);
@@ -2985,17 +3123,30 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                   <div
                     className="pe-card pe-card-content ep-glass-tile pe-saved-estimate-card pe-estimate-card"
                     key={invoiceId || invoice?.invoiceNumber || Math.random()}
+                    ref={(node) => {
+                      if (node) invoiceCardRefs.current[invoiceId] = node;
+                      else delete invoiceCardRefs.current[invoiceId];
+                    }}
+                    data-invoice-card-id={invoiceId}
+                    data-invoice-card-highlighted={isTypeaheadHighlighted ? "true" : undefined}
                     style={{
                       ...invoiceCardStyle,
                       cursor: "default",
                       border: `1px solid ${cardSurfaceTone.border}`,
                       background: cardSurfaceTone.background,
                       boxShadow: cardSurfaceTone.shadow,
+                      transition: "box-shadow 220ms ease, border-color 220ms ease",
                       ...(isOpen
                         ? {
                             border: "1px solid rgba(34,197,94,0.42)",
                             background: "rgba(255,255,255,0.07)",
                             boxShadow: "0 0 0 1px rgba(34,197,94,0.18), 0 10px 22px rgba(0,0,0,0.28)",
+                          }
+                        : null),
+                      ...(isTypeaheadHighlighted
+                        ? {
+                            border: "1px solid rgba(74,222,128,0.85)",
+                            boxShadow: "0 0 0 3px rgba(74,222,128,0.35), 0 18px 40px rgba(0,0,0,0.3)",
                           }
                         : null),
                     }}
