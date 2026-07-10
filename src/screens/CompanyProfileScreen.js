@@ -11,6 +11,7 @@ import {
   normalizeCompanyProfile,
 } from "../utils/storage";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
@@ -245,6 +246,7 @@ function fileToDataUrl(file) {
 }
 
 export default function CompanyProfileScreen() {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
   if (initialProfileRef.current === null) {
     initialProfileRef.current = loadProfile();
@@ -553,7 +555,7 @@ export default function CompanyProfileScreen() {
     refreshStripeStatus(stripeAccountId);
   }, [refreshStripeStatus, stripeAccountId]);
 
-  const doExplicitSave = () => {
+  const doExplicitSave = async () => {
     const missing = getMissingRequiredFields(profile);
     if (missing.length) {
       setSaveFlash(false);
@@ -588,6 +590,13 @@ export default function CompanyProfileScreen() {
       }
     }
 
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      setLastSaveOk(false);
+      setToastMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      setShowToast(true);
+      return;
+    }
     const ok = saveProfile(profile);
     setLastSaveOk(ok);
     try {
@@ -613,7 +622,13 @@ export default function CompanyProfileScreen() {
     }
   };
 
-  const doClearProfile = () => {
+  const doClearProfile = async () => {
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      setToastMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      setShowToast(true);
+      return;
+    }
     try {
       localStorage.removeItem(PROFILE_KEY);
       markCloudBackupDirty({

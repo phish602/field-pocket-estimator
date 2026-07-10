@@ -11,6 +11,7 @@ import {
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
@@ -562,6 +563,12 @@ export default function ProjectDetailScreen({
   onOpenEstimate,
   onOpenInvoice,
 }) {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
+  const ensureProjectMutation = async () => {
+    const access = await ensureCanMutateBusinessData("local_save");
+    if (!access?.ok) window.alert(access?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+    return Boolean(access?.ok);
+  };
   const [projectId] = useState(() => readProjectDetailTarget());
   const cloudBackupStatus = useCloudBackupStatus();
   const [refreshSeq, setRefreshSeq] = useState(0);
@@ -984,7 +991,8 @@ export default function ProjectDetailScreen({
                     border: `1px solid ${selected ? optionStyle.border : "rgba(255,255,255,0.08)"}`,
                     color: selected ? optionStyle.color : "rgba(230,241,248,0.62)",
                   }}
-                  onClick={() => {
+                  onClick={async () => {
+                    if (!await ensureProjectMutation()) return;
                     const updated = updateProjectStoredStatus(project.id, option.key);
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
@@ -1213,7 +1221,8 @@ export default function ProjectDetailScreen({
                     fontFamily: "inherit",
                     letterSpacing: "0.02em",
                   }}
-                  onClick={() => {
+                  onClick={async () => {
+                    if (!await ensureProjectMutation()) return;
                     const updated = updateProjectStoredStatus(project.id, "archived");
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
@@ -1261,7 +1270,8 @@ export default function ProjectDetailScreen({
                       fontFamily: "inherit",
                       letterSpacing: "0.02em",
                     }}
-                    onClick={() => {
+                    onClick={async () => {
+                      if (!await ensureProjectMutation()) return;
                       const updated = updateProjectStoredStatus(project.id, "archived");
                       if (updated) {
                         setRefreshSeq((value) => value + 1);
@@ -1287,8 +1297,9 @@ export default function ProjectDetailScreen({
                     fontFamily: "inherit",
                     letterSpacing: "0.02em",
                   }}
-                  onClick={() => {
+                  onClick={async () => {
                     if (deleteBusy || deleteConfirmValue !== "DELETE") return;
+                    if (!await ensureProjectMutation()) return;
                     setDeleteBusy(true);
                     setDeleteMessage("");
                     try {

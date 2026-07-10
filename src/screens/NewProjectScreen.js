@@ -7,6 +7,7 @@ import {
   readStoredProjects,
   writeStoredProjects,
 } from "../utils/projects";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
@@ -136,6 +137,7 @@ function buildInlineResidentialCustomer({ id, name, phone, email, now }) {
 }
 
 export default function NewProjectScreen({ onBack, onSave }) {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [customers, setCustomers] = useState(() => readCustomers());
 
   const [projectName, setProjectName] = useState("");
@@ -292,7 +294,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
 
   const customerAddr = useMemo(() => getCustomerAddress(selectedCustomer), [selectedCustomer]);
 
-  const handleInlineCreateCustomer = useCallback(() => {
+  const handleInlineCreateCustomer = useCallback(async () => {
     const name = inlineName.trim();
     if (!name) return;
     const id = buildCustomerId();
@@ -304,6 +306,11 @@ export default function NewProjectScreen({ onBack, onSave }) {
       email: inlineEmail,
       now,
     });
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     const next = [...customers, newCustomer];
     writeCustomers(next);
     window.dispatchEvent(new Event("estipaid:customers-changed"));
@@ -316,7 +323,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     setInlineEmail("");
     setAddrSource("custom"); // inline new customers have no address yet
     addrUserOwnedRef.current = false;
-  }, [customers, inlineName, inlinePhone, inlineEmail]);
+  }, [customers, ensureCanMutateBusinessData, inlineName, inlinePhone, inlineEmail]);
 
   const canSave = projectName.trim().length > 0;
 
@@ -327,7 +334,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
     return [line1, line2].filter(Boolean).join(", ");
   }
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!canSave) return;
     const now = Date.now();
     const source = {
@@ -342,10 +349,15 @@ export default function NewProjectScreen({ onBack, onSave }) {
     };
     const projects = readStoredProjects();
     const { project, projects: next } = createManualProject(projects, source);
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     writeStoredProjects(next);
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     if (onSave) onSave(project.id);
-  }, [canSave, selectedCustomerId, selectedCustomer, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave]);
+  }, [canSave, selectedCustomerId, selectedCustomer, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave, ensureCanMutateBusinessData]);
 
   return (
     <div style={S.screen}>

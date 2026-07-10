@@ -8,6 +8,7 @@ import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
@@ -545,6 +546,7 @@ export default function CustomersScreen({
   onOpenProjectDetail,
 }) {
   const label = (en, es) => labelOf(lang, en, es);
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
 
   const [projectChooser, setProjectChooser] = useState(null);
   // projectChooser: null | { customerId, projects: [] } | { customerId, empty: true }
@@ -975,7 +977,7 @@ export default function CustomersScreen({
     } catch {}
   }
 
-  function saveDraft() {
+  async function saveDraft() {
     const d = draft || emptyDraft(defaultCustomerType);
     const type = String(d.type || "residential");
 
@@ -1058,6 +1060,11 @@ export default function CustomersScreen({
 
     // sort recently used
     next.sort((a, b) => (Number(b?.lastUsed) || 0) - (Number(a?.lastUsed) || 0));
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     persistCustomers(next);
 
     if (typeof setCustomers === "function") setCustomers(next);
@@ -1083,7 +1090,7 @@ export default function CustomersScreen({
     }
   }
 
-  function del(id) {
+  async function del(id) {
     const sid = String(id || "");
     const target = (Array.isArray(list) ? list : []).find((c) => String(c?.id || "") === sid);
     const nm = target ? displayName(target) : sid;
@@ -1123,6 +1130,11 @@ export default function CustomersScreen({
     const ok = window.confirm(label(`Delete customer: ${nm}? This cannot be undone.`, `¿Eliminar cliente: ${nm}? Esto no se puede deshacer.`));
     if (!ok) return;
     const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     persistCustomers(next);
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
@@ -1130,9 +1142,14 @@ export default function CustomersScreen({
     window.dispatchEvent(new Event("estipaid:customers-changed"));
   }
 
-  function useCustomer(c) {
+  async function useCustomer(c) {
     const id = String(c?.id || "");
     const next = (Array.isArray(list) ? [...list] : []).map((x) => (String(x?.id) === id ? { ...x, lastUsed: Date.now() } : x));
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     persistCustomers(next);
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);

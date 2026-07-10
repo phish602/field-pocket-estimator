@@ -84,6 +84,7 @@ import {
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 import { markCloudBackupDirty } from "./lib/cloudBackupQueue";
+import { useBusinessMutationGuard } from "./lib/BusinessMutationGuardContext";
 import useGuidedBuild, {
   buildCanonicalBlankDisplayState,
   hasCoreGuidedDraftState,
@@ -1466,6 +1467,7 @@ function resolveMaterialsFromScopePrompt(mode) {
 }
 
 export default function EstimateForm(props) {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const {
     embeddedInShell = false,
     mobileBottomChromeVisible = true,
@@ -3627,7 +3629,7 @@ export default function EstimateForm(props) {
     }));
   }
 
-  function handleSaveScopeTemplate(event) {
+  async function handleSaveScopeTemplate(event) {
     if (event?.preventDefault) event.preventDefault();
     if (event?.stopPropagation) event.stopPropagation();
     try {
@@ -3705,6 +3707,11 @@ export default function EstimateForm(props) {
       });
       if (!template) return;
 
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        setSavePrompt({ tone: "error", message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device." });
+        return;
+      }
       const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates], { throwOnError: true });
       setScopeTemplates(nextTemplates);
       setSavePrompt({ tone: "success", message: "Template saved" });
@@ -5044,7 +5051,7 @@ export default function EstimateForm(props) {
     pendingSpecialConditionsAutoCollapseRef.current = hasValidCommit;
   };
 
-  const onSaveNow = () => {
+  const onSaveNow = async () => {
     if (guided?.enabled) return;
     try {
       triggerHaptic();
@@ -5132,6 +5139,15 @@ export default function EstimateForm(props) {
       const createdAt = savedDocCreatedAt > 0
         ? savedDocCreatedAt
         : Number(existingMatch?.createdAt || now) || now;
+
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        setSavePrompt({
+          tone: "error",
+          message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.",
+        });
+        return;
+      }
 
       const persistedDraft = saveNow?.(
         { savedDocId: recordId, savedDocCreatedAt: createdAt },

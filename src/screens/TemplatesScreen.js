@@ -8,6 +8,7 @@ import {
 } from "../utils/scopeTemplates";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 function formatTemplateTimestamp(value) {
   const ts = Number(value || 0);
@@ -43,8 +44,14 @@ function hasBlanketMaterials(template = {}) {
 
 export default function TemplatesScreen({ onOpenBuilder }) {
   const [templates, setTemplates] = useState(() => readStoredScopeTemplates());
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
 
-  const commitTemplates = (nextTemplates) => {
+  const commitTemplates = async (nextTemplates) => {
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return null;
+    }
     const saved = writeStoredScopeTemplates(nextTemplates);
     setTemplates(saved);
     try {
@@ -109,24 +116,24 @@ export default function TemplatesScreen({ onOpenBuilder }) {
     })
   ), [templates]);
 
-  const handleRenameTemplate = (templateId) => {
+  const handleRenameTemplate = async (templateId) => {
     const existing = templates.find((entry) => String(entry?.id || "").trim() === String(templateId || "").trim());
     if (!existing) return;
     const nextName = window.prompt("Rename template:", String(existing?.name || "").trim());
     if (nextName === null) return;
 
     const updated = updateScopeTemplate(templates, templateId, { name: nextName });
-    commitTemplates(updated);
+    await commitTemplates(updated);
   };
 
-  const handleDeleteTemplate = (templateId) => {
+  const handleDeleteTemplate = async (templateId) => {
     const existing = templates.find((entry) => String(entry?.id || "").trim() === String(templateId || "").trim());
     if (!existing) return;
     const ok = window.confirm(`Delete template "${existing.name}"?`);
     if (!ok) return;
 
     const updated = deleteScopeTemplate(templates, templateId);
-    commitTemplates(updated);
+    await commitTemplates(updated);
   };
 
   return (

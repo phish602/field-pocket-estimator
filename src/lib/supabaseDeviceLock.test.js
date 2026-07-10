@@ -10,6 +10,7 @@ const {
   claimActiveDevice,
   ensureCurrentDeviceCanWriteCloud,
   ensureCurrentDeviceCanApplyLocalRestore,
+  ensureCurrentDeviceCanMutateBusinessData,
   DEVICE_LOCK_LOST_CODE,
   DEVICE_LOCK_CHANGED_EVENT,
 } = require("./supabaseDeviceLock");
@@ -284,6 +285,26 @@ describe("supabaseDeviceLock", () => {
     } finally {
       window.removeEventListener(DEVICE_LOCK_CHANGED_EVENT, onLockChanged);
     }
+  });
+
+  test("fresh business-mutation guard returns the typed save-stopped lock result", async () => {
+    const client = createMockClient();
+    client.setRow({
+      id: "device_lock_row_1",
+      setting_value: { activeDeviceId: "device_a", activeDeviceName: "Chrome on Mac" },
+    });
+    mockGetSupabaseClient.mockReturnValue(client);
+
+    const result = await ensureCurrentDeviceCanMutateBusinessData({
+      configured,
+      user,
+      company,
+      storage: createStorage({ [LOCAL_DEVICE_ID_KEY]: "device_b" }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(DEVICE_LOCK_LOST_CODE);
+    expect(result.userMessage).toBe("Save stopped because EstiPaid was switched to another device.");
   });
 
   test("heartbeat race returns locked when another device takes over between reads", async () => {

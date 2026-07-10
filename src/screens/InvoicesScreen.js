@@ -22,6 +22,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -1203,6 +1204,7 @@ function getStatusConfirmationContent(nextStatus, lang) {
 }
 
 export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDetail }) {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [list, setList] = useState(() => readStoredInvoices());
@@ -2119,7 +2121,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     reconcileStripeCheckoutSessionsWithInvoices(list);
   }, [list, stripeCheckoutSessions, stripeAccountId]);
 
-  const removeInvoice = (invoice) => {
+  const removeInvoice = async (invoice) => {
     if (!canHardDeleteInvoice(invoice)) {
       window.alert(
         lang === "es"
@@ -2132,6 +2134,11 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     if (!ok) return;
     const invoiceId = String(invoice?.id || "").trim();
     const next = list.filter((entry) => String(entry?.id || "").trim() !== invoiceId);
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
     persistInvoices(next);
     setExpanded((prev) => {
       if (!prev[invoiceId]) return prev;
@@ -2141,12 +2148,17 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     });
   };
 
-  const duplicateInvoice = (invoice) => {
+  const duplicateInvoice = async (invoice) => {
     const currentInvoices = readStoredInvoices();
     const currentEstimates = loadSavedEstimates();
     const duplicated = duplicateInvoiceDraft(invoice, currentInvoices, { estimates: currentEstimates });
     if (!duplicated.ok || !duplicated.draft) {
       window.alert(duplicated?.message || (lang === "es" ? "No se pudo duplicar la factura." : "Unable to duplicate invoice."));
+      return;
+    }
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
     persistInvoices(
@@ -2163,13 +2175,18 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     } catch {}
   };
 
-  const updateInvoiceStatus = (invoice, nextStatus) => {
+  const updateInvoiceStatus = async (invoice, nextStatus) => {
     const currentInvoices = readStoredInvoices();
     const invoiceId = String(invoice?.id || "").trim();
     const nextInvoices = currentInvoices.map((entry) => {
       if (String(entry?.id || "").trim() !== invoiceId) return entry;
       return updateInvoiceLifecycleStatus(entry, nextStatus);
     });
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return null;
+    }
     const normalizedInvoices = persistInvoices(nextInvoices);
     const updatedInvoice = normalizedInvoices.find((entry) => String(entry?.id || "").trim() === invoiceId) || null;
     if (!updatedInvoice) return;
@@ -2196,7 +2213,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     setStatusConfirmState(null);
   };
 
-  const confirmInvoiceStatusChange = () => {
+  const confirmInvoiceStatusChange = async () => {
     if (statusConfirmBusy || !statusConfirmState?.invoiceId || !statusConfirmState?.nextStatus) return;
     setStatusConfirmBusy(true);
     try {
@@ -2208,7 +2225,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         setStatusConfirmState(null);
         return;
       }
-      updateInvoiceStatus(targetInvoice, statusConfirmState.nextStatus);
+      await updateInvoiceStatus(targetInvoice, statusConfirmState.nextStatus);
       setStatusConfirmState(null);
     } finally {
       setStatusConfirmBusy(false);
@@ -2245,7 +2262,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     });
   };
 
-  const confirmPayment = () => {
+  const confirmPayment = async () => {
     if (paymentBusy || !paymentModalState?.invoiceId) return;
 
     const amount = roundCurrency(paymentForm.amount);
@@ -2287,6 +2304,11 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         String(entry?.id || "").trim() === invoiceId ? result.invoice : entry
       ));
       const fullyPaid = String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID;
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        setPaymentError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        return;
+      }
       persistInvoices(
         nextInvoices,
         fullyPaid

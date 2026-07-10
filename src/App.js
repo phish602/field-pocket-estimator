@@ -33,6 +33,7 @@ import DeviceLockGate from "./components/DeviceLockGate";
 import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
+import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -4544,5 +4545,14 @@ export default function App() {
     return <AuthScreen auth={auth} />;
   }
 
-  return <EstiPaidAppShell auth={auth} account={account} deviceLock={deviceLock} />;
+  return (
+    <BusinessMutationGuardProvider
+      configured={auth.configured}
+      user={auth.user}
+      company={account.company}
+      deviceLock={deviceLock}
+    >
+      <EstiPaidAppShell auth={auth} account={account} deviceLock={deviceLock} />
+    </BusinessMutationGuardProvider>
+  );
 }

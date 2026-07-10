@@ -750,3 +750,24 @@ export async function ensureCurrentDeviceCanApplyLocalRestore({
 
   return { ok: true, code: "", deviceLockLost: false, access, error: "" };
 }
+
+// Durable local saves use the same shared active-device record as cloud
+// mutations. Keeping this narrow avoids a global localStorage interception:
+// save owners opt in immediately before writing business data.
+export async function ensureCurrentDeviceCanMutateBusinessData({
+  configured = false,
+  user = null,
+  company = null,
+  storage = localStorage,
+  reason = "local_save",
+  claimIfMissing = false,
+} = {}) {
+  return ensureCurrentDeviceCanWriteCloud({
+    configured,
+    user,
+    company,
+    storage,
+    reason,
+    claimIfMissing,
+  });
+}

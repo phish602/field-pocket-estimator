@@ -19,6 +19,7 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -623,6 +624,7 @@ export default function EstimatesScreen({
   requestedInvoiceComposerEstimateId = "",
   onInvoiceComposerRequestHandled,
 }) {
+  const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [customerFilter, setCustomerFilter] = useState("all");
@@ -1436,13 +1438,19 @@ export default function EstimatesScreen({
     return resolved;
   };
 
-  const openInvoiceBuilderFromEstimate = (estimate) => {
+  const openInvoiceBuilderFromEstimate = async (estimate) => {
     const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
     if (!target) return false;
 
     const currentInvoices = readStoredInvoices();
     const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
     if (!created.ok || !created.draft) {
+      return false;
+    }
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return false;
     }
 
@@ -1484,7 +1492,7 @@ export default function EstimatesScreen({
     }
   }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
 
-  const submitInvoiceComposer = () => {
+  const submitInvoiceComposer = async () => {
     if (!invoiceComposerTarget) return false;
 
     const currentInvoices = readStoredInvoices();
@@ -1499,6 +1507,12 @@ export default function EstimatesScreen({
       setInvoiceComposerError(
         created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
       );
+      return false;
+    }
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      setInvoiceComposerError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return false;
     }
 
@@ -1626,7 +1640,7 @@ export default function EstimatesScreen({
     ? `Estimate: ${deleteTargetName || "(unnamed)"}${deleteTargetNumber ? ` • #${deleteTargetNumber}` : ""}`
     : "";
 
-  const duplicateEstimate = (estimate) => {
+  const duplicateEstimate = async (estimate) => {
     try {
       const now = Date.now();
       const duplicate = cloneAsNewEstimate(estimate, now);
@@ -1640,6 +1654,11 @@ export default function EstimatesScreen({
       }
 
       const existing = readSavedEstimatesList();
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        return;
+      }
       writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
 
       setExpanded({});
