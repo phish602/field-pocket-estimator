@@ -43,6 +43,51 @@ function normalizeEstimateStatus(status) {
   return STATUS_PENDING;
 }
 
+export function getEstimateDeleteMode(estimate, invoices = [], projects = []) {
+  const status = String(estimate?.deleteSafetyStatus ?? estimate?.status ?? "").trim().toLowerCase();
+  const id = String(estimate?.id || "").trim();
+  const linkedInvoices = (Array.isArray(invoices) ? invoices : []).filter((invoice) => {
+    const sourceEstimateId = String(invoice?.sourceEstimateId || "").trim();
+    const estimateId = String(invoice?.estimateId || "").trim();
+    return sourceEstimateId === id || estimateId === id;
+  });
+  const isConverted = Boolean(
+    estimate?.convertedInvoiceId
+    || estimate?.invoiceId
+    || estimate?.sourceInvoiceId
+    || estimate?.convertedAt
+    || estimate?.conversion?.invoiceId
+    || estimate?.invoice?.id
+    || estimate?.sourceInvoice?.id
+    || linkedInvoices.length
+  );
+  const hasProjectOrCustomerHistory = Boolean(
+    estimate?.projectId || estimate?.project?.id || estimate?.projectName
+    || estimate?.customerId || estimate?.customer?.id || estimate?.customerName || estimate?.customer?.name
+    || (Array.isArray(projects) && projects.some((project) => String(project?.id || "").trim() === String(estimate?.projectId || "").trim()))
+  );
+  const isPendingLike = status === STATUS_PENDING || status === "sent" || Boolean(estimate?.sentAt || estimate?.sent);
+  const isApprovedLike = status === STATUS_APPROVED || status === "accepted";
+  const isDraftSafe = status === "draft" && !isPendingLike && !isApprovedLike && !isConverted && !hasProjectOrCustomerHistory;
+  const reasons = [];
+  if (status !== "draft") reasons.push("not_draft");
+  if (isPendingLike) reasons.push("pending_or_sent");
+  if (isApprovedLike) reasons.push("approved");
+  if (isConverted) reasons.push("converted_or_invoiced");
+  if (hasProjectOrCustomerHistory) reasons.push("project_or_customer_history");
+  return {
+    mode: isDraftSafe ? "delete" : "archive",
+    isDraftSafe,
+    isSentLike: isPendingLike,
+    isPendingLike,
+    isApprovedLike,
+    isConverted,
+    hasLinkedInvoices: linkedInvoices.length > 0,
+    hasProjectOrCustomerHistory,
+    reasons,
+  };
+}
+
 function sortEstimatesByDateDesc(a, b) {
   const bTs = getMostRecentTimestamp(b);
   const aTs = getMostRecentTimestamp(a);
@@ -54,7 +99,14 @@ function normalizeEstimateList(records) {
   const arr = Array.isArray(records) ? records.filter(Boolean) : [];
   return arr
     .filter((entry) => String(entry?.docType || "estimate").toLowerCase() !== "invoice")
-    .map((entry) => ({ ...entry, status: normalizeEstimateStatus(entry?.status) }))
+    .map((entry) => {
+      const normalized = { ...entry, status: normalizeEstimateStatus(entry?.status) };
+      Object.defineProperty(normalized, "deleteSafetyStatus", {
+        value: String(entry?.status || "").trim().toLowerCase(),
+        enumerable: false,
+      });
+      return normalized;
+    })
     .sort(sortEstimatesByDateDesc);
 }
 
@@ -627,6 +679,7 @@ export default function EstimatesScreen({
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [showArchived, setShowArchived] = useState(false);
   const [customerFilter, setCustomerFilter] = useState("all");
   const [valueFilter, setValueFilter] = useState("all");
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
@@ -885,12 +938,15 @@ export default function EstimatesScreen({
     );
   };
 
+  const displayedEstimates = (estimates || []).filter(
+    (estimate) => Boolean(estimate?.archived) === showArchived
+  );
   const pendingEstimates =
-    (estimates || []).filter((e) => e?.status === "pending");
+    displayedEstimates.filter((e) => e?.status === "pending");
   const approvedEstimates =
-    (estimates || []).filter((e) => e?.status === "approved");
+    displayedEstimates.filter((e) => e?.status === "approved");
   const lostEstimates =
-    (estimates || []).filter((e) => e?.status === "lost");
+    displayedEstimates.filter((e) => e?.status === "lost");
 
   const pipelineSections = useMemo(
     () => [
@@ -912,6 +968,15 @@ export default function EstimatesScreen({
     ],
     [lang, pendingEstimates, approvedEstimates, lostEstimates]
   );
+
+  const estimateDeleteModes = useMemo(() => {
+    const currentInvoices = readStoredInvoices();
+    const currentProjects = readStoredProjects();
+    return new Map(readSavedEstimatesList().map((estimate) => [
+      estimateIdentity(estimate),
+      getEstimateDeleteMode(estimate, currentInvoices, currentProjects),
+    ]));
+  }, [estimates, invoices]);
 
   const estimateDisplayMeta = useMemo(() => {
     const currentProjects = readStoredProjects();
@@ -1016,6 +1081,7 @@ export default function EstimatesScreen({
     };
 
     for (const estimate of estimates) {
+      if (estimate?.archived) continue;
       const status = normalizeEstimateStatus(estimate?.status);
       const amount = toNum(estimate?.total);
       if (status === STATUS_APPROVED) totals.approvedRevenue += amount;
@@ -1025,7 +1091,7 @@ export default function EstimatesScreen({
 
     return totals;
   }, [estimates]);
-  const visibleEstimates = (estimates || []).filter(matchesSearch);
+  const visibleEstimates = displayedEstimates.filter(matchesSearch);
   const estimatePipelineSummary = useMemo(() => {
     const approvedVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_APPROVED);
     const pendingVisible = visibleEstimates.filter((estimate) => normalizeEstimateStatus(estimate?.status) === STATUS_PENDING);
@@ -1266,6 +1332,12 @@ export default function EstimatesScreen({
     const normalized = normalizeEstimateStatus(nextStatus);
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
+    const storedEstimate = readSavedEstimatesList().find((item) => (
+      targetIdentity
+        ? estimateIdentity(item) === targetIdentity
+        : String(item?.id || "").trim() === targetId
+    ));
+    if (estimate?.archived || storedEstimate?.archived) return;
 
     if (estimate?.status === STATUS_APPROVED && normalized !== STATUS_APPROVED) {
       const summary = buildEstimateInvoiceSummary(estimate, readStoredInvoices());
@@ -1336,7 +1408,7 @@ export default function EstimatesScreen({
       (e) => String(e?.id || "") === draggedId
     );
     const normalized = normalizeEstimateStatus(status);
-    if (!draggedId) return;
+    if (!draggedId || movedEstimate?.archived) return;
 
     setEstimates((prev) => {
       const next = (Array.isArray(prev) ? prev : []).map((est) => {
@@ -1399,7 +1471,7 @@ export default function EstimatesScreen({
   };
 
   const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
-    if (!estimate || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
+    if (!estimate || estimate?.archived || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
       return false;
     }
 
@@ -1434,7 +1506,7 @@ export default function EstimatesScreen({
         return String(entry?.id || "").trim() === targetId;
       }) || null;
     const resolved = liveEstimate || persistedEstimate || estimate || null;
-    if (!resolved || normalizeEstimateStatus(resolved?.status) !== STATUS_APPROVED) return null;
+    if (!resolved || resolved?.archived || normalizeEstimateStatus(resolved?.status) !== STATUS_APPROVED) return null;
     return resolved;
   };
 
@@ -1539,7 +1611,31 @@ export default function EstimatesScreen({
     openInvoiceBuilderFromEstimate(target);
   };
 
-  const onConfirmDelete = () => {
+  const restoreEstimate = async (estimate) => {
+    const targetIdentity = estimateIdentity(estimate);
+    const targetId = String(estimate?.id || "").trim();
+    const confirmed = window.confirm("Restore Estimate?\n\nThis estimate will return to your active pipeline.");
+    if (!confirmed) return;
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
+    }
+
+    const existing = readSavedEstimatesList();
+    const next = existing.map((item) => {
+      const matches = targetIdentity
+        ? estimateIdentity(item) === targetIdentity
+        : String(item?.id || "").trim() === targetId;
+      if (!matches) return item;
+      const { archived, archivedAt, ...rest } = item;
+      return rest;
+    });
+    writeStoredEstimatesPreservingLegacy(next);
+  };
+
+  const onConfirmDelete = async () => {
     const target = deleteTarget;
     if (!target) {
       onCancelDelete();
@@ -1548,23 +1644,28 @@ export default function EstimatesScreen({
 
     const targetIdentity = estimateIdentity(target);
     const deletedId = String(target?.id || "").trim();
-
-    if (deletedId) {
-      const summary = buildEstimateInvoiceSummary(target, readStoredInvoices());
-      if (summary.activeInvoiceCount > 0) {
-        const count = summary.activeInvoiceCount;
-        window.alert(
-          lang === "es"
-            ? `No se puede eliminar esta estimación. Tiene ${count} factura${count === 1 ? "" : "s"} vinculada${count === 1 ? "" : "s"} y no puede ser eliminada.`
-            : `Cannot delete this estimate. It has ${count} linked invoice${count === 1 ? "" : "s"} and cannot be removed.`
-        );
-        onCancelDelete();
-        return;
-      }
+    const existing = readSavedEstimatesList();
+    const currentTarget = existing.find((item) => (
+      targetIdentity
+        ? estimateIdentity(item) === targetIdentity
+        : String(item?.id || "").trim() === deletedId
+    )) || target;
+    const deleteMode = getEstimateDeleteMode(currentTarget, readStoredInvoices(), readStoredProjects());
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      return;
     }
 
-    try {
-      const existing = readSavedEstimatesList();
+    if (deleteMode.mode === "archive") {
+      const next = existing.map((item) => {
+        const matches = targetIdentity
+          ? estimateIdentity(item) === targetIdentity
+          : String(item?.id || "").trim() === deletedId;
+        return matches ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item;
+      });
+      writeStoredEstimatesPreservingLegacy(next);
+    } else {
       const next = existing.filter((item) => {
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
@@ -1577,7 +1678,7 @@ export default function EstimatesScreen({
           localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
         }
       }
-    } catch {}
+    }
 
     if (deletedId) {
       setExpanded((prev) => {
@@ -1608,7 +1709,6 @@ export default function EstimatesScreen({
   const labelDetails = lang === "es" ? "Detalles" : "Details";
   const labelHide = lang === "es" ? "Ocultar" : "Hide";
   const labelDuplicate = lang === "es" ? "Duplicar" : "Duplicate";
-  const labelDelete = "Delete";
   const labelTotalMetric = lang === "es" ? "TOTAL" : "TOTAL";
   const labelMarginMetric = lang === "es" ? "MARGEN" : "MARGIN";
 
@@ -1639,6 +1739,9 @@ export default function EstimatesScreen({
   const deleteTargetDetail = deleteTarget
     ? `Estimate: ${deleteTargetName || "(unnamed)"}${deleteTargetNumber ? ` • #${deleteTargetNumber}` : ""}`
     : "";
+  const deleteTargetMode = deleteTarget
+    ? (estimateDeleteModes.get(estimateIdentity(deleteTarget)) || getEstimateDeleteMode(deleteTarget, invoices, readStoredProjects()))
+    : { mode: "delete" };
 
   const duplicateEstimate = async (estimate) => {
     try {
@@ -1680,7 +1783,8 @@ export default function EstimatesScreen({
   const hasActiveFilters =
     String(searchQuery || "").trim().length > 0
     || statusFilter !== "all"
-    || valueFilter !== "all";
+    || valueFilter !== "all"
+    || showArchived;
   const hasNoMatchingResults = hasActiveFilters && visibleEstimatesCount === 0;
 
   const onRevenueTileClick = (statusKey) => {
@@ -2261,10 +2365,20 @@ export default function EstimatesScreen({
 
               <button
                 type="button"
+                onClick={() => setShowArchived((value) => !value)}
+              >
+                {showArchived
+                  ? (lang === "es" ? "Ver activas" : "Show active")
+                  : (lang === "es" ? "Ver archivadas" : "Show archived")}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   setSearchQuery("");
                   setStatusFilter("all");
                   setValueFilter("all");
+                  setShowArchived(false);
                 }}
               >
                 Clear
@@ -2513,6 +2627,7 @@ export default function EstimatesScreen({
                       const displayMeta = estimateDisplayMeta.get(id) || {};
                       const isOpen = Boolean(expanded[id]);
                       const status = normalizeEstimateStatus(e?.status);
+                      const deleteMode = estimateDeleteModes.get(estimateIdentity(e)) || { mode: "archive" };
                       const bd = calcBreakdown(e);
                       const invoiceSummary = status === STATUS_APPROVED
                         ? buildEstimateInvoiceSummary(e, invoices)
@@ -2726,7 +2841,7 @@ export default function EstimatesScreen({
                     || `${estimateIdentity(e)}:${getMostRecentTimestamp(e)}:${String(e?.projectName || "")}:${String(e?.customerName || "")}`
                   )}
                   style={card}
-                  draggable={true}
+                  draggable={!e?.archived}
                   onTouchStart={(e) => {
                     const touch = e.touches?.[0];
                     if (!touch) return;
@@ -2896,6 +3011,11 @@ export default function EstimatesScreen({
                               {lang === "es" ? "Alto valor" : "High value"}
                             </span>
                           ) : null}
+                          {e?.archived ? (
+                            <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(96,165,250,0.35)", background: "rgba(59,130,246,0.12)", color: "rgba(191,219,254,0.98)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                              {lang === "es" ? "Archivada" : "Archived"}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <div style={{ display: "grid", gap: 8, justifyItems: "end", alignContent: "start", minWidth: 0 }}>
@@ -2982,6 +3102,7 @@ export default function EstimatesScreen({
                         onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "open")}
                         onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "open")}
                         onClick={(evt) => runEstimateCardAction(evt, id, "open", () => openEstimate(e))}
+                        disabled={Boolean(e?.archived)}
                         style={estimatePrimaryActionStyle}
                       >
                         {labelOpen}
@@ -3032,6 +3153,7 @@ export default function EstimatesScreen({
                         <button
                           className={status === STATUS_APPROVED ? "pe-btn" : "pe-btn pe-btn-ghost"}
                           type="button"
+                          disabled={Boolean(e?.archived)}
                           onClick={() => {
                             setEstimateStatus(e, STATUS_APPROVED);
                           }}
@@ -3041,6 +3163,7 @@ export default function EstimatesScreen({
                         <button
                           className={status === STATUS_LOST ? "pe-btn" : "pe-btn pe-btn-ghost"}
                           type="button"
+                          disabled={Boolean(e?.archived)}
                           onClick={() => setEstimateStatus(e, STATUS_LOST)}
                         >
                           {lang === "es" ? "Marcar perdido" : "Mark Lost"}
@@ -3048,6 +3171,7 @@ export default function EstimatesScreen({
                         <button
                           className={status === STATUS_PENDING ? "pe-btn" : "pe-btn pe-btn-ghost"}
                           type="button"
+                          disabled={Boolean(e?.archived)}
                           onClick={() => setEstimateStatus(e, STATUS_PENDING)}
                         >
                           {lang === "es" ? "Restablecer a pendiente" : "Reset to Pending"}
@@ -3055,6 +3179,7 @@ export default function EstimatesScreen({
                         <button
                           className="pe-btn pe-btn-secondary pe-btn-duplicate"
                           type="button"
+                          disabled={Boolean(e?.archived)}
                           onClick={(evt) => {
                             evt.stopPropagation();
                             duplicateEstimate(estimate);
@@ -3063,7 +3188,7 @@ export default function EstimatesScreen({
                           <CopyIcon />
                           Duplicate
                         </button>
-                        {status === STATUS_APPROVED ? (
+                        {status === STATUS_APPROVED && !e?.archived ? (
                           <button
                             className="pe-btn"
                             type="button"
@@ -3076,7 +3201,7 @@ export default function EstimatesScreen({
                       </div>
                     </div>
 
-                    {status === STATUS_APPROVED ? (
+                        {status === STATUS_APPROVED ? (
                       <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
                         <div style={sectionTitle}>{lang === "es" ? "Facturación" : "Invoicing"}</div>
                         <div style={row}>
@@ -3281,10 +3406,15 @@ export default function EstimatesScreen({
                         type="button"
                         onClick={(evt) => {
                           evt.stopPropagation();
-                          onRequestDelete(e);
+                          if (e?.archived) restoreEstimate(e);
+                          else onRequestDelete(e);
                         }}
                       >
-                        {labelDelete}
+                        {e?.archived
+                          ? (lang === "es" ? "Restaurar estimación" : "Restore Estimate")
+                          : deleteMode.mode === "delete"
+                            ? (lang === "es" ? "Eliminar estimación" : "Delete Estimate")
+                            : (lang === "es" ? "Archivar estimación" : "Archive Estimate")}
                       </button>
                     </div>
                   </div>
@@ -3307,7 +3437,7 @@ export default function EstimatesScreen({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Delete estimate confirmation"
+          aria-label={deleteTargetMode.mode === "archive" ? "Archive estimate confirmation" : "Delete estimate confirmation"}
           onClick={onCancelDelete}
           style={{
             position: "fixed",
@@ -3340,10 +3470,12 @@ export default function EstimatesScreen({
             }}
           >
             <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "0.2px" }}>
-              Delete estimate?
+              {deleteTargetMode.mode === "archive" ? "Archive estimate?" : "Delete estimate?"}
             </div>
             <div style={{ fontSize: 14, opacity: 0.9 }}>
-              This will permanently delete this estimate. This can&apos;t be undone.
+              {deleteTargetMode.mode === "archive"
+                ? "This estimate has been sent, approved, or connected to business history. To protect your records, EstiPaid will archive it instead of deleting it. Archived estimates stay connected to customer, project, and invoice history."
+                : "This estimate has not been sent or approved. Deleting removes it from your estimate list and updates active estimate totals."}
             </div>
             {deleteTargetDetail ? (
               <div style={{ fontSize: 13, opacity: 0.82 }}>
@@ -3359,12 +3491,14 @@ export default function EstimatesScreen({
                 className="pe-btn"
                 onClick={onConfirmDelete}
                 style={{
-                  borderColor: "rgba(248,113,113,0.65)",
-                  background: "linear-gradient(180deg, rgba(185,28,28,0.74), rgba(127,29,29,0.7))",
+                  borderColor: deleteTargetMode.mode === "archive" ? "rgba(96,165,250,0.65)" : "rgba(248,113,113,0.65)",
+                  background: deleteTargetMode.mode === "archive"
+                    ? "linear-gradient(180deg, rgba(30,64,175,0.74), rgba(30,58,138,0.7))"
+                    : "linear-gradient(180deg, rgba(185,28,28,0.74), rgba(127,29,29,0.7))",
                   color: "#fff",
                 }}
               >
-                Delete
+                {deleteTargetMode.mode === "archive" ? "Archive" : "Delete"}
               </button>
             </div>
           </div>

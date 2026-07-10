@@ -90,6 +90,13 @@ function openInvoiceDetails() {
   fireEvent.click(screen.getByRole("button", { name: /Details/i }));
 }
 
+async function clickAndFlush(target) {
+  await act(async () => {
+    fireEvent.click(target);
+    await Promise.resolve();
+  });
+}
+
 function setInvoiceStatusFilter(value) {
   const [statusSelect] = screen.getAllByRole("combobox");
   fireEvent.change(statusSelect, { target: { value } });
@@ -121,7 +128,7 @@ describe("InvoicesScreen status confirm dialog", () => {
     jest.useRealTimers();
   });
 
-  test("voiding a paid invoice updates storage to void with amountPaid 0, empty payments, and balanceRemaining 0", () => {
+  test("voiding a paid invoice updates storage to void with amountPaid 0, empty payments, and balanceRemaining 0", async () => {
     const paidInvoice = createPaidInvoice();
     seedInvoices([paidInvoice]);
 
@@ -136,7 +143,7 @@ describe("InvoicesScreen status confirm dialog", () => {
     expect(screen.getByText(/This will mark the invoice status to Void/i)).toBeInTheDocument();
 
     // Confirm void
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
 
     // Dialog dismissed after confirmation
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -178,7 +185,7 @@ describe("InvoicesScreen status confirm dialog", () => {
     expect(Array.isArray(invoice.payments) && invoice.payments.length > 0).toBe(true);
   });
 
-  test("Mark Paid retires pending Stripe sessions and hides Stripe payment actions", () => {
+  test("Mark Paid retires pending Stripe sessions and hides Stripe payment actions", async () => {
     seedInvoices([createSentInvoice()]);
     seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
     seedStripeCheckoutSessions([
@@ -200,7 +207,7 @@ describe("InvoicesScreen status confirm dialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Mark Paid$/i }));
 
     const dialog = screen.getByRole("dialog", { name: /Mark invoice as paid\?/i });
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Mark Paid$/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /^Mark Paid$/i }));
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.status).toBe("paid");
@@ -348,7 +355,7 @@ describe("InvoicesScreen manual payments", () => {
     expect(screen.queryByRole("button", { name: /Take Payment|Add Payment/i })).toBeNull();
   });
 
-  test("partial payment appends a ledger entry and updates payment totals", () => {
+  test("partial payment appends a ledger entry and updates payment totals", async () => {
     seedInvoices([createSentInvoice()]);
     renderInvoicesScreen();
     openInvoiceDetails();
@@ -360,7 +367,7 @@ describe("InvoicesScreen manual payments", () => {
     fireEvent.change(within(dialog).getByLabelText(/Paid date/i), { target: { value: "2026-05-06" } });
     fireEvent.change(within(dialog).getByLabelText(/Payment method/i), { target: { value: "cash" } });
     fireEvent.change(within(dialog).getByLabelText(/Payment note/i), { target: { value: "Deposit received" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /Record payment/i }));
 
     const stored = readStoredInvoices();
     const invoice = stored.find((entry) => entry.id === "inv_sent_payment");
@@ -380,7 +387,7 @@ describe("InvoicesScreen manual payments", () => {
     expect(screen.getByRole("button", { name: /^Add Payment$/i })).toBeInTheDocument();
   });
 
-  test("manual partial payment marks existing old-balance pending Stripe session stale without mutating accounting beyond the payment", () => {
+  test("manual partial payment marks existing old-balance pending Stripe session stale without mutating accounting beyond the payment", async () => {
     seedInvoices([createSentInvoice()]);
     seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
     seedStripeCheckoutSessions([
@@ -406,7 +413,7 @@ describe("InvoicesScreen manual payments", () => {
     fireEvent.change(within(dialog).getByLabelText(/Paid date/i), { target: { value: "2026-05-06" } });
     fireEvent.change(within(dialog).getByLabelText(/Payment method/i), { target: { value: "cash" } });
     fireEvent.change(within(dialog).getByLabelText(/Payment note/i), { target: { value: "Deposit received" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /Record payment/i }));
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.status).toBe("sent");
@@ -430,7 +437,7 @@ describe("InvoicesScreen manual payments", () => {
     expect(screen.getByRole("button", { name: /Check \/ Sync Stripe Payment/i })).toBeInTheDocument();
   });
 
-  test("final payoff marks the invoice paid", () => {
+  test("final payoff marks the invoice paid", async () => {
     seedInvoices([
       createSentInvoice({
         id: "inv_partial_payoff",
@@ -456,7 +463,7 @@ describe("InvoicesScreen manual payments", () => {
 
     const dialog = screen.getByRole("dialog", { name: /Record payment/i });
     fireEvent.change(within(dialog).getByLabelText(/Payment amount/i), { target: { value: "375.00" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Record payment/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /Record payment/i }));
 
     const stored = readStoredInvoices();
     const invoice = stored.find((entry) => entry.id === "inv_partial_payoff");
@@ -497,7 +504,7 @@ describe("InvoicesScreen manual payments", () => {
     expect(readStoredInvoices()).toEqual(before);
   });
 
-  test("voiding a partially paid invoice still clears the payment ledger", () => {
+  test("voiding a partially paid invoice still clears the payment ledger", async () => {
     seedInvoices([
       createSentInvoice({
         id: "inv_partial_void",
@@ -522,7 +529,7 @@ describe("InvoicesScreen manual payments", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
 
     const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
 
     const stored = readStoredInvoices();
     const invoice = stored.find((entry) => entry.id === "inv_partial_void");
@@ -534,7 +541,7 @@ describe("InvoicesScreen manual payments", () => {
     expect(Number(invoice.balanceRemaining)).toBe(0);
   });
 
-  test("Void retires pending Stripe sessions and keeps Stripe actions hidden", () => {
+  test("Void retires pending Stripe sessions and keeps Stripe actions hidden", async () => {
     seedInvoices([createSentInvoice()]);
     seedCompanyProfile({ stripeAccountId: "acct_test_connected_123" });
     seedStripeCheckoutSessions([
@@ -556,7 +563,7 @@ describe("InvoicesScreen manual payments", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
 
     const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.status).toBe("void");
@@ -2507,7 +2514,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
     expect(screen.queryByRole("button", { name: /Copy Existing Stripe Link/i })).toBeNull();
   });
 
-  test("void still clears synced Stripe and manual payments", () => {
+  test("void still clears synced Stripe and manual payments", async () => {
     seedInvoices([
       createSentInvoice({
         amountPaid: 500,
@@ -2542,7 +2549,7 @@ describe("InvoicesScreen Stripe payment sync", () => {
     openInvoiceDetails();
     fireEvent.click(screen.getByRole("button", { name: /^Void$/i }));
     const dialog = screen.getByRole("dialog", { name: /Void this invoice\?/i });
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
+    await clickAndFlush(within(dialog).getByRole("button", { name: /^Void Invoice$/i }));
 
     const invoice = readStoredInvoices()[0];
     expect(invoice.status).toBe("void");

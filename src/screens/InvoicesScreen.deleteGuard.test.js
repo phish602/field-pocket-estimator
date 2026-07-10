@@ -48,11 +48,27 @@ function renderInvoicesScreen() {
   });
 }
 
-function openInvoiceDetails() {
-  fireEvent.click(screen.getByRole("button", { name: /Details/i }));
+async function openInvoiceDetails() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Details/i }));
+  });
 }
 
-describe("InvoicesScreen delete guard", () => {
+async function archiveInvoice() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Archive Invoice/i }));
+    await Promise.resolve();
+  });
+}
+
+async function restoreInvoice() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Restore Invoice/i }));
+    await Promise.resolve();
+  });
+}
+
+describe("InvoicesScreen archive safety", () => {
   let confirmSpy;
   let alertSpy;
 
@@ -70,7 +86,7 @@ describe("InvoicesScreen delete guard", () => {
     jest.useRealTimers();
   });
 
-  test("disposable draft invoice can still be deleted", () => {
+  test("even a disposable draft invoice is archived instead of deleted", async () => {
     seedInvoices([
       createInvoice({
         id: "inv_disposable_draft",
@@ -83,17 +99,20 @@ describe("InvoicesScreen delete guard", () => {
     ]);
 
     renderInvoicesScreen();
-  openInvoiceDetails();
-
-    fireEvent.click(screen.getByRole("button", { name: /Delete/i }));
+    await openInvoiceDetails();
+    await archiveInvoice();
 
     expect(confirmSpy).toHaveBeenCalledTimes(1);
     expect(alertSpy).not.toHaveBeenCalled();
-    expect(readStoredInvoices()).toEqual([]);
-    expect(screen.getByText(/No invoices yet/i)).toBeInTheDocument();
+    expect(readStoredInvoices()).toHaveLength(1);
+    expect(readStoredInvoices()[0]).toMatchObject({
+      id: "inv_disposable_draft",
+      archived: true,
+    });
+    expect(typeof readStoredInvoices()[0].archivedAt).toBe("string");
   });
 
-  test("linked invoice delete is blocked and storage remains unchanged", () => {
+  test("linked invoices archive without altering their financial history", async () => {
     const linkedInvoice = createInvoice({
       id: "inv_linked_history",
       invoiceNumber: "INV-LINKED-1",
@@ -109,17 +128,24 @@ describe("InvoicesScreen delete guard", () => {
     seedInvoices([linkedInvoice]);
 
     renderInvoicesScreen();
-    openInvoiceDetails();
+    await openInvoiceDetails();
+    await archiveInvoice();
 
-    fireEvent.click(screen.getByRole("button", { name: /Delete/i }));
-
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(alertSpy).toHaveBeenCalledWith("This invoice is part of project/financial history and cannot be deleted.");
-    expect(readStoredInvoices()).toEqual([linkedInvoice]);
-    expect(screen.getByText("Linked Project")).toBeInTheDocument();
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(readStoredInvoices()[0]).toMatchObject({
+      id: "inv_linked_history",
+      sourceEstimateId: "est_1",
+      invoiceTotal: 250,
+      amountPaid: 0,
+      balanceRemaining: 250,
+      status: "draft",
+      paymentStatus: "unpaid",
+      archived: true,
+    });
   });
 
-  test("non-draft invoice delete is blocked and storage remains unchanged", () => {
+  test("sent invoices archive without changing their status or balance", async () => {
     const sentInvoice = createInvoice({
       id: "inv_sent_history",
       invoiceNumber: "INV-SENT-1",
@@ -131,13 +157,38 @@ describe("InvoicesScreen delete guard", () => {
     seedInvoices([sentInvoice]);
 
     renderInvoicesScreen();
-    openInvoiceDetails();
+    await openInvoiceDetails();
+    await archiveInvoice();
 
-    fireEvent.click(screen.getByRole("button", { name: /Delete/i }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(readStoredInvoices()[0]).toMatchObject({
+      id: "inv_sent_history",
+      invoiceTotal: 250,
+      amountPaid: 0,
+      archived: true,
+      status: "sent",
+      paymentStatus: "unpaid",
+      balanceRemaining: 250,
+    });
+  });
 
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(alertSpy).toHaveBeenCalledWith("This invoice is part of project/financial history and cannot be deleted.");
-    expect(readStoredInvoices()).toEqual([sentInvoice]);
-    expect(screen.getByText("Sent Invoice")).toBeInTheDocument();
+  test("archived invoices are hidden by default, shown with an Archived badge, and can be restored", async () => {
+    seedInvoices([createInvoice({ archived: true, archivedAt: "2026-07-10T00:00:00.000Z" })]);
+
+    renderInvoicesScreen();
+
+    expect(screen.queryByText("Invoice Project")).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Show archived/i }));
+    });
+    expect(screen.getByText("Invoice Project")).toBeInTheDocument();
+    expect(screen.getByText(/^Archived$/i)).toBeInTheDocument();
+
+    await openInvoiceDetails();
+    await restoreInvoice();
+
+    expect(readStoredInvoices()[0].archived).toBeUndefined();
+    expect(readStoredInvoices()[0].archivedAt).toBeUndefined();
   });
 });

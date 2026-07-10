@@ -1034,64 +1034,6 @@ function moneyUSD(value) {
   }
 }
 
-const PROTECTED_DELETE_PAYMENT_STATUSES = new Set([
-  PAYMENT_STATUSES.PAID,
-  PAYMENT_STATUSES.PARTIAL,
-  PAYMENT_STATUSES.VOID,
-]);
-
-function hasSourceEstimateHistory(invoice) {
-  if (!invoice || typeof invoice !== "object") return false;
-  if (String(invoice?.sourceEstimateId || "").trim()) return true;
-  const snapshot = invoice?.sourceEstimateSnapshot;
-  if (!snapshot || typeof snapshot !== "object") return false;
-  return Boolean(
-    String(
-      snapshot?.estimateId
-      || snapshot?.estimateNumber
-      || snapshot?.projectId
-      || snapshot?.projectName
-      || snapshot?.customerId
-      || snapshot?.customerName
-      || ""
-    ).trim()
-  );
-}
-
-function hasProjectHistory(invoice) {
-  if (!invoice || typeof invoice !== "object") return false;
-  const projectId = String(invoice?.projectId || invoice?.project?.id || "").trim();
-  if (!projectId) return false;
-  return Boolean(
-    String(
-      invoice?.projectName
-      || invoice?.project?.name
-      || invoice?.projectNumber
-      || invoice?.siteAddress
-      || invoice?.job?.location
-      || invoice?.customerId
-      || invoice?.customerName
-      || invoice?.customer?.projectAddress
-      || invoice?.customer?.address
-      || ""
-    ).trim()
-  );
-}
-
-function canHardDeleteInvoice(invoice) {
-  const derivedStatus = deriveInvoiceStatus(invoice);
-  const storedStatus = String(invoice?.status || "").trim().toLowerCase();
-  const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
-  const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-
-  if (hasSourceEstimateHistory(invoice) || hasProjectHistory(invoice)) return false;
-  if (derivedStatus !== INVOICE_STATUSES.DRAFT) return false;
-  if (storedStatus && storedStatus !== INVOICE_STATUSES.DRAFT) return false;
-  if (PROTECTED_DELETE_PAYMENT_STATUSES.has(paymentStatus)) return false;
-  if (amountPaid > 0) return false;
-  return true;
-}
-
 function formatDateTime(value) {
   const raw = Number(value || 0) || Date.parse(String(value || ""));
   if (!raw) return "";
@@ -1207,6 +1149,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [showArchived, setShowArchived] = useState(false);
   const [list, setList] = useState(() => readStoredInvoices());
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [expanded, setExpanded] = useState(() => ({}));
@@ -1488,6 +1431,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     const search = String(q || "").trim().toLowerCase();
     const filterStatus = String(statusFilter || "all").trim().toLowerCase();
     return (Array.isArray(list) ? list : []).filter((invoice) => {
+      if (Boolean(invoice?.archived) !== Boolean(showArchived)) return false;
       const derivedStatus = deriveInvoiceStatus(invoice);
       const displayMeta = invoiceDisplayMeta.get(String(invoice?.id || "").trim()) || {};
       const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
@@ -1512,7 +1456,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
       return searchMatch && statusMatch;
     });
-  }, [invoiceDisplayMeta, list, q, statusFilter]);
+  }, [invoiceDisplayMeta, list, q, showArchived, statusFilter]);
 
   const clearCardActionIntent = () => {
     cardActionIntentRef.current = {
@@ -2121,31 +2065,30 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     reconcileStripeCheckoutSessionsWithInvoices(list);
   }, [list, stripeCheckoutSessions, stripeAccountId]);
 
-  const removeInvoice = async (invoice) => {
-    if (!canHardDeleteInvoice(invoice)) {
-      window.alert(
-        lang === "es"
-          ? "Esta factura forma parte del historial financiero del proyecto y no se puede eliminar."
-          : "This invoice is part of project/financial history and cannot be deleted."
-      );
-      return;
-    }
-    const ok = window.confirm(lang === "es" ? "¿Eliminar esta factura del historial?" : "Delete this invoice from history?");
+  const archiveInvoice = async (invoice) => {
+    const isArchived = Boolean(invoice?.archived);
+    const ok = window.confirm(isArchived
+      ? "Restore Invoice?\n\nThis invoice will return to your active invoice list."
+      : "Archive Invoice?\n\nInvoices are business records and cannot be deleted.\n\nArchiving hides this invoice from your active invoice list while preserving customer history, payment records, balances, and financial reporting.");
     if (!ok) return;
     const invoiceId = String(invoice?.id || "").trim();
-    const next = list.filter((entry) => String(entry?.id || "").trim() !== invoiceId);
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    persistInvoices(next);
-    setExpanded((prev) => {
-      if (!prev[invoiceId]) return prev;
-      const nextExpanded = { ...prev };
-      delete nextExpanded[invoiceId];
-      return nextExpanded;
+    const currentInvoices = readStoredInvoices();
+    const currentInvoice = currentInvoices.find((entry) => String(entry?.id || "").trim() === invoiceId) || invoice;
+    const shouldRestore = Boolean(currentInvoice?.archived);
+    const next = currentInvoices.map((entry) => {
+      if (String(entry?.id || "").trim() !== invoiceId) return entry;
+      if (shouldRestore) {
+        const { archived, archivedAt, ...rest } = entry;
+        return rest;
+      }
+      return { ...entry, archived: true, archivedAt: new Date().toISOString() };
     });
+    persistInvoices(next);
   };
 
   const duplicateInvoice = async (invoice) => {
@@ -2841,12 +2784,17 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                 <option value={INVOICE_STATUSES.VOID}>{formatStatusLabel(INVOICE_STATUSES.VOID, lang)}</option>
               </select>
 
+              <button type="button" style={clearButtonStyle} onClick={() => setShowArchived((value) => !value)}>
+                {showArchived ? (lang === "es" ? "Ver activos" : "Show active") : (lang === "es" ? "Ver archivadas" : "Show archived")}
+              </button>
+
               <button
                 type="button"
                 style={clearButtonStyle}
                 onClick={() => {
                   setQ("");
                   setStatusFilter("all");
+                  setShowArchived(false);
                 }}
               >
                 {lang === "es" ? "Limpiar" : "Clear"}
@@ -3112,6 +3060,23 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                         >
                           {formatStatusLabel(derivedStatus, lang)}
                         </div>
+                        {invoice?.archived ? (
+                          <div
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: 999,
+                              border: "1px solid rgba(96,165,250,0.35)",
+                              background: "rgba(59,130,246,0.12)",
+                              color: "rgba(191,219,254,0.98)",
+                              fontSize: 10.5,
+                              fontWeight: 900,
+                              letterSpacing: "0.08em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {lang === "es" ? "Archivada" : "Archived"}
+                          </div>
+                        ) : null}
                       </div>
                       <div style={invoiceSignalGridStyle}>
                         <div style={{ ...invoiceSignalCardStyle, border: `1px solid ${cardActionMeta.border}`, background: cardActionMeta.background }}>
@@ -3665,8 +3630,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                               </div>
                               <div style={paymentConsoleActionCopyStyle}>
                                 {lang === "es"
-                                  ? "Mantén anulación y eliminación separadas del cobro para evitar errores."
-                                  : "Keep void and delete separated from collection actions to avoid mistakes."}
+                                  ? "Mantén la anulación y el archivo separados del cobro para evitar errores."
+                                  : "Keep void and archive separated from collection actions to avoid mistakes."}
                               </div>
                               <div style={paymentConsoleButtonGridStyle}>
                                 <button
@@ -3677,8 +3642,8 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
                                 >
                                   {lang === "es" ? "Anular" : "Void"}
                                 </button>
-                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => removeInvoice(invoice)}>
-                                  {lang === "es" ? "Eliminar" : "Delete"}
+                                <button className="pe-btn pe-btn-ghost" type="button" onClick={() => archiveInvoice(invoice)}>
+                                  {invoice?.archived ? (lang === "es" ? "Restaurar factura" : "Restore Invoice") : (lang === "es" ? "Archivar factura" : "Archive Invoice")}
                                 </button>
                               </div>
                             </div>

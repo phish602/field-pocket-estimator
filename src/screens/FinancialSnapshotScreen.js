@@ -903,8 +903,11 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
 
     const customerAll = (Array.isArray(customers) ? customers : []).filter(Boolean);
     const projectAll = (Array.isArray(projects) ? projects : []).filter(Boolean);
+    // Archived invoices remain ledger inputs; archived estimates are excluded from the active pipeline.
     const invAll = (Array.isArray(invoices) ? invoices : []).filter(Boolean);
-    const estAll = (Array.isArray(estimates) ? estimates : []).filter(Boolean);
+    const estAll = (Array.isArray(estimates) ? estimates : []).filter(
+      (estimate) => estimate && !estimate.archived
+    );
     const committedInvoices = invAll.filter((invoice) => isInvoiceFinanciallyCommitted(invoice, now.getTime()));
     const datedCommittedInvoices = committedInvoices.filter((invoice) => hasRealInvoiceDate(invoice));
     const missingInvoiceDateCount = committedInvoices.length - datedCommittedInvoices.length;
