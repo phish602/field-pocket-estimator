@@ -12,6 +12,7 @@ import {
 } from "../utils/storage";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
+import { getPlanLabel, shouldShowPdfWatermark } from "../lib/entitlements";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
@@ -863,6 +864,22 @@ const stripeActionGroupStyle = {
           </div>
         </div>
         <CloudBackupInlineStatus style={{ margin: "-4px 0 8px" }} />
+
+        <div
+          className="pe-company-plan-indicator"
+          data-plan={getPlanLabel(profile)}
+          style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "2px 0 10px", padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(148,163,184,0.22)", background: "rgba(255,255,255,0.03)" }}
+        >
+          <span style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>Plan</span>
+          <span style={{ fontSize: 13, fontWeight: 900, padding: "3px 10px", borderRadius: 999, border: "1px solid rgba(96,165,250,0.35)", background: "rgba(59,130,246,0.12)", color: "rgba(219,234,254,0.96)" }}>
+            {getPlanLabel(profile)}
+          </span>
+          <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>
+            {shouldShowPdfWatermark(profile)
+              ? "PDF exports include EstiPaid branding. Upgrade to remove it."
+              : "Custom PDF branding enabled — no EstiPaid watermark."}
+          </span>
+        </div>
 
         {showMissingRequiredPrompt && missingRequiredFields.length ? (
           <div className="pe-company-missing-banner" role="alert" aria-live="assertive">

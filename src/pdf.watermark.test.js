@@ -1,0 +1,85 @@
+// Integration test for the plan-aware PDF watermark. jsPDF + autoTable are
+// replaced with a lightweight capturing mock so we can assert exactly what text
+// buildPdfDoc draws, without a real PDF renderer.
+
+let mockTextCalls = [];
+let mockPages = 1;
+
+jest.mock("jspdf", () =>
+  function MockJsPDF() {
+    mockPages = 1;
+    const base = {
+      text: (...args) => { mockTextCalls.push(args); },
+      addPage: () => { mockPages += 1; },
+      getNumberOfPages: () => mockPages,
+      setPage: () => {},
+      getFontSize: () => 10,
+      getTextWidth: () => 20,
+      splitTextToSize: (t) => String(t == null ? "" : t).split("\n"),
+      getImageProperties: () => ({ width: 100, height: 100 }),
+      output: () => new ArrayBuffer(8),
+      save: () => {},
+      internal: {
+        scaleFactor: 1,
+        pageSize: { getWidth: () => 210, getHeight: () => 297, width: 210, height: 297 },
+      },
+    };
+    // Returning an object from a constructor makes `new MockJsPDF()` use it.
+    return new Proxy(base, {
+      get(target, prop) {
+        return prop in target ? target[prop] : () => {};
+      },
+    });
+  },
+);
+jest.mock("jspdf-autotable", () => jest.fn());
+
+const { exportPdf } = require("./pdf");
+
+function basePayload(overrides = {}) {
+  return {
+    docType: "estimate",
+    documentNumber: "EST-1001",
+    company: { companyName: "Test Co", ...(overrides.company || {}) },
+    customer: { name: "Test Customer" },
+    job: { projectName: "Test Project", date: "2026-07-10" },
+    summaryRows: [["Total", "$1,000.00"]],
+    ...overrides,
+    // keep company override explicit above
+    ...(overrides.company ? { company: { companyName: "Test Co", ...overrides.company } } : {}),
+  };
+}
+
+function drewText(needle) {
+  return mockTextCalls.some((args) => String(args[0]).includes(needle));
+}
+
+describe("PDF plan-aware watermark", () => {
+  beforeEach(() => {
+    mockTextCalls = [];
+    mockPages = 1;
+  });
+
+  test("Free plan (no plan field) draws the 'Created with EstiPaid' watermark", async () => {
+    await exportPdf(basePayload(), "download");
+    expect(drewText("Created with EstiPaid")).toBe(true);
+    // Export still runs its normal footer/page content.
+    expect(drewText("Page 1 of 1")).toBe(true);
+  });
+
+  test("Pro plan does not draw the watermark", async () => {
+    await exportPdf(basePayload({ company: { plan: "pro" } }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(false);
+    expect(drewText("Page 1 of 1")).toBe(true);
+  });
+
+  test("Team plan does not draw the watermark", async () => {
+    await exportPdf(basePayload({ company: { plan: "team" } }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(false);
+  });
+
+  test("invoice PDFs also carry the watermark on Free", async () => {
+    await exportPdf(basePayload({ docType: "invoice" }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(true);
+  });
+});

@@ -5,6 +5,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { detectDataUrlType } from "./utils/sanitize";
+import { shouldShowPdfWatermark } from "./lib/entitlements";
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
@@ -869,6 +870,9 @@ function buildPdfDoc(payload) {
   const footerLine = buildFooterLine(company);
   const footerCompanyName = asText(company?.companyName);
   const footerDetails = buildFooterDetails(company);
+  // Free plans carry a tasteful "Created with EstiPaid" mark; Pro/Team remove it.
+  // Defaults to shown when no plan is present (i.e. Free).
+  const showEstipaidWatermark = shouldShowPdfWatermark(company);
   const invoiceStatusText = resolveInvoiceStatusText(payload);
   const invoicePaymentTermsText = payload?.docType === "invoice" ? buildInvoicePaymentTermsText(payload) : "";
   const billToText = buildBillToText(customer);
@@ -1831,6 +1835,13 @@ function buildPdfDoc(payload) {
     doc.setFontSize(PAGE_NUMBER_FONT_SIZE);
     doc.setTextColor(PAGE_NUMBER_TEXT_COLOR);
     doc.text(`Page ${page} of ${pageCount}`, RIGHT, PAGE_NUMBER_Y, { align: "right" });
+
+    if (showEstipaidWatermark) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(PAGE_NUMBER_FONT_SIZE);
+      doc.setTextColor(PAGE_NUMBER_TEXT_COLOR);
+      doc.text("Created with EstiPaid", LEFT, PAGE_NUMBER_Y, { align: "left" });
+    }
 
     if (page > 1) {
       doc.setFont("helvetica", "bold");
