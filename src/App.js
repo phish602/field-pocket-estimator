@@ -3950,7 +3950,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         />
       );
     }
-    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen supabaseConfigured={Boolean(auth?.configured)} companyId={String(account?.company?.id || "")} /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen supabaseConfigured={Boolean(auth?.configured)} companyId={String(account?.company?.id || "")} accessToken={String(auth?.session?.access_token || "")} /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? (
       <AdvancedSettingsScreen
         onOpenCompanyProfile={() => navigateToCompanyProfile()}

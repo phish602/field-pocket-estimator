@@ -255,7 +255,7 @@ function fileToDataUrl(file) {
   });
 }
 
-export default function CompanyProfileScreen({ supabaseConfigured = false, companyId = "" } = {}) {
+export default function CompanyProfileScreen({ supabaseConfigured = false, companyId = "", accessToken = "" } = {}) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
   if (initialProfileRef.current === null) {
@@ -278,6 +278,8 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const [stripeConnectBusy, setStripeConnectBusy] = useState(false);
   const [stripeStatusBusy, setStripeStatusBusy] = useState(false);
   const [stripeStatus, setStripeStatus] = useState(null);
+  const [subscriptionCheckoutBusy, setSubscriptionCheckoutBusy] = useState("");
+  const [subscriptionCheckoutError, setSubscriptionCheckoutError] = useState("");
   const fileInputRef = useRef(null);
   const brandingCardRef = useRef(null);
   const brandingUploadButtonRef = useRef(null);
@@ -364,6 +366,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       helper: "Connect Stripe to let customers pay invoices online without changing invoice or payment flows.",
       nextAction: "Connect Stripe to start onboarding and create a payment-ready account link.",
     };
+  const resolvedSubscriptionPlan = resolvePlanFromSubscriptionState(subscriptionPlanState);
 
   useEffect(() => () => {
     if (saveFlashTimerRef.current) {
@@ -527,6 +530,42 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       setStripeConnectBusy(false);
     }
   }, [persistProfileUpdate, profile, stripeAccountId, stripeConnectBusy]);
+
+  const handleSubscriptionCheckout = useCallback(async (requestedPlan) => {
+    if (subscriptionCheckoutBusy) return;
+    if (!supabaseConfigured || !String(companyId || "").trim() || !String(accessToken || "").trim()) {
+      setSubscriptionCheckoutError("Sign in to a company account before starting an upgrade.");
+      return;
+    }
+
+    setSubscriptionCheckoutError("");
+    setSubscriptionCheckoutBusy(requestedPlan);
+    try {
+      const response = await fetch("/api/stripe/create-subscription-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ plan: requestedPlan, companyId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const checkoutUrl = String(payload?.checkoutUrl || "").trim();
+      if (!response.ok || !checkoutUrl) {
+        setSubscriptionCheckoutError(payload?.error || "Unable to start subscription checkout.");
+        return;
+      }
+
+      const opened = typeof window !== "undefined" && typeof window.open === "function"
+        ? window.open(checkoutUrl, "_self")
+        : null;
+      if (!opened && typeof window !== "undefined") window.location.assign(checkoutUrl);
+    } catch {
+      setSubscriptionCheckoutError("Unable to start subscription checkout.");
+    } finally {
+      setSubscriptionCheckoutBusy("");
+    }
+  }, [accessToken, companyId, subscriptionCheckoutBusy, supabaseConfigured]);
 
   const openLogoPicker = () => {
     if (!fileInputRef.current) return;
@@ -915,7 +954,7 @@ const stripeActionGroupStyle = {
 
         <div
           className="pe-company-plan-indicator"
-          data-plan={resolvePlanFromSubscriptionState(subscriptionPlanState)}
+          data-plan={resolvedSubscriptionPlan}
           data-status={subscriptionPlanState.status}
           style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "2px 0 10px", padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(148,163,184,0.22)", background: "rgba(255,255,255,0.03)" }}
         >
@@ -928,6 +967,30 @@ const stripeActionGroupStyle = {
               ? "PDF exports include EstiPaid branding. Upgrade to remove it."
               : "Custom PDF branding enabled — no EstiPaid watermark."}`}
           </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%" }}>
+            {resolvedSubscriptionPlan === "free" ? (
+              <>
+                <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("pro")}>
+                  {subscriptionCheckoutBusy === "pro" ? "Starting Pro checkout…" : "Upgrade to Pro"}
+                </button>
+                <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("team")}>
+                  {subscriptionCheckoutBusy === "team" ? "Starting Team checkout…" : "Upgrade to Team"}
+                </button>
+              </>
+            ) : null}
+            {resolvedSubscriptionPlan === "pro" ? (
+              <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("team")}>
+                {subscriptionCheckoutBusy === "team" ? "Starting Team checkout…" : "Upgrade to Team"}
+              </button>
+            ) : null}
+            {resolvedSubscriptionPlan === "team" ? (
+              <span style={{ fontSize: 11.5, color: "rgba(187,247,208,0.92)", fontWeight: 800 }}>Team is your current plan.</span>
+            ) : null}
+            <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>Plan changes activate after Stripe confirms payment.</span>
+          </div>
+          {subscriptionCheckoutError ? (
+            <span role="alert" style={{ width: "100%", fontSize: 11.5, color: "rgba(254,202,202,0.96)" }}>{subscriptionCheckoutError}</span>
+          ) : null}
         </div>
 
         {showMissingRequiredPrompt && missingRequiredFields.length ? (
