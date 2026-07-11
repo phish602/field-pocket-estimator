@@ -68,6 +68,7 @@ describe("PDF plan-aware watermark", () => {
     mockTextCalls = [];
     mockPages = 1;
     localStorage.removeItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE);
+    localStorage.removeItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_REMOTE_CACHE);
   });
 
   test("Free plan (no plan field) draws the 'Created with EstiPaid' watermark", async () => {
@@ -109,5 +110,23 @@ describe("PDF plan-aware watermark", () => {
     seedSubscriptionState({ plan: "pro", status: "canceled" });
     await exportPdf(basePayload({ docType: "invoice" }), "download");
     expect(drewText("Created with EstiPaid")).toBe(true);
+  });
+
+  test("cached remote state takes priority over local dev state for every PDF type", async () => {
+    seedSubscriptionState({ plan: "pro", status: "active" });
+    localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_REMOTE_CACHE, JSON.stringify({
+      state: { plan: "pro", status: "canceled", source: "stripe" },
+      resolvedAt: "2026-07-10T00:00:00.000Z",
+    }));
+    await exportPdf(basePayload({ docType: "estimate" }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(true);
+
+    mockTextCalls = [];
+    localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_REMOTE_CACHE, JSON.stringify({
+      state: { plan: "team", status: "active", source: "stripe" },
+      resolvedAt: "2026-07-10T00:00:00.000Z",
+    }));
+    await exportPdf(basePayload({ docType: "invoice" }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(false);
   });
 });

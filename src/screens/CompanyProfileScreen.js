@@ -14,11 +14,14 @@ import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
   getEntitlementsFromSubscriptionState,
+  getDefaultSubscriptionPlanState,
   getSubscriptionPlanLabel,
   getSubscriptionStatusLabel,
   loadLocalSubscriptionPlanState,
   resolvePlanFromSubscriptionState,
 } from "../lib/subscriptionPlanState";
+import { getSupabaseClient } from "../lib/supabaseClient";
+import { loadResolvedSubscriptionPlanState } from "../lib/subscriptionPlanStateRemote";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
@@ -252,7 +255,7 @@ function fileToDataUrl(file) {
   });
 }
 
-export default function CompanyProfileScreen() {
+export default function CompanyProfileScreen({ supabaseConfigured = false, companyId = "" } = {}) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
   if (initialProfileRef.current === null) {
@@ -260,7 +263,9 @@ export default function CompanyProfileScreen() {
   }
 
   const [profile, setProfile] = useState(() => initialProfileRef.current);
-  const [subscriptionPlanState, setSubscriptionPlanState] = useState(() => loadLocalSubscriptionPlanState());
+  const [subscriptionPlanState, setSubscriptionPlanState] = useState(() => (
+    supabaseConfigured && companyId ? getDefaultSubscriptionPlanState() : loadLocalSubscriptionPlanState()
+  ));
   const [lastSaveOk, setLastSaveOk] = useState(true);
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -294,6 +299,26 @@ export default function CompanyProfileScreen() {
       window.removeEventListener("pe-localstorage", onLocalStorage);
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadSubscriptionState = async () => {
+      if (!supabaseConfigured || !companyId) {
+        if (active) setSubscriptionPlanState(loadLocalSubscriptionPlanState());
+        return;
+      }
+
+      if (active) setSubscriptionPlanState(getDefaultSubscriptionPlanState());
+      const resolved = await loadResolvedSubscriptionPlanState({
+        supabase: getSupabaseClient(),
+        companyId,
+        allowLocalFallback: process.env.NODE_ENV !== "production",
+      });
+      if (active) setSubscriptionPlanState(resolved.state);
+    };
+    loadSubscriptionState();
+    return () => { active = false; };
+  }, [companyId, supabaseConfigured]);
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
   const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
   const missingRequiredSet = useMemo(

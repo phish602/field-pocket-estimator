@@ -5,7 +5,9 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { detectDataUrlType } from "./utils/sanitize";
-import { getEntitlementsFromSubscriptionState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
+import { getEntitlementsFromSubscriptionState } from "./lib/subscriptionPlanState";
+import { loadBestAvailableSubscriptionPlanState } from "./lib/subscriptionPlanStateRemote";
+import { isSupabaseConfigured } from "./lib/supabaseClient";
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
@@ -872,7 +874,9 @@ function buildPdfDoc(payload) {
   const footerDetails = buildFooterDetails(company);
   // Subscription state, not editable Company Profile fields, controls branding.
   const showEstipaidWatermark = getEntitlementsFromSubscriptionState(
-    loadLocalSubscriptionPlanState()
+    loadBestAvailableSubscriptionPlanState({
+      allowLocalFallback: !isSupabaseConfigured || process.env.NODE_ENV !== "production",
+    })
   ).showPdfWatermark;
   const invoiceStatusText = resolveInvoiceStatusText(payload);
   const invoicePaymentTermsText = payload?.docType === "invoice" ? buildInvoicePaymentTermsText(payload) : "";
