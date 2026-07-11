@@ -4,8 +4,15 @@ const http = require("http");
 const express = require("express");
 const Stripe = require("stripe");
 const { fetch } = require("undici");
+const { createExpressStripeSubscriptionWebhookHandler } = require("./stripeSubscriptionWebhook");
 
 const app = express();
+// This route must stay ahead of express.json so Stripe verifies the exact bytes it signed.
+app.post(
+  "/api/stripe/subscription-webhook",
+  express.raw({ type: "application/json" }),
+  createExpressStripeSubscriptionWebhookHandler(),
+);
 app.use(express.json({ limit: "1mb" }));
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
