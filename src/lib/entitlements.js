@@ -9,9 +9,8 @@
 //   - no React hooks
 //   - no business-record mutations
 //
-// The plan is expected to live on the company profile (profile.plan). Until a
-// real subscription is wired up, every unknown/missing plan resolves to Free,
-// so nothing changes for existing users.
+// This module only maps a known plan to capabilities. Subscription authority
+// lives in subscriptionPlanState; unknown/missing plans resolve to Free.
 
 export const PLAN_FREE = "free";
 export const PLAN_PRO = "pro";

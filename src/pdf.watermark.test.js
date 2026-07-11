@@ -35,6 +35,7 @@ jest.mock("jspdf", () =>
 jest.mock("jspdf-autotable", () => jest.fn());
 
 const { exportPdf } = require("./pdf");
+const { STORAGE_KEYS } = require("./constants/storageKeys");
 
 function basePayload(overrides = {}) {
   return {
@@ -54,10 +55,19 @@ function drewText(needle) {
   return mockTextCalls.some((args) => String(args[0]).includes(needle));
 }
 
+function seedSubscriptionState(state) {
+  localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE, JSON.stringify({
+    source: "local_dev",
+    updatedAt: "2026-07-10T00:00:00.000Z",
+    ...state,
+  }));
+}
+
 describe("PDF plan-aware watermark", () => {
   beforeEach(() => {
     mockTextCalls = [];
     mockPages = 1;
+    localStorage.removeItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE);
   });
 
   test("Free plan (no plan field) draws the 'Created with EstiPaid' watermark", async () => {
@@ -67,18 +77,36 @@ describe("PDF plan-aware watermark", () => {
     expect(drewText("Page 1 of 1")).toBe(true);
   });
 
-  test("Pro plan does not draw the watermark", async () => {
+  test("a Company Profile plan field alone does not remove the watermark", async () => {
     await exportPdf(basePayload({ company: { plan: "pro" } }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(true);
+  });
+
+  test("active Pro subscription state does not draw the estimate watermark", async () => {
+    seedSubscriptionState({ plan: "pro", status: "active" });
+    await exportPdf(basePayload({ company: { plan: "free" } }), "download");
     expect(drewText("Created with EstiPaid")).toBe(false);
     expect(drewText("Page 1 of 1")).toBe(true);
   });
 
-  test("Team plan does not draw the watermark", async () => {
-    await exportPdf(basePayload({ company: { plan: "team" } }), "download");
+  test("active Team subscription state does not draw the estimate watermark", async () => {
+    seedSubscriptionState({ plan: "team", status: "active" });
+    await exportPdf(basePayload({ company: { plan: "free" } }), "download");
     expect(drewText("Created with EstiPaid")).toBe(false);
   });
 
   test("invoice PDFs also carry the watermark on Free", async () => {
+    await exportPdf(basePayload({ docType: "invoice" }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(true);
+  });
+
+  test("invoice PDFs follow active Team and canceled Pro state", async () => {
+    seedSubscriptionState({ plan: "team", status: "active" });
+    await exportPdf(basePayload({ docType: "invoice" }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(false);
+
+    mockTextCalls = [];
+    seedSubscriptionState({ plan: "pro", status: "canceled" });
     await exportPdf(basePayload({ docType: "invoice" }), "download");
     expect(drewText("Created with EstiPaid")).toBe(true);
   });

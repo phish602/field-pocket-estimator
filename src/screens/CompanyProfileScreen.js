@@ -12,7 +12,13 @@ import {
 } from "../utils/storage";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
-import { getPlanLabel, shouldShowPdfWatermark } from "../lib/entitlements";
+import {
+  getEntitlementsFromSubscriptionState,
+  getSubscriptionPlanLabel,
+  getSubscriptionStatusLabel,
+  loadLocalSubscriptionPlanState,
+  resolvePlanFromSubscriptionState,
+} from "../lib/subscriptionPlanState";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
@@ -254,6 +260,7 @@ export default function CompanyProfileScreen() {
   }
 
   const [profile, setProfile] = useState(() => initialProfileRef.current);
+  const [subscriptionPlanState, setSubscriptionPlanState] = useState(() => loadLocalSubscriptionPlanState());
   const [lastSaveOk, setLastSaveOk] = useState(true);
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -271,6 +278,22 @@ export default function CompanyProfileScreen() {
   const brandingUploadButtonRef = useRef(null);
   const brandingFocusTimerRef = useRef(null);
   const saveFlashTimerRef = useRef(null);
+
+  useEffect(() => {
+    const refreshSubscriptionPlanState = () => setSubscriptionPlanState(loadLocalSubscriptionPlanState());
+    const onStorage = (event) => {
+      if (event?.key === STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE) refreshSubscriptionPlanState();
+    };
+    const onLocalStorage = (event) => {
+      if (event?.detail?.key === STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE) refreshSubscriptionPlanState();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("pe-localstorage", onLocalStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pe-localstorage", onLocalStorage);
+    };
+  }, []);
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
   const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
   const missingRequiredSet = useMemo(
@@ -867,17 +890,18 @@ const stripeActionGroupStyle = {
 
         <div
           className="pe-company-plan-indicator"
-          data-plan={getPlanLabel(profile)}
+          data-plan={resolvePlanFromSubscriptionState(subscriptionPlanState)}
+          data-status={subscriptionPlanState.status}
           style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "2px 0 10px", padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(148,163,184,0.22)", background: "rgba(255,255,255,0.03)" }}
         >
           <span style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>Plan</span>
           <span style={{ fontSize: 13, fontWeight: 900, padding: "3px 10px", borderRadius: 999, border: "1px solid rgba(96,165,250,0.35)", background: "rgba(59,130,246,0.12)", color: "rgba(219,234,254,0.96)" }}>
-            {getPlanLabel(profile)}
+            {getSubscriptionPlanLabel(subscriptionPlanState)}
           </span>
           <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>
-            {shouldShowPdfWatermark(profile)
+            {`Status: ${getSubscriptionStatusLabel(subscriptionPlanState)} · ${getEntitlementsFromSubscriptionState(subscriptionPlanState).showPdfWatermark
               ? "PDF exports include EstiPaid branding. Upgrade to remove it."
-              : "Custom PDF branding enabled — no EstiPaid watermark."}
+              : "Custom PDF branding enabled — no EstiPaid watermark."}`}
           </span>
         </div>
 

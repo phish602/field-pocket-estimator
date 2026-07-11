@@ -5,7 +5,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { detectDataUrlType } from "./utils/sanitize";
-import { shouldShowPdfWatermark } from "./lib/entitlements";
+import { getEntitlementsFromSubscriptionState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
@@ -870,9 +870,10 @@ function buildPdfDoc(payload) {
   const footerLine = buildFooterLine(company);
   const footerCompanyName = asText(company?.companyName);
   const footerDetails = buildFooterDetails(company);
-  // Free plans carry a tasteful "Created with EstiPaid" mark; Pro/Team remove it.
-  // Defaults to shown when no plan is present (i.e. Free).
-  const showEstipaidWatermark = shouldShowPdfWatermark(company);
+  // Subscription state, not editable Company Profile fields, controls branding.
+  const showEstipaidWatermark = getEntitlementsFromSubscriptionState(
+    loadLocalSubscriptionPlanState()
+  ).showPdfWatermark;
   const invoiceStatusText = resolveInvoiceStatusText(payload);
   const invoicePaymentTermsText = payload?.docType === "invoice" ? buildInvoicePaymentTermsText(payload) : "";
   const billToText = buildBillToText(customer);
