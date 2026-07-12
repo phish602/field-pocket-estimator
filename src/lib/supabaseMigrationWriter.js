@@ -55,6 +55,56 @@ function buildNotice(level, code, message, details = {}) {
   return { level, code, message, details };
 }
 
+// Non-sensitive summary of why a reconciliation could not clear a mismatch.
+// It reports outcome shape only: entity types, counts, and reasons -- never
+// customer contact details, addresses, notes, or money amounts. Legacy ids and
+// invoice numbers are technical identifiers, not private business content.
+function summarizeIdentityPlanForDiagnostics(plan) {
+  if (!plan || typeof plan !== "object") return null;
+  const list = (value) => (Array.isArray(value) ? value : []);
+  const byType = (entries) => list(entries).reduce((acc, entry) => {
+    const type = asText(entry?.entityType) || "unknown";
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {});
+  const reasons = (entries) => list(entries).reduce((acc, entry) => {
+    const reason = asText(entry?.reason) || "unspecified";
+    acc[reason] = (acc[reason] || 0) + 1;
+    return acc;
+  }, {});
+  // Which payment identity fields were missing, so the next Retry Sync can show
+  // exactly why a payment could not be proven the same (field names only, no
+  // amounts, no customer data).
+  const paymentIdentityMissingFields = [...new Set(
+    list(plan.protectedConflicts)
+      .filter((entry) => entry?.entityType === "invoice_payment")
+      .flatMap((entry) => list(entry?.missingFields).map((field) => asText(field)))
+      .filter(Boolean)
+  )];
+  return {
+    reconciliations: byType(plan.reconciliations),
+    exactMatches: byType(plan.exactMatches),
+    localOnly: byType(plan.localOnly),
+    cloudOnly: byType(plan.cloudOnly),
+    ambiguous: reasons(plan.ambiguous),
+    protectedConflicts: reasons(plan.protectedConflicts),
+    paymentIdentity: {
+      reasons: reasons(list(plan.protectedConflicts).filter((entry) => entry?.entityType === "invoice_payment")),
+      missingFields: paymentIdentityMissingFields,
+    },
+    unmatchedInvoiceNumbers: {
+      localOnly: list(plan.localOnly)
+        .filter((entry) => entry?.entityType === "invoice")
+        .map((entry) => asText(entry?.currentLocalLegacyId))
+        .filter(Boolean),
+      cloudOnly: list(plan.cloudOnly)
+        .filter((entry) => entry?.entityType === "invoice")
+        .map((entry) => asText(entry?.oldCloudLegacyId))
+        .filter(Boolean),
+    },
+  };
+}
+
 function buildTableResult(table, label, localCount, status = "pending", extra = {}) {
   return {
     table,
@@ -883,6 +933,20 @@ const RECONCILIATION_TABLE_BY_ENTITY = {
   project: "projects",
   estimate: "estimates",
   invoice: "invoices",
+  // A proven 1:1 payment on a reconciled invoice re-keys only legacy_local_id;
+  // the cloud UUID and all financial columns (amount/method/status/paid_at) are
+  // left untouched by the update statement in applyCloudIdentityReconciliations.
+  invoice_payment: "invoice_payments",
+};
+
+// Maps each reconciled entity type to the key used by readCloudIdentityRows(),
+// so the post-re-key verification can re-read the affected rows fresh.
+const RECONCILIATION_IDENTITY_KEY_BY_ENTITY = {
+  customer: "customers",
+  project: "projects",
+  estimate: "estimates",
+  invoice: "invoices",
+  invoice_payment: "invoice_payments",
 };
 
 const RECONCILIATION_CHILD_PARENT_COLUMNS = {
@@ -1192,6 +1256,7 @@ export async function runSupabaseMigrationWrite({
           )],
           cloudCountsBefore: cloudCounts,
           identityPlan,
+          identityDiagnostics: summarizeIdentityPlanForDiagnostics(identityPlan),
           tableResults,
           noLocalDeletes: true,
         };
@@ -1218,6 +1283,39 @@ export async function runSupabaseMigrationWrite({
           };
         }
         appliedIdentityReconciliations = applied.applied;
+
+        // Conclusively re-read the reconciled cloud rows before the legacy-id
+        // resume guard runs. This proves the re-key persisted: the cloud UUID
+        // is unchanged and legacy_local_id now equals the current local id. If
+        // any re-key did not stick, fail clearly instead of continuing on a
+        // stale identity snapshot.
+        const verifyIdentityRows = await readCloudIdentityRows(client, companyId);
+        const unresolvedRekey = appliedIdentityReconciliations.find((reconciliation) => {
+          const tableKey = RECONCILIATION_IDENTITY_KEY_BY_ENTITY[reconciliation?.entityType];
+          if (!tableKey) return false;
+          const freshRows = Array.isArray(verifyIdentityRows?.[tableKey]) ? verifyIdentityRows[tableKey] : [];
+          const freshRow = freshRows.find((row) => asText(row?.id) === asText(reconciliation?.cloudUuid));
+          return !freshRow || asText(freshRow?.legacy_local_id) !== asText(reconciliation?.currentLocalLegacyId);
+        });
+        if (unresolvedRekey) {
+          return {
+            ok: false,
+            blocked: false,
+            reason: "Cloud identity re-key did not persist for a reconciled record.",
+            notices: [buildNotice(
+              "error",
+              "identity_reconciliation_not_persisted",
+              "Cloud identity re-key did not persist for a reconciled record.",
+              { entityType: asText(unresolvedRekey.entityType), cloudUuid: asText(unresolvedRekey.cloudUuid) }
+            )],
+            cloudCountsBefore: cloudCounts,
+            identityPlan,
+            identityDiagnostics: summarizeIdentityPlanForDiagnostics(identityPlan),
+            tableResults,
+            noLocalDeletes: true,
+          };
+        }
+
         notices.push(buildNotice(
           "info",
           "cloud_identity_reconciled",

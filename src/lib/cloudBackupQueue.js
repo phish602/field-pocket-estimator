@@ -479,6 +479,58 @@ export function markCloudBackupReviewRequired(reason, {
   }
 }
 
+// The cloud backup result status that means "verified success". Kept as a
+// literal here (rather than importing from supabaseCloudOnboarding) because
+// that module imports this one; a reverse import would create a cycle.
+export const CLOUD_BACKUP_RESULT_COMPLETED_STATUS = "backup_completed";
+export const CLOUD_BACKUP_MAX_RETRY_DELAY_MS = 60000;
+
+// Exponential backoff shared by the automatic worker and manual Retry Sync so
+// both use the identical retry cadence.
+export function computeCloudBackupRetryDelayMs(retryCount) {
+  const exponent = Math.max(0, Math.min(6, Number(retryCount || 0) - 1));
+  return Math.min(CLOUD_BACKUP_MAX_RETRY_DELAY_MS, 1500 * (2 ** exponent));
+}
+
+// Single source of truth for turning a cloud backup RESULT into exactly one
+// queue transition. Used by BOTH the automatic background worker and the manual
+// "Retry Sync" button so the persisted queue can never disagree with the result
+// the user is shown (e.g. "retrying" while the result is "cloud changed").
+//
+// Exactly one transition is applied, in priority order:
+//   device lock lost  -> leave pending, never clean, never retry-schedule
+//   permanent review  -> remote_changed / conflict, no retry timer
+//   verified success  -> clear the uploaded generation (clean)
+//   transient failure -> retry_wait / needs_attention with backoff
+export function applyCloudBackupResultToQueue(result, { queueGeneration = null } = {}) {
+  if (result?.deviceLockLost) {
+    return { transition: "device_lock_lost", state: readCloudBackupQueueState() };
+  }
+  if (result?.permanentIdentityConflict) {
+    const state = markCloudBackupReviewRequired(result?.error || result?.reason, {
+      status: result?.syncReviewState,
+      errorCode: "identity_review_required",
+    });
+    return { transition: "review_required", state };
+  }
+  if (result?.status === CLOUD_BACKUP_RESULT_COMPLETED_STATUS) {
+    const state = clearCloudBackupDirty(
+      "backup_verified",
+      queueGeneration !== null && queueGeneration !== undefined ? { expectedRevision: queueGeneration } : {}
+    );
+    return { transition: "cleared", state };
+  }
+  const current = readCloudBackupQueueState();
+  const state = recordCloudBackupAttemptFailure(
+    result?.error || result?.status || "backup_incomplete",
+    {
+      retryDelayMs: computeCloudBackupRetryDelayMs(Number(current.retryCount || 0) + 1),
+      errorCode: result?.status || "backup_incomplete",
+    }
+  );
+  return { transition: "retry", state };
+}
+
 export function pauseCloudAutoBackup(reason = "manual_pause") {
   return writeAutoBackupPauseSnapshot({
     paused: true,

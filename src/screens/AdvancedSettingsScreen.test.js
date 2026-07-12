@@ -33,6 +33,7 @@ import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
   recordCloudBackupAttemptFailure,
+  readCloudBackupQueueState,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { scanLocalDataIntegrity } from "../lib/localDataIntegrity";
@@ -1616,7 +1617,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       role: "owner",
       allowCloudOnlyReplacement: true,
     }));
-    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+    // After a successful manual backup the shared classifier also clears the
+    // Gate 13A queue, so the automatic status line and the onboarding result
+    // both confirm success -- consistent, no longer contradictory.
+    expect(screen.getAllByText("Cloud backup is up to date.").length).toBeGreaterThan(0);
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
   });
 
@@ -2147,9 +2151,63 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       company: expect.objectContaining({ id: "company_1" }),
       role: "owner",
     }));
-    expect(screen.getByText("Cloud backup is up to date.")).toBeInTheDocument();
+    // Success now also clears the Gate 13A queue via the shared classifier, so
+    // the automatic status line and onboarding result agree (both up to date).
+    expect(screen.getAllByText("Cloud backup is up to date.").length).toBeGreaterThan(0);
     expect(screen.getByText("Cloud data matches this device.")).toBeInTheDocument();
     expect(screen.getByText("No local data was deleted.")).toBeInTheDocument();
+  });
+
+  test("manual backup returning a permanent conflict updates the queue to remote_changed and shows no retrying copy", async () => {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_1", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    runSupabaseCloudOnboardingBackup.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH,
+      permanentIdentityConflict: true,
+      syncReviewState: "remote_changed",
+      error: "Cloud contains records that require review.",
+      preview: {},
+      writeResult: { ok: false, blocked: true, permanentIdentityConflict: true, syncReviewState: "remote_changed" },
+      verification: null,
+      noLocalDeletes: true,
+    });
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up This Device" }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
+    });
+
+    // The queue reflects the conflict, so the automatic status shows the calm
+    // review copy and never the "retrying" sentence at the same time.
+    expect(screen.getAllByText("Cloud changed elsewhere").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Your changes are safe. EstiPaid is retrying cloud sync.")).not.toBeInTheDocument();
+    expect(readCloudBackupQueueState().status).toBe("remote_changed");
   });
 
   test("backup needs_attention state points to developer migration tools instead of a false success", async () => {

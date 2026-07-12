@@ -35,7 +35,7 @@ import {
   updateSupabaseAppRestoreBundle,
   APP_RESTORE_BUNDLE_STATUS,
 } from "../lib/supabaseAppRestoreBundle";
-import { markCloudBackupDirty, readCloudBackupQueueState, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
+import { markCloudBackupDirty, readCloudBackupQueueState, markCloudBackupSyncing, applyCloudBackupResultToQueue, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "../lib/cloudBackupRunLock";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import {
@@ -691,14 +691,25 @@ export default function AdvancedSettingsScreen({
     if (!acquireCloudBackupRunLock()) return;
     try {
       setOnboardingBackupBusy(true);
+      // Capture the queue generation so a verified clear cannot wipe out a
+      // local mutation that lands while this manual backup is in flight.
+      const syncingQueue = markCloudBackupSyncing({ companyId: company?.id });
+      const queueGeneration = Number(syncingQueue?.syncingRevision ?? 0);
       const result = await runSupabaseCloudOnboardingBackup({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
         user,
         company,
         role: accountRole,
+        queueGeneration,
       });
       setOnboardingStatus(result);
+      // Manual Retry Sync applies the SAME queue classification as the automatic
+      // worker, then immediately refreshes the persisted queue shown on screen,
+      // so it can never leave stale "retrying" copy after a remote_changed /
+      // conflict result.
+      applyCloudBackupResultToQueue(result, { queueGeneration });
+      setAutoBackupQueueState(readCloudBackupQueueState());
     } catch {
       setOnboardingStatus({
         status: CLOUD_ONBOARDING_STATUS.ERROR,
@@ -708,6 +719,8 @@ export default function AdvancedSettingsScreen({
         error: "Unable to complete cloud backup.",
         noLocalDeletes: true,
       });
+      applyCloudBackupResultToQueue({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: "Unable to complete cloud backup." });
+      setAutoBackupQueueState(readCloudBackupQueueState());
     } finally {
       releaseCloudBackupRunLock();
       setOnboardingBackupBusy(false);
@@ -724,6 +737,8 @@ export default function AdvancedSettingsScreen({
     if (!acquireCloudBackupRunLock()) return;
     try {
       setReplaceCloudBusy(true);
+      const syncingQueue = markCloudBackupSyncing({ companyId: company?.id });
+      const queueGeneration = Number(syncingQueue?.syncingRevision ?? 0);
       const result = await runSupabaseCloudOnboardingBackup({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
@@ -731,8 +746,11 @@ export default function AdvancedSettingsScreen({
         company,
         role: accountRole,
         allowCloudOnlyReplacement: true,
+        queueGeneration,
       });
       setOnboardingStatus(result);
+      applyCloudBackupResultToQueue(result, { queueGeneration });
+      setAutoBackupQueueState(readCloudBackupQueueState());
       const replacedRows = result?.writeResult?.replacedCloudOnlyRows;
       if (Array.isArray(replacedRows) && replacedRows.length > 0) {
         const auditEvent = createStoredAuditEvent("data_integrity.cloud_only_rows_replaced", {
@@ -752,6 +770,8 @@ export default function AdvancedSettingsScreen({
         error: "Unable to replace the cloud backup.",
         noLocalDeletes: true,
       });
+      applyCloudBackupResultToQueue({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: "Unable to replace the cloud backup." });
+      setAutoBackupQueueState(readCloudBackupQueueState());
     } finally {
       releaseCloudBackupRunLock();
       setReplaceCloudBusy(false);
@@ -794,14 +814,19 @@ export default function AdvancedSettingsScreen({
   // "Current" is only shown once a backup has actually been confirmed --
   // a fresh queue that has never been dirty and never backed up has nothing
   // to report yet, so the detailed status below speaks for it instead.
+  // Priority (highest first): running, conflict, remote_changed, needs_attention
+  // (retry_wait folds into pending/retry copy below), pending, clean. A review
+  // state (conflict/remote_changed) must always win over the retrying copy so
+  // the screen can never show "EstiPaid is retrying" alongside "Cloud changed
+  // elsewhere".
   const autoBackupDisplayState = autoBackupRunning
     ? "running"
-    : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
-      ? "needs_attention"
+    : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.CONFLICT
+      ? "conflict"
       : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.REMOTE_CHANGED
         ? "remote_changed"
-        : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.CONFLICT
-          ? "conflict"
+        : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
+          ? "needs_attention"
           : autoBackupQueueState.pending
             ? "pending"
             : autoBackupQueueState.lastSuccessfulBackupAt

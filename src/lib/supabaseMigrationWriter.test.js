@@ -202,6 +202,7 @@ function createMockClient({
     projects: createUpdateChain(readRowsByTable.projects),
     estimates: createUpdateChain(readRowsByTable.estimates),
     invoices: createUpdateChain(readRowsByTable.invoices),
+    invoice_payments: createUpdateChain(readRowsByTable.invoice_payments),
   };
 
   const from = jest.fn((table) => {
@@ -336,6 +337,113 @@ describe("supabaseMigrationWriter", () => {
     expect(mockClient.deleteChains.estimate_line_items.secondEq).toHaveBeenCalledWith("estimate_id", "db_est");
     expect(mockClient.deleteChains.invoice_line_items.secondEq).toHaveBeenCalledWith("invoice_id", "db_inv");
     expect(mockClient.deleteChains.invoices.delete).not.toHaveBeenCalled();
+    expect(mockClient.deleteChains.invoice_payments.delete).not.toHaveBeenCalled();
+  });
+
+  test("reconciles a drifted invoice AND its single fully-fingerprinted drifted payment instead of blocking, leaving payment financials untouched", async () => {
+    // Live-shaped INV-2609: the invoice and its one payment both drifted ids
+    // (id drift after a re-create/restore) but are the same records, with a
+    // complete matching payment fingerprint (amount + method + status + paid_at).
+    const customers = [{ id: "cust_1", name: "Acme Property Group", email: "acct@example.com", phone: "555-000-1111" }];
+    const projects = [{ id: "proj_1", customerId: "cust_1", projectName: "Suite Refresh", projectNumber: "PRJ-42" }];
+    const estimates = [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-77", total: 150, lineItems: [{ description: "Labor", quantity: 1, price: 150, total: 150 }] }];
+    const invoices = [{
+      id: "inv_local_new", projectId: "proj_1", customerId: "cust_1", sourceEstimateId: "est_1",
+      invoiceNumber: "INV-2609", invoiceTotal: 150, amountPaid: 150, balanceRemaining: 0, status: "paid",
+      lineItems: [{ description: "Labor", quantity: 1, price: 150, total: 150 }],
+      payments: [{ id: "pay_local_new", amount: 150, method: "card", status: "paid", paidAt: "2026-07-03T18:30:00.000Z" }],
+    }];
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 },
+      existingCustomerRows: [{ id: "db_cust", legacy_local_id: "cust_1", email: "acct@example.com", phone: "5550001111", display_name: "Acme Property Group" }],
+      existingProjectRows: [{ id: "db_proj", legacy_local_id: "proj_1", customer_id: "db_cust", project_number: "PRJ-42" }],
+      existingEstimateRows: [{ id: "db_est", legacy_local_id: "est_1", customer_id: "db_cust", project_id: "db_proj", estimate_number: "EST-77" }],
+      existingInvoiceRows: [{ id: "db_inv", legacy_local_id: "inv_cloud_old", customer_id: "db_cust", project_id: "db_proj", estimate_id: "db_est", invoice_number: "INV-2609" }],
+      existingPaymentRows: [{ id: "db_pay", legacy_local_id: "pay_cloud_old", invoice_id: "db_inv", amount: 150, method: "card", status: "paid", paid_at: "2026-07-03T18:30:00.000Z" }],
+      existingEstimateLineItemRows: [{ id: "db_est_line", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est" }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line", legacy_local_id: "invoice:inv_cloud_old:line:0", invoice_id: "db_inv" }],
+      customerRows: [{ id: "db_cust", legacy_local_id: "cust_1" }],
+      projectRows: [{ id: "db_proj", legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: "db_est", legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: "db_inv", legacy_local_id: "inv_local_new" }],
+      paymentRows: [{ id: "db_pay", legacy_local_id: "pay_local_new" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ customers, projects, estimates, invoices }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "Acme Property Group" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    // The backup is no longer blocked by the drifted payment.
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toBeFalsy();
+    expect(result.appliedIdentityReconciliations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice", cloudUuid: "db_inv", currentLocalLegacyId: "inv_local_new" }),
+      expect.objectContaining({ entityType: "invoice_payment", cloudUuid: "db_pay", oldCloudLegacyId: "pay_cloud_old", currentLocalLegacyId: "pay_local_new" }),
+    ]));
+    // Invoice re-key preserves the cloud UUID.
+    expect(mockClient.updateChains.invoices.update).toHaveBeenCalledWith({ legacy_local_id: "inv_local_new" });
+    // Payment re-key touches ONLY legacy_local_id -- no amount/method/status change, and no delete.
+    expect(mockClient.updateChains.invoice_payments.update).toHaveBeenCalledWith({ legacy_local_id: "pay_local_new" });
+    expect(mockClient.updateChains.invoice_payments.update).not.toHaveBeenCalledWith(expect.objectContaining({ amount: expect.anything() }));
+    expect(mockClient.deleteChains.invoice_payments.delete).not.toHaveBeenCalled();
+    expect(mockClient.deleteChains.invoices.delete).not.toHaveBeenCalled();
+  });
+
+  test("keeps the whole write blocked when a drifted payment's identity fields cannot be proven, even though the invoice matches", async () => {
+    // The cloud payment has no paid_at (identity fields incomplete), so the
+    // payment stays a protected conflict and the write must not proceed -- no
+    // re-key, no delete, no false success.
+    const customers = [{ id: "cust_1", name: "Acme Property Group", email: "acct@example.com", phone: "555-000-1111" }];
+    const projects = [{ id: "proj_1", customerId: "cust_1", projectName: "Suite Refresh", projectNumber: "PRJ-42" }];
+    const estimates = [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-77", total: 150, lineItems: [{ description: "Labor", quantity: 1, price: 150, total: 150 }] }];
+    const invoices = [{
+      id: "inv_local_new", projectId: "proj_1", customerId: "cust_1", sourceEstimateId: "est_1",
+      invoiceNumber: "INV-2609", invoiceTotal: 150, amountPaid: 150, balanceRemaining: 0, status: "paid",
+      lineItems: [{ description: "Labor", quantity: 1, price: 150, total: 150 }],
+      payments: [{ id: "pay_local_new", amount: 150 }],
+    }];
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 },
+      existingCustomerRows: [{ id: "db_cust", legacy_local_id: "cust_1", email: "acct@example.com", phone: "5550001111", display_name: "Acme Property Group" }],
+      existingProjectRows: [{ id: "db_proj", legacy_local_id: "proj_1", customer_id: "db_cust", project_number: "PRJ-42" }],
+      existingEstimateRows: [{ id: "db_est", legacy_local_id: "est_1", customer_id: "db_cust", project_id: "db_proj", estimate_number: "EST-77" }],
+      existingInvoiceRows: [{ id: "db_inv", legacy_local_id: "inv_cloud_old", customer_id: "db_cust", project_id: "db_proj", estimate_id: "db_est", invoice_number: "INV-2609" }],
+      existingPaymentRows: [{ id: "db_pay", legacy_local_id: "pay_cloud_old", invoice_id: "db_inv", amount: 150 }],
+      existingEstimateLineItemRows: [{ id: "db_est_line", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est" }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line", legacy_local_id: "invoice:inv_cloud_old:line:0", invoice_id: "db_inv" }],
+      customerRows: [{ id: "db_cust", legacy_local_id: "cust_1" }],
+      projectRows: [{ id: "db_proj", legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: "db_est", legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: "db_inv", legacy_local_id: "inv_local_new" }],
+      paymentRows: [{ id: "db_pay", legacy_local_id: "pay_local_new" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ customers, projects, estimates, invoices }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "Acme Property Group" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.permanentIdentityConflict).toBe(true);
+    // Non-sensitive diagnostics explain exactly why the payment failed.
+    expect(result.identityDiagnostics.paymentIdentity.missingFields).toEqual(expect.arrayContaining(["paid_at"]));
+    // No re-key and no delete happened.
+    expect(mockClient.updateChains.invoice_payments.update).not.toHaveBeenCalled();
+    expect(mockClient.updateChains.invoices.update).not.toHaveBeenCalled();
     expect(mockClient.deleteChains.invoice_payments.delete).not.toHaveBeenCalled();
   });
 

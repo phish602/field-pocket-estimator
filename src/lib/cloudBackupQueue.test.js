@@ -12,6 +12,7 @@ import {
   CLOUD_BACKUP_SEVERITY,
   CLOUD_BACKUP_PRIORITY,
   CLOUD_BACKUP_STATUS,
+  applyCloudBackupResultToQueue,
 } from "./cloudBackupQueue";
 
 beforeEach(() => {
@@ -315,5 +316,72 @@ describe("markCloudBackupReviewRequired", () => {
       nextRetryAt: null,
       lastErrorCode: "identity_review_required",
     }));
+  });
+});
+
+describe("applyCloudBackupResultToQueue (shared automatic + manual classifier)", () => {
+  test("verified success clears the queue to clean", () => {
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    const { transition } = applyCloudBackupResultToQueue({ status: "backup_completed" });
+    expect(transition).toBe("cleared");
+    expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({
+      pending: false,
+      status: CLOUD_BACKUP_STATUS.CLEAN,
+    }));
+  });
+
+  test("permanent identity conflict moves to remote_changed / conflict with no retry timer", () => {
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    const { transition } = applyCloudBackupResultToQueue({
+      permanentIdentityConflict: true,
+      syncReviewState: "remote_changed",
+      reason: "Cloud changed elsewhere.",
+    });
+    expect(transition).toBe("review_required");
+    const state = readCloudBackupQueueState();
+    expect(state.status).toBe(CLOUD_BACKUP_STATUS.REMOTE_CHANGED);
+    expect(state.pending).toBe(true);
+    expect(state.nextRetryAt).toBeNull();
+  });
+
+  test("a two-sided conflict maps to the conflict status", () => {
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    applyCloudBackupResultToQueue({ permanentIdentityConflict: true, syncReviewState: "conflict", reason: "Cloud sync conflict." });
+    expect(readCloudBackupQueueState().status).toBe(CLOUD_BACKUP_STATUS.CONFLICT);
+  });
+
+  test("a transient failure schedules a retry with backoff", () => {
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    const { transition } = applyCloudBackupResultToQueue({ status: "backup_incomplete", error: "network error" });
+    expect(transition).toBe("retry");
+    const state = readCloudBackupQueueState();
+    expect([CLOUD_BACKUP_STATUS.RETRY_WAIT, CLOUD_BACKUP_STATUS.NEEDS_ATTENTION]).toContain(state.status);
+    expect(state.nextRetryAt).toEqual(expect.any(Number));
+    expect(state.nextRetryAt).toBeGreaterThan(Date.now());
+  });
+
+  test("a lost device lock leaves the mutation pending and never clears or schedules a retry", () => {
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    const before = readCloudBackupQueueState();
+    const { transition } = applyCloudBackupResultToQueue({ deviceLockLost: true, status: "backup_completed" });
+    expect(transition).toBe("device_lock_lost");
+    const after = readCloudBackupQueueState();
+    expect(after.pending).toBe(true);
+    expect(after.status).toBe(before.status);
+    expect(after.status).not.toBe(CLOUD_BACKUP_STATUS.CLEAN);
+  });
+
+  test("a review-required result never leaves stale needs_attention copy", () => {
+    // Simulate an earlier transient failure that pushed the queue to retry/needs_attention.
+    markCloudBackupDirty(buildBackupDirtyEvent({ reason: "invoice_saved" }));
+    recordCloudBackupAttemptFailure("network", { retryDelayMs: 1000, errorCode: "x" });
+    recordCloudBackupAttemptFailure("network", { retryDelayMs: 1000, errorCode: "x" });
+    recordCloudBackupAttemptFailure("network", { retryDelayMs: 1000, errorCode: "x" });
+    expect(readCloudBackupQueueState().status).toBe(CLOUD_BACKUP_STATUS.NEEDS_ATTENTION);
+    // A manual Retry Sync then returns a permanent conflict.
+    applyCloudBackupResultToQueue({ permanentIdentityConflict: true, syncReviewState: "remote_changed" });
+    const state = readCloudBackupQueueState();
+    expect(state.status).toBe(CLOUD_BACKUP_STATUS.REMOTE_CHANGED);
+    expect(state.nextRetryAt).toBeNull();
   });
 });

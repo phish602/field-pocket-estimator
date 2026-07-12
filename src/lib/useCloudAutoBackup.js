@@ -16,13 +16,12 @@ import {
   readCloudBackupQueueState,
   markCloudBackupSyncing,
   markCloudBackupOfflinePending,
-  markCloudBackupReviewRequired,
-  clearCloudBackupDirty,
   recordCloudBackupAttemptFailure,
+  applyCloudBackupResultToQueue,
   CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
-import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
+import { runSupabaseCloudOnboardingBackup } from "./supabaseCloudOnboarding";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 
@@ -137,22 +136,10 @@ export default function useCloudAutoBackup({
         });
         deviceLockLost = Boolean(result?.deviceLockLost);
 
-        if (result?.permanentIdentityConflict) {
-          markCloudBackupReviewRequired(result?.error || result?.reason, {
-            status: result?.syncReviewState,
-            errorCode: "identity_review_required",
-          });
-        } else if (result?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
-          // The production writer performs this after verified success. Keep
-          // this generation-aware fallback for alternate callers/tests.
-          clearCloudBackupDirty("automatic_backup_verified", { expectedRevision: queueGeneration });
-        } else if (!result?.deviceLockLost) {
-          const current = readCloudBackupQueueState();
-          recordCloudBackupAttemptFailure(
-            result?.error || result?.status || "automatic_backup_incomplete",
-            { retryDelayMs: retryDelayMs(Number(current.retryCount || 0) + 1), errorCode: result?.status || "automatic_backup_incomplete" }
-          );
-        }
+        // Both the automatic worker and the manual Retry Sync button classify a
+        // backup result through the SAME shared queue transition, so the queue
+        // status can never disagree with the result the user sees.
+        applyCloudBackupResultToQueue(result, { queueGeneration });
       } catch (error) {
         const current = readCloudBackupQueueState();
         recordCloudBackupAttemptFailure(

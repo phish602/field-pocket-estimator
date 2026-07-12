@@ -103,6 +103,65 @@ function relationshipCompatible(localLegacyId, cloudUuid, resolvedCloudIds) {
   return !resolved || resolved === asText(cloudUuid);
 }
 
+function amountToCents(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric * 100);
+}
+
+function normalizePaymentMethodText(value) {
+  return asText(value).toLowerCase();
+}
+
+function normalizePaymentStatusText(value) {
+  return asText(value).toLowerCase();
+}
+
+function paidAtEpochMs(value) {
+  const raw = asText(value);
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Pure, deterministic financial-identity fingerprint for a single payment.
+// Returns { ok: false, missing: [...] } when ANY required identity field is
+// absent, so a payment that cannot be uniquely identified is never
+// auto-reconciled by amount alone.
+//
+// The composite is intentionally strict: parent invoice UUID + amount in
+// integer cents + normalized method + normalized status + paid_at as an exact
+// epoch. Both sides derive these from the same mapper, so equal payments
+// produce byte-identical fingerprints. Mutable UI metadata is never included.
+//
+// created_at is deliberately EXCLUDED: the writer (mapInvoicePaymentPayloads)
+// does not persist created_at, so the cloud row's created_at is the database
+// `default now()` insert time, not the app payment createdAt. The two sides are
+// not comparable, so created_at is not reliable corroboration here.
+export function buildPaymentIdentityFingerprint(payment, parentInvoiceUuid) {
+  const parent = asText(parentInvoiceUuid);
+  const amountCents = amountToCents(payment?.amount);
+  const method = normalizePaymentMethodText(payment?.method);
+  const status = normalizePaymentStatusText(payment?.status);
+  const paidAtMs = paidAtEpochMs(payment?.paid_at);
+  const missing = [];
+  if (!parent) missing.push("parent_invoice");
+  if (amountCents === null) missing.push("amount");
+  if (!method) missing.push("method");
+  if (!status) missing.push("status");
+  if (paidAtMs === null) missing.push("paid_at");
+  if (missing.length > 0) return { ok: false, missing };
+  return {
+    ok: true,
+    parent,
+    amountCents,
+    method,
+    status,
+    paidAtMs,
+    key: `${parent}|${amountCents}|${method}|${status}|${paidAtMs}`,
+  };
+}
+
 function oneToOneNumberCandidate(local, cloudOnly, column) {
   const value = normalizeNumber(local?.[column]);
   if (!value) return [];
@@ -250,8 +309,17 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
   }, resolvedInvoiceIds);
   rows(invoicePlan.exact_match).forEach((entry) => resolvedInvoiceIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
 
-  // Payment identity is financial history. The current schema and mapper do
-  // not carry payment_reference, so ID drift cannot be proved safe here.
+  // Payment identity is financial history. A drifted payment is only ever
+  // reconciled when its parent invoice was independently proven to be the same
+  // record (exact match or safe reconciliation) AND the payment is an
+  // unambiguous 1:1 match under that preserved invoice UUID whose FULL financial
+  // fingerprint is present and identical on both sides -- amount (cents),
+  // normalized method, normalized status, and paid_at. Amount alone never
+  // reconciles: two distinct payments on one invoice can share an amount. Any
+  // missing, ambiguous, or conflicting identity field stays a protected
+  // conflict. A reconciliation re-keys ONLY the cloud payment's
+  // legacy_local_id; the cloud UUID, invoice_id, amount, method, status, and
+  // paid_at are all preserved untouched.
   const paymentLocalByLegacy = indexByLegacyId(draft.invoicePayments);
   const paymentCloudByLegacy = indexByLegacyId(cloudRowsByTable.invoice_payments);
   rows(draft.invoicePayments).forEach((payment) => {
@@ -262,20 +330,79 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
       result.exactMatches.push({ entityType: "invoice_payment", cloudUuid: cloudId(cloud), currentLocalLegacyId: legacyId(payment), oldCloudLegacyId: legacyId(cloud), stableIdentifier: "legacy_local_id" });
     }
   });
+
+  // Group the remaining UNMATCHED payments by their resolved parent invoice UUID
+  // so the 1:1 and ambiguity checks can require exactly one payment per side and
+  // detect two payments that share the same identity fingerprint.
+  const unmatchedLocalPaymentsByParent = new Map();
   paymentLocalByLegacy.forEach((payment) => {
-    const parentCloudUuid = asText(resolvedInvoiceIds.get(asText(payment?.invoice_legacy_local_id)));
-    const competingCloudPayments = [...paymentCloudByLegacy.values()]
-      .filter((cloudPayment) => parentCloudUuid && asText(cloudPayment?.invoice_id) === parentCloudUuid);
-    if (competingCloudPayments.length === 0) {
-      result.localOnly.push({ entityType: "invoice_payment", currentLocalLegacyId: legacyId(payment) });
-      return;
-    }
+    const parent = asText(resolvedInvoiceIds.get(asText(payment?.invoice_legacy_local_id)));
+    if (!parent) return;
+    const list = unmatchedLocalPaymentsByParent.get(parent) || [];
+    list.push(payment);
+    unmatchedLocalPaymentsByParent.set(parent, list);
+  });
+  const unmatchedCloudPaymentsByParent = new Map();
+  paymentCloudByLegacy.forEach((cloudPayment) => {
+    const parent = asText(cloudPayment?.invoice_id);
+    if (!parent) return;
+    const list = unmatchedCloudPaymentsByParent.get(parent) || [];
+    list.push(cloudPayment);
+    unmatchedCloudPaymentsByParent.set(parent, list);
+  });
+
+  const pushPaymentProtectedConflict = (payment, cloudCandidates, reason, missingFields) => {
     result.protectedConflicts.push({
       entityType: "invoice_payment",
       currentLocalLegacyId: legacyId(payment),
-      candidateCloudUuids: competingCloudPayments.map(cloudId).filter(Boolean),
-      reason: "payment_identity_not_provable",
+      candidateCloudUuids: cloudCandidates.map(cloudId).filter(Boolean),
+      reason,
+      ...(Array.isArray(missingFields) && missingFields.length ? { missingFields } : {}),
     });
+  };
+
+  paymentLocalByLegacy.forEach((payment) => {
+    const parentCloudUuid = asText(resolvedInvoiceIds.get(asText(payment?.invoice_legacy_local_id)));
+    const competingCloudPayments = parentCloudUuid
+      ? (unmatchedCloudPaymentsByParent.get(parentCloudUuid) || [])
+      : [];
+    if (competingCloudPayments.length === 0) {
+      // No cloud counterpart under a resolved parent: a purely local payment.
+      result.localOnly.push({ entityType: "invoice_payment", currentLocalLegacyId: legacyId(payment) });
+      return;
+    }
+    // Strict 1:1 under the proven invoice. More than one candidate on either
+    // side is ambiguous and stays protected.
+    const localPaymentsOnParent = unmatchedLocalPaymentsByParent.get(parentCloudUuid) || [];
+    if (localPaymentsOnParent.length !== 1 || competingCloudPayments.length !== 1) {
+      pushPaymentProtectedConflict(payment, competingCloudPayments, "payment_identity_ambiguous");
+      return;
+    }
+    const cloudPayment = competingCloudPayments[0];
+    const localFingerprint = buildPaymentIdentityFingerprint(payment, parentCloudUuid);
+    const cloudFingerprint = buildPaymentIdentityFingerprint(cloudPayment, asText(cloudPayment?.invoice_id));
+    if (!localFingerprint.ok || !cloudFingerprint.ok) {
+      const missing = [...new Set([...(localFingerprint.missing || []), ...(cloudFingerprint.missing || [])])];
+      pushPaymentProtectedConflict(payment, [cloudPayment], "payment_identity_fields_missing", missing);
+      return;
+    }
+    if (localFingerprint.key !== cloudFingerprint.key) {
+      pushPaymentProtectedConflict(payment, [cloudPayment], "payment_identity_mismatch");
+      return;
+    }
+    // Proven the same payment by full financial fingerprint. Re-key only the
+    // legacy_local_id pointer; every financial value is preserved.
+    result.reconciliations.push({
+      entityType: "invoice_payment",
+      cloudUuid: cloudId(cloudPayment),
+      oldCloudLegacyId: legacyId(cloudPayment),
+      currentLocalLegacyId: legacyId(payment),
+      stableIdentifier: "payment_identity_fingerprint",
+      parentInvoiceUuid: parentCloudUuid,
+      confidenceRule: "single unmatched local + single unmatched cloud payment on a proven invoice with identical amount, method, status, and paid_at",
+      dependentChildOperations: [],
+    });
+    paymentCloudByLegacy.delete(legacyId(cloudPayment));
   });
   paymentCloudByLegacy.forEach((payment) => {
     result.protectedConflicts.push({ entityType: "invoice_payment", cloudUuid: cloudId(payment), oldCloudLegacyId: legacyId(payment), reason: "unmatched_protected_cloud_payment" });
@@ -290,13 +417,14 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
     result.cloudOnly.push(...plan.cloud_only);
     result.ambiguous.push(...plan.ambiguous);
   });
+  const paymentProtectedConflicts = result.protectedConflicts.filter((entry) => entry.entityType === "invoice_payment");
   result.byEntity.invoice_payment = {
     exact_match: result.exactMatches.filter((entry) => entry.entityType === "invoice_payment"),
-    safe_reconciliation: [],
+    safe_reconciliation: result.reconciliations.filter((entry) => entry.entityType === "invoice_payment"),
     ambiguous: [],
-    local_only: result.protectedConflicts.filter((entry) => entry.currentLocalLegacyId),
-    cloud_only: result.protectedConflicts.filter((entry) => entry.oldCloudLegacyId),
-    protected_conflict: result.protectedConflicts,
+    local_only: result.localOnly.filter((entry) => entry.entityType === "invoice_payment"),
+    cloud_only: paymentProtectedConflicts.filter((entry) => entry.oldCloudLegacyId),
+    protected_conflict: paymentProtectedConflicts,
   };
 
   return result;
