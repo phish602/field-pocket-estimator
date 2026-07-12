@@ -2032,3 +2032,162 @@ describe("supabaseMigrationWriter", () => {
     ]));
   });
 });
+
+const {
+  getCloudAssetBinding,
+  readCloudAssetBindings,
+} = require("./cloudAssetBindings");
+
+const UUID_CUST = "aaaaaaaa-0000-4000-8000-000000000001";
+const UUID_PROJ = "aaaaaaaa-0000-4000-8000-000000000002";
+const UUID_EST = "aaaaaaaa-0000-4000-8000-000000000003";
+const UUID_INV = "aaaaaaaa-0000-4000-8000-000000000004";
+const UUID_PAY = "aaaaaaaa-0000-4000-8000-000000000005";
+
+function bindingBackupInput({ customers, projects, estimates, invoices } = {}) {
+  return {
+    storageSnapshot: buildStorageSnapshot({
+      customers: customers || [{ id: "cust_1", name: "N", email: "a@b.com", phone: "5551110000" }],
+      projects: projects || [{ id: "proj_1", customerId: "cust_1", projectName: "P", projectNumber: "P-1" }],
+      estimates: estimates || [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100, lineItems: [{ description: "L", quantity: 1, price: 100, total: 100 }] }],
+      invoices: invoices || [{ id: "inv_1", projectId: "proj_1", customerId: "cust_1", sourceEstimateId: "est_1", invoiceNumber: "INV-1", invoiceTotal: 100, amountPaid: 100, balanceRemaining: 0, lineItems: [{ description: "L", quantity: 1, price: 100, total: 100 }], payments: [{ id: "pay_1", amount: 100, method: "card", status: "paid", paidAt: "2026-07-03T00:00:00.000Z" }] }],
+    }),
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "Co" },
+    role: "owner",
+    backupDownloadAvailable: true,
+    preview: buildPreview(),
+  };
+}
+
+describe("supabaseMigrationWriter cloud asset binding capture", () => {
+  beforeEach(() => {
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    localStorage.clear();
+  });
+
+  test("a successful backup stores a binding for every core entity", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_1" }],
+      paymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1" }],
+    }));
+    const result = await runSupabaseMigrationWrite(bindingBackupInput());
+    expect(result.ok).toBe(true);
+    expect(getCloudAssetBinding("customer", "cust_1", "company_1")).toMatchObject({ cloudUuid: UUID_CUST, source: "cloud_upsert" });
+    expect(getCloudAssetBinding("project", "proj_1", "company_1")).toMatchObject({ cloudUuid: UUID_PROJ });
+    expect(getCloudAssetBinding("estimate", "est_1", "company_1")).toMatchObject({ cloudUuid: UUID_EST });
+    expect(getCloudAssetBinding("invoice", "inv_1", "company_1")).toMatchObject({ cloudUuid: UUID_INV });
+    expect(getCloudAssetBinding("invoice_payment", "pay_1", "company_1")).toMatchObject({ cloudUuid: UUID_PAY });
+    expect(result.assetBindingCapture).toMatchObject({ ok: true, written: 5 });
+  });
+
+  test("a failed upsert stores no bindings at all", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceError: { message: "invoice write blew up" },
+    }));
+    const result = await runSupabaseMigrationWrite(bindingBackupInput());
+    expect(result.ok).toBe(false);
+    // Even though customers/projects/estimates upserted, no binding is written
+    // because capture only runs after the WHOLE core write is confirmed.
+    expect(getCloudAssetBinding("customer", "cust_1", "company_1")).toBeNull();
+    expect(readCloudAssetBindings("company_1").bindings.customer).toEqual({});
+  });
+
+  test("a partial upsert response only binds the confirmed rows", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      // Only one of two customers is confirmed by Supabase.
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_1" }],
+      paymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1" }],
+    }));
+    const result = await runSupabaseMigrationWrite(bindingBackupInput({
+      customers: [
+        { id: "cust_1", name: "N1", email: "a@b.com", phone: "5551110000" },
+        { id: "cust_2", name: "N2", email: "c@d.com", phone: "5552220000" },
+      ],
+    }));
+    expect(result.ok).toBe(true);
+    expect(getCloudAssetBinding("customer", "cust_1", "company_1").cloudUuid).toBe(UUID_CUST);
+    expect(getCloudAssetBinding("customer", "cust_2", "company_1")).toBeNull();
+  });
+
+  test("a safe reconciliation stores the preserved cloud UUID with a reconciliation source", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 },
+      existingCustomerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1", email: "a@b.com", phone: "5551110000", display_name: "N" }],
+      existingProjectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1", customer_id: UUID_CUST, project_number: "P-1" }],
+      existingEstimateRows: [{ id: UUID_EST, legacy_local_id: "est_1", customer_id: UUID_CUST, project_id: UUID_PROJ, estimate_number: "EST-1" }],
+      existingInvoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_cloud_old", customer_id: UUID_CUST, project_id: UUID_PROJ, estimate_id: UUID_EST, invoice_number: "INV-1" }],
+      existingPaymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1", invoice_id: UUID_INV, amount: 100, method: "card", status: "paid", paid_at: "2026-07-03T00:00:00.000Z" }],
+      existingEstimateLineItemRows: [{ id: "db_est_line", legacy_local_id: "estimate:est_1:line:0", estimate_id: UUID_EST }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line", legacy_local_id: "invoice:inv_cloud_old:line:0", invoice_id: UUID_INV }],
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_local_new" }],
+      paymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1" }],
+    }));
+    const result = await runSupabaseMigrationWrite(bindingBackupInput({
+      invoices: [{ id: "inv_local_new", projectId: "proj_1", customerId: "cust_1", sourceEstimateId: "est_1", invoiceNumber: "INV-1", invoiceTotal: 100, amountPaid: 100, balanceRemaining: 0, lineItems: [{ description: "L", quantity: 1, price: 100, total: 100 }], payments: [{ id: "pay_1", amount: 100, method: "card", status: "paid", paidAt: "2026-07-03T00:00:00.000Z" }] }],
+    }));
+    expect(result.ok).toBe(true);
+    const invoiceBinding = getCloudAssetBinding("invoice", "inv_local_new", "company_1");
+    expect(invoiceBinding).toMatchObject({ cloudUuid: UUID_INV, source: "cloud_reconciliation" });
+  });
+
+  test("a binding write failure does not fail the confirmed business backup", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_1" }],
+      paymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1" }],
+    }));
+    const originalSetItem = window.localStorage.setItem;
+    const setItemSpy = jest.spyOn(window.localStorage.__proto__, "setItem").mockImplementation((key) => {
+      if (key === "estipaid-cloud-asset-bindings-v1") throw new Error("quota exceeded");
+      return originalSetItem.call(window.localStorage, key, arguments[1]);
+    });
+    try {
+      const result = await runSupabaseMigrationWrite(bindingBackupInput());
+      expect(result.ok).toBe(true);
+      expect(result.assetBindingCapture.ok).toBe(false);
+      expect(result.notices).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "asset_binding_capture_incomplete" }),
+      ]));
+    } finally {
+      setItemSpy.mockRestore();
+    }
+  });
+
+  test("a device-lock loss before the last write leaves no bindings for the unconfirmed mutation", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      customerRows: [{ id: UUID_CUST, legacy_local_id: "cust_1" }],
+      projectRows: [{ id: UUID_PROJ, legacy_local_id: "proj_1" }],
+      estimateRows: [{ id: UUID_EST, legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: UUID_INV, legacy_local_id: "inv_1" }],
+      paymentRows: [{ id: UUID_PAY, legacy_local_id: "pay_1" }],
+    }));
+    // First few access checks pass, then the device lock is lost.
+    mockEnsureCurrentDeviceCanWriteCloud
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+      .mockResolvedValue({ ok: false, access: { isActive: false, isLocked: true }, deviceLockLost: true, error: "Device lock lost." });
+    const result = await runSupabaseMigrationWrite(bindingBackupInput());
+    expect(result.ok).toBe(false);
+    expect(readCloudAssetBindings("company_1").bindings.invoice).toEqual({});
+    expect(getCloudAssetBinding("customer", "cust_1", "company_1")).toBeNull();
+  });
+});

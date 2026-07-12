@@ -228,3 +228,175 @@ describe("buildCloudIdentityReconciliationPlan", () => {
     expect(fp.key).toBe(`uuid_inv|15000|card|paid|${Date.parse(PAID_AT)}`);
   });
 });
+
+const B_UUID_CUST = "bbbbbbbb-0000-4000-8000-000000000001";
+const B_UUID_PROJ = "bbbbbbbb-0000-4000-8000-000000000002";
+const B_UUID_EST = "bbbbbbbb-0000-4000-8000-000000000003";
+const B_UUID_INV = "bbbbbbbb-0000-4000-8000-000000000004";
+const B_UUID_PAY = "bbbbbbbb-0000-4000-8000-000000000005";
+
+describe("buildCloudIdentityReconciliationPlan asset-binding integration", () => {
+  // A drifted invoice (local id changed) whose cloud UUID is remembered by a
+  // durable binding, with matching parents.
+  function driftScenario(assetBindings) {
+    return buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [{ legacy_local_id: "cust_1", email: "a@b.com", phone: "5551110000", display_name: "N" }],
+        projects: [{ legacy_local_id: "proj_1", customer_legacy_local_id: "cust_1", project_number: "P-1" }],
+        estimates: [{ legacy_local_id: "est_1", customer_legacy_local_id: "cust_1", project_legacy_local_id: "proj_1", estimate_number: "EST-1" }],
+        invoices: [{ legacy_local_id: "inv_local_new", customer_legacy_local_id: "cust_1", project_legacy_local_id: "proj_1", source_estimate_legacy_local_id: "est_1", invoice_number: "INV-1" }],
+        invoicePayments: [],
+      },
+      cloudRowsByTable: {
+        customers: [{ id: B_UUID_CUST, legacy_local_id: "cust_1", email: "a@b.com", phone: "5551110000", display_name: "N" }],
+        projects: [{ id: B_UUID_PROJ, legacy_local_id: "proj_1", customer_id: B_UUID_CUST, project_number: "P-1" }],
+        estimates: [{ id: B_UUID_EST, legacy_local_id: "est_1", customer_id: B_UUID_CUST, project_id: B_UUID_PROJ, estimate_number: "EST-1" }],
+        invoices: [{ id: B_UUID_INV, legacy_local_id: "inv_cloud_old", customer_id: B_UUID_CUST, project_id: B_UUID_PROJ, estimate_id: B_UUID_EST, invoice_number: "INV-1" }],
+        invoice_payments: [],
+      },
+      assetBindings,
+    });
+  }
+
+  test("a valid UUID binding is preferred over business-number inference", () => {
+    const plan = driftScenario({ invoice: { inv_local_new: B_UUID_INV } });
+    const invoiceReconciliation = plan.reconciliations.find((entry) => entry.entityType === "invoice");
+    expect(invoiceReconciliation).toMatchObject({
+      cloudUuid: B_UUID_INV,
+      currentLocalLegacyId: "inv_local_new",
+      oldCloudLegacyId: "inv_cloud_old",
+      stableIdentifier: "asset_binding",
+    });
+    expect(plan.localOnly.some((e) => e.entityType === "invoice")).toBe(false);
+    expect(plan.cloudOnly.some((e) => e.entityType === "invoice")).toBe(false);
+  });
+
+  test("a bound UUID that is not in the cloud rows falls back safely and is diagnosed", () => {
+    const plan = driftScenario({ invoice: { inv_local_new: "cccccccc-0000-4000-8000-000000000099" } });
+    // Falls back to business-number reconciliation (same INV-1).
+    const invoiceReconciliation = plan.reconciliations.find((entry) => entry.entityType === "invoice");
+    expect(invoiceReconciliation.stableIdentifier).toBe("invoice_number");
+    expect(plan.bindingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice", reason: "binding_missing_cloud_row" }),
+    ]));
+  });
+
+  test("a contradictory invoice number blocks the binding (falls back, does not silently win)", () => {
+    const plan = buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [], projects: [], estimates: [],
+        invoices: [{ legacy_local_id: "inv_local_new", invoice_number: "INV-DIFFERENT" }],
+        invoicePayments: [],
+      },
+      cloudRowsByTable: {
+        customers: [], projects: [], estimates: [],
+        invoices: [{ id: B_UUID_INV, legacy_local_id: "inv_cloud_old", invoice_number: "INV-1" }],
+        invoice_payments: [],
+      },
+      assetBindings: { invoice: { inv_local_new: B_UUID_INV } },
+    });
+    expect(plan.reconciliations.some((e) => e.entityType === "invoice")).toBe(false);
+    expect(plan.bindingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice", reason: "binding_conflict" }),
+    ]));
+    expect(plan.localOnly.some((e) => e.entityType === "invoice")).toBe(true);
+    expect(plan.cloudOnly.some((e) => e.entityType === "invoice")).toBe(true);
+  });
+
+  test("a contradictory estimate number blocks the binding", () => {
+    const plan = buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [], projects: [],
+        estimates: [{ legacy_local_id: "est_local_new", estimate_number: "EST-DIFFERENT" }],
+        invoices: [], invoicePayments: [],
+      },
+      cloudRowsByTable: {
+        customers: [], projects: [],
+        estimates: [{ id: B_UUID_EST, legacy_local_id: "est_cloud_old", estimate_number: "EST-1" }],
+        invoices: [], invoice_payments: [],
+      },
+      assetBindings: { estimate: { est_local_new: B_UUID_EST } },
+    });
+    expect(plan.reconciliations.some((e) => e.entityType === "estimate")).toBe(false);
+    expect(plan.bindingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "estimate", reason: "binding_conflict" }),
+    ]));
+  });
+
+  test("a conflicting customer relationship blocks an invoice binding", () => {
+    // The bound cloud invoice belongs to a DIFFERENT resolved customer than the
+    // local invoice, so the binding must not win.
+    const plan = buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [{ legacy_local_id: "cust_1", email: "a@b.com", phone: "5551110000", display_name: "N" }],
+        projects: [],
+        estimates: [],
+        invoices: [{ legacy_local_id: "inv_local_new", customer_legacy_local_id: "cust_1", invoice_number: "INV-1" }],
+        invoicePayments: [],
+      },
+      cloudRowsByTable: {
+        customers: [{ id: B_UUID_CUST, legacy_local_id: "cust_1", email: "a@b.com", phone: "5551110000", display_name: "N" }],
+        projects: [],
+        estimates: [],
+        invoices: [{ id: B_UUID_INV, legacy_local_id: "inv_cloud_old", customer_id: "dddddddd-0000-4000-8000-000000000099", invoice_number: "INV-1" }],
+        invoice_payments: [],
+      },
+      assetBindings: { invoice: { inv_local_new: B_UUID_INV } },
+    });
+    expect(plan.reconciliations.some((e) => e.entityType === "invoice")).toBe(false);
+    expect(plan.bindingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice", reason: "binding_conflict" }),
+    ]));
+  });
+
+  test("a payment bound to the wrong invoice is blocked", () => {
+    const plan = buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [], projects: [], estimates: [],
+        invoices: [{ legacy_local_id: "inv_1", invoice_number: "INV-1" }],
+        invoicePayments: [{ legacy_local_id: "pay_local_new", invoice_legacy_local_id: "inv_1", amount: 100, method: "card", status: "paid", paid_at: "2026-07-03T00:00:00.000Z" }],
+      },
+      cloudRowsByTable: {
+        customers: [], projects: [], estimates: [],
+        invoices: [{ id: B_UUID_INV, legacy_local_id: "inv_1", invoice_number: "INV-1" }],
+        // The bound cloud payment belongs to a DIFFERENT invoice UUID.
+        invoice_payments: [{ id: B_UUID_PAY, legacy_local_id: "pay_cloud_old", invoice_id: "eeeeeeee-0000-4000-8000-000000000099", amount: 100, method: "card", status: "paid", paid_at: "2026-07-03T00:00:00.000Z" }],
+      },
+      assetBindings: { invoice_payment: { pay_local_new: B_UUID_PAY } },
+    });
+    expect(plan.reconciliations.some((e) => e.entityType === "invoice_payment")).toBe(false);
+    expect(plan.protectedConflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice_payment", reason: "binding_conflict" }),
+    ]));
+    expect(hasPermanentCloudIdentityConflict(plan)).toBe(true);
+  });
+
+  test("duplicate local claims to one cloud UUID are diagnosed as duplicate and neither wins by binding", () => {
+    const plan = buildCloudIdentityReconciliationPlan({
+      draft: {
+        customers: [], projects: [], estimates: [],
+        invoices: [
+          { legacy_local_id: "inv_a", invoice_number: "INV-A" },
+          { legacy_local_id: "inv_b", invoice_number: "INV-B" },
+        ],
+        invoicePayments: [],
+      },
+      cloudRowsByTable: {
+        customers: [], projects: [], estimates: [],
+        invoices: [{ id: B_UUID_INV, legacy_local_id: "inv_cloud_old", invoice_number: "INV-A" }],
+        invoice_payments: [],
+      },
+      assetBindings: { invoice: { inv_a: B_UUID_INV, inv_b: B_UUID_INV } },
+    });
+    expect(plan.reconciliations.filter((e) => e.entityType === "invoice" && e.stableIdentifier === "asset_binding")).toEqual([]);
+    expect(plan.bindingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "invoice", reason: "binding_duplicate_local_claim" }),
+    ]));
+  });
+
+  test("existing reconciliation fallback still works when there are no bindings", () => {
+    const plan = driftScenario({});
+    const invoiceReconciliation = plan.reconciliations.find((entry) => entry.entityType === "invoice");
+    expect(invoiceReconciliation).toMatchObject({ cloudUuid: B_UUID_INV, stableIdentifier: "invoice_number" });
+  });
+});

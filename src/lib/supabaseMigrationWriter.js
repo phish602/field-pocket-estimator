@@ -12,8 +12,51 @@ import {
   buildCloudIdentityReconciliationPlan,
   hasPermanentCloudIdentityConflict,
 } from "./cloudIdentityReconciliation";
+import { setCloudAssetBindingsBatch, getCloudAssetBindingUuidMap } from "./cloudAssetBindings";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
+
+// Captures durable local->cloud asset bindings AFTER every core table write has
+// been confirmed by Supabase. This is a metadata sidecar write only: it never
+// mutates a business record, never queues a business backup, and never turns a
+// successful business write into a failure. Any binding-write problem is only a
+// non-sensitive diagnostic.
+function captureConfirmedCloudAssetBindings({
+  companyId,
+  idMapsByEntity,
+  appliedIdentityReconciliations,
+  reusedCustomers,
+}) {
+  try {
+    const reconciledKeys = new Set(
+      (Array.isArray(appliedIdentityReconciliations) ? appliedIdentityReconciliations : [])
+        .map((entry) => `${asText(entry?.entityType)}:${asText(entry?.currentLocalLegacyId)}`)
+    );
+    const entries = [];
+    Object.entries(idMapsByEntity).forEach(([entityType, map]) => {
+      if (!map || typeof map.forEach !== "function") return;
+      map.forEach((cloudUuid, localLegacyId) => {
+        const legacy = asText(localLegacyId);
+        const uuid = asText(cloudUuid);
+        if (!legacy || !uuid) return;
+        const reconciled = reconciledKeys.has(`${entityType}:${legacy}`);
+        const source = reconciled
+          ? "cloud_reconciliation"
+          : (entityType === "customer" && reusedCustomers ? "existing_cloud_row_reused" : "cloud_upsert");
+        entries.push({ entityType, localLegacyId: legacy, cloudUuid: uuid, companyId, source });
+      });
+    });
+    const summary = setCloudAssetBindingsBatch(companyId, entries, { reconciliationKeys: reconciledKeys });
+    return {
+      attempted: entries.length,
+      written: summary.written,
+      skipped: summary.skipped.map((entry) => ({ entityType: entry.entityType, reason: entry.reason })),
+      ok: Boolean(summary.ok),
+    };
+  } catch (error) {
+    return { attempted: 0, written: 0, skipped: [], ok: false, error: "binding_capture_failed" };
+  }
+}
 
 const ALLOWED_MIGRATION_ROLES = new Set(["owner", "admin"]);
 const COUNTED_TABLES = [
@@ -1219,7 +1262,11 @@ export async function runSupabaseMigrationWrite({
   ) {
     try {
       const cloudIdentityRows = await readCloudIdentityRows(client, companyId);
-      identityPlan = buildCloudIdentityReconciliationPlan({ draft, cloudRowsByTable: cloudIdentityRows });
+      // Durable asset bindings are the first identity signal; the planner falls
+      // back to legacy-id + the existing reconciliation rules for unbound rows.
+      let assetBindings = {};
+      try { assetBindings = getCloudAssetBindingUuidMap(companyId); } catch { assetBindings = {}; }
+      identityPlan = buildCloudIdentityReconciliationPlan({ draft, cloudRowsByTable: cloudIdentityRows, assetBindings });
       const preservedSkippedEstimateIdSet = new Set(
         (Array.isArray(preservedSkippedEstimateLegacyIds) ? preservedSkippedEstimateLegacyIds : [])
           .map((legacyId) => asText(legacyId))
@@ -1632,6 +1679,29 @@ export async function runSupabaseMigrationWrite({
   }
   tableResults[6] = { ...tableResults[6], status: "success", written: paymentPayloads.length };
 
+  // All core tables are confirmed written. Capture durable asset bindings from
+  // the confirmed cloud UUIDs. A binding-write problem never fails this backup.
+  const assetBindingCapture = captureConfirmedCloudAssetBindings({
+    companyId,
+    idMapsByEntity: {
+      customer: customerIdByLegacyId,
+      project: projectIdByLegacyId,
+      estimate: estimateIdByLegacyId,
+      invoice: invoiceIdByLegacyId,
+      invoice_payment: buildLegacyIdMap(paymentResponse?.data),
+    },
+    appliedIdentityReconciliations,
+    reusedCustomers: !shouldWriteCustomers,
+  });
+  if (assetBindingCapture && assetBindingCapture.ok === false) {
+    notices.push(buildNotice(
+      "warning",
+      "asset_binding_capture_incomplete",
+      "Cloud backup succeeded, but durable asset bindings could not be fully saved on this device.",
+      { attempted: assetBindingCapture.attempted, written: assetBindingCapture.written }
+    ));
+  }
+
   return {
     ok: true,
     blocked: false,
@@ -1643,6 +1713,7 @@ export async function runSupabaseMigrationWrite({
     repairSummary: repairedLocalData.repairs,
     identityPlan,
     appliedIdentityReconciliations,
+    assetBindingCapture,
     replacedCloudOnlyRows: cloudOnlyRowsReplaced,
     preservedSkippedCloudRows,
     notices: [

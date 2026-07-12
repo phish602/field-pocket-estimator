@@ -39,6 +39,11 @@ const SUPPORTING_KEYS = {
   JOB_LEARNING_EVENTS: "estipaid-job-learning-events-v1",
 };
 
+// The durable cloud-asset binding sidecar. Captured as read-only metadata so a
+// This-Device backup can carry the local->cloud UUID map. It holds no customer
+// names, totals, notes, or payment details — only identity bindings.
+const CLOUD_ASSET_BINDINGS_KEY = "estipaid-cloud-asset-bindings-v1";
+
 // SCREAMING_SNAKE_CASE -> camelCase
 function toCamel(keyName) {
   return keyName.toLowerCase().replace(/_([a-z])/g, (_, c) => c.toUpperCase());
@@ -200,6 +205,23 @@ export function buildLocalStorageExportArtifact(storageSnapshot, options) {
     }
   }
 
+  // Capture the binding sidecar verbatim as metadata (never a business record).
+  let cloudAssetBindings = null;
+  const bindingsRaw = readFromSnapshot(storageSnapshot, CLOUD_ASSET_BINDINGS_KEY);
+  if (bindingsRaw !== null) {
+    const { value, error } = safeParse(bindingsRaw);
+    if (error !== null) {
+      warnings.push(buildWarning(
+        `invalid_json:${CLOUD_ASSET_BINDINGS_KEY}`,
+        CLOUD_ASSET_BINDINGS_KEY,
+        `Cloud asset binding sidecar contains invalid JSON: ${error}`,
+        "warning"
+      ));
+    } else {
+      cloudAssetBindings = value;
+    }
+  }
+
   const createdAt = (options && options.createdAt) ? options.createdAt : new Date().toISOString();
 
   const cp = migrationData.companyProfile ? migrationData.companyProfile.parsed : null;
@@ -241,6 +263,7 @@ export function buildLocalStorageExportArtifact(storageSnapshot, options) {
     },
     parseWarnings: warnings,
     migrationReadiness,
+    cloudAssetBindings,
   };
 }
 

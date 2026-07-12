@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
+import { setCloudAssetBindingsBatch } from "./cloudAssetBindings";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
@@ -669,6 +670,40 @@ function buildDeviceLockRestoreResult(extra = {}) {
   });
 }
 
+// Captures durable local->cloud UUID bindings for the records that were just
+// restored. Runs ONLY after a successful local write, is fully guarded (a
+// binding failure never fails a restore that already succeeded), and stores no
+// business data -- only { entityType, localLegacyId, cloudUuid }. Source is
+// "cloud_restore". Line items stay parent-owned and get no bindings this phase.
+function captureRestoredCloudAssetBindings({ companyId, fetched, restorableEstimateRows }) {
+  try {
+    const cid = asText(companyId);
+    if (!cid) return { ok: false, reason: "no_company" };
+    const rowsToEntries = (entityType, rows) => (Array.isArray(rows) ? rows : [])
+      .map((row) => ({
+        entityType,
+        localLegacyId: asText(row?.legacy_local_id),
+        cloudUuid: asText(row?.id),
+        companyId: cid,
+        source: "cloud_restore",
+      }))
+      .filter((entry) => entry.localLegacyId && entry.cloudUuid);
+    const entries = [
+      ...rowsToEntries("customer", fetched.customers),
+      ...rowsToEntries("project", fetched.projects),
+      ...rowsToEntries("estimate", restorableEstimateRows),
+      ...rowsToEntries("invoice", fetched.invoices),
+      ...rowsToEntries("invoice_payment", fetched.invoice_payments),
+    ];
+    // Reconcile: a restore is authoritative for the current company, so a
+    // drifted local id may take over its cloud UUID.
+    const reconciliationKeys = entries.map((e) => `${e.entityType}:${e.localLegacyId}`);
+    return setCloudAssetBindingsBatch(cid, entries, { reconciliationKeys });
+  } catch (error) {
+    return { ok: false, reason: asText(error?.message) || "binding_capture_failed" };
+  }
+}
+
 // Phase B: explicit restore. Only call this from a direct user click after
 // the user has typed the confirmation phrase. Rechecks local emptiness both
 // before fetching cloud data and again immediately before writing, builds
@@ -833,6 +868,14 @@ export async function executeSupabaseCloudRestore({
     });
   }
 
+  // The local write succeeded, so remember each restored record's cloud UUID.
+  // Guarded: this must never turn a successful restore into a failure.
+  const assetBindingCapture = captureRestoredCloudAssetBindings({
+    companyId,
+    fetched,
+    restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
+  });
+
   dispatchChangeEvents({
     includeEstimates: payload.estimates.length > 0,
     includeCompanyProfile: Boolean(payload.companyProfile),
@@ -902,6 +945,7 @@ export async function executeSupabaseCloudRestore({
       invoices: payload.invoices.length,
       estimates: payload.estimates.length,
     },
+    assetBindingCapture,
   });
 }
 

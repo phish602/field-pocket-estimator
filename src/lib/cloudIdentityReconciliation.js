@@ -173,6 +173,8 @@ function makeCorePlan(entityType, localRows, cloudRows, {
   candidateFinder = null,
   compatible = () => true,
   childTable = "",
+  bindings = null,
+  bindingContradicts = () => false,
 } = {}, resolvedCloudIds = new Map()) {
   const result = {
     exact_match: [],
@@ -181,7 +183,10 @@ function makeCorePlan(entityType, localRows, cloudRows, {
     local_only: [],
     cloud_only: [],
     protected_conflict: [],
+    binding_diagnostics: [],
   };
+  const bindingMap = bindings instanceof Map ? bindings : new Map(Object.entries(bindings || {}));
+  const getBoundUuid = (row) => asText(bindingMap.get(legacyId(row)));
   const localByLegacy = indexByLegacyId(localRows);
   const cloudByLegacy = indexByLegacyId(cloudRows);
   const unmatchedLocal = rows(localRows).filter((row) => !cloudByLegacy.has(legacyId(row)));
@@ -199,10 +204,58 @@ function makeCorePlan(entityType, localRows, cloudRows, {
     });
   });
 
+  // Durable-binding pass. A valid cloud-asset-UUID binding is the strongest
+  // identity signal after a legacy-id exact match: it re-keys the preserved
+  // cloud row for a drifted local id WITHOUT relying on business-number
+  // inference. A binding whose cloud row is missing, duplicated, or contradicts
+  // the current business identifier never wins -- it falls through to the
+  // existing planner.
+  const bindingReconciledLocalIds = new Set();
+  const bindingReconciledCloudUuids = new Set();
+  const localBindCountByUuid = new Map();
+  rows(localRows).forEach((local) => {
+    const uuid = getBoundUuid(local);
+    if (uuid) localBindCountByUuid.set(uuid, (localBindCountByUuid.get(uuid) || 0) + 1);
+  });
+  const unmatchedCloudByUuid = new Map(unmatchedCloud.map((cloud) => [cloudId(cloud), cloud]));
   unmatchedLocal.forEach((local) => {
+    const boundUuid = getBoundUuid(local);
+    if (!boundUuid) return;
+    const cloud = unmatchedCloudByUuid.get(boundUuid);
+    if (!cloud) {
+      result.binding_diagnostics.push({ entityType, currentLocalLegacyId: legacyId(local), reason: "binding_missing_cloud_row" });
+      return;
+    }
+    if ((localBindCountByUuid.get(boundUuid) || 0) > 1) {
+      result.binding_diagnostics.push({ entityType, currentLocalLegacyId: legacyId(local), reason: "binding_duplicate_local_claim" });
+      return;
+    }
+    if (bindingContradicts(local, cloud, resolvedCloudIds)) {
+      result.binding_diagnostics.push({ entityType, currentLocalLegacyId: legacyId(local), reason: "binding_conflict" });
+      return;
+    }
+    addPlanItem(result, CLOUD_IDENTITY_OUTCOME.SAFE_RECONCILIATION, {
+      entityType,
+      cloudUuid: cloudId(cloud),
+      oldCloudLegacyId: legacyId(cloud),
+      currentLocalLegacyId: legacyId(local),
+      stableIdentifier: "asset_binding",
+      parentIdentities: {},
+      confidenceRule: "durable cloud asset UUID binding",
+      dependentChildOperations: childTable ? [{ action: "rebuild_matched_parent_children", table: childTable, parentUuid: cloudId(cloud) }] : [],
+    });
+    resolvedCloudIds.set(legacyId(local), cloudId(cloud));
+    bindingReconciledLocalIds.add(legacyId(local));
+    bindingReconciledCloudUuids.add(cloudId(cloud));
+  });
+
+  const remainingUnmatchedCloud = unmatchedCloud.filter((cloud) => !bindingReconciledCloudUuids.has(cloudId(cloud)));
+
+  unmatchedLocal.forEach((local) => {
+    if (bindingReconciledLocalIds.has(legacyId(local))) return;
     const candidates = candidateFinder
-      ? candidateFinder(local, unmatchedCloud)
-      : oneToOneNumberCandidate(local, unmatchedCloud, secondaryColumn);
+      ? candidateFinder(local, remainingUnmatchedCloud)
+      : oneToOneNumberCandidate(local, remainingUnmatchedCloud, secondaryColumn);
     const compatibleCandidates = candidates.filter((cloud) => compatible(local, cloud, resolvedCloudIds));
     if (compatibleCandidates.length === 1) {
       const cloud = compatibleCandidates[0];
@@ -261,7 +314,7 @@ function mergePlans(target, source) {
  * Builds a no-I/O plan. The caller must pass cloud rows containing the
  * secondary identifiers and UUID foreign keys used below.
  */
-export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTable = {} } = {}) {
+export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTable = {}, assetBindings = {} } = {}) {
   const result = {
     exactMatches: [],
     reconciliations: [],
@@ -269,6 +322,7 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
     cloudOnly: [],
     ambiguous: [],
     protectedConflicts: [],
+    bindingDiagnostics: [],
     byEntity: {},
   };
   const resolvedCustomerIds = new Map();
@@ -276,17 +330,42 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
   const resolvedEstimateIds = new Map();
   const resolvedInvoiceIds = new Map();
 
+  const bindingMapFor = (entityType) => {
+    const table = assetBindings && typeof assetBindings === "object" ? assetBindings[entityType] : null;
+    return new Map(Object.entries(table || {}).map(([legacy, uuid]) => [asText(legacy), asText(uuid)]));
+  };
+  const numberContradicts = (column) => (local, cloud) => {
+    const left = normalizeNumber(local?.[column]);
+    const right = normalizeNumber(cloud?.[column]);
+    return Boolean(left && right && left !== right);
+  };
+  const customerBindingContradicts = (local, cloud) => {
+    const left = customerSignals(local);
+    const right = customerSignals(cloud);
+    const bothHaveSignals = (left.email || left.phone) && (right.email || right.phone);
+    return Boolean(bothHaveSignals && !customersCorroborate(local, cloud));
+  };
+
   const customerPlan = makeCorePlan("customer", draft.customers, cloudRowsByTable.customers, {
     candidateFinder: customerCandidates,
     secondaryColumn: "corroborated_contact",
+    bindings: bindingMapFor("customer"),
+    bindingContradicts: customerBindingContradicts,
   }, resolvedCustomerIds);
   rows(customerPlan.exact_match).forEach((entry) => resolvedCustomerIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
+  rows(customerPlan.safe_reconciliation).forEach((entry) => resolvedCustomerIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
 
   const projectPlan = makeCorePlan("project", draft.projects, cloudRowsByTable.projects, {
     secondaryColumn: "project_number",
     compatible: (local, cloud) => relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds),
+    bindings: bindingMapFor("project"),
+    bindingContradicts: (local, cloud) => (
+      numberContradicts("project_number")(local, cloud)
+      || !relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds)
+    ),
   }, resolvedProjectIds);
   rows(projectPlan.exact_match).forEach((entry) => resolvedProjectIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
+  rows(projectPlan.safe_reconciliation).forEach((entry) => resolvedProjectIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
 
   const estimatePlan = makeCorePlan("estimate", draft.estimates, cloudRowsByTable.estimates, {
     secondaryColumn: "estimate_number",
@@ -295,8 +374,15 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
       && relationshipCompatible(local?.project_legacy_local_id, cloud?.project_id, resolvedProjectIds)
     ),
     childTable: "estimate_line_items",
+    bindings: bindingMapFor("estimate"),
+    bindingContradicts: (local, cloud) => (
+      numberContradicts("estimate_number")(local, cloud)
+      || !relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds)
+      || !relationshipCompatible(local?.project_legacy_local_id, cloud?.project_id, resolvedProjectIds)
+    ),
   }, resolvedEstimateIds);
   rows(estimatePlan.exact_match).forEach((entry) => resolvedEstimateIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
+  rows(estimatePlan.safe_reconciliation).forEach((entry) => resolvedEstimateIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
 
   const invoicePlan = makeCorePlan("invoice", draft.invoices, cloudRowsByTable.invoices, {
     secondaryColumn: "invoice_number",
@@ -306,8 +392,16 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
       && relationshipCompatible(local?.source_estimate_legacy_local_id, cloud?.estimate_id || cloud?.source_estimate_id, resolvedEstimateIds)
     ),
     childTable: "invoice_line_items",
+    bindings: bindingMapFor("invoice"),
+    bindingContradicts: (local, cloud) => (
+      numberContradicts("invoice_number")(local, cloud)
+      || !relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds)
+      || !relationshipCompatible(local?.project_legacy_local_id, cloud?.project_id, resolvedProjectIds)
+      || !relationshipCompatible(local?.source_estimate_legacy_local_id, cloud?.estimate_id || cloud?.source_estimate_id, resolvedEstimateIds)
+    ),
   }, resolvedInvoiceIds);
   rows(invoicePlan.exact_match).forEach((entry) => resolvedInvoiceIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
+  rows(invoicePlan.safe_reconciliation).forEach((entry) => resolvedInvoiceIds.set(entry.currentLocalLegacyId, entry.cloudUuid));
 
   // Payment identity is financial history. A drifted payment is only ever
   // reconciled when its parent invoice was independently proven to be the same
@@ -329,6 +423,42 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
       paymentCloudByLegacy.delete(legacyId(payment));
       result.exactMatches.push({ entityType: "invoice_payment", cloudUuid: cloudId(cloud), currentLocalLegacyId: legacyId(payment), oldCloudLegacyId: legacyId(cloud), stableIdentifier: "legacy_local_id" });
     }
+  });
+
+  // Payment binding pass: a durable payment-UUID binding proves identity, but
+  // ONLY when the bound cloud payment still belongs to the SAME resolved parent
+  // invoice UUID. A payment bound to a different invoice is blocked, never
+  // silently accepted.
+  const paymentBindings = bindingMapFor("invoice_payment");
+  const paymentCloudById = new Map();
+  paymentCloudByLegacy.forEach((cloudPayment) => paymentCloudById.set(cloudId(cloudPayment), cloudPayment));
+  [...paymentLocalByLegacy.values()].forEach((payment) => {
+    const boundUuid = asText(paymentBindings.get(legacyId(payment)));
+    if (!boundUuid) return;
+    const cloudPayment = paymentCloudById.get(boundUuid);
+    if (!cloudPayment) {
+      result.bindingDiagnostics.push({ entityType: "invoice_payment", currentLocalLegacyId: legacyId(payment), reason: "binding_missing_cloud_row" });
+      return;
+    }
+    const parentCloudUuid = asText(resolvedInvoiceIds.get(asText(payment?.invoice_legacy_local_id)));
+    if (!parentCloudUuid || asText(cloudPayment?.invoice_id) !== parentCloudUuid) {
+      result.protectedConflicts.push({ entityType: "invoice_payment", currentLocalLegacyId: legacyId(payment), candidateCloudUuids: [boundUuid], reason: "binding_conflict" });
+      paymentLocalByLegacy.delete(legacyId(payment));
+      return;
+    }
+    result.reconciliations.push({
+      entityType: "invoice_payment",
+      cloudUuid: cloudId(cloudPayment),
+      oldCloudLegacyId: legacyId(cloudPayment),
+      currentLocalLegacyId: legacyId(payment),
+      stableIdentifier: "asset_binding",
+      parentInvoiceUuid: parentCloudUuid,
+      confidenceRule: "durable cloud payment UUID binding on the same invoice",
+      dependentChildOperations: [],
+    });
+    paymentLocalByLegacy.delete(legacyId(payment));
+    paymentCloudByLegacy.delete(legacyId(cloudPayment));
+    paymentCloudById.delete(boundUuid);
   });
 
   // Group the remaining UNMATCHED payments by their resolved parent invoice UUID
@@ -416,6 +546,7 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
     result.localOnly.push(...plan.local_only);
     result.cloudOnly.push(...plan.cloud_only);
     result.ambiguous.push(...plan.ambiguous);
+    result.bindingDiagnostics.push(...rows(plan.binding_diagnostics));
   });
   const paymentProtectedConflicts = result.protectedConflicts.filter((entry) => entry.entityType === "invoice_payment");
   result.byEntity.invoice_payment = {

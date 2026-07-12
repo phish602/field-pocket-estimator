@@ -1228,3 +1228,80 @@ describe("supabaseCloudRestore", () => {
     });
   });
 });
+
+const { readCloudAssetBindings, CLOUD_ASSET_BINDINGS_KEY } = require("./cloudAssetBindings");
+
+describe("executeSupabaseCloudRestore — cloud asset binding capture", () => {
+  const U = {
+    cust: "aaaa1111-0000-4000-8000-000000000001",
+    proj: "aaaa1111-0000-4000-8000-000000000002",
+    est: "aaaa1111-0000-4000-8000-000000000003",
+    inv: "aaaa1111-0000-4000-8000-000000000004",
+    pay: "aaaa1111-0000-4000-8000-000000000005",
+  };
+
+  function uuidCloudRows() {
+    return fullCloudRows({
+      customers: [cloudCustomerRow({ id: U.cust })],
+      projects: [cloudProjectRow({ id: U.proj, customer_id: U.cust })],
+      estimates: [cloudEstimateRow({ id: U.est, customer_id: U.cust, project_id: U.proj })],
+      invoices: [cloudInvoiceRow({ id: U.inv, customer_id: U.cust, project_id: U.proj })],
+      invoice_payments: [cloudPaymentRow({ id: U.pay, invoice_id: U.inv })],
+      invoice_line_items: [cloudInvoiceLineItemRow({ invoice_id: U.inv })],
+    });
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(null);
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+  });
+
+  test("a successful restore binds every restored record to its cloud UUID (source cloud_restore)", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: uuidCloudRows() }));
+    const storage = buildWritableStorage();
+
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+    expect(result.assetBindingCapture).toMatchObject({ ok: true, written: 5 });
+
+    const state = readCloudAssetBindings("company_1");
+    expect(state.bindings.customer.cust_1).toMatchObject({ cloudUuid: U.cust, source: "cloud_restore" });
+    expect(state.bindings.project.proj_1).toMatchObject({ cloudUuid: U.proj });
+    expect(state.bindings.estimate.est_1).toMatchObject({ cloudUuid: U.est });
+    expect(state.bindings.invoice.inv_1).toMatchObject({ cloudUuid: U.inv });
+    expect(state.bindings.invoice_payment.pay_1).toMatchObject({ cloudUuid: U.pay });
+  });
+
+  test("a blocked restore (local not empty) writes no bindings", async () => {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: uuidCloudRows() }));
+    const storage = buildWritableStorage({
+      [STORAGE_KEYS.CUSTOMERS]: JSON.stringify([{ id: "cust_local_x", type: "residential", fullName: "Existing" }]),
+    });
+
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    // No sidecar was written at all.
+    expect(localStorage.getItem(CLOUD_ASSET_BINDINGS_KEY)).toBeNull();
+  });
+
+  test("non-UUID cloud ids are skipped and never fail the restore", async () => {
+    // The default fixtures use non-UUID ids like "db_cust_1".
+    mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: fullCloudRows() }));
+    const storage = buildWritableStorage();
+
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+    // Capture ran but wrote nothing (all ids failed UUID validation).
+    expect(result.assetBindingCapture).toMatchObject({ written: 0 });
+    expect(readCloudAssetBindings("company_1").bindings.customer).toEqual({});
+  });
+});

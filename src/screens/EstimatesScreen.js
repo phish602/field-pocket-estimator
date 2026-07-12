@@ -19,6 +19,7 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
@@ -1800,6 +1801,7 @@ export default function EstimatesScreen({
         return String(item?.id || "").trim() !== deletedId;
       });
       writeStoredEstimatesPreservingLegacy(next);
+      removeCloudAssetBinding("estimate", deletedId);
 
       if (deletedId) {
         const currentEditTarget = String(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY) || "").trim();

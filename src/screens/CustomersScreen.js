@@ -8,6 +8,7 @@ import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
@@ -1180,6 +1181,7 @@ export default function CustomersScreen({
     }
     const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
     persistCustomers(next);
+    removeCloudAssetBinding("customer", sid);
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");

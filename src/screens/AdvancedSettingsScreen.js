@@ -1341,7 +1341,7 @@ export default function AdvancedSettingsScreen({
         if (!proceed) return;
       }
 
-      const result = applyBackupJsonImportPlan({ plan, storage: localStorage });
+      const result = applyBackupJsonImportPlan({ plan, storage: localStorage, companyId: company?.id });
 
       const mergedSettings = mergeSettingsSafe(loadSettings(), asObject(plan.settings));
       saveSettings(mergedSettings);

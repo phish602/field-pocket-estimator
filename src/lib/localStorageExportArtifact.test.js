@@ -488,3 +488,35 @@ describe("no Supabase interaction", () => {
     xhrOpenSpy.mockRestore();
   });
 });
+
+describe("buildLocalStorageExportArtifact — cloud asset binding sidecar", () => {
+  const SIDECAR = {
+    version: 1,
+    companyId: "company_1",
+    updatedAt: 123,
+    bindings: {
+      customer: { c1: { entityType: "customer", localLegacyId: "c1", cloudUuid: "11111111-1111-4111-8111-111111111111", companyId: "company_1", source: "cloud_upsert", boundAt: 1, lastConfirmedAt: 1 } },
+      project: {}, estimate: {}, invoice: {}, invoice_payment: {},
+    },
+  };
+
+  test("captures the sidecar verbatim as read-only metadata when present", () => {
+    const artifact = buildLocalStorageExportArtifact({
+      "estipaid-cloud-asset-bindings-v1": JSON.stringify(SIDECAR),
+    });
+    expect(artifact.cloudAssetBindings).toEqual(SIDECAR);
+  });
+
+  test("is null when the sidecar key is absent", () => {
+    const artifact = buildLocalStorageExportArtifact({});
+    expect(artifact.cloudAssetBindings).toBeNull();
+  });
+
+  test("warns and leaves the sidecar null on invalid JSON", () => {
+    const artifact = buildLocalStorageExportArtifact({
+      "estipaid-cloud-asset-bindings-v1": "{not json",
+    });
+    expect(artifact.cloudAssetBindings).toBeNull();
+    expect(artifact.parseWarnings.some((w) => w.key === "estipaid-cloud-asset-bindings-v1")).toBe(true);
+  });
+});

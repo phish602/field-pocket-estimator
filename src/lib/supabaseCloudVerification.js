@@ -2,6 +2,7 @@ import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
+import { readCloudAssetBindings } from "./cloudAssetBindings";
 
 export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v1";
 
@@ -120,6 +121,35 @@ function findResult(tableResults, table) {
   return tableResults.find((result) => result.table === table) || null;
 }
 
+function buildBindingDiagnostics(companyId, draft, cloudRowsByTable) {
+  const state = readCloudAssetBindings(companyId);
+  const entityConfig = [
+    ["customer", "customers", "customers"], ["project", "projects", "projects"],
+    ["estimate", "estimates", "estimates"], ["invoice", "invoices", "invoices"],
+    ["invoice_payment", "invoicePayments", "invoice_payments"],
+  ];
+  const out = { boundRecordsChecked: 0, bindingsConfirmed: 0, bindingsMissingCloudRow: 0, bindingConflicts: 0, unboundLocalRecords: 0, unboundCloudRecords: 0 };
+  entityConfig.forEach(([entity, draftKey, table]) => {
+    const bindings = state.bindings?.[entity] || {};
+    const local = new Map((Array.isArray(draft?.[draftKey]) ? draft[draftKey] : []).map((row) => [asText(row?.legacy_local_id), row]));
+    const cloud = Array.isArray(cloudRowsByTable[table]) ? cloudRowsByTable[table] : [];
+    const byUuid = new Map(cloud.map((row) => [asText(row?.id), row]));
+    const boundUuids = new Set();
+    Object.keys(bindings).forEach((legacyId) => {
+      out.boundRecordsChecked += 1;
+      const binding = bindings[legacyId];
+      const row = byUuid.get(asText(binding?.cloudUuid));
+      if (!row) { out.bindingsMissingCloudRow += 1; return; }
+      boundUuids.add(asText(binding?.cloudUuid));
+      if (!local.has(legacyId) || asText(row?.legacy_local_id) !== legacyId) out.bindingConflicts += 1;
+      else out.bindingsConfirmed += 1;
+    });
+    local.forEach((_, legacyId) => { if (!bindings[legacyId]) out.unboundLocalRecords += 1; });
+    cloud.forEach((row) => { if (!boundUuids.has(asText(row?.id))) out.unboundCloudRecords += 1; });
+  });
+  return out;
+}
+
 // Cheap, read-only sanity check using counts already fetched above: flags an
 // orphaned-looking child table (rows present in cloud) whose parent table has
 // zero cloud rows for this company. No extra Supabase calls are made.
@@ -210,6 +240,7 @@ export async function runSupabaseCloudVerification({
   };
 
   const tableResults = [];
+  const cloudRowsByTable = {};
   let preservedSkippedCloudEstimateRowIds = new Set();
   let preservedOlderEstimatesMatched = false;
 
@@ -223,6 +254,7 @@ export async function runSupabaseCloudVerification({
       notices.push(buildNotice("error", `${table}_read_failed`, `Unable to read ${table} from Supabase.`));
       continue;
     }
+    cloudRowsByTable[table] = rows;
 
     const localIds = buildLegacyIdSet(draft[key]);
     const cloudIds = buildLegacyIdSet(rows);
@@ -345,6 +377,7 @@ export async function runSupabaseCloudVerification({
   }
 
   notices.push(...collectRelationshipNotices(tableResults));
+  const bindingDiagnostics = buildBindingDiagnostics(companyId, draft, cloudRowsByTable);
 
   const allMatched = tableResults.length > 0 && tableResults.every((result) => result.status === "matched");
 
@@ -384,6 +417,7 @@ export async function runSupabaseCloudVerification({
     tableResults,
     allMatched,
     notices,
+    bindingDiagnostics,
     noWritesPerformed: true,
   };
 }

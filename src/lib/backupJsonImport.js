@@ -19,6 +19,7 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { EXPORT_ARTIFACT_VERSION } from "./localStorageExportArtifact";
 import { CLOUD_BACKUP_EXPORT_ARTIFACT_VERSION } from "./supabaseCloudRestore";
+import { importCloudAssetBindingsFromArtifact } from "./cloudAssetBindings";
 
 export const BACKUP_JSON_SOURCE = {
   CLOUD: "cloud",
@@ -94,7 +95,7 @@ function buildBlockedPlan(source, blockedReason) {
   };
 }
 
-function finalizePlan({ source, writes, counts, settings, warnings, importedDomains }) {
+function finalizePlan({ source, writes, counts, settings, warnings, importedDomains, cloudAssetBindings = null }) {
   const coreRecordTotal =
     Number(counts.customers || 0) +
     Number(counts.projects || 0) +
@@ -111,6 +112,7 @@ function finalizePlan({ source, writes, counts, settings, warnings, importedDoma
     settings: isPlainObject(settings) ? settings : null,
     warnings,
     importedDomains,
+    cloudAssetBindings,
   };
 }
 
@@ -241,6 +243,7 @@ function buildDeviceImportPlan(parsed) {
     settings,
     warnings,
     importedDomains,
+    cloudAssetBindings: parsed?.cloudAssetBindings || null,
   });
 }
 
@@ -319,7 +322,7 @@ export function buildBackupJsonImportPlan(parsed) {
  * Settings are intentionally NOT written here -- callers must merge them
  * through their safe settings merge path.
  */
-export function applyBackupJsonImportPlan({ plan, storage } = {}) {
+export function applyBackupJsonImportPlan({ plan, storage, companyId = "" } = {}) {
   if (!plan?.ok || !storage || typeof storage.setItem !== "function") {
     return { writeCount: 0, writtenKeys: [], importedCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0, invoicePayments: 0 } };
   }
@@ -330,9 +333,14 @@ export function applyBackupJsonImportPlan({ plan, storage } = {}) {
       writtenKeys.push(key);
     } catch {}
   });
+  let assetBindingImport = { ok: true, imported: 0, skipped: [], companyScopeMismatch: false };
+  if (plan.cloudAssetBindings) {
+    assetBindingImport = importCloudAssetBindingsFromArtifact({ cloudAssetBindings: plan.cloudAssetBindings }, { companyId, storage });
+  }
   return {
     writeCount: writtenKeys.length,
     writtenKeys,
     importedCounts: { ...plan.counts },
+    assetBindingImport,
   };
 }
