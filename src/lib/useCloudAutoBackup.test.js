@@ -3,6 +3,7 @@ import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
   pauseCloudAutoBackup,
+  recordCloudBackupAttemptFailure,
   readCloudBackupQueueState,
   CLOUD_BACKUP_STATUS,
 } from "./cloudBackupQueue";
@@ -144,6 +145,48 @@ test("backup failure records the failure and keeps the queue pending", async () 
   expect(state.attempts).toBeGreaterThan(0);
   expect(state.lastError).toBeTruthy();
 
+  unmount();
+});
+
+test("a fresh bundle automatically recovers one pending NEEDS_ATTENTION item without a Retry Sync click", async () => {
+  markCloudBackupDirty({ reason: "stale_invoice_duplicate", severity: "money_critical" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({ pending: true, status: CLOUD_BACKUP_STATUS.NEEDS_ATTENTION, lastError: "previous browser delete path failed" }));
+
+  const localRecords = { customers: "local-customers", projects: "local-projects", estimates: "local-estimates", invoices: "local-invoices" };
+  Object.entries(localRecords).forEach(([key, value]) => localStorage.setItem(key, value));
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED,
+    writeResult: { staleInvoiceLineItemRepair: { ok: true, repaired: 2 } },
+    verification: { ok: true },
+    noLocalDeletes: true,
+  });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({ pending: false, status: CLOUD_BACKUP_STATUS.CURRENT })));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({ user: USER, company: COMPANY, role: "owner" }));
+  Object.entries(localRecords).forEach(([key, value]) => expect(localStorage.getItem(key)).toBe(value));
+  unmount();
+});
+
+test("failed fresh-bundle NEEDS_ATTENTION recovery remains pending without a same-session retry loop", async () => {
+  markCloudBackupDirty({ reason: "stale_invoice_duplicate", severity: "money_critical" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  recordCloudBackupAttemptFailure("previous browser delete path failed", { errorCode: "legacy_browser_delete" });
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, error: "server repair unavailable" });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({ pending: true, status: CLOUD_BACKUP_STATUS.NEEDS_ATTENTION, lastError: "server repair unavailable" })));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
   unmount();
 });
 

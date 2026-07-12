@@ -6,6 +6,7 @@ const Stripe = require("stripe");
 const { fetch } = require("undici");
 const { createExpressStripeSubscriptionWebhookHandler } = require("./stripeSubscriptionWebhook");
 const { createExpressSubscriptionCheckoutHandler } = require("./stripeSubscriptionCheckout");
+const { createExpressStaleInvoiceLineItemRepairHandler } = require("./staleInvoiceLineItemRepair");
 
 const app = express();
 // This route must stay ahead of express.json so Stripe verifies the exact bytes it signed.
@@ -16,6 +17,7 @@ app.post(
 );
 app.use(express.json({ limit: "1mb" }));
 app.post("/api/stripe/create-subscription-checkout", createExpressSubscriptionCheckoutHandler());
+app.post("/api/cloud/repair-stale-invoice-line-items", createExpressStaleInvoiceLineItemRepairHandler());
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
 const GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions";

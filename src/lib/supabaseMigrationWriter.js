@@ -7,7 +7,8 @@ import {
   buildLocalSnapshotFromArtifact,
   repairStoredLocalDataIntegrity,
 } from "./localDataIntegrity";
-import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanWriteCloud, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import { repairProvenStaleInvoiceLineItemDuplicates } from "./staleInvoiceLineItemRepairClient";
 import {
   buildCloudIdentityReconciliationPlan,
   hasPermanentCloudIdentityConflict,
@@ -1697,8 +1698,8 @@ export async function runSupabaseMigrationWrite({
     const staleMutationAccess = await ensureFreshMutationAccess();
     if (!staleMutationAccess.ok) return buildMutationLockResult(staleMutationAccess, { cloudCountsBefore: cloudCounts });
     const staleIds = staleInvoiceLineItemPlan.provenStaleRows.map((row) => asText(row?.id)).filter(Boolean);
-    const response = await client.from("invoice_line_items").delete().eq("company_id", companyId).in("id", staleIds);
-    if (response?.error) return { ok: false, blocked: false, reason: asText(response.error?.message) || "Failed to remove proven stale invoice line-item duplicates.", notices: [buildNotice("error", "stale_invoice_line_item_duplicate_cleanup_failed", asText(response.error?.message) || "Failed to remove proven stale invoice line-item duplicates.")], cloudCountsBefore: cloudCounts, tableResults, noLocalDeletes: true };
+    const repair = await repairProvenStaleInvoiceLineItemDuplicates({ client, companyId, deviceId: getOrCreateLocalDeviceId(storageSnapshot), staleRowIds: staleIds });
+    if (!repair.ok || repair.repaired !== staleIds.length) return { ok: false, blocked: false, reason: "Failed to remove proven stale invoice line-item duplicates.", notices: [buildNotice("error", "stale_invoice_line_item_duplicate_cleanup_failed", "Failed to remove proven stale invoice line-item duplicates.")], cloudCountsBefore: cloudCounts, tableResults, noLocalDeletes: true };
     existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId, invoiceLineItemColumns);
     const remainingIds = new Set(existingInvoiceLineItems.map((row) => asText(row?.id)));
     if (staleIds.some((id) => remainingIds.has(id)) || staleInvoiceLineItemPlan.canonicalRows.some((row) => !remainingIds.has(asText(row?.id)))) {

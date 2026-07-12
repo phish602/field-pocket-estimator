@@ -51,6 +51,15 @@ function isEligibleQueueState(queueState) {
     && !["remote_changed", "conflict"].includes(String(queueState?.status || ""));
 }
 
+function queueIdentity(queueState, companyId) {
+  return [
+    String(queueState?.companyId || companyId || "").trim(),
+    Number(queueState?.localMutationRevision || 0),
+    Number(queueState?.createdAt || 0),
+    String(queueState?.documentId || "").trim(),
+  ].join(":");
+}
+
 function delayForPriority(priority, immediateDelayMs, normalDelayMs) {
   return priority === CLOUD_BACKUP_PRIORITY.IMMEDIATE ? immediateDelayMs : normalDelayMs;
 }
@@ -80,6 +89,10 @@ export default function useCloudAutoBackup({
 } = {}) {
   const [running, setRunning] = useState(false);
   const paramsRef = useRef({ enabled, configured, user, company, role, deviceLocked });
+  // A NEEDS_ATTENTION item may be a repaired stale-child duplicate from a
+  // previous bundle. Give it one fresh-bundle recovery attempt, but never
+  // turn a failed recovery into a tight same-session retry loop.
+  const needsAttentionRecoveryAttemptsRef = useRef(new Set());
   paramsRef.current = { enabled, configured, user, company, role, deviceLocked };
 
   useEffect(() => {
@@ -112,6 +125,9 @@ export default function useCloudAutoBackup({
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
+      const recoveryKey = queueIdentity(queueState, params.company?.id);
+      const recoveringNeedsAttention = queueState.status === "needs_attention";
+      if (needsAttentionRecoveryAttemptsRef.current.has(recoveryKey)) return;
 
       if (!isBrowserOnline()) {
         markCloudBackupOfflinePending();
@@ -119,6 +135,7 @@ export default function useCloudAutoBackup({
       }
 
       if (!acquireCloudBackupRunLock()) return;
+      if (recoveringNeedsAttention) needsAttentionRecoveryAttemptsRef.current.add(recoveryKey);
       setRunningState(true);
       const activeDeviceId = getOrCreateLocalDeviceId(localStorage);
       const syncingQueue = markCloudBackupSyncing({ companyId: params.company?.id, activeDeviceId });
@@ -164,6 +181,7 @@ export default function useCloudAutoBackup({
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
+      if (needsAttentionRecoveryAttemptsRef.current.has(queueIdentity(queueState, params.company?.id))) return;
 
       if (!isBrowserOnline()) {
         markCloudBackupOfflinePending();
@@ -185,6 +203,7 @@ export default function useCloudAutoBackup({
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
+      if (needsAttentionRecoveryAttemptsRef.current.has(queueIdentity(queueState, params.company?.id))) return;
 
       attemptBackup();
     };
