@@ -23,7 +23,7 @@ const {
   CLOUD_RESTORE_COMPLETE_EVENT,
 } = require("./supabaseCloudRestore");
 const { STORAGE_KEYS } = require("../constants/storageKeys");
-const { markCloudBackupDirty, readCloudBackupQueueState } = require("./cloudBackupQueue");
+const { markCloudBackupDirty, readCloudBackupQueueState, CLOUD_BACKUP_STATUS } = require("./cloudBackupQueue");
 
 function buildEmptyStorageSnapshot(overrides = {}) {
   const values = {
@@ -868,7 +868,7 @@ describe("supabaseCloudRestore", () => {
       expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
       const queueState = readCloudBackupQueueState();
       expect(queueState.pending).toBe(false);
-      expect(queueState.status).toBe("current");
+      expect(queueState.status).toBe(CLOUD_BACKUP_STATUS.CLEAN);
     });
 
     test("a successful restore dispatches the cloud-restore-complete event so the app shell can navigate Home", async () => {

@@ -1072,9 +1072,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud backup pending")).toBeInTheDocument();
+    expect(screen.getByText("Cloud sync")).toBeInTheDocument();
     expect(
-      screen.getByText("Your latest changes are saved on this device and will back up automatically.")
+      screen.getByText("Your changes are saved on this device and will sync automatically.")
     ).toBeInTheDocument();
   });
 
@@ -1316,14 +1316,14 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud backup pending")).toBeInTheDocument();
+    expect(screen.getByText("Cloud sync")).toBeInTheDocument();
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
     });
 
     expect(screen.getByText("Backing up changes...")).toBeInTheDocument();
-    expect(screen.queryByText("Cloud backup pending")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cloud sync")).not.toBeInTheDocument();
   });
 
   test("shows the calm automatic backup current status once the queue clears with a confirmed backup", async () => {
@@ -1339,7 +1339,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.getByText(/Last backed up/)).toBeInTheDocument();
   });
 
-  test("shows the calm automatic backup failed status and keeps it pending after a recorded failure", async () => {
+  test("shows automatic retrying after an initial sync failure and keeps local work pending", async () => {
     mockSignedInWithCompany();
     markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
     recordCloudBackupAttemptFailure("Unable to reach Supabase.");
@@ -1348,10 +1348,26 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud backup needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Cloud sync")).toBeInTheDocument();
     expect(
-      screen.getByText("Your work is saved on this device. Cloud backup will retry.")
+      screen.getByText("Your changes are safe. EstiPaid is retrying cloud sync.")
     ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry Sync" })).not.toBeInTheDocument();
+  });
+
+  test("offers Retry Sync only after repeated automatic failures", async () => {
+    mockSignedInWithCompany();
+    markCloudBackupDirty({ reason: "project_saved", domains: ["projects"], severity: "normal" });
+    recordCloudBackupAttemptFailure("Unable to reach Supabase.");
+    recordCloudBackupAttemptFailure("Unable to reach Supabase.");
+    recordCloudBackupAttemptFailure("Unable to reach Supabase.");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Sync needs attention")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry Sync" })).toBeInTheDocument();
   });
 
   test("restore success reports company profile, logo, settings, and scope templates restored when the app bundle is present", async () => {

@@ -166,7 +166,7 @@ test("device-lock abort leaves the pending queue untouched instead of recording 
   unmount();
 });
 
-test("does not run a duplicate concurrent backup while one is already in flight", async () => {
+test("a mutation during upload schedules one follow-up backup after the first completes", async () => {
   markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
   let resolveBackup;
   runSupabaseCloudOnboardingBackup.mockImplementation(
@@ -183,6 +183,7 @@ test("does not run a duplicate concurrent backup while one is already in flight"
   expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
 
   resolveBackup({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(2));
   unmount();
 });
 
@@ -195,7 +196,7 @@ test("pending queue resumes on hook remount", async () => {
   first.unmount();
 
   const second = renderHook(() => useCloudAutoBackup(baseProps()));
-  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(2), { timeout: 3000 });
   second.unmount();
 });
 
@@ -213,6 +214,23 @@ test("browser online event retries a pending queue", async () => {
 
   await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
 
+  unmount();
+});
+
+test("offline mutation remains safely queued until connectivity returns", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(navigator, "onLine");
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await waitFor(() => expect(readCloudBackupQueueState().status).toBe("offline_pending"));
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
+  act(() => window.dispatchEvent(new Event("online")));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+
+  if (descriptor) Object.defineProperty(navigator, "onLine", descriptor);
   unmount();
 });
 

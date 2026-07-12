@@ -81,6 +81,9 @@ export default function useCloudBackupStatus() {
         return;
       }
       refresh();
+      if (key === STORAGE_KEYS.CLOUD_BACKUP_QUEUE) {
+        setRefreshToken((value) => value + 1);
+      }
       if (key === STORAGE_KEYS.CLOUD_PARTIAL_RECOVERY_STATUS) {
         setRefreshToken((value) => value + 1);
       }

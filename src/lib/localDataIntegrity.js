@@ -808,9 +808,15 @@ export function getCloudDataDecision({
   const firstBlocker = localIntegrity?.blockers?.[0] || null;
   const firstSafeRepair = localIntegrity?.safeRepairs?.[0] || null;
   const queuePending = Boolean(queueState?.pending);
-  const queueFailed = asText(queueState?.status).toLowerCase() === "failed";
-  const mismatch = onboardingState === "local_cloud_mismatch"
+  const queueStatus = asText(queueState?.status).toLowerCase();
+  const queueFailed = queueStatus === "failed" || queueStatus === "needs_attention";
+  // A queued local mutation makes the pre-upload local/cloud difference
+  // expected. Do not turn that normal window into a conflict card. Once the
+  // worker needs attention, any remaining mismatch is surfaced for review.
+  const knownPendingLocalMutation = queuePending && ["pending", "syncing", "offline_pending", "retry_wait"].includes(queueStatus);
+  const rawMismatch = onboardingState === "local_cloud_mismatch"
     || Boolean(cloudVerification?.ok && cloudVerification?.allMatched === false);
+  const mismatch = rawMismatch && !knownPendingLocalMutation;
   // Rows the cloud has that this device does not (e.g. a cloud-only
   // estimate) are not fatal corruption -- they just mean the normal upsert
   // backup can't silently proceed, so the user gets an explicit choice
@@ -907,6 +913,7 @@ export function getCloudDataDecision({
     screenState,
     chipState,
     chipAction,
+    knownPendingLocalMutation,
     firstBlocker,
     firstSafeRepair,
     mismatch,

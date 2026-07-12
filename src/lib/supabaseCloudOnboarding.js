@@ -722,6 +722,7 @@ export async function runSupabaseCloudOnboardingBackup({
   role = "",
   allowCloudOnlyReplacement = false,
   preservedSkippedEstimateLegacyIds = null,
+  queueGeneration = null,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildBackupResult(gated);
@@ -866,7 +867,7 @@ export async function runSupabaseCloudOnboardingBackup({
       });
     }
 
-    clearCloudBackupDirty("manual_backup_success");
+    clearCloudBackupDirty("cloud_backup_verified", { expectedRevision: queueGeneration });
 
     return buildBackupResult(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED, { preview, writeResult, verification });
   } catch (error) {

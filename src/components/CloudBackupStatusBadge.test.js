@@ -81,9 +81,8 @@ test("shows a calm pending status when the queue is dirty", async () => {
 
   await renderAndSettle();
 
-  expect(screen.getByText("Cloud backup pending")).toBeInTheDocument();
-  expect(screen.getByText("Latest changes are saved on this device.")).toBeInTheDocument();
-  expect(screen.queryByText(/sync/i)).not.toBeInTheDocument();
+  expect(screen.getByText("Cloud sync pending")).toBeInTheDocument();
+  expect(screen.getByText("Your changes are saved on this device and will sync automatically.")).toBeInTheDocument();
 });
 
 test("shows running status when the auto-backup worker reports it is running", async () => {
@@ -110,8 +109,8 @@ test("shows a calm failed status that reassures local work is safe", async () =>
 
   await renderAndSettle();
 
-  expect(screen.getByText("Cloud backup needs attention")).toBeInTheDocument();
-  expect(screen.getByText("Your work is saved on this device. Backup will retry.")).toBeInTheDocument();
+  expect(screen.getByText("Sync needs attention")).toBeInTheDocument();
+  expect(screen.getByText("Your changes are safe. EstiPaid is retrying cloud sync.")).toBeInTheDocument();
 });
 
 test("shows a restored confirmation after a cloud-restore-complete event", async () => {

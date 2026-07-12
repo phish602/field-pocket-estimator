@@ -10,7 +10,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
-export const CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "1.0.0";
+export const CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "2.0.0";
 
 export const CLOUD_BACKUP_SEVERITY = {
   LOW: "low",
@@ -25,9 +25,17 @@ export const CLOUD_BACKUP_PRIORITY = {
 };
 
 export const CLOUD_BACKUP_STATUS = {
+  CLEAN: "clean",
   PENDING: "pending",
-  CURRENT: "current",
-  FAILED: "failed",
+  SYNCING: "syncing",
+  OFFLINE_PENDING: "offline_pending",
+  RETRY_WAIT: "retry_wait",
+  NEEDS_ATTENTION: "needs_attention",
+  REMOTE_CHANGED: "remote_changed",
+  CONFLICT: "conflict",
+  // Compatibility value for queue snapshots written before the sync model.
+  CURRENT: "clean",
+  FAILED: "retry_wait",
 };
 
 const SEVERITY_RANK = {
@@ -107,7 +115,7 @@ function defaultQueueState() {
   return {
     schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
     pending: false,
-    status: CLOUD_BACKUP_STATUS.CURRENT,
+    status: CLOUD_BACKUP_STATUS.CLEAN,
     reasons: [],
     domains: [],
     severity: CLOUD_BACKUP_SEVERITY.LOW,
@@ -115,9 +123,18 @@ function defaultQueueState() {
     createdAt: null,
     updatedAt: null,
     attempts: 0,
-    lastAttemptAt: null,
     lastError: "",
     lastSuccessfulBackupAt: null,
+    lastVerifiedAt: null,
+    lastQueuedAt: null,
+    lastAttemptAt: null,
+    nextRetryAt: null,
+    retryCount: 0,
+    localMutationRevision: 0,
+    syncingRevision: null,
+    companyId: "",
+    activeDeviceId: "",
+    lastErrorCode: "",
     source: "",
     documentId: "",
     // Reserved for a future local-fingerprint/hash engine that can prove
@@ -128,9 +145,7 @@ function defaultQueueState() {
 }
 
 function isValidStatus(value) {
-  return value === CLOUD_BACKUP_STATUS.PENDING
-    || value === CLOUD_BACKUP_STATUS.CURRENT
-    || value === CLOUD_BACKUP_STATUS.FAILED;
+  return Object.values(CLOUD_BACKUP_STATUS).includes(value);
 }
 
 function normalizeQueueState(raw) {
@@ -142,12 +157,22 @@ function normalizeQueueState(raw) {
     ...raw,
     schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
     pending: Boolean(raw.pending),
-    status: isValidStatus(raw.status) ? raw.status : base.status,
+    status: raw.status === "current"
+      ? CLOUD_BACKUP_STATUS.CLEAN
+      : raw.status === "failed"
+        ? CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
+        : isValidStatus(raw.status) ? raw.status : base.status,
     reasons: dedupeStrings(asArray(raw.reasons), MAX_RECENT_REASONS),
     domains: dedupeStrings(asArray(raw.domains), MAX_DOMAINS),
     severity: normalizeSeverity(raw.severity),
     priority: normalizePriority(raw.priority) || base.priority,
     attempts: Number.isFinite(Number(raw.attempts)) && Number(raw.attempts) >= 0 ? Number(raw.attempts) : 0,
+    retryCount: Number.isFinite(Number(raw.retryCount)) && Number(raw.retryCount) >= 0 ? Number(raw.retryCount) : Number(raw.attempts || 0),
+    localMutationRevision: Number.isFinite(Number(raw.localMutationRevision)) && Number(raw.localMutationRevision) >= 0 ? Number(raw.localMutationRevision) : 0,
+    syncingRevision: Number.isFinite(Number(raw.syncingRevision)) ? Number(raw.syncingRevision) : null,
+    companyId: String(raw.companyId || "").trim(),
+    activeDeviceId: String(raw.activeDeviceId || "").trim(),
+    lastErrorCode: String(raw.lastErrorCode || "").trim(),
     source: String(raw.source || "").trim(),
     documentId: String(raw.documentId || "").trim(),
     lastError: String(raw.lastError || "").trim(),
@@ -277,12 +302,20 @@ export function markCloudBackupDirty(event) {
       ...current,
       pending: true,
       status: CLOUD_BACKUP_STATUS.PENDING,
+      localMutationRevision: Number(current.localMutationRevision || 0) + 1,
+      syncingRevision: null,
       reasons: dedupeStrings([...current.reasons, normalizedEvent.reason], MAX_RECENT_REASONS),
       domains: dedupeStrings([...current.domains, ...normalizedEvent.domains], MAX_DOMAINS),
       severity: higherSeverity(current.severity, normalizedEvent.severity),
       priority: higherPriority(current.priority, normalizedEvent.priority),
       createdAt: current.pending && current.createdAt ? current.createdAt : ts,
       updatedAt: ts,
+      lastQueuedAt: ts,
+      nextRetryAt: null,
+      retryCount: 0,
+      lastErrorCode: "",
+      companyId: String(normalizedEvent.companyId || current.companyId || "").trim(),
+      activeDeviceId: String(normalizedEvent.activeDeviceId || current.activeDeviceId || "").trim(),
       source: normalizedEvent.source || current.source,
       documentId: normalizedEvent.documentId || current.documentId,
     };
@@ -304,23 +337,44 @@ export function markCloudBackupDirty(event) {
  * confirmed successful backup, or after a cloud restore that made local data
  * equal to cloud (so nothing is actually dirty relative to the cloud).
  */
-export function clearCloudBackupDirty(reason) {
+export function clearCloudBackupDirty(reason, { expectedRevision = null } = {}) {
   try {
     const current = readCloudBackupQueueState();
     const ts = nowTs();
     const normalizedReason = String(reason || "").trim();
+    const revisionChanged = expectedRevision !== null
+      && Number(current.localMutationRevision || 0) !== Number(expectedRevision);
+
+    if (revisionChanged) {
+      return writeQueueState({
+        ...current,
+        pending: true,
+        status: CLOUD_BACKUP_STATUS.PENDING,
+        syncingRevision: null,
+        updatedAt: ts,
+        lastSuccessfulBackupAt: ts,
+        lastVerifiedAt: ts,
+        lastError: "",
+        lastErrorCode: "",
+      });
+    }
 
     const next = {
       ...current,
       pending: false,
-      status: CLOUD_BACKUP_STATUS.CURRENT,
+      status: CLOUD_BACKUP_STATUS.CLEAN,
       reasons: [],
       domains: [],
       severity: CLOUD_BACKUP_SEVERITY.LOW,
       priority: CLOUD_BACKUP_PRIORITY.DEFERRED,
       updatedAt: ts,
       lastSuccessfulBackupAt: ts,
+      lastVerifiedAt: ts,
+      retryCount: 0,
+      nextRetryAt: null,
+      syncingRevision: null,
       lastError: "",
+      lastErrorCode: "",
       source: normalizedReason || current.source,
     };
 
@@ -340,17 +394,51 @@ export function clearCloudBackupDirty(reason) {
  * required by any wired-in caller yet (the upload worker itself is a future
  * gate), but kept small and safe so that worker can adopt it directly.
  */
-export function recordCloudBackupAttemptFailure(errorMessage) {
+export function markCloudBackupSyncing({ companyId = "", activeDeviceId = "" } = {}) {
+  try {
+    const current = readCloudBackupQueueState();
+    if (!current.pending) return current;
+    return writeQueueState({
+      ...current,
+      status: CLOUD_BACKUP_STATUS.SYNCING,
+      syncingRevision: Number(current.localMutationRevision || 0),
+      companyId: String(companyId || current.companyId || "").trim(),
+      activeDeviceId: String(activeDeviceId || current.activeDeviceId || "").trim(),
+      lastAttemptAt: nowTs(),
+      updatedAt: nowTs(),
+    });
+  } catch {
+    return readCloudBackupQueueState();
+  }
+}
+
+export function markCloudBackupOfflinePending() {
+  try {
+    const current = readCloudBackupQueueState();
+    if (!current.pending) return current;
+    return writeQueueState({ ...current, status: CLOUD_BACKUP_STATUS.OFFLINE_PENDING, syncingRevision: null, updatedAt: nowTs() });
+  } catch {
+    return readCloudBackupQueueState();
+  }
+}
+
+export function recordCloudBackupAttemptFailure(errorMessage, { retryDelayMs = 0, errorCode = "" } = {}) {
   try {
     const current = readCloudBackupQueueState();
     const ts = nowTs();
 
     const next = {
       ...current,
-      status: current.pending ? CLOUD_BACKUP_STATUS.FAILED : current.status,
+      status: current.pending
+        ? (Number(current.retryCount || 0) + 1 >= 3 ? CLOUD_BACKUP_STATUS.NEEDS_ATTENTION : CLOUD_BACKUP_STATUS.RETRY_WAIT)
+        : current.status,
       attempts: current.attempts + 1,
+      retryCount: Number(current.retryCount || 0) + 1,
       lastAttemptAt: ts,
       lastError: String(errorMessage || "").trim(),
+      lastErrorCode: String(errorCode || "").trim(),
+      nextRetryAt: retryDelayMs > 0 ? ts + Number(retryDelayMs) : null,
+      syncingRevision: null,
       updatedAt: ts,
     };
 

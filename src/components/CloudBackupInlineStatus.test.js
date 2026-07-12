@@ -84,9 +84,8 @@ test("renders pending copy", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Backup pending"
+    "Saved on this device · Syncing automatically"
   );
-  expect(screen.queryByText(/sync/i)).not.toBeInTheDocument();
 });
 
 test("renders running copy", async () => {
@@ -118,7 +117,7 @@ test("renders a calm failed/retry copy", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Backup will retry"
+    "Saved on this device · Sync needs attention"
   );
 });
 

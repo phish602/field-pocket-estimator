@@ -796,13 +796,17 @@ export default function AdvancedSettingsScreen({
   // to report yet, so the detailed status below speaks for it instead.
   const autoBackupDisplayState = autoBackupRunning
     ? "running"
-    : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.FAILED
-      ? "failed"
-      : autoBackupQueueState.pending
-        ? "pending"
-        : autoBackupQueueState.lastSuccessfulBackupAt
-          ? "current"
-          : "none";
+    : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.NEEDS_ATTENTION
+      ? "needs_attention"
+      : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.REMOTE_CHANGED
+        ? "remote_changed"
+        : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.CONFLICT
+          ? "conflict"
+          : autoBackupQueueState.pending
+            ? "pending"
+            : autoBackupQueueState.lastSuccessfulBackupAt
+              ? "current"
+              : "none";
   const backupAttentionDetail = String(
     onboardingStatus?.writeResult?.notices?.find((notice) => notice?.level !== "info")?.message
       || onboardingStatus?.writeResult?.reason
@@ -1696,17 +1700,40 @@ export default function AdvancedSettingsScreen({
                       <div role="status" aria-live="polite" className="pe-field-helper">
                         Backing up changes...
                       </div>
-                    ) : autoBackupDisplayState === "failed" ? (
+                    ) : autoBackupDisplayState === "needs_attention" ? (
                       <>
                         <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                          Cloud backup needs attention
+                          Sync needs attention
                         </div>
-                        <div className="pe-field-helper">Your work is saved on this device. Cloud backup will retry.</div>
+                        <div className="pe-field-helper">Your changes are safe. EstiPaid is retrying cloud sync.</div>
+                        <div>
+                          <button
+                            type="button"
+                            className="pe-btn pe-btn-ghost"
+                            onClick={runCloudBackup}
+                            disabled={onboardingBackupBusy || autoBackupRunning}
+                          >
+                            {onboardingBackupBusy ? "Retrying..." : "Retry Sync"}
+                          </button>
+                        </div>
+                      </>
+                    ) : autoBackupDisplayState === "remote_changed" || autoBackupDisplayState === "conflict" ? (
+                      <>
+                        <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
+                          {autoBackupDisplayState === "conflict" ? "Cloud sync conflict" : "Cloud changed elsewhere"}
+                        </div>
+                        <div className="pe-field-helper">Review this device and cloud backup before choosing a recovery action.</div>
                       </>
                     ) : autoBackupDisplayState === "pending" ? (
                       <>
-                        <div className="pe-field-helper">Cloud backup pending</div>
-                        <div className="pe-field-helper">Your latest changes are saved on this device and will back up automatically.</div>
+                        <div className="pe-field-helper">Cloud sync</div>
+                        <div className="pe-field-helper">
+                          {autoBackupQueueState.status === CLOUD_BACKUP_STATUS.OFFLINE_PENDING
+                            ? "Your changes are saved on this device. Sync will continue when you’re back online."
+                            : autoBackupQueueState.status === CLOUD_BACKUP_STATUS.RETRY_WAIT
+                              ? "Your changes are safe. EstiPaid is retrying cloud sync."
+                              : "Your changes are saved on this device and will sync automatically."}
+                        </div>
                       </>
                     ) : (
                       <>
@@ -1990,10 +2017,12 @@ export default function AdvancedSettingsScreen({
                             : "Restore could not be completed on this device."}
                       </div>
                     ) : null}
-                    <div className="pe-field-helper">
-                      Restore is blocked here because this device already has local data. Use Replace only if you want cloud to match this device instead.
-                    </div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <details>
+                      <summary className="pe-field-helper" style={{ cursor: "pointer" }}>Advanced recovery</summary>
+                      <div className="pe-field-helper" style={{ marginTop: 8 }}>
+                        Restore is blocked here because this device already has local data. Use Replace only if you want cloud to match this device instead.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
                       <button
                         type="button"
                         className="pe-btn pe-btn-ghost"
@@ -2035,7 +2064,8 @@ export default function AdvancedSettingsScreen({
                       >
                         Download This Device Backup JSON
                       </button>
-                    </div>
+                      </div>
+                    </details>
                   </>
                 ) : cloudDecision.screenState === LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT ? (
                   <>

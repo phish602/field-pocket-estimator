@@ -197,7 +197,7 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
     expect(screen.queryByTestId("project-detail-backup-chip")).not.toBeInTheDocument();
   });
 
-  test("compact backup chip shows 'Backup pending' when the queue is dirty", async () => {
+  test("compact backup chip shows 'Cloud sync pending' when the queue is dirty", async () => {
     signedInWithCompany();
     markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
     seedProject(createProject({ id: "proj_1" }));
@@ -205,8 +205,8 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
 
     await renderProjectDetail();
 
-    expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Backup pending");
-    expect(screen.queryByText(/sync/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Cloud sync pending");
+    expect(screen.queryByTestId("cloud-backup-status-badge")).not.toBeInTheDocument();
   });
 
   test("compact backup chip shows 'Backing up...' while the worker is running", async () => {

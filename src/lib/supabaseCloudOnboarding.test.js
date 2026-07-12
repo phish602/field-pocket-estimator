@@ -696,7 +696,7 @@ describe("supabaseCloudOnboarding", () => {
       expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED);
       const queueState = readCloudBackupQueueState();
       expect(queueState.pending).toBe(false);
-      expect(queueState.status).toBe("current");
+      expect(queueState.status).toBe("clean");
     });
 
     test("does not clear the backup queue or claim success when ownership is lost after verification", async () => {

@@ -140,7 +140,9 @@ describe("markCloudBackupDirty", () => {
     const allowedKeys = new Set([
       "schemaVersion", "pending", "status", "reasons", "domains", "severity",
       "priority", "createdAt", "updatedAt", "attempts", "lastAttemptAt",
-      "lastError", "lastSuccessfulBackupAt", "source", "documentId", "localFingerprint",
+      "lastError", "lastSuccessfulBackupAt", "lastVerifiedAt", "lastQueuedAt", "nextRetryAt",
+      "retryCount", "localMutationRevision", "syncingRevision", "companyId", "activeDeviceId",
+      "lastErrorCode", "source", "documentId", "localFingerprint",
     ]);
     Object.keys(parsed).forEach((key) => expect(allowedKeys.has(key)).toBe(true));
     expect(typeof parsed.documentId).toBe("string");
@@ -252,6 +254,20 @@ describe("clearCloudBackupDirty", () => {
 
     expect(isCloudAutoBackupPaused()).toBe(false);
   });
+
+  test("does not clear a newer local mutation when an older upload completes", () => {
+    markCloudBackupDirty({ reason: "first_save", domains: ["projects"] });
+    const firstRevision = readCloudBackupQueueState().localMutationRevision;
+    markCloudBackupDirty({ reason: "second_save", domains: ["invoices"] });
+
+    clearCloudBackupDirty("verified_first_upload", { expectedRevision: firstRevision });
+
+    expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({
+      pending: true,
+      status: CLOUD_BACKUP_STATUS.PENDING,
+      reasons: expect.arrayContaining(["second_save"]),
+    }));
+  });
 });
 
 describe("pauseCloudAutoBackup", () => {
@@ -279,5 +295,6 @@ describe("recordCloudBackupAttemptFailure", () => {
     expect(state.attempts).toBe(1);
     expect(state.lastError).toBe("Network unreachable");
     expect(state.lastAttemptAt).toEqual(expect.any(Number));
+    expect(state.nextRetryAt).toBeNull();
   });
 });

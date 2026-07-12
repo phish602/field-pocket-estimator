@@ -13,7 +13,7 @@
 import useCloudBackupStatus from "../lib/useCloudBackupStatus";
 
 export default function CloudBackupStatusBadge({ style } = {}) {
-  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently } = useCloudBackupStatus();
+  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently, queueState, chipState } = useCloudBackupStatus();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
   if (displayState === "none" && !restoredRecently) return null;
@@ -43,13 +43,13 @@ export default function CloudBackupStatusBadge({ style } = {}) {
         <div style={{ color: "rgba(99,179,237,0.92)" }}>Backing up changes...</div>
       ) : displayState === "failed" ? (
         <>
-          <div style={{ color: "rgba(253,224,71,0.95)" }}>Cloud backup needs attention</div>
-          <div style={{ fontWeight: 500, opacity: 0.75 }}>Your work is saved on this device. Backup will retry.</div>
+          <div style={{ color: "rgba(253,224,71,0.95)" }}>{chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention"}</div>
+          <div style={{ fontWeight: 500, opacity: 0.75 }}>{chipState === "local_cloud_mismatch" ? "Cloud data differs from this device and needs review." : "Your changes are safe. EstiPaid is retrying cloud sync."}</div>
         </>
       ) : displayState === "pending" ? (
         <>
-          <div>Cloud backup pending</div>
-          <div style={{ fontWeight: 500, opacity: 0.75 }}>Latest changes are saved on this device.</div>
+          <div>{queueState?.status === "offline_pending" ? "Waiting for connection" : queueState?.status === "retry_wait" ? "Cloud sync retrying" : "Cloud sync pending"}</div>
+          <div style={{ fontWeight: 500, opacity: 0.75 }}>{queueState?.status === "offline_pending" ? "Your changes are saved on this device. Sync will continue when you’re back online." : "Your changes are saved on this device and will sync automatically."}</div>
         </>
       ) : (
         <div style={{ color: "rgba(187,247,208,0.95)" }}>Cloud backup is up to date.</div>

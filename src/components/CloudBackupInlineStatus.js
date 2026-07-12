@@ -12,7 +12,7 @@
 import useCloudBackupStatus from "../lib/useCloudBackupStatus";
 
 export default function CloudBackupInlineStatus({ className, style } = {}) {
-  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently } = useCloudBackupStatus();
+  const { isSupabaseReady, hasCompany, userEmail, displayState, restoredRecently, queueState, chipState } = useCloudBackupStatus();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
   if (displayState === "none" && !restoredRecently) return null;
@@ -22,9 +22,15 @@ export default function CloudBackupInlineStatus({ className, style } = {}) {
     : displayState === "running"
       ? "Saved on this device · Backing up..."
       : displayState === "failed"
-        ? "Saved on this device · Backup will retry"
+        ? chipState === "local_cloud_mismatch"
+          ? "Saved on this device · Cloud changed elsewhere"
+          : "Saved on this device · Sync needs attention"
         : displayState === "pending"
-          ? "Saved on this device · Backup pending"
+          ? queueState?.status === "offline_pending"
+            ? "Saved on this device · Waiting for connection"
+            : queueState?.status === "retry_wait"
+              ? "Saved on this device · Retrying cloud sync"
+              : "Saved on this device · Syncing automatically"
           : "Saved on this device · Cloud up to date";
 
   const color = restoredRecently || displayState === "current"

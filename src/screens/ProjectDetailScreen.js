@@ -839,8 +839,18 @@ export default function ProjectDetailScreen({
     if (!cloudBackupStatus.isSupabaseReady || !cloudBackupStatus.userEmail || !cloudBackupStatus.hasCompany) return null;
     if (cloudBackupStatus.restoredRecently) return { label: "Restored", color: "rgba(187,247,208,0.92)" };
     if (cloudBackupStatus.displayState === "running") return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
-    if (cloudBackupStatus.displayState === "failed") return { label: "Backup needs attention", color: "rgba(253,224,71,0.92)" };
-    if (cloudBackupStatus.displayState === "pending") return { label: "Backup pending", color: null };
+    if (cloudBackupStatus.displayState === "failed") return {
+      label: cloudBackupStatus.chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention",
+      color: "rgba(253,224,71,0.92)",
+    };
+    if (cloudBackupStatus.displayState === "pending") return {
+      label: cloudBackupStatus.queueState?.status === "offline_pending"
+        ? "Waiting for connection"
+        : cloudBackupStatus.queueState?.status === "retry_wait"
+          ? "Retrying cloud sync"
+          : "Cloud sync pending",
+      color: null,
+    };
     if (cloudBackupStatus.displayState === "current") return { label: "Cloud up to date", color: "rgba(187,247,208,0.92)" };
     return null;
   })();
