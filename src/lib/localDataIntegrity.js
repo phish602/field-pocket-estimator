@@ -148,10 +148,15 @@ function hasCustomerIdentity(customer) {
   return Boolean(
     asText(customer?.name)
     || asText(customer?.displayName)
+    || asText(customer?.fullName)
     || asText(customer?.companyName)
     || asText(customer?.contactName)
     || asText(customer?.email)
+    || asText(customer?.resEmail)
+    || asText(customer?.comEmail)
     || asText(customer?.phone)
+    || asText(customer?.resPhone)
+    || asText(customer?.comPhone)
   );
 }
 

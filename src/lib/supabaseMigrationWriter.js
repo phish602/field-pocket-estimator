@@ -894,6 +894,53 @@ function summarizeLineItemSync(payloads, existingRows) {
   return { reused, written };
 }
 
+function parseInvoiceLineItemLegacyId(value) {
+  const match = /^invoice:([^:]+):line:(\d+)$/.exec(asText(value));
+  return match ? { parentSegment: match[1], stableIndex: Number(match[2]) } : null;
+}
+
+function normalizedValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (typeof value !== "object" && Number.isFinite(number) && String(value).trim() !== "") return number;
+  if (Array.isArray(value)) return value.map(normalizedValue);
+  if (value && typeof value === "object") return Object.keys(value).sort().reduce((out, key) => ({ ...out, [key]: normalizedValue(value[key]) }), {});
+  return value;
+}
+
+function sameInvoiceLineItemContent(left, right) {
+  return JSON.stringify(["invoice_id", "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"].map((key) => normalizedValue(left?.[key])))
+    === JSON.stringify(["invoice_id", "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"].map((key) => normalizedValue(right?.[key])));
+}
+
+function planProvenStaleInvoiceLineItems(existingRows, currentPayloads, confirmedInvoiceIds) {
+  const canonicalIds = new Set((currentPayloads || []).map((row) => asText(row?.legacy_local_id)));
+  const confirmed = new Set([...confirmedInvoiceIds.values()].map(asText));
+  const rows = Array.isArray(existingRows) ? existingRows : [];
+  const canonicalByKey = new Map();
+  rows.forEach((row) => {
+    const parsed = parseInvoiceLineItemLegacyId(row?.legacy_local_id);
+    if (parsed && canonicalIds.has(asText(row?.legacy_local_id)) && confirmed.has(asText(row?.invoice_id))) {
+      const key = `${asText(row.invoice_id)}:${parsed.stableIndex}`;
+      const list = canonicalByKey.get(key) || [];
+      list.push(row); canonicalByKey.set(key, list);
+    }
+  });
+  const provenStaleRows = []; const unresolvedExtraRows = []; const canonicalRows = [];
+  rows.forEach((row) => {
+    if (canonicalIds.has(asText(row?.legacy_local_id))) return;
+    const parsed = parseInvoiceLineItemLegacyId(row?.legacy_local_id);
+    if (!parsed || !asText(row?.id) || !confirmed.has(asText(row?.invoice_id))) { unresolvedExtraRows.push(row); return; }
+    const candidates = canonicalByKey.get(`${asText(row.invoice_id)}:${parsed.stableIndex}`) || [];
+    if (candidates.length !== 1) { unresolvedExtraRows.push(row); return; }
+    const canonical = candidates[0];
+    const canonicalParsed = parseInvoiceLineItemLegacyId(canonical?.legacy_local_id);
+    if (!canonicalParsed || canonicalParsed.parentSegment === parsed.parentSegment || !asText(canonical?.id) || !sameInvoiceLineItemContent(row, canonical)) { unresolvedExtraRows.push(row); return; }
+    provenStaleRows.push(row); canonicalRows.push(canonical);
+  });
+  return { provenStaleRows, unresolvedExtraRows, canonicalRows, counts: { existing: rows.length, canonical: canonicalIds.size, provenStale: provenStaleRows.length, unresolvedExtra: unresolvedExtraRows.length } };
+}
+
 async function migrateLineItemTable({
   client,
   table,
@@ -1643,7 +1690,22 @@ export async function runSupabaseMigrationWrite({
     };
   }
 
-  const existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId);
+  const invoiceLineItemColumns = "id, legacy_local_id, invoice_id, sort_order, description, quantity, unit, unit_price, total_price, metadata";
+  let existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId, invoiceLineItemColumns);
+  const staleInvoiceLineItemPlan = planProvenStaleInvoiceLineItems(existingInvoiceLineItems, invoiceLineItemPayloads.payloads, invoiceIdByLegacyId);
+  if (staleInvoiceLineItemPlan.provenStaleRows.length > 0) {
+    const staleMutationAccess = await ensureFreshMutationAccess();
+    if (!staleMutationAccess.ok) return buildMutationLockResult(staleMutationAccess, { cloudCountsBefore: cloudCounts });
+    const staleIds = staleInvoiceLineItemPlan.provenStaleRows.map((row) => asText(row?.id)).filter(Boolean);
+    const response = await client.from("invoice_line_items").delete().eq("company_id", companyId).in("id", staleIds);
+    if (response?.error) return { ok: false, blocked: false, reason: asText(response.error?.message) || "Failed to remove proven stale invoice line-item duplicates.", notices: [buildNotice("error", "stale_invoice_line_item_duplicate_cleanup_failed", asText(response.error?.message) || "Failed to remove proven stale invoice line-item duplicates.")], cloudCountsBefore: cloudCounts, tableResults, noLocalDeletes: true };
+    existingInvoiceLineItems = await readExistingRows(client, "invoice_line_items", companyId, invoiceLineItemColumns);
+    const remainingIds = new Set(existingInvoiceLineItems.map((row) => asText(row?.id)));
+    if (staleIds.some((id) => remainingIds.has(id)) || staleInvoiceLineItemPlan.canonicalRows.some((row) => !remainingIds.has(asText(row?.id)))) {
+      return { ok: false, blocked: false, reason: "Proven stale invoice line-item cleanup could not be verified.", notices: [buildNotice("error", "stale_invoice_line_item_duplicate_cleanup_unverified", "Proven stale invoice line-item cleanup could not be verified.")], cloudCountsBefore: cloudCounts, tableResults, noLocalDeletes: true };
+    }
+    notices.push(buildNotice("info", "stale_invoice_line_item_duplicates_removed", "Removed proven stale duplicate invoice line items.", { count: staleIds.length }));
+  }
   const invoiceLineItemMutationAccess = await ensureFreshMutationAccess();
   if (!invoiceLineItemMutationAccess.ok) return buildMutationLockResult(invoiceLineItemMutationAccess, { cloudCountsBefore: cloudCounts });
   const invoiceLineItemSync = await migrateLineItemTable({
@@ -1654,6 +1716,7 @@ export async function runSupabaseMigrationWrite({
     existingRows: existingInvoiceLineItems,
   });
   tableResults[5] = invoiceLineItemSync.result;
+  if (staleInvoiceLineItemPlan.provenStaleRows.length > 0) tableResults[5].staleDuplicatesRemoved = staleInvoiceLineItemPlan.provenStaleRows.length;
   if (invoiceLineItemSync.response?.error) {
     return {
       ok: false,
