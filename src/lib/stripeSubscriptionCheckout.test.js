@@ -2,6 +2,7 @@
 
 const {
   createSubscriptionCheckoutSession,
+  validateAuthenticatedCompanyUser,
 } = require("../../server/stripeSubscriptionCheckout");
 
 const ENV = {
@@ -26,6 +27,21 @@ function stripeClient(options = {}) {
         }),
       },
     },
+  };
+}
+
+function adminClient({ user = { id: "verified_user", email: "owner@example.test" }, userError = null, membership = null, membershipError = null } = {}) {
+  const maybeSingle = jest.fn(async () => ({ data: membership, error: membershipError }));
+  const userEq = jest.fn(() => ({ maybeSingle }));
+  const companyEq = jest.fn(() => ({ eq: userEq }));
+  const select = jest.fn(() => ({ eq: companyEq }));
+  return {
+    auth: { getUser: jest.fn(async () => ({ data: { user }, error: userError })) },
+    from: jest.fn(() => ({ select })),
+    select,
+    companyEq,
+    userEq,
+    maybeSingle,
   };
 }
 
@@ -86,5 +102,52 @@ describe("Stripe subscription Checkout creation", () => {
     });
     expect(result).toEqual({ ok: false, status: 500, error: "Unable to start subscription checkout." });
     expect(JSON.stringify(result)).not.toContain(ENV.STRIPE_SECRET_KEY);
+  });
+
+  test.each(["owner", "admin"])("a verified %s can create checkout from a service-role membership lookup", async (role) => {
+    const client = adminClient({ membership: { company_id: "company_1", user_id: "verified_user", role } });
+    const stripe = stripeClient();
+    const result = await createSubscriptionCheckoutSession({
+      plan: "solo", companyId: "company_1", accessToken: "opaque_access_token", userId: "frontend_user_attempt", env: ENV, adminClient: client, stripeClient: stripe,
+    });
+    expect(result.ok).toBe(true);
+    expect(client.auth.getUser).toHaveBeenCalledWith("opaque_access_token");
+    expect(client.select).toHaveBeenCalledWith("company_id, user_id, role");
+    expect(client.companyEq).toHaveBeenCalledWith("company_id", "company_1");
+    expect(client.userEq).toHaveBeenCalledWith("user_id", "verified_user");
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ companyId: "company_1", requestedPlan: "solo", userId: "verified_user" }),
+    }));
+  });
+
+  test.each(["member", "viewer", null])("rejects a verified non-manager role (%s)", async (role) => {
+    const result = await validateAuthenticatedCompanyUser({
+      accessToken: "opaque_access_token", companyId: "company_1", adminClient: adminClient({ membership: { role } }), logger: { warn: jest.fn() },
+    });
+    expect(result).toMatchObject({ ok: false, status: 403 });
+  });
+
+  test("rejects missing membership, missing authorization, and an invalid token", async () => {
+    const missingMembership = await validateAuthenticatedCompanyUser({ accessToken: "opaque_access_token", companyId: "company_1", adminClient: adminClient(), logger: { warn: jest.fn() } });
+    const missingAuthorization = await validateAuthenticatedCompanyUser({ companyId: "company_1", adminClient: adminClient(), logger: { warn: jest.fn() } });
+    const invalidToken = await validateAuthenticatedCompanyUser({ accessToken: "bad_token", companyId: "company_1", adminClient: adminClient({ user: null, userError: { message: "invalid jwt" } }), logger: { warn: jest.fn() } });
+    expect(missingMembership).toMatchObject({ ok: false, status: 403 });
+    expect(missingAuthorization).toMatchObject({ ok: false, status: 400 });
+    expect(invalidToken).toMatchObject({ ok: false, status: 400 });
+  });
+
+  test("authorizes the reported owner/company pairing without an obsolete status filter", async () => {
+    const companyId = "0ccc675b-ec4f-44c4-a8ec-e4d642bb8b15";
+    const verifiedUserId = "ec4143e4-2525-44b2-acd2-65a086e85f08";
+    const client = adminClient({ user: { id: verifiedUserId, email: "owner@example.test" }, membership: { company_id: companyId, user_id: verifiedUserId, role: "owner" } });
+    const stripe = stripeClient();
+    const result = await createSubscriptionCheckoutSession({
+      plan: "solo", companyId, accessToken: "opaque_access_token", env: ENV, adminClient: client, stripeClient: stripe,
+    });
+    expect(result.ok).toBe(true);
+    expect(client.userEq).toHaveBeenCalledWith("user_id", verifiedUserId);
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ companyId, requestedPlan: "solo", userId: verifiedUserId }),
+    }));
   });
 });

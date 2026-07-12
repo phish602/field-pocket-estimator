@@ -49,7 +49,19 @@ function getAdminClient({ env = process.env, adminClient } = {}) {
   return createClient(url, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-async function validateAuthenticatedCompanyUser({ accessToken, companyId, env = process.env, adminClient } = {}) {
+function logAuthorizationRejection(logger, { companyId, userId = "", reason, membership = null, error = null } = {}) {
+  logger?.warn?.("[stripe_subscription_checkout] authorization rejected", {
+    companyId: text(companyId),
+    userId: text(userId),
+    reason: text(reason),
+    membershipFound: Boolean(membership),
+    role: text(membership?.role),
+    errorCode: text(error?.code),
+    errorMessage: text(error?.message),
+  });
+}
+
+async function validateAuthenticatedCompanyUser({ accessToken, companyId, env = process.env, adminClient, logger = console } = {}) {
   const token = text(accessToken);
   const normalizedCompanyId = text(companyId);
   if (!token) return { ok: false, status: 400, error: "Sign in is required to start an upgrade." };
@@ -62,25 +74,34 @@ async function validateAuthenticatedCompanyUser({ accessToken, companyId, env = 
     const userResponse = await client.auth.getUser(token);
     const user = userResponse?.data?.user || null;
     if (userResponse?.error || !text(user?.id)) {
+      logAuthorizationRejection(logger, { companyId: normalizedCompanyId, reason: "invalid_token", error: userResponse?.error });
       return { ok: false, status: 400, error: "Sign in is required to start an upgrade." };
     }
 
     const membershipResponse = await client
       .from("company_users")
-      .select("company_id, user_id, role, status")
+      .select("company_id, user_id, role")
       .eq("company_id", normalizedCompanyId)
       .eq("user_id", text(user.id))
-      .eq("status", "active")
       .maybeSingle();
     const membership = membershipResponse?.data || null;
     if (membershipResponse?.error || !membership) {
+      logAuthorizationRejection(logger, {
+        companyId: normalizedCompanyId,
+        userId: user.id,
+        reason: "missing_membership",
+        membership,
+        error: membershipResponse?.error,
+      });
       return { ok: false, status: 403, error: "You are not authorized to upgrade this company." };
     }
     if (!MANAGEABLE_ROLES.has(text(membership.role).toLowerCase())) {
+      logAuthorizationRejection(logger, { companyId: normalizedCompanyId, userId: user.id, reason: "insufficient_role", membership });
       return { ok: false, status: 403, error: "Only a company owner or admin can start an upgrade." };
     }
     return { ok: true, user: { id: text(user.id), email: text(user.email) } };
   } catch {
+    logAuthorizationRejection(logger, { companyId: normalizedCompanyId, reason: "lookup_exception" });
     return { ok: false, status: 500, error: "Unable to verify your company access." };
   }
 }
@@ -94,13 +115,14 @@ async function createSubscriptionCheckoutSession({
   stripeClient,
   StripeConstructor = Stripe,
   validateCompanyUser = validateAuthenticatedCompanyUser,
+  logger,
 } = {}) {
   const normalizedPlan = normalizePlan(plan);
   const normalizedCompanyId = text(companyId);
   if (!normalizedPlan) return { ok: false, status: 400, error: "Choose Solo, Pro, or Business." };
   if (!normalizedCompanyId) return { ok: false, status: 400, error: "Missing company context." };
 
-  const access = await validateCompanyUser({ accessToken, companyId: normalizedCompanyId, env, adminClient });
+  const access = await validateCompanyUser({ accessToken, companyId: normalizedCompanyId, env, adminClient, logger });
   if (!access?.ok) return access || { ok: false, status: 500, error: "Unable to verify your company access." };
 
   const priceId = priceIdForPlan(normalizedPlan, env);
