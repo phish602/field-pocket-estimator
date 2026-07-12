@@ -493,9 +493,9 @@ export async function removePreservedOlderCloudEstimates({
     client,
     "invoices",
     companyId,
-    "source_estimate_legacy_local_id",
+    "source_estimate_legacy_id",
     preservedEstimateLegacyIds,
-    "id, legacy_local_id, source_estimate_legacy_local_id"
+    "id, legacy_local_id, source_estimate_legacy_id"
   );
   if (cloudInvoiceRead.error) {
     return buildPreservedEstimateCleanupResult(PRESERVED_OLDER_ESTIMATE_CLEANUP_STATUS.ERROR, {
@@ -509,7 +509,7 @@ export async function removePreservedOlderCloudEstimates({
     ? cloudInvoiceRead.rows.map((row) => ({
       id: asText(row?.id),
       legacyLocalId: asText(row?.legacy_local_id),
-      sourceEstimateLegacyId: asText(row?.source_estimate_legacy_local_id),
+      sourceEstimateLegacyId: asText(row?.source_estimate_legacy_id),
     }))
     : [];
   if (cloudInvoicesReferencingPreservedEstimates.length > 0) {

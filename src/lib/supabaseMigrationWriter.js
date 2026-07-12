@@ -741,7 +741,7 @@ async function readCloudReplacementDependencyRows(client, companyId) {
   const [projects, estimates, invoices] = await Promise.all([
     readExistingRows(client, "projects", companyId, "id, customer_id"),
     readExistingRows(client, "estimates", companyId, "id, customer_id, project_id"),
-    readExistingRows(client, "invoices", companyId, "id, customer_id, project_id, estimate_id, source_estimate_id"),
+    readExistingRows(client, "invoices", companyId, "id, customer_id, project_id, estimate_id, source_estimate_legacy_id"),
   ]);
   return { projects, estimates, invoices };
 }
@@ -762,7 +762,12 @@ function collectCloudOnlyReplacementDependencies(replacement, dependencyRows) {
     add("estimates", dependencyRows?.estimates, ["project_id"]);
     add("invoices", dependencyRows?.invoices, ["project_id"]);
   } else if (replacement?.table === "estimates") {
-    add("invoices", dependencyRows?.invoices, ["estimate_id", "source_estimate_id"]);
+    const cloudRowIds = new Set((Array.isArray(replacement?.cloudRowIds) ? replacement.cloudRowIds : []).map(asText).filter(Boolean));
+    const cloudLegacyIds = new Set((Array.isArray(replacement?.legacyIds) ? replacement.legacyIds : []).map(asText).filter(Boolean));
+    const count = (Array.isArray(dependencyRows?.invoices) ? dependencyRows.invoices : []).filter((row) => (
+      cloudRowIds.has(asText(row?.estimate_id)) || cloudLegacyIds.has(asText(row?.source_estimate_legacy_id))
+    )).length;
+    if (count > 0) linked.push({ table: "invoices", count });
   }
   return linked;
 }
@@ -967,7 +972,7 @@ const IDENTITY_RECONCILIATION_READS = [
   ["customers", "customers", "id, legacy_local_id, email, phone, company_name, display_name, contact_name"],
   ["projects", "projects", "id, legacy_local_id, customer_id, project_number"],
   ["estimates", "estimates", "id, legacy_local_id, customer_id, project_id, estimate_number"],
-  ["invoices", "invoices", "id, legacy_local_id, customer_id, project_id, estimate_id, source_estimate_id, invoice_number"],
+  ["invoices", "invoices", "id, legacy_local_id, customer_id, project_id, estimate_id, source_estimate_legacy_id, invoice_number"],
   ["invoice_payments", "invoice_payments", "id, legacy_local_id, invoice_id, amount, method, status, paid_at"],
 ];
 

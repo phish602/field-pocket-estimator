@@ -103,6 +103,17 @@ function relationshipCompatible(localLegacyId, cloudUuid, resolvedCloudIds) {
   return !resolved || resolved === asText(cloudUuid);
 }
 
+function invoiceEstimateRelationshipCompatible(local, cloud, resolvedEstimateIds) {
+  const localLegacyId = asText(local?.source_estimate_legacy_local_id);
+  if (!localLegacyId) return true;
+  const cloudEstimateUuid = asText(cloud?.estimate_id);
+  if (cloudEstimateUuid) {
+    return relationshipCompatible(localLegacyId, cloudEstimateUuid, resolvedEstimateIds);
+  }
+  const cloudEstimateLegacyId = asText(cloud?.source_estimate_legacy_id);
+  return !cloudEstimateLegacyId || cloudEstimateLegacyId === localLegacyId;
+}
+
 function amountToCents(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
@@ -389,7 +400,7 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
     compatible: (local, cloud) => (
       relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds)
       && relationshipCompatible(local?.project_legacy_local_id, cloud?.project_id, resolvedProjectIds)
-      && relationshipCompatible(local?.source_estimate_legacy_local_id, cloud?.estimate_id || cloud?.source_estimate_id, resolvedEstimateIds)
+      && invoiceEstimateRelationshipCompatible(local, cloud, resolvedEstimateIds)
     ),
     childTable: "invoice_line_items",
     bindings: bindingMapFor("invoice"),
@@ -397,7 +408,7 @@ export function buildCloudIdentityReconciliationPlan({ draft = {}, cloudRowsByTa
       numberContradicts("invoice_number")(local, cloud)
       || !relationshipCompatible(local?.customer_legacy_local_id, cloud?.customer_id, resolvedCustomerIds)
       || !relationshipCompatible(local?.project_legacy_local_id, cloud?.project_id, resolvedProjectIds)
-      || !relationshipCompatible(local?.source_estimate_legacy_local_id, cloud?.estimate_id || cloud?.source_estimate_id, resolvedEstimateIds)
+      || !invoiceEstimateRelationshipCompatible(local, cloud, resolvedEstimateIds)
     ),
   }, resolvedInvoiceIds);
   rows(invoicePlan.exact_match).forEach((entry) => resolvedInvoiceIds.set(entry.currentLocalLegacyId, entry.cloudUuid));

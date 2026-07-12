@@ -828,7 +828,7 @@ describe("supabaseCloudOnboarding", () => {
           { id: "db_est_4", legacy_local_id: "est_4" },
         ],
         invoices: [
-          { id: "db_inv_1", legacy_local_id: "inv_1", source_estimate_legacy_local_id: "est_3" },
+          { id: "db_inv_1", legacy_local_id: "inv_1", source_estimate_legacy_id: "est_3" },
         ],
       });
       mockGetSupabaseClient.mockReturnValue(client);
