@@ -21,22 +21,27 @@ describe("subscription plan state", () => {
     expect(shouldTreatSubscriptionAsPaid({ plan: "pro", status: "mystery" })).toBe(false);
   });
 
-  test("active Pro and Team resolve to their paid entitlements", () => {
+  test("active Solo, Pro, and Business resolve to their paid entitlements", () => {
+    expect(getEntitlementsFromSubscriptionState({ plan: "solo", status: "active" })).toMatchObject({ plan: "solo", canRemovePdfWatermark: true });
     expect(getEntitlementsFromSubscriptionState({ plan: "pro", status: "active" })).toMatchObject({ plan: "pro", canRemovePdfWatermark: true });
-    expect(getEntitlementsFromSubscriptionState({ plan: "team", status: "active" })).toMatchObject({ plan: "team", canUseTeamFeatures: true });
+    expect(getEntitlementsFromSubscriptionState({ plan: "business", status: "active" })).toMatchObject({ plan: "business", canUseBusinessFeatures: true });
   });
 
   test("canceled and past-due paid plans fall back to Free entitlements", () => {
-    expect(getEntitlementsFromSubscriptionState({ plan: "pro", status: "canceled" }).plan).toBe("free");
-    expect(getEntitlementsFromSubscriptionState({ plan: "pro", status: "past_due" }).plan).toBe("free");
+    ["solo", "pro", "business"].forEach((plan) => {
+      expect(getEntitlementsFromSubscriptionState({ plan, status: "canceled" }).plan).toBe("free");
+      expect(getEntitlementsFromSubscriptionState({ plan, status: "past_due" }).plan).toBe("free");
+    });
   });
 
-  test("trialing Pro remains paid for the trial", () => {
+  test("trialing paid tiers remain paid for the trial", () => {
+    expect(resolvePlanFromSubscriptionState({ plan: "solo", status: SUBSCRIPTION_STATUSES.TRIALING })).toBe("solo");
     expect(resolvePlanFromSubscriptionState({ plan: "pro", status: SUBSCRIPTION_STATUSES.TRIALING })).toBe("pro");
+    expect(resolvePlanFromSubscriptionState({ plan: "business", status: SUBSCRIPTION_STATUSES.TRIALING })).toBe("business");
   });
 
   test("Company Profile plan-shaped data is not an authority", () => {
-    expect(resolvePlanFromSubscriptionState({ companyProfile: { plan: "team" }, status: "active" })).toBe("free");
+    expect(resolvePlanFromSubscriptionState({ companyProfile: { plan: "business" }, status: "active" })).toBe("free");
   });
 
   test("labels reflect the resolved plan and normalized status", () => {

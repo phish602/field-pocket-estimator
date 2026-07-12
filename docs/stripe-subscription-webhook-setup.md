@@ -9,14 +9,15 @@ Set these as server/runtime environment variables only. Do not prefix them with 
 - `STRIPE_SECRET_KEY` — Stripe secret API key used only to retrieve the subscription after a Checkout completion event.
 - `STRIPE_WEBHOOK_SECRET` — signing secret for this endpoint from the Stripe Dashboard.
 - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` — server-only credentials used by the subscription plan-state writer.
-- `STRIPE_PRO_PRICE_ID` (or `ESTIPAID_STRIPE_PRO_PRICE_ID`) — Stripe Price ID for Pro.
-- `STRIPE_TEAM_PRICE_ID` (or `ESTIPAID_STRIPE_TEAM_PRICE_ID`) — Stripe Price ID for Team.
+- `STRIPE_SOLO_PRICE_ID` — Stripe Price ID for Solo.
+- `STRIPE_PRO_PRICE_ID` — Stripe Price ID for Pro.
+- `STRIPE_BUSINESS_PRICE_ID` — Stripe Price ID for Business.
 
 Normal browser clients may read this plan-state row but cannot insert or update it; apply [the subscription RLS patch](supabase-subscription-plan-state-rls-patch.sql) before enabling webhooks.
 
 ## Stripe metadata and event configuration
 
-Set `metadata.companyId` to the EstiPaid company ID on every Stripe Subscription. When Stripe Checkout creates the subscription, also set the same value on the Checkout Session metadata as a fallback (and preferably on `subscription_data.metadata`). The webhook accepts only this trusted metadata key—never a company name, email address, or browser-provided field.
+Free is the default demo tier and has no Stripe Price. Set `metadata.companyId` to the EstiPaid company ID on every Solo, Pro, or Business Stripe Subscription. When Stripe Checkout creates the subscription, also set the same value on the Checkout Session metadata as a fallback (and preferably on `subscription_data.metadata`). The webhook accepts only this trusted metadata key—never a company name, email address, or browser-provided field.
 
 Configure the Stripe endpoint for these event types:
 

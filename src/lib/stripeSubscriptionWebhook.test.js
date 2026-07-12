@@ -3,8 +3,9 @@
 const { processStripeSubscriptionWebhook } = require("../../server/stripeSubscriptionWebhook");
 
 const ENV = {
+  STRIPE_SOLO_PRICE_ID: "price_solo",
   STRIPE_PRO_PRICE_ID: "price_pro",
-  STRIPE_TEAM_PRICE_ID: "price_team",
+  STRIPE_BUSINESS_PRICE_ID: "price_business",
 };
 
 function subscription({ companyId = "company_1", priceId = "price_pro", status = "active", customer = { id: "cus_1" }, id = "sub_1" } = {}) {
@@ -62,9 +63,11 @@ describe("Stripe subscription webhook", () => {
     });
   });
 
-  test("maps trialing Team, past_due, and deleted subscriptions conservatively", async () => {
-    const trialing = await process({ type: "customer.subscription.created", data: { object: subscription({ priceId: "price_team", status: "trialing" }) } });
-    expect(trialing.upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ plan: "team", status: "trialing" }));
+  test("maps Solo, Pro, Business, past_due, and deleted subscriptions conservatively", async () => {
+    const trialingSolo = await process({ type: "customer.subscription.created", data: { object: subscription({ priceId: "price_solo", status: "trialing" }) } });
+    expect(trialingSolo.upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ plan: "solo", status: "trialing" }));
+    const activeBusiness = await process({ type: "customer.subscription.updated", data: { object: subscription({ priceId: "price_business", status: "active" }) } });
+    expect(activeBusiness.upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ plan: "business", status: "active" }));
 
     const pastDue = await process({ type: "customer.subscription.updated", data: { object: subscription({ status: "past_due" }) } });
     expect(pastDue.upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ plan: "pro", status: "past_due" }));

@@ -27,8 +27,9 @@ function companyIdFromSources(...sources) {
 
 function configuredPriceIds(env = process.env) {
   return {
-    pro: text(env.STRIPE_PRO_PRICE_ID || env.ESTIPAID_STRIPE_PRO_PRICE_ID),
-    team: text(env.STRIPE_TEAM_PRICE_ID || env.ESTIPAID_STRIPE_TEAM_PRICE_ID),
+    solo: text(env.STRIPE_SOLO_PRICE_ID),
+    pro: text(env.STRIPE_PRO_PRICE_ID),
+    business: text(env.STRIPE_BUSINESS_PRICE_ID),
   };
 }
 
@@ -39,8 +40,9 @@ function planFromSubscriptionPrices(subscription, env = process.env) {
 
   for (const lineItem of lineItems) {
     const priceId = text(lineItem?.price?.id || lineItem?.price);
+    if (priceId && priceId === priceIds.solo) matchedPlans.add("solo");
     if (priceId && priceId === priceIds.pro) matchedPlans.add("pro");
-    if (priceId && priceId === priceIds.team) matchedPlans.add("team");
+    if (priceId && priceId === priceIds.business) matchedPlans.add("business");
   }
 
   return matchedPlans.size === 1 ? [...matchedPlans][0] : "free";

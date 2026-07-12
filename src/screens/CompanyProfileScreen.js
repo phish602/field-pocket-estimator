@@ -964,27 +964,40 @@ const stripeActionGroupStyle = {
           </span>
           <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>
             {`Status: ${getSubscriptionStatusLabel(subscriptionPlanState)} · ${getEntitlementsFromSubscriptionState(subscriptionPlanState).showPdfWatermark
-              ? "PDF exports include EstiPaid branding. Upgrade to remove it."
-              : "Custom PDF branding enabled — no EstiPaid watermark."}`}
+              ? "PDF exports include EstiPaid branding."
+              : "No EstiPaid watermark."}`}
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%" }}>
             {resolvedSubscriptionPlan === "free" ? (
               <>
+                <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("solo")}>
+                  {subscriptionCheckoutBusy === "solo" ? "Starting Solo checkout…" : "Upgrade to Solo"}
+                </button>
                 <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("pro")}>
                   {subscriptionCheckoutBusy === "pro" ? "Starting Pro checkout…" : "Upgrade to Pro"}
                 </button>
-                <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("team")}>
-                  {subscriptionCheckoutBusy === "team" ? "Starting Team checkout…" : "Upgrade to Team"}
+                <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
+                  {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
+                </button>
+              </>
+            ) : null}
+            {resolvedSubscriptionPlan === "solo" ? (
+              <>
+                <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("pro")}>
+                  {subscriptionCheckoutBusy === "pro" ? "Starting Pro checkout…" : "Upgrade to Pro"}
+                </button>
+                <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
+                  {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
                 </button>
               </>
             ) : null}
             {resolvedSubscriptionPlan === "pro" ? (
-              <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("team")}>
-                {subscriptionCheckoutBusy === "team" ? "Starting Team checkout…" : "Upgrade to Team"}
+              <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
+                {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
               </button>
             ) : null}
-            {resolvedSubscriptionPlan === "team" ? (
-              <span style={{ fontSize: 11.5, color: "rgba(187,247,208,0.92)", fontWeight: 800 }}>Team is your current plan.</span>
+            {resolvedSubscriptionPlan === "business" ? (
+              <span style={{ fontSize: 11.5, color: "rgba(187,247,208,0.92)", fontWeight: 800 }}>Business is your current plan.</span>
             ) : null}
             <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>Plan changes activate after Stripe confirms payment.</span>
           </div>

@@ -22,10 +22,11 @@ describe("CompanyProfileScreen subscription Checkout entry", () => {
     window.open = originalOpen;
   });
 
-  test("shows both upgrade actions for Free without an editable plan selector", async () => {
+  test("shows Solo, Pro, and Business upgrade actions for Free without an editable plan selector", async () => {
     await act(async () => { render(<CompanyProfileScreen />); });
+    expect(screen.getByRole("button", { name: "Upgrade to Solo" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upgrade to Pro" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Business" })).toBeInTheDocument();
     expect(screen.queryByLabelText(/plan/i)).toBeNull();
   });
 
@@ -45,12 +46,29 @@ describe("CompanyProfileScreen subscription Checkout entry", () => {
     expect(localStorage.getItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE)).toBeNull();
   });
 
-  test("shows current Pro state without Free upgrade copy and offers only Team", async () => {
+  test("shows current Pro state without Free upgrade copy and offers only Business", async () => {
     seedSubscriptionState({ plan: "pro", status: "active" });
     await act(async () => { render(<CompanyProfileScreen />); });
     expect(screen.getByText("Pro")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Business" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Upgrade to Pro" })).toBeNull();
     expect(screen.queryByText(/PDF exports include EstiPaid branding/i)).toBeNull();
+  });
+
+  test("shows Solo with Pro and Business upgrade paths", async () => {
+    seedSubscriptionState({ plan: "solo", status: "active" });
+    await act(async () => { render(<CompanyProfileScreen />); });
+    expect(screen.getByText("Solo")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Pro" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Business" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade to Solo" })).toBeNull();
+  });
+
+  test("shows Business as the terminal current tier", async () => {
+    seedSubscriptionState({ plan: "business", status: "active" });
+    await act(async () => { render(<CompanyProfileScreen />); });
+    expect(screen.getByText("Business")).toBeInTheDocument();
+    expect(screen.getByText("Business is your current plan.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/i })).toBeNull();
   });
 });

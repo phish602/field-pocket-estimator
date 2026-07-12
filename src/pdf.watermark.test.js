@@ -90,8 +90,12 @@ describe("PDF plan-aware watermark", () => {
     expect(drewText("Page 1 of 1")).toBe(true);
   });
 
-  test("active Team subscription state does not draw the estimate watermark", async () => {
-    seedSubscriptionState({ plan: "team", status: "active" });
+  test("active Solo and Business subscription states do not draw the estimate watermark", async () => {
+    seedSubscriptionState({ plan: "solo", status: "active" });
+    await exportPdf(basePayload({ company: { plan: "free" } }), "download");
+    expect(drewText("Created with EstiPaid")).toBe(false);
+    mockTextCalls = [];
+    seedSubscriptionState({ plan: "business", status: "active" });
     await exportPdf(basePayload({ company: { plan: "free" } }), "download");
     expect(drewText("Created with EstiPaid")).toBe(false);
   });
@@ -101,8 +105,8 @@ describe("PDF plan-aware watermark", () => {
     expect(drewText("Created with EstiPaid")).toBe(true);
   });
 
-  test("invoice PDFs follow active Team and canceled Pro state", async () => {
-    seedSubscriptionState({ plan: "team", status: "active" });
+  test("invoice PDFs follow active Business and canceled Pro state", async () => {
+    seedSubscriptionState({ plan: "business", status: "active" });
     await exportPdf(basePayload({ docType: "invoice" }), "download");
     expect(drewText("Created with EstiPaid")).toBe(false);
 
@@ -123,7 +127,7 @@ describe("PDF plan-aware watermark", () => {
 
     mockTextCalls = [];
     localStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_REMOTE_CACHE, JSON.stringify({
-      state: { plan: "team", status: "active", source: "stripe" },
+      state: { plan: "business", status: "active", source: "stripe" },
       resolvedAt: "2026-07-10T00:00:00.000Z",
     }));
     await exportPdf(basePayload({ docType: "invoice" }), "download");

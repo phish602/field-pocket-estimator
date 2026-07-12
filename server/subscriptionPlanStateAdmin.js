@@ -3,7 +3,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { randomUUID } = require("crypto");
 
 const SUBSCRIPTION_PLAN_STATE_KEY = "subscription_plan_state";
-const VALID_PLANS = new Set(["free", "pro", "team"]);
+const VALID_PLANS = new Set(["free", "solo", "pro", "business"]);
 const VALID_STATUSES = new Set(["free", "trialing", "active", "past_due", "canceled", "unknown"]);
 const VALID_SOURCES = new Set(["stripe", "supabase", "admin"]);
 

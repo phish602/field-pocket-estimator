@@ -13,21 +13,27 @@
 // lives in subscriptionPlanState; unknown/missing plans resolve to Free.
 
 export const PLAN_FREE = "free";
+export const PLAN_SOLO = "solo";
 export const PLAN_PRO = "pro";
-export const PLAN_TEAM = "team";
+export const PLAN_BUSINESS = "business";
+// Compatibility export for callers from the former Team tier. Its value and
+// user-facing label intentionally resolve to Business.
+export const PLAN_TEAM = PLAN_BUSINESS;
 
 export const PLAN_LABELS = {
   [PLAN_FREE]: "Free",
+  [PLAN_SOLO]: "Solo",
   [PLAN_PRO]: "Pro",
-  [PLAN_TEAM]: "Team",
+  [PLAN_BUSINESS]: "Business",
 };
 
 // Normalize any raw plan value to a known plan id. Missing / unknown / null /
 // undefined all fall back to Free.
 export function normalizePlan(plan) {
   const raw = String(plan == null ? "" : plan).trim().toLowerCase();
+  if (raw === PLAN_SOLO) return PLAN_SOLO;
   if (raw === PLAN_PRO) return PLAN_PRO;
-  if (raw === PLAN_TEAM) return PLAN_TEAM;
+  if (raw === PLAN_BUSINESS || raw === "team") return PLAN_BUSINESS;
   return PLAN_FREE;
 }
 
@@ -52,22 +58,28 @@ function resolvePlan(profileOrPlan) {
   return getPlanFromCompanyProfile(profileOrPlan);
 }
 
-// The full entitlement set for a plan. Team inherits everything Pro has.
+// The full entitlement set for a plan. Business inherits all Pro features.
 export function getEntitlementsForPlan(profileOrPlan) {
   const plan = resolvePlan(profileOrPlan);
-  const isPro = plan === PLAN_PRO || plan === PLAN_TEAM;
-  const isTeam = plan === PLAN_TEAM;
+  const isPaid = plan === PLAN_SOLO || plan === PLAN_PRO || plan === PLAN_BUSINESS;
+  const hasProFeatures = plan === PLAN_PRO || plan === PLAN_BUSINESS;
+  const hasBusinessFeatures = plan === PLAN_BUSINESS;
   return {
     plan,
     label: PLAN_LABELS[plan] || PLAN_LABELS[PLAN_FREE],
     // PDF / white-label
-    showPdfWatermark: !isPro,
-    canRemovePdfWatermark: isPro,
-    canUseCustomPdfBranding: isPro,
+    showPdfWatermark: !isPaid,
+    canRemovePdfWatermark: isPaid,
+    canUseCustomPdfBranding: isPaid,
     // Payments (helper only -- not wired into billing behavior in this lane)
-    canUseStripePayments: isPro,
-    // Team / multi-user (future)
-    canUseTeamFeatures: isTeam,
+    canUseStripePayments: hasProFeatures,
+    canUseSwipePayments: hasProFeatures,
+    canUseFinancialSnapshot: hasProFeatures,
+    canUseReporting: hasProFeatures,
+    // Business / multi-user (future)
+    canUseBusinessFeatures: hasBusinessFeatures,
+    // Backward-compatible alias for prior callers.
+    canUseTeamFeatures: hasBusinessFeatures,
   };
 }
 
@@ -81,6 +93,22 @@ export function canUseCustomPdfBranding(profileOrPlan) {
 
 export function canUseStripePayments(profileOrPlan) {
   return getEntitlementsForPlan(profileOrPlan).canUseStripePayments;
+}
+
+export function canUseSwipePayments(profileOrPlan) {
+  return getEntitlementsForPlan(profileOrPlan).canUseSwipePayments;
+}
+
+export function canUseFinancialSnapshot(profileOrPlan) {
+  return getEntitlementsForPlan(profileOrPlan).canUseFinancialSnapshot;
+}
+
+export function canUseReporting(profileOrPlan) {
+  return getEntitlementsForPlan(profileOrPlan).canUseReporting;
+}
+
+export function canUseBusinessFeatures(profileOrPlan) {
+  return getEntitlementsForPlan(profileOrPlan).canUseBusinessFeatures;
 }
 
 export function canUseTeamFeatures(profileOrPlan) {

@@ -19,11 +19,11 @@ describe("subscription Checkout API", () => {
   });
 
   test("returns safe validation errors", async () => {
-    const createCheckout = jest.fn(async () => ({ ok: false, status: 400, error: "Choose Pro or Team." }));
+    const createCheckout = jest.fn(async () => ({ ok: false, status: 400, error: "Choose Solo, Pro, or Business." }));
     const res = response();
     await createSubscriptionCheckoutApiHandler({ createCheckout })({ method: "POST", headers: {}, body: { plan: "bad" } }, res);
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: "Choose Pro or Team." });
+    expect(res.body).toEqual({ error: "Choose Solo, Pro, or Business." });
   });
 
   test("forwards only plan, company context, and bearer token; it ignores a raw price ID", async () => {

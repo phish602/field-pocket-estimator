@@ -6,8 +6,9 @@ const {
 
 const ENV = {
   STRIPE_SECRET_KEY: "sk_test_server_only",
+  STRIPE_SOLO_PRICE_ID: "price_solo",
   STRIPE_PRO_PRICE_ID: "price_pro",
-  STRIPE_TEAM_PRICE_ID: "price_team",
+  STRIPE_BUSINESS_PRICE_ID: "price_business",
   APP_BASE_URL: "https://app.estipaid.test",
 };
 
@@ -46,29 +47,37 @@ describe("Stripe subscription Checkout creation", () => {
     expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
   });
 
-  test("maps Pro to its server price and writes required metadata only to Stripe Checkout", async () => {
+  test.each([
+    ["solo", "price_solo"],
+    ["pro", "price_pro"],
+    ["business", "price_business"],
+  ])("maps %s to its server price and writes required metadata only to Stripe Checkout", async (plan, price) => {
     const stripe = stripeClient();
     const result = await createSubscriptionCheckoutSession({
-      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV, stripeClient: stripe, validateCompanyUser: validatedUser(),
+      plan, companyId: "company_1", accessToken: "access_1", env: ENV, stripeClient: stripe, validateCompanyUser: validatedUser(),
     });
     expect(result).toEqual({ ok: true, checkoutUrl: "https://checkout.stripe.test/session", sessionId: "cs_test_1" });
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith({
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
       mode: "subscription",
-      line_items: [{ price: "price_pro", quantity: 1 }],
+      line_items: [{ price, quantity: 1 }],
       success_url: "https://app.estipaid.test/?subscriptionCheckout=success&session_id={CHECKOUT_SESSION_ID}",
       cancel_url: "https://app.estipaid.test/?subscriptionCheckout=cancel",
       customer_email: "owner@example.test",
-      metadata: { companyId: "company_1", requestedPlan: "pro", userId: "user_1" },
-      subscription_data: { metadata: { companyId: "company_1", requestedPlan: "pro", userId: "user_1" } },
-    });
+      metadata: { companyId: "company_1", requestedPlan: plan, userId: "user_1" },
+      subscription_data: { metadata: { companyId: "company_1", requestedPlan: plan, userId: "user_1" } },
+    }));
   });
 
-  test("maps Team to its server price without accepting a browser price", async () => {
+  test("rejects Free and ignores a browser price ID", async () => {
     const stripe = stripeClient();
-    await createSubscriptionCheckoutSession({
-      plan: "team", companyId: "company_1", accessToken: "access_1", env: ENV, stripeClient: stripe, validateCompanyUser: validatedUser(), priceId: "price_browser_attempt",
+    const free = await createSubscriptionCheckoutSession({
+      plan: "free", companyId: "company_1", accessToken: "access_1", env: ENV, stripeClient: stripe, validateCompanyUser: validatedUser(),
     });
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ line_items: [{ price: "price_team", quantity: 1 }] }));
+    expect(free).toMatchObject({ ok: false, status: 400 });
+    await createSubscriptionCheckoutSession({
+      plan: "business", companyId: "company_1", accessToken: "access_1", env: ENV, stripeClient: stripe, validateCompanyUser: validatedUser(), priceId: "price_browser_attempt",
+    });
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ line_items: [{ price: "price_business", quantity: 1 }] }));
   });
 
   test("returns a safe error when Stripe fails without exposing server secrets", async () => {

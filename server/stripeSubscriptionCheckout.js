@@ -2,7 +2,7 @@
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
-const ALLOWED_PLANS = new Set(["pro", "team"]);
+const ALLOWED_PLANS = new Set(["solo", "pro", "business"]);
 const MANAGEABLE_ROLES = new Set(["owner", "admin"]);
 
 function text(value) {
@@ -15,8 +15,9 @@ function normalizePlan(value) {
 }
 
 function priceIdForPlan(plan, env = process.env) {
-  if (plan === "pro") return text(env.STRIPE_PRO_PRICE_ID || env.ESTIPAID_STRIPE_PRO_PRICE_ID);
-  if (plan === "team") return text(env.STRIPE_TEAM_PRICE_ID || env.ESTIPAID_STRIPE_TEAM_PRICE_ID);
+  if (plan === "solo") return text(env.STRIPE_SOLO_PRICE_ID);
+  if (plan === "pro") return text(env.STRIPE_PRO_PRICE_ID);
+  if (plan === "business") return text(env.STRIPE_BUSINESS_PRICE_ID);
   return "";
 }
 
@@ -96,7 +97,7 @@ async function createSubscriptionCheckoutSession({
 } = {}) {
   const normalizedPlan = normalizePlan(plan);
   const normalizedCompanyId = text(companyId);
-  if (!normalizedPlan) return { ok: false, status: 400, error: "Choose Pro or Team." };
+  if (!normalizedPlan) return { ok: false, status: 400, error: "Choose Solo, Pro, or Business." };
   if (!normalizedCompanyId) return { ok: false, status: 400, error: "Missing company context." };
 
   const access = await validateCompanyUser({ accessToken, companyId: normalizedCompanyId, env, adminClient });

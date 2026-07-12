@@ -23,12 +23,12 @@ describe("CompanyProfileScreen subscription plan display", () => {
     });
 
     expect(screen.getByText("Free")).toBeInTheDocument();
-    expect(screen.getByText("Status: Free · PDF exports include EstiPaid branding. Upgrade to remove it.")).toBeInTheDocument();
+    expect(screen.getByText("Status: Free · PDF exports include EstiPaid branding.")).toBeInTheDocument();
     expect(screen.queryByLabelText(/plan/i)).toBeNull();
   });
 
   test("shows trusted active Pro state without trusting Company Profile plan fields", async () => {
-    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({ plan: "team" }));
+    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({ plan: "business" }));
     seedSubscriptionState({ plan: "pro", status: "active" });
 
     await act(async () => {
@@ -36,11 +36,11 @@ describe("CompanyProfileScreen subscription plan display", () => {
     });
 
     expect(screen.getByText("Pro")).toBeInTheDocument();
-    expect(screen.getByText("Status: Active · Custom PDF branding enabled — no EstiPaid watermark.")).toBeInTheDocument();
+    expect(screen.getByText("Status: Active · No EstiPaid watermark.")).toBeInTheDocument();
   });
 
   test("saving Company Profile does not overwrite subscription state", async () => {
-    const subscriptionState = { plan: "team", status: "active" };
+    const subscriptionState = { plan: "business", status: "active" };
     localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({
       companyName: "Desert Ridge",
       phone: "6025550100",

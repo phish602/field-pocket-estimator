@@ -1,7 +1,8 @@
 import {
   PLAN_FREE,
+  PLAN_SOLO,
   PLAN_PRO,
-  PLAN_TEAM,
+  PLAN_BUSINESS,
   getEntitlementsForPlan,
   getPlanLabel,
   normalizePlan,
@@ -54,7 +55,7 @@ export function normalizeSubscriptionPlanState(raw) {
 
 export function shouldTreatSubscriptionAsPaid(raw) {
   const state = normalizeSubscriptionPlanState(raw);
-  const paidPlan = state.plan === PLAN_PRO || state.plan === PLAN_TEAM;
+  const paidPlan = state.plan === PLAN_SOLO || state.plan === PLAN_PRO || state.plan === PLAN_BUSINESS;
   return paidPlan && (
     state.status === SUBSCRIPTION_STATUSES.ACTIVE
     || state.status === SUBSCRIPTION_STATUSES.TRIALING

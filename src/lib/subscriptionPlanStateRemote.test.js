@@ -38,11 +38,11 @@ describe("remote subscription plan state", () => {
 
   test("remote state beats local dev state, including malformed remote data", () => {
     expect(resolveSubscriptionPlanStatePriority({
-      remoteState: { plan: "team", status: "active" },
+      remoteState: { plan: "business", status: "active" },
       remoteAvailable: true,
       localState: { plan: "pro", status: "active" },
       allowLocalFallback: true,
-    })).toMatchObject({ plan: "team", status: "active" });
+    })).toMatchObject({ plan: "business", status: "active" });
     expect(resolveSubscriptionPlanStatePriority({
       remoteState: { plan: "invalid", status: "active" },
       remoteAvailable: true,

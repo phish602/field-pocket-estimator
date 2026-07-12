@@ -34,8 +34,8 @@ describe("server subscription plan writer scaffold", () => {
 
   test("updates an existing row without any browser credential dependency", async () => {
     const adminClient = createAdminClient({ rows: [{ id: "setting_1" }] });
-    const result = await upsertCompanySubscriptionPlanState({ adminClient, companyId: "company_1", plan: "team", status: "trialing", source: "admin" });
-    expect(result).toMatchObject({ ok: true, action: "updated", state: { plan: "team", status: "trialing" } });
+    const result = await upsertCompanySubscriptionPlanState({ adminClient, companyId: "company_1", plan: "business", status: "trialing", source: "admin" });
+    expect(result).toMatchObject({ ok: true, action: "updated", state: { plan: "business", status: "trialing" } });
     expect(adminClient.update).toHaveBeenCalledWith(expect.objectContaining({ setting_value: expect.objectContaining({ updatedAt: expect.any(String) }) }));
   });
 });
