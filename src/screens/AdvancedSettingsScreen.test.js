@@ -1534,7 +1534,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud changed elsewhere.")).toBeInTheDocument();
     expect(screen.getByText(/Choose whether to restore cloud data here or replace the cloud backup/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
@@ -1669,7 +1669,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(screen.getByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(screen.getByText("Cloud changed elsewhere.")).toBeInTheDocument();
     expect(screen.getByText("Cloud verification found mismatches between local and Supabase data.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Restore Cloud to This Device" })).toBeDisabled();
@@ -1730,7 +1730,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Replace Cloud Backup With This Device" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Cloud and this device are different.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cloud changed elsewhere.")).not.toBeInTheDocument();
   });
 
   test("Restore Cloud to This Device re-verifies after a successful restore and clears the mismatch state", async () => {
@@ -1993,7 +1993,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
       render(<AdvancedSettingsScreen />);
     });
 
-    expect(await screen.findByText("Cloud and this device are different.")).toBeInTheDocument();
+    expect(await screen.findByText("Cloud changed elsewhere.")).toBeInTheDocument();
     expect(screen.getByText(/estimates: 1 only in the cloud\. Replace can remove the cloud-only rows\./i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace Cloud Backup With This Device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recheck Cloud Status" })).toBeInTheDocument();

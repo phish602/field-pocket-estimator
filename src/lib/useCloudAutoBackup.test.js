@@ -273,3 +273,20 @@ test("takeover pause blocks automatic backup until a fresh local change re-dirti
   await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
   hook.unmount();
 });
+
+test("a permanent identity conflict stops automatic retries and remains review-required", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+    permanentIdentityConflict: true,
+    syncReviewState: "conflict",
+    reason: "Cloud records require identity review.",
+  });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(readCloudBackupQueueState().status).toBe(CLOUD_BACKUP_STATUS.CONFLICT));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
+  unmount();
+});

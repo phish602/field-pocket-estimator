@@ -8,6 +8,10 @@ import {
   repairStoredLocalDataIntegrity,
 } from "./localDataIntegrity";
 import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+import {
+  buildCloudIdentityReconciliationPlan,
+  hasPermanentCloudIdentityConflict,
+} from "./cloudIdentityReconciliation";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -120,10 +124,10 @@ async function readExistingCustomers(client, companyId) {
   return readExistingRows(client, "customers", companyId);
 }
 
-async function readExistingRows(client, table, companyId) {
+async function readExistingRows(client, table, companyId, columns = "id, legacy_local_id") {
   const response = await client
     .from(table)
-    .select("id, legacy_local_id")
+    .select(columns)
     .eq("company_id", companyId);
 
   if (response?.error) {
@@ -640,6 +644,36 @@ const CLOUD_ONLY_CHILD_TABLES = {
   estimates: { table: "estimate_line_items", parentColumn: "estimate_id" },
 };
 
+async function readCloudReplacementDependencyRows(client, companyId) {
+  const [projects, estimates, invoices] = await Promise.all([
+    readExistingRows(client, "projects", companyId, "id, customer_id"),
+    readExistingRows(client, "estimates", companyId, "id, customer_id, project_id"),
+    readExistingRows(client, "invoices", companyId, "id, customer_id, project_id, estimate_id, source_estimate_id"),
+  ]);
+  return { projects, estimates, invoices };
+}
+
+function collectCloudOnlyReplacementDependencies(replacement, dependencyRows) {
+  const ids = new Set((Array.isArray(replacement?.cloudRowIds) ? replacement.cloudRowIds : []).map(asText).filter(Boolean));
+  if (ids.size === 0) return [];
+  const linked = [];
+  const add = (table, rows, columns) => {
+    const count = (Array.isArray(rows) ? rows : []).filter((row) => columns.some((column) => ids.has(asText(row?.[column])))).length;
+    if (count > 0) linked.push({ table, count });
+  };
+  if (replacement?.table === "customers") {
+    add("projects", dependencyRows?.projects, ["customer_id"]);
+    add("estimates", dependencyRows?.estimates, ["customer_id"]);
+    add("invoices", dependencyRows?.invoices, ["customer_id"]);
+  } else if (replacement?.table === "projects") {
+    add("estimates", dependencyRows?.estimates, ["project_id"]);
+    add("invoices", dependencyRows?.invoices, ["project_id"]);
+  } else if (replacement?.table === "estimates") {
+    add("invoices", dependencyRows?.invoices, ["estimate_id", "source_estimate_id"]);
+  }
+  return linked;
+}
+
 async function collectExistingCloudResumeIssues(
   client,
   companyId,
@@ -656,6 +690,9 @@ async function collectExistingCloudResumeIssues(
     .map((legacyId) => asText(legacyId))
     .filter(Boolean);
   const preservedSkippedEstimateIdSet = new Set(preservedSkippedEstimateIds);
+  const replacementDependencyRows = allowCloudOnlyReplacement
+    ? await readCloudReplacementDependencyRows(client, companyId)
+    : null;
 
   for (const [table, draftKey, label] of SAFE_RESUME_TABLES) {
     const existingRows = await readExistingRows(client, table, companyId);
@@ -696,7 +733,18 @@ async function collectExistingCloudResumeIssues(
         .filter((row) => cloudOnlyIdSet.has(asText(row?.legacy_local_id)))
         .map((row) => asText(row?.id))
         .filter(Boolean);
-      replacements.push({ table, label, legacyIds: cloudOnlyIds, cloudRowIds });
+      const replacement = { table, label, legacyIds: cloudOnlyIds, cloudRowIds };
+      const dependencies = collectCloudOnlyReplacementDependencies(replacement, replacementDependencyRows);
+      if (dependencies.length > 0) {
+        notices.push(buildNotice(
+          "error",
+          `${table}_cloud_only_rows_linked_history`,
+          `Cloud-only ${label} rows have linked business history and cannot be removed automatically.`,
+          { cloudOnlyLegacyIds: cloudOnlyIds, dependencies }
+        ));
+        continue;
+      }
+      replacements.push(replacement);
       continue;
     }
 
@@ -820,6 +868,81 @@ async function upsertTableRows(client, table, rows) {
     .from(table)
     .upsert(rows, { onConflict: "company_id,legacy_local_id" })
     .select("id, legacy_local_id");
+}
+
+const IDENTITY_RECONCILIATION_READS = [
+  ["customers", "customers", "id, legacy_local_id, email, phone, company_name, display_name, contact_name"],
+  ["projects", "projects", "id, legacy_local_id, customer_id, project_number"],
+  ["estimates", "estimates", "id, legacy_local_id, customer_id, project_id, estimate_number"],
+  ["invoices", "invoices", "id, legacy_local_id, customer_id, project_id, estimate_id, source_estimate_id, invoice_number"],
+  ["invoice_payments", "invoice_payments", "id, legacy_local_id, invoice_id, amount, method, status, paid_at"],
+];
+
+const RECONCILIATION_TABLE_BY_ENTITY = {
+  customer: "customers",
+  project: "projects",
+  estimate: "estimates",
+  invoice: "invoices",
+};
+
+const RECONCILIATION_CHILD_PARENT_COLUMNS = {
+  estimate_line_items: "estimate_id",
+  invoice_line_items: "invoice_id",
+};
+
+async function readCloudIdentityRows(client, companyId) {
+  const entries = await Promise.all(IDENTITY_RECONCILIATION_READS.map(async ([table, key, columns]) => {
+    const rows = await readExistingRows(client, table, companyId, columns);
+    return [key, rows];
+  }));
+  return Object.fromEntries(entries);
+}
+
+async function applyCloudIdentityReconciliations({
+  client,
+  companyId,
+  reconciliations,
+  ensureFreshMutationAccess,
+}) {
+  const applied = [];
+  const childRebuilds = [];
+  for (const reconciliation of (Array.isArray(reconciliations) ? reconciliations : [])) {
+    const table = RECONCILIATION_TABLE_BY_ENTITY[reconciliation?.entityType];
+    if (!table || !asText(reconciliation?.cloudUuid) || !asText(reconciliation?.currentLocalLegacyId)) continue;
+    const access = await ensureFreshMutationAccess();
+    if (!access.ok) return { applied, childRebuilds, access };
+    const response = await client
+      .from(table)
+      .update({ legacy_local_id: reconciliation.currentLocalLegacyId })
+      .eq("company_id", companyId)
+      .eq("id", reconciliation.cloudUuid);
+    if (response?.error) {
+      return { applied, childRebuilds, error: response.error, failed: reconciliation };
+    }
+    applied.push(reconciliation);
+    childRebuilds.push(...(Array.isArray(reconciliation?.dependentChildOperations) ? reconciliation.dependentChildOperations : []));
+  }
+
+  // A parent legacy-id re-key changes deterministic child legacy ids. Clear
+  // only the children of that now-proven parent; the normal writer rebuilds
+  // them immediately afterward under the preserved cloud UUID.
+  for (const child of childRebuilds) {
+    const table = asText(child?.table);
+    const parentColumn = RECONCILIATION_CHILD_PARENT_COLUMNS[table];
+    const parentUuid = asText(child?.parentUuid);
+    if (!table || !parentColumn || !parentUuid) continue;
+    const access = await ensureFreshMutationAccess();
+    if (!access.ok) return { applied, childRebuilds, access };
+    const response = await client
+      .from(table)
+      .delete()
+      .eq("company_id", companyId)
+      .eq(parentColumn, parentUuid);
+    if (response?.error) {
+      return { applied, childRebuilds, error: response.error, failedChild: child };
+    }
+  }
+  return { applied, childRebuilds, error: null };
 }
 
 export async function runSupabaseMigrationWrite({
@@ -1019,6 +1142,101 @@ export async function runSupabaseMigrationWrite({
 
   const cloudCounts = await readCloudCounts(client, companyId);
   const localCounts = preview?.localCounts || {};
+  let identityPlan = null;
+  let appliedIdentityReconciliations = [];
+
+  // Before the legacy-id resume guard decides that two rows are different,
+  // reconcile only the one-to-one identities that the pure planner can prove.
+  // This preserves the cloud UUID and all foreign-key history; it never
+  // inserts a duplicate or deletes a financial record.
+  if (
+    Object.values(cloudCounts).some((count) => Number(count || 0) > 0)
+    && !isCustomersOnlyPartialState(localCounts, cloudCounts)
+  ) {
+    try {
+      const cloudIdentityRows = await readCloudIdentityRows(client, companyId);
+      identityPlan = buildCloudIdentityReconciliationPlan({ draft, cloudRowsByTable: cloudIdentityRows });
+      const preservedSkippedEstimateIdSet = new Set(
+        (Array.isArray(preservedSkippedEstimateLegacyIds) ? preservedSkippedEstimateLegacyIds : [])
+          .map((legacyId) => asText(legacyId))
+          .filter(Boolean)
+      );
+      const reviewCloudOnlyRows = identityPlan.cloudOnly.filter((entry) => {
+        return entry.entityType !== "estimate" || !preservedSkippedEstimateIdSet.has(asText(entry?.oldCloudLegacyId));
+      });
+      const unmatchedProtectedInvoice = reviewCloudOnlyRows.some((entry) => entry.entityType === "invoice");
+      const hasTwoSidedUnmatchedBusinessData = identityPlan.localOnly.some((entry) => entry.entityType !== "invoice_payment")
+        && reviewCloudOnlyRows.some((entry) => entry.entityType !== "invoice_payment");
+      const requiresReview = hasPermanentCloudIdentityConflict(identityPlan) || unmatchedProtectedInvoice || (!allowCloudOnlyReplacement && reviewCloudOnlyRows.length > 0);
+
+      if (requiresReview) {
+        const reviewState = hasTwoSidedUnmatchedBusinessData || identityPlan.ambiguous.length > 0 || identityPlan.protectedConflicts.length > 1
+          ? "conflict"
+          : "remote_changed";
+        return {
+          ok: false,
+          blocked: true,
+          permanentIdentityConflict: true,
+          syncReviewState: reviewState,
+          reason: "Cloud records not present on this device require identity review before this device can write safely.",
+          notices: [buildNotice(
+            "error",
+            `identity_${reviewState}`,
+            "Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically.",
+            {
+              reconciliationsAvailable: identityPlan.reconciliations.length,
+              ambiguousCount: identityPlan.ambiguous.length,
+              protectedConflictCount: identityPlan.protectedConflicts.length,
+              cloudOnlyCount: reviewCloudOnlyRows.length,
+            }
+          )],
+          cloudCountsBefore: cloudCounts,
+          identityPlan,
+          tableResults,
+          noLocalDeletes: true,
+        };
+      }
+
+      if (identityPlan.reconciliations.length > 0) {
+        const applied = await applyCloudIdentityReconciliations({
+          client,
+          companyId,
+          reconciliations: identityPlan.reconciliations,
+          ensureFreshMutationAccess,
+        });
+        if (applied.access) return buildMutationLockResult(applied.access, { cloudCountsBefore: cloudCounts, identityPlan });
+        if (applied.error) {
+          return {
+            ok: false,
+            blocked: false,
+            reason: asText(applied.error?.message) || "Cloud identity reconciliation failed.",
+            notices: [buildNotice("error", "identity_reconciliation_write_failed", asText(applied.error?.message) || "Cloud identity reconciliation failed.")],
+            cloudCountsBefore: cloudCounts,
+            identityPlan,
+            tableResults,
+            noLocalDeletes: true,
+          };
+        }
+        appliedIdentityReconciliations = applied.applied;
+        notices.push(buildNotice(
+          "info",
+          "cloud_identity_reconciled",
+          "Safely reconciled matching cloud record identities before backup.",
+          { count: applied.applied.length }
+        ));
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        blocked: false,
+        reason: asText(error?.message) || "Unable to read cloud identities for safe backup.",
+        notices: [buildNotice("error", "identity_reconciliation_read_failed", asText(error?.message) || "Unable to read cloud identities for safe backup.")],
+        cloudCountsBefore: cloudCounts,
+        tableResults,
+        noLocalDeletes: true,
+      };
+    }
+  }
 
   let customerIdByLegacyId = new Map();
   let shouldWriteCustomers = true;
@@ -1078,7 +1296,7 @@ export async function runSupabaseMigrationWrite({
         return {
           ok: false,
           blocked: true,
-          reason: "Cloud business tables contain rows that are not present on this device. Backup is blocked without an override path.",
+          reason: asText(resumeIssues.notices[0]?.message) || "Cloud business tables contain rows that are not present on this device. Backup is blocked without an override path.",
           notices: resumeIssues.notices,
           cloudCountsBefore: cloudCounts,
           tableResults,
@@ -1325,6 +1543,8 @@ export async function runSupabaseMigrationWrite({
     cloudCountsBefore: cloudCounts,
     integrity,
     repairSummary: repairedLocalData.repairs,
+    identityPlan,
+    appliedIdentityReconciliations,
     replacedCloudOnlyRows: cloudOnlyRowsReplaced,
     preservedSkippedCloudRows,
     notices: [

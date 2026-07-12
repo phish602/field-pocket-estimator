@@ -1977,10 +1977,12 @@ export default function AdvancedSettingsScreen({
                 ) : cloudDecision.screenState === LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH ? (
                   <>
                     <div role="status" aria-live="polite" className="pe-field-helper" style={{ color: "rgba(253,224,71,0.95)" }}>
-                      Cloud and this device are different.
+                      {autoBackupQueueState.status === CLOUD_BACKUP_STATUS.CONFLICT ? "Cloud sync conflict." : "Cloud changed elsewhere."}
                     </div>
                     <div className="pe-field-helper">
-                      Cloud has records or verification details that do not match this device. Choose whether to restore cloud data here or replace the cloud backup with this device.
+                      {autoBackupQueueState.status === CLOUD_BACKUP_STATUS.REMOTE_CHANGED || autoBackupQueueState.status === CLOUD_BACKUP_STATUS.CONFLICT
+                        ? "Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically."
+                        : "Cloud has records or verification details that do not match this device. Choose whether to restore cloud data here or replace the cloud backup with this device."}
                     </div>
                     {repairResult?.changed ? (
                       <div className="pe-field-helper" style={{ color: "rgba(187,247,208,0.95)" }}>

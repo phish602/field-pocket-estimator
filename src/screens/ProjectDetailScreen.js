@@ -840,7 +840,9 @@ export default function ProjectDetailScreen({
     if (cloudBackupStatus.restoredRecently) return { label: "Restored", color: "rgba(187,247,208,0.92)" };
     if (cloudBackupStatus.displayState === "running") return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
     if (cloudBackupStatus.displayState === "failed") return {
-      label: cloudBackupStatus.chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention",
+      label: cloudBackupStatus.queueState?.status === "conflict"
+        ? "Cloud sync conflict"
+        : cloudBackupStatus.chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention",
       color: "rgba(253,224,71,0.92)",
     };
     if (cloudBackupStatus.displayState === "pending") return {

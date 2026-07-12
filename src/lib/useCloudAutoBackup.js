@@ -16,6 +16,7 @@ import {
   readCloudBackupQueueState,
   markCloudBackupSyncing,
   markCloudBackupOfflinePending,
+  markCloudBackupReviewRequired,
   clearCloudBackupDirty,
   recordCloudBackupAttemptFailure,
   CLOUD_BACKUP_PRIORITY,
@@ -46,7 +47,9 @@ function canRunAutomatically({ enabled, configured, user, company, deviceLocked 
 }
 
 function isEligibleQueueState(queueState) {
-  return Boolean(queueState?.pending) && queueState?.priority !== CLOUD_BACKUP_PRIORITY.DEFERRED;
+  return Boolean(queueState?.pending)
+    && queueState?.priority !== CLOUD_BACKUP_PRIORITY.DEFERRED
+    && !["remote_changed", "conflict"].includes(String(queueState?.status || ""));
 }
 
 function delayForPriority(priority, immediateDelayMs, normalDelayMs) {
@@ -134,7 +137,12 @@ export default function useCloudAutoBackup({
         });
         deviceLockLost = Boolean(result?.deviceLockLost);
 
-        if (result?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
+        if (result?.permanentIdentityConflict) {
+          markCloudBackupReviewRequired(result?.error || result?.reason, {
+            status: result?.syncReviewState,
+            errorCode: "identity_review_required",
+          });
+        } else if (result?.status === CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED) {
           // The production writer performs this after verified success. Keep
           // this generation-aware fallback for alternate callers/tests.
           clearCloudBackupDirty("automatic_backup_verified", { expectedRevision: queueGeneration });

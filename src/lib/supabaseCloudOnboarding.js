@@ -830,7 +830,13 @@ export async function runSupabaseCloudOnboardingBackup({
     });
 
     if (!writeResult?.ok) {
-      return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview, writeResult });
+      return buildBackupResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+        preview,
+        writeResult,
+        permanentIdentityConflict: Boolean(writeResult?.permanentIdentityConflict),
+        syncReviewState: writeResult?.syncReviewState || "",
+        error: writeResult?.permanentIdentityConflict ? writeResult?.reason : "",
+      });
     }
 
     const verification = await runSupabaseCloudVerification({

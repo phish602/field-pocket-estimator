@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import CloudBackupInlineStatus from "./CloudBackupInlineStatus";
 import {
   markCloudBackupDirty,
+  markCloudBackupReviewRequired,
   clearCloudBackupDirty,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
@@ -118,6 +119,17 @@ test("renders a calm failed/retry copy", async () => {
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
     "Saved on this device · Sync needs attention"
+  );
+});
+
+test("renders permanent conflict copy without retry wording", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  markCloudBackupReviewRequired("Cloud payment history requires review.", { status: "conflict" });
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Cloud sync conflict"
   );
 });
 

@@ -5,6 +5,7 @@ import {
   clearCloudBackupDirty,
   buildBackupDirtyEvent,
   recordCloudBackupAttemptFailure,
+  markCloudBackupReviewRequired,
   pauseCloudAutoBackup,
   readCloudAutoBackupPauseState,
   isCloudAutoBackupPaused,
@@ -296,5 +297,23 @@ describe("recordCloudBackupAttemptFailure", () => {
     expect(state.lastError).toBe("Network unreachable");
     expect(state.lastAttemptAt).toEqual(expect.any(Number));
     expect(state.nextRetryAt).toBeNull();
+  });
+});
+
+describe("markCloudBackupReviewRequired", () => {
+  test("keeps local work pending but removes a permanent identity conflict from retry scheduling", () => {
+    markCloudBackupDirty({ reason: "invoice_saved", domains: ["invoices"], severity: "money_critical" });
+
+    markCloudBackupReviewRequired("Cloud invoice history requires review.", {
+      status: CLOUD_BACKUP_STATUS.CONFLICT,
+      errorCode: "identity_review_required",
+    });
+
+    expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({
+      pending: true,
+      status: CLOUD_BACKUP_STATUS.CONFLICT,
+      nextRetryAt: null,
+      lastErrorCode: "identity_review_required",
+    }));
   });
 });

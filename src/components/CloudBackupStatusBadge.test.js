@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import CloudBackupStatusBadge from "./CloudBackupStatusBadge";
 import {
   markCloudBackupDirty,
+  markCloudBackupReviewRequired,
   clearCloudBackupDirty,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
@@ -111,6 +112,16 @@ test("shows a calm failed status that reassures local work is safe", async () =>
 
   expect(screen.getByText("Sync needs attention")).toBeInTheDocument();
   expect(screen.getByText("Your changes are safe. EstiPaid is retrying cloud sync.")).toBeInTheDocument();
+});
+
+test("shows review-required conflict copy without promising another automatic retry", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  markCloudBackupReviewRequired("Cloud payment history requires review.", { status: "conflict" });
+
+  await renderAndSettle();
+
+  expect(screen.getByText("Cloud sync conflict")).toBeInTheDocument();
+  expect(screen.getByText("Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically.")).toBeInTheDocument();
 });
 
 test("shows a restored confirmation after a cloud-restore-complete event", async () => {

@@ -113,9 +113,27 @@ function createUpsertChain(response) {
 
 function createDeleteChain(response = { error: null }) {
   const inFn = jest.fn(async () => response);
-  const eq = jest.fn(() => ({ in: inFn }));
+  const secondEq = jest.fn(async () => response);
+  const eq = jest.fn(() => ({ in: inFn, eq: secondEq }));
   const del = jest.fn(() => ({ eq }));
-  return { delete: del, eq, in: inFn };
+  return { delete: del, eq, secondEq, in: inFn };
+}
+
+function createUpdateChain(rows, response = { error: null }) {
+  let payload = null;
+  const secondEq = jest.fn(async (column, value) => {
+    if (column === "id" && payload) {
+      const row = (Array.isArray(rows) ? rows : []).find((entry) => entry?.id === value);
+      if (row) Object.assign(row, payload);
+    }
+    return response;
+  });
+  const eq = jest.fn(() => ({ eq: secondEq }));
+  const update = jest.fn((nextPayload) => {
+    payload = nextPayload;
+    return { eq };
+  });
+  return { update, eq, secondEq };
 }
 
 function createMockClient({
@@ -176,7 +194,14 @@ function createMockClient({
     estimates: createDeleteChain({ error: deleteErrors.estimates || null }),
     estimate_line_items: createDeleteChain({ error: deleteErrors.estimate_line_items || null }),
     invoices: createDeleteChain({ error: deleteErrors.invoices || null }),
+    invoice_line_items: createDeleteChain({ error: deleteErrors.invoice_line_items || null }),
     invoice_payments: createDeleteChain({ error: deleteErrors.invoice_payments || null }),
+  };
+  const updateChains = {
+    customers: createUpdateChain(readRowsByTable.customers),
+    projects: createUpdateChain(readRowsByTable.projects),
+    estimates: createUpdateChain(readRowsByTable.estimates),
+    invoices: createUpdateChain(readRowsByTable.invoices),
   };
 
   const from = jest.fn((table) => {
@@ -199,10 +224,11 @@ function createMockClient({
       }),
       upsert: writeChain.upsert,
       delete: deleteChains[table] ? deleteChains[table].delete : undefined,
+      update: updateChains[table] ? updateChains[table].update : undefined,
     };
   });
 
-  return { from, countChains, writeChains, deleteChains };
+  return { from, countChains, writeChains, deleteChains, updateChains };
 }
 
 describe("supabaseMigrationWriter", () => {
@@ -261,6 +287,56 @@ describe("supabaseMigrationWriter", () => {
     expect(result.ok).toBe(false);
     expect(result.blocked).toBe(true);
     expect(result.reason).toMatch(/locked/i);
+  });
+
+  test("re-keys a proven cross-entity identity match without changing cloud UUIDs and rebuilds only matched children", async () => {
+    const customers = [{ id: "cust_new", name: "Avery Owner", email: "owner@example.com", phone: "555-111-2222" }];
+    const projects = [{ id: "proj_new", customerId: "cust_new", projectName: "Roof Repair", projectNumber: "P-100" }];
+    const estimates = [{ id: "est_new", projectId: "proj_new", customerId: "cust_new", estimateNumber: "EST-100", total: 100, lineItems: [{ description: "Labor", quantity: 1, price: 100, total: 100 }] }];
+    const invoices = [{
+      id: "inv_new", projectId: "proj_new", customerId: "cust_new", sourceEstimateId: "est_new",
+      invoiceNumber: "INV-100", invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100,
+      lineItems: [{ description: "Labor", quantity: 1, price: 100, total: 100 }],
+      payments: [{ id: "pay_1", amount: 0, method: "cash", status: "paid" }],
+    }];
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 },
+      existingCustomerRows: [{ id: "db_cust", legacy_local_id: "cust_old", email: "owner@example.com", phone: "5551112222", display_name: "Avery Owner" }],
+      existingProjectRows: [{ id: "db_proj", legacy_local_id: "proj_old", customer_id: "db_cust", project_number: "P-100" }],
+      existingEstimateRows: [{ id: "db_est", legacy_local_id: "est_old", customer_id: "db_cust", project_id: "db_proj", estimate_number: "EST-100" }],
+      existingInvoiceRows: [{ id: "db_inv", legacy_local_id: "inv_old", customer_id: "db_cust", project_id: "db_proj", estimate_id: "db_est", invoice_number: "INV-100" }],
+      existingPaymentRows: [{ id: "db_pay", legacy_local_id: "pay_1", invoice_id: "db_inv", amount: 0, method: "cash", status: "paid" }],
+      existingEstimateLineItemRows: [{ id: "db_est_line", legacy_local_id: "estimate:est_old:line:0", estimate_id: "db_est" }],
+      existingInvoiceLineItemRows: [{ id: "db_inv_line", legacy_local_id: "invoice:inv_old:line:0", invoice_id: "db_inv" }],
+      customerRows: [{ id: "db_cust", legacy_local_id: "cust_new" }],
+      projectRows: [{ id: "db_proj", legacy_local_id: "proj_new" }],
+      estimateRows: [{ id: "db_est", legacy_local_id: "est_new" }],
+      invoiceRows: [{ id: "db_inv", legacy_local_id: "inv_new" }],
+      paymentRows: [{ id: "db_pay", legacy_local_id: "pay_1" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ customers, projects, estimates, invoices }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.appliedIdentityReconciliations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: "customer", cloudUuid: "db_cust", currentLocalLegacyId: "cust_new" }),
+      expect.objectContaining({ entityType: "invoice", cloudUuid: "db_inv", currentLocalLegacyId: "inv_new" }),
+    ]));
+    expect(mockClient.updateChains.customers.update).toHaveBeenCalledWith({ legacy_local_id: "cust_new" });
+    expect(mockClient.updateChains.invoices.update).toHaveBeenCalledWith({ legacy_local_id: "inv_new" });
+    expect(mockClient.deleteChains.estimate_line_items.secondEq).toHaveBeenCalledWith("estimate_id", "db_est");
+    expect(mockClient.deleteChains.invoice_line_items.secondEq).toHaveBeenCalledWith("invoice_id", "db_inv");
+    expect(mockClient.deleteChains.invoices.delete).not.toHaveBeenCalled();
+    expect(mockClient.deleteChains.invoice_payments.delete).not.toHaveBeenCalled();
   });
 
   test("aborts before the first cloud upsert when ownership changes after snapshot preparation", async () => {
@@ -487,6 +563,40 @@ describe("supabaseMigrationWriter", () => {
     expect(result.replacedCloudOnlyRows).toEqual([
       expect.objectContaining({ table: "estimates", legacyIds: ["cloud_only_est"], cloudRowIds: ["db_est_x"] }),
     ]);
+  });
+
+  test("explicit replace-cloud blocks a cloud-only customer that still owns linked project history", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 2, projects: 1, estimates: 0, invoices: 0, invoicePayments: 0 },
+      existingCustomerRows: [
+        { id: "db_cust_1", legacy_local_id: "cust_1" },
+        { id: "db_cust_remote", legacy_local_id: "cust_remote" },
+      ],
+      existingProjectRows: [{ id: "db_proj_1", legacy_local_id: "proj_1", customer_id: "db_cust_remote" }],
+      existingEstimateRows: [],
+      existingInvoiceRows: [],
+      existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ estimates: [], invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({
+        localCounts: { customers: 1, projects: 1, estimates: 0, estimateLineItems: 0, invoices: 0, invoiceLineItems: 0, invoicePayments: 0 },
+      }),
+      allowCloudOnlyReplacement: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "customers_cloud_only_rows_linked_history" }),
+    ]));
+    expect(mockClient.deleteChains.customers.delete).not.toHaveBeenCalled();
   });
 
   test("replace-cloud option also removes the cloud-only estimate's orphaned line items so verification can actually clear", async () => {

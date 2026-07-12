@@ -452,6 +452,33 @@ export function recordCloudBackupAttemptFailure(errorMessage, { retryDelayMs = 0
   }
 }
 
+// Identity ambiguity and protected remote financial history cannot be fixed
+// by retrying the same upload. Keep the local mutation pending for review,
+// but take it out of the automatic retry loop.
+export function markCloudBackupReviewRequired(reason, {
+  status = CLOUD_BACKUP_STATUS.REMOTE_CHANGED,
+  errorCode = "identity_review_required",
+} = {}) {
+  try {
+    const current = readCloudBackupQueueState();
+    const nextStatus = status === CLOUD_BACKUP_STATUS.CONFLICT
+      ? CLOUD_BACKUP_STATUS.CONFLICT
+      : CLOUD_BACKUP_STATUS.REMOTE_CHANGED;
+    return writeQueueState({
+      ...current,
+      pending: true,
+      status: nextStatus,
+      syncingRevision: null,
+      nextRetryAt: null,
+      lastError: String(reason || "").trim(),
+      lastErrorCode: String(errorCode || "identity_review_required").trim(),
+      updatedAt: nowTs(),
+    });
+  } catch {
+    return readCloudBackupQueueState();
+  }
+}
+
 export function pauseCloudAutoBackup(reason = "manual_pause") {
   return writeAutoBackupPauseSnapshot({
     paused: true,

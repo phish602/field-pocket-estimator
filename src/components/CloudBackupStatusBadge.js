@@ -43,8 +43,16 @@ export default function CloudBackupStatusBadge({ style } = {}) {
         <div style={{ color: "rgba(99,179,237,0.92)" }}>Backing up changes...</div>
       ) : displayState === "failed" ? (
         <>
-          <div style={{ color: "rgba(253,224,71,0.95)" }}>{chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention"}</div>
-          <div style={{ fontWeight: 500, opacity: 0.75 }}>{chipState === "local_cloud_mismatch" ? "Cloud data differs from this device and needs review." : "Your changes are safe. EstiPaid is retrying cloud sync."}</div>
+          <div style={{ color: "rgba(253,224,71,0.95)" }}>
+            {queueState?.status === "conflict" ? "Cloud sync conflict" : chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention"}
+          </div>
+          <div style={{ fontWeight: 500, opacity: 0.75 }}>
+            {queueState?.status === "remote_changed" || queueState?.status === "conflict"
+              ? "Cloud contains records that require review. EstiPaid will not overwrite or delete them automatically."
+              : chipState === "local_cloud_mismatch"
+                ? "Cloud data differs from this device and needs review."
+                : "Your changes are safe. EstiPaid is retrying cloud sync."}
+          </div>
         </>
       ) : displayState === "pending" ? (
         <>

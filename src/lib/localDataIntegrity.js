@@ -810,6 +810,7 @@ export function getCloudDataDecision({
   const queuePending = Boolean(queueState?.pending);
   const queueStatus = asText(queueState?.status).toLowerCase();
   const queueFailed = queueStatus === "failed" || queueStatus === "needs_attention";
+  const queueRequiresReview = queueStatus === "remote_changed" || queueStatus === "conflict";
   // A queued local mutation makes the pre-upload local/cloud difference
   // expected. Do not turn that normal window into a conflict card. Once the
   // worker needs attention, any remaining mismatch is surfaced for review.
@@ -853,7 +854,7 @@ export function getCloudDataDecision({
     screenState = LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP;
   } else if (cloudUnrestorable) {
     screenState = LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE;
-  } else if (mismatch) {
+  } else if (mismatch || queueRequiresReview) {
     // A resolvable data mismatch (verification ran and reported a
     // difference) must win over a generic "needs_attention"/"error"/
     // queue-failed label -- otherwise a clean-local-integrity mismatch (e.g.
@@ -883,7 +884,7 @@ export function getCloudDataDecision({
     // backup is queued -- otherwise the chip stays stuck on "Pending" while
     // Advanced Settings shows a real blocker underneath it.
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
-  } else if (mismatch) {
+  } else if (mismatch || queueRequiresReview) {
     // A resolvable mismatch (verification ran fine, local integrity is
     // clean) must win over a generic queue-failed/needs_attention/error
     // label -- otherwise the chip says "Backup issue" with no path forward
@@ -914,6 +915,7 @@ export function getCloudDataDecision({
     chipState,
     chipAction,
     knownPendingLocalMutation,
+    queueRequiresReview,
     firstBlocker,
     firstSafeRepair,
     mismatch,
