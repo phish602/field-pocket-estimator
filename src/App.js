@@ -34,6 +34,9 @@ import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
+import { getSupabaseClient } from "./lib/supabaseClient";
+import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
+import { loadResolvedSubscriptionPlanState } from "./lib/subscriptionPlanStateRemote";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -2590,6 +2593,10 @@ function EstiPaidAppShell({ auth = null, account = null, deviceLock = null } = {
 
   const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => ROUTES.HOME);
+  const snapshotCompanyId = String(account?.company?.id || "").trim();
+  const [snapshotSubscriptionPlanState, setSnapshotSubscriptionPlanState] = useState(() => (
+    auth?.configured && snapshotCompanyId ? getDefaultSubscriptionPlanState() : loadLocalSubscriptionPlanState()
+  ));
   const [routeEnterSeq, setRouteEnterSeq] = useState(0);
   const [userProfileDirty, setUserProfileDirty] = useState(false);
   const [showUnsavedProfileModal, setShowUnsavedProfileModal] = useState(false);
@@ -2668,6 +2675,26 @@ const [spinTick, setSpinTick] = useState(0);
       companyProfile,
     });
   }, [invoiceHistory, recentProjects, businessPulseCounts]);
+
+  useEffect(() => {
+    let active = true;
+    const loadSnapshotSubscriptionState = async () => {
+      if (!auth?.configured || !snapshotCompanyId) {
+        if (active) setSnapshotSubscriptionPlanState(loadLocalSubscriptionPlanState());
+        return;
+      }
+
+      if (active) setSnapshotSubscriptionPlanState(getDefaultSubscriptionPlanState());
+      const resolved = await loadResolvedSubscriptionPlanState({
+        supabase: getSupabaseClient(),
+        companyId: snapshotCompanyId,
+        allowLocalFallback: process.env.NODE_ENV !== "production",
+      });
+      if (active) setSnapshotSubscriptionPlanState(resolved.state);
+    };
+    loadSnapshotSubscriptionState();
+    return () => { active = false; };
+  }, [activeTab, auth?.configured, snapshotCompanyId]);
 
   const shellT = useCallback((key) => {
     const en = {
@@ -3961,6 +3988,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
       <FinancialSnapshotScreen
+        subscriptionPlanState={snapshotSubscriptionPlanState}
+        onOpenCompanyProfile={() => navigateToCompanyProfile()}
         onCreateInvoiceFromEstimate={(estimate) => {
           const estimateId = String(estimate?.id || "").trim();
           if (!estimateId) return false;

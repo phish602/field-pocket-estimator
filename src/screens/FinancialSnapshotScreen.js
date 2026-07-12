@@ -11,6 +11,7 @@ import {
   readStoredInvoices,
 } from "../utils/invoices";
 import { readStoredProjects } from "../utils/projects";
+import { getEntitlementsFromSubscriptionState } from "../lib/subscriptionPlanState";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -774,7 +775,7 @@ function Bars({ data, height = 196, width = 320 }) {
   );
 }
 
-export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onCreateInvoiceFromEstimate = null }) {
+function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoiceFromEstimate = null }) {
   const [range, setRange] = useState("ytd");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -2297,6 +2298,82 @@ export default function FinancialSnapshotScreen({ lang = "en", spinTick = 0, onC
       </button>
     </section>
   );
+}
+
+function FinancialSnapshotPreview({ onOpenCompanyProfile = null }) {
+  const sampleMetrics = [
+    { label: "Revenue", value: "$42,680", tone: "rgba(74,222,128,0.76)" },
+    { label: "Outstanding", value: "$8,240", tone: "rgba(251,191,36,0.78)" },
+    { label: "Collected", value: "$31,120", tone: "rgba(96,165,250,0.8)" },
+    { label: "Avg margin", value: "31.4%", tone: "rgba(167,139,250,0.78)" },
+  ];
+
+  return (
+    <section className="pe-section pe-snapshot-screen" data-testid="financial-snapshot-locked-preview">
+      <div className="pe-card pe-company-shell pe-snapshot-shell" style={{ position: "relative", overflow: "hidden" }}>
+        <div aria-hidden="true" style={{ filter: "blur(7px)", opacity: 0.58, pointerEvents: "none", userSelect: "none" }}>
+          <div className="pe-company-profile-header pe-snapshot-header" style={{ minHeight: 56 }}>
+            <div className="pe-company-header-title">
+              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="Financial Snapshot">Financial Snapshot</h1>
+            </div>
+            <div style={{ width: 110, height: 34, borderRadius: 8, background: "rgba(255,255,255,0.09)" }} />
+          </div>
+
+          <div className="pe-card pe-card-content ep-glass-tile ep-section-gap-sm" style={{ display: "grid", gap: 14, padding: "14px 14px 16px" }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>Financial cockpit</div>
+              <div style={{ fontSize: 24, fontWeight: 950, color: "rgba(239,245,249,0.98)" }}>Active Exposure</div>
+              <div className="pe-muted" style={{ fontSize: 12.5 }}>Revenue, receivables, and next actions at a glance.</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+              {sampleMetrics.map((metric) => (
+                <div key={metric.label} className="pe-snapshot-kpi" style={{ padding: 12, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, display: "grid", gap: 5 }}>
+                  <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(229,231,235,0.58)" }}>{metric.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 950, color: metric.tone }}>{metric.value}</div>
+                  <div style={{ height: 5, borderRadius: 999, background: metric.tone, width: "68%" }} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginTop: 14 }}>
+            <div className="pe-card pe-card-content ep-glass-tile" style={{ minHeight: 210 }}>
+              <div style={{ fontWeight: 900, marginBottom: 12 }}>Revenue Trend</div>
+              <div style={{ height: 130, display: "flex", alignItems: "end", gap: 10, padding: "0 8px" }}>
+                {[42, 68, 51, 82, 64, 91, 74, 86].map((height, index) => (
+                  <div key={index} style={{ flex: 1, height: `${height}%`, borderRadius: "6px 6px 2px 2px", background: "linear-gradient(180deg, rgba(96,165,250,0.9), rgba(34,197,94,0.6))" }} />
+                ))}
+              </div>
+            </div>
+            <div className="pe-card pe-card-content ep-glass-tile" style={{ minHeight: 210 }}>
+              <div style={{ fontWeight: 900, marginBottom: 12 }}>Receivables Aging</div>
+              {["Current", "1–15 days", "16–30 days"].map((label, index) => (
+                <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderTop: index ? "1px solid rgba(255,255,255,0.08)" : "none" }}>
+                  <span>{label}</span><span>{index === 0 ? "$4,120" : index === 1 ? "$2,880" : "$1,240"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ position: "absolute", inset: 0, zIndex: 2, display: "grid", placeItems: "center", padding: 20, background: "linear-gradient(180deg, rgba(7,10,15,0.12), rgba(7,10,15,0.56))" }}>
+          <div role="region" aria-label="Financial Snapshot upgrade" style={{ width: "min(460px, 100%)", display: "grid", gap: 12, padding: "22px 20px", borderRadius: 16, border: "1px solid rgba(96,165,250,0.38)", background: "rgba(12,18,28,0.94)", boxShadow: "0 22px 54px rgba(0,0,0,0.42)", textAlign: "center" }}>
+            <div style={{ fontSize: 21, fontWeight: 950, color: "rgba(239,245,249,0.98)" }}>Unlock Financial Snapshot</div>
+            <div style={{ fontSize: 13.5, lineHeight: 1.55, color: "rgba(215,225,233,0.78)" }}>Upgrade to Pro or Business to see reporting, payment tracking, and financial insights for your company.</div>
+            <button type="button" className="pe-btn" onClick={() => onOpenCompanyProfile?.()}>Upgrade in Company Profile</button>
+            <div style={{ fontSize: 11.5, color: "rgba(180,196,208,0.62)" }}>Preview shown with sample data.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export default function FinancialSnapshotScreen({ subscriptionPlanState, ...props }) {
+  if (!getEntitlementsFromSubscriptionState(subscriptionPlanState).canUseFinancialSnapshot) {
+    return <FinancialSnapshotPreview onOpenCompanyProfile={props.onOpenCompanyProfile} />;
+  }
+  return <FinancialSnapshotRealScreen {...props} />;
 }
 
 function KPI({ label, value, tone = "ok", note = "", numericValue, formatValue }) {
