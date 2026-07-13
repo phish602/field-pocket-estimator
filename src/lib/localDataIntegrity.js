@@ -816,13 +816,12 @@ export function getCloudDataDecision({
   const queueStatus = asText(queueState?.status).toLowerCase();
   const queueFailed = queueStatus === "failed" || queueStatus === "needs_attention";
   const queueRequiresReview = queueStatus === "remote_changed" || queueStatus === "conflict";
-  // A queued local mutation makes the pre-upload local/cloud difference
-  // expected. Do not turn that normal window into a conflict card. Once the
-  // worker needs attention, any remaining mismatch is surfaced for review.
+  // Keep this as diagnostic context, but do not let ordinary queued work hide
+  // an explicit mismatch reported by onboarding or verification.
   const knownPendingLocalMutation = queuePending && ["pending", "syncing", "offline_pending", "retry_wait"].includes(queueStatus);
   const rawMismatch = onboardingState === "local_cloud_mismatch"
     || Boolean(cloudVerification?.ok && cloudVerification?.allMatched === false);
-  const mismatch = rawMismatch && !knownPendingLocalMutation;
+  const mismatch = rawMismatch;
   // Rows the cloud has that this device does not (e.g. a cloud-only
   // estimate) are not fatal corruption -- they just mean the normal upsert
   // backup can't silently proceed, so the user gets an explicit choice
@@ -882,9 +881,7 @@ export function getCloudDataDecision({
   }
 
   let chipState = null;
-  if (workerRunning) {
-    chipState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
-  } else if (firstBlocker || firstSafeRepair || cloudUnrestorable) {
+  if (firstBlocker || firstSafeRepair || cloudUnrestorable) {
     // A concrete local blocker or repairable issue must surface even if a
     // backup is queued -- otherwise the chip stays stuck on "Pending" while
     // Advanced Settings shows a real blocker underneath it.
@@ -898,6 +895,8 @@ export function getCloudDataDecision({
     chipState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
   } else if (queueFailed || onboardingState === "error" || onboardingState === "needs_attention") {
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
+  } else if (workerRunning) {
+    chipState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
   } else if (queuePending) {
     chipState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (restoreAvailable) {

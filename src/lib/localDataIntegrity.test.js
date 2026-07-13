@@ -265,6 +265,17 @@ describe("localDataIntegrity", () => {
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
   });
 
+  test("mismatch beats ordinary backup pending work", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "pending" },
+      onboardingStatus: { status: "local_cloud_mismatch" },
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+  });
+
   function buildCloudOnlyEstimateVerification() {
     return {
       ok: true,
@@ -417,6 +428,18 @@ describe("localDataIntegrity", () => {
     });
 
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
+  });
+
+  test("an active worker beats ordinary pending work when no blocker or mismatch exists", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "pending" },
+      onboardingStatus: { status: "already_backed_up" },
+      workerRunning: true,
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_RUNNING);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_RUNNING);
   });
 
   test("restore available does not beat backup issue", () => {

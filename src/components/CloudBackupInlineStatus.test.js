@@ -85,11 +85,11 @@ test("renders pending copy", async () => {
   await renderAndSettle();
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Syncing automatically"
+    "Saved on this device · Backup pending"
   );
 });
 
-test("renders running copy", async () => {
+test("renders syncing copy only while the automatic worker is running", async () => {
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
   await renderAndSettle();
@@ -98,7 +98,26 @@ test("renders running copy", async () => {
   });
 
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
-    "Saved on this device · Backing up..."
+    "Saved on this device · Syncing automatically"
+  );
+});
+
+test("returns to pending copy when the automatic worker stops with queued work", async () => {
+  markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
+
+  await renderAndSettle();
+  act(() => {
+    window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
+  });
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Syncing automatically"
+  );
+
+  act(() => {
+    window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: false } }));
+  });
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Backup pending"
   );
 });
 

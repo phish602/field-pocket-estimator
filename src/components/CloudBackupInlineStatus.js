@@ -20,7 +20,7 @@ export default function CloudBackupInlineStatus({ className, style } = {}) {
   const text = restoredRecently
     ? "Cloud backup restored"
     : displayState === "running"
-      ? "Saved on this device · Backing up..."
+      ? "Saved on this device · Syncing automatically"
       : displayState === "failed"
         ? chipState === "local_cloud_mismatch"
           ? queueState?.status === "conflict"
@@ -32,7 +32,7 @@ export default function CloudBackupInlineStatus({ className, style } = {}) {
             ? "Saved on this device · Waiting for connection"
             : queueState?.status === "retry_wait"
               ? "Saved on this device · Retrying cloud sync"
-              : "Saved on this device · Syncing automatically"
+              : "Saved on this device · Backup pending"
           : "Saved on this device · Cloud up to date";
 
   const color = restoredRecently || displayState === "current"
