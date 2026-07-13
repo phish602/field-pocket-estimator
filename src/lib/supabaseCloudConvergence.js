@@ -19,6 +19,8 @@ const FAMILY_KEYS = {
   settings: STORAGE_KEYS.SETTINGS, scopeTemplates: STORAGE_KEYS.SCOPE_TEMPLATES,
 };
 const ENTITY_BINDING_TYPES = { customers: "customer", projects: "project", estimates: "estimate", invoices: "invoice" };
+const CUSTOMER_PROTECTED_FIELDS = new Set(["id", "type", "displayName"]);
+const PROJECT_PROTECTED_FIELDS = new Set(["id", "customerId", "projectNumber"]);
 
 const asText = (value) => String(value == null ? "" : value).trim();
 const asArray = (value) => Array.isArray(value) ? value : [];
@@ -38,6 +40,27 @@ export function normalizeCustomerContract(customer = {}) {
 }
 export function normalizeProjectContract(project = {}) {
   return { id: entityId(project), customerId: asText(project.customerId || project.customer?.id), projectNumber: asText(project.projectNumber), projectName: asText(project.projectName || project.name), siteAddress: asText(project.siteAddress || project.projectAddress), status: asText(project.status || project.projectStatus), notes: asText(project.notes || project.projectNotes), scopeSummary: asText(project.scopeSummary || project.scopeNotes || project.additionalNotes) };
+}
+function normalizeFamilyEntity(family, value) {
+  if (!value) return null;
+  if (family === "customers") return normalizeCustomerContract(value);
+  if (family === "projects") return normalizeProjectContract(value);
+  return value;
+}
+function normalizeFamilyEntityForId(family, value, canonicalId = "") {
+  const normalized = normalizeFamilyEntity(family, value);
+  return normalized && canonicalId ? { ...normalized, id: canonicalId } : normalized;
+}
+function sameFamilyEntity(family, left, right) {
+  return cloudSyncEqual(normalizeFamilyEntity(family, left), normalizeFamilyEntity(family, right));
+}
+function sameFamilyIdentity(family, left, right) {
+  const normalizedLeft = normalizeFamilyEntity(family, left); const normalizedRight = normalizeFamilyEntity(family, right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  return cloudSyncEqual({ ...normalizedLeft, id: "" }, { ...normalizedRight, id: "" });
+}
+function familyProtectedFields(family) {
+  return family === "customers" ? CUSTOMER_PROTECTED_FIELDS : family === "projects" ? PROJECT_PROTECTED_FIELDS : RELATIONSHIP_FIELDS;
 }
 function mapById(rows) {
   const map = new Map(); const duplicateIds = [];
@@ -95,43 +118,105 @@ function changedFields(base, next) {
 export function mergeNonOverlappingCloudMetadata({ baseline, local, cloud, family } = {}) {
   if (!METADATA_MERGE_FAMILIES.has(family) || !baseline || !local || !cloud) return null;
   const localFields = changedFields(baseline, local); const cloudFields = changedFields(baseline, cloud);
-  if (localFields.some((field) => RELATIONSHIP_FIELDS.has(field)) || cloudFields.some((field) => RELATIONSHIP_FIELDS.has(field))) return null;
+  const protectedFields = familyProtectedFields(family);
+  if (localFields.some((field) => protectedFields.has(field)) || cloudFields.some((field) => protectedFields.has(field))) return null;
   if (localFields.some((field) => cloudFields.includes(field))) return null;
   return { ...cloud, ...localFields.reduce((out, field) => ({ ...out, [field]: local[field] }), {}) };
 }
 
-function bindingCodes({ companyId, local, cloudSnapshot }) {
-  const bindings = readCloudAssetBindings(companyId);
-  const codes = [];
-  Object.entries(ENTITY_BINDING_TYPES).forEach(([family, entityType]) => {
-    const cloudUuids = cloudSnapshot?.uuidMaps?.[family] || {};
-    const localIds = new Set(asArray(local[family]).map(entityId));
-    Object.entries(bindings.bindings?.[entityType] || {}).forEach(([legacyId, binding]) => {
-      if (!localIds.has(legacyId)) return;
-      const cloudUuid = cloudUuids[legacyId];
-      if (cloudUuid && asText(binding?.cloudUuid) !== asText(cloudUuid)) codes.push(`${family}:binding_conflict`);
-      if (!cloudUuid && asText(binding?.cloudUuid)) codes.push(`${family}:binding_missing_cloud_row`);
-    });
+function bindingResolutionForFamily({ family, local, cloud, cloudSnapshot, bindings, companyId }) {
+  const entityType = ENTITY_BINDING_TYPES[family];
+  const localMap = mapById(local); const cloudMap = mapById(cloud);
+  const cloudUuids = cloudSnapshot?.uuidMaps?.[family] || {};
+  const bindingTable = bindings.bindings?.[entityType] || {};
+  const byUuid = new Map();
+  Object.entries(cloudUuids).forEach(([legacyId, uuid]) => {
+    if (!cloudMap.map.has(legacyId) || !asText(uuid)) return;
+    const list = byUuid.get(asText(uuid)) || [];
+    list.push(legacyId); byUuid.set(asText(uuid), list);
   });
-  return [...new Set(codes)];
+  const pairs = new Map(); const entries = []; const codes = [];
+  const bindingUuidOwners = new Map();
+  Object.entries(bindingTable).forEach(([legacyId, binding]) => {
+    const uuid = asText(binding?.cloudUuid); if (!uuid) return;
+    const owners = bindingUuidOwners.get(uuid) || []; owners.push(legacyId); bindingUuidOwners.set(uuid, owners);
+  });
+  [...bindingUuidOwners.values()].forEach((owners) => { if (owners.length > 1) codes.push(`${family}:binding_uuid_reused`); });
+
+  localMap.map.forEach((localRow, localId) => {
+    const binding = bindingTable[localId];
+    const directCloud = cloudMap.map.get(localId);
+    const boundUuid = asText(binding?.cloudUuid);
+    if (binding && directCloud && boundUuid && boundUuid !== asText(cloudUuids[localId])) {
+      codes.push(`${family}:binding_conflict`); return;
+    }
+    if (binding && directCloud) { pairs.set(localId, localId); return; }
+    const exactCandidates = [...cloudMap.map.entries()]
+      .filter(([cloudId, cloudRow]) => cloudId !== localId && sameFamilyIdentity(family, localRow, cloudRow))
+      .map(([cloudId]) => cloudId);
+    if (binding) {
+      const boundCandidates = byUuid.get(boundUuid) || [];
+      if (boundCandidates.length > 1) { codes.push(`${family}:binding_ambiguous_candidate`); return; }
+      if (boundCandidates.length === 1) {
+        const cloudId = boundCandidates[0];
+        if (!sameFamilyIdentity(family, localRow, cloudMap.map.get(cloudId))) { codes.push(`${family}:binding_conflict`); return; }
+        pairs.set(localId, cloudId); return;
+      }
+      if (exactCandidates.length !== 1) { codes.push(`${family}:${exactCandidates.length ? "binding_ambiguous_candidate" : "binding_missing_cloud_row"}`); return; }
+      const cloudId = exactCandidates[0]; const cloudUuid = asText(cloudUuids[cloudId]);
+      if (!cloudUuid) { codes.push(`${family}:binding_missing_cloud_row`); return; }
+      pairs.set(localId, cloudId);
+      entries.push({ entityType, localLegacyId: localId, cloudUuid, companyId, source: "cloud_convergence", reconciliation: true });
+      return;
+    }
+    if (directCloud) {
+      pairs.set(localId, localId);
+      if (sameFamilyEntity(family, localRow, directCloud) && asText(cloudUuids[localId])) entries.push({ entityType, localLegacyId: localId, cloudUuid: asText(cloudUuids[localId]), companyId, source: "cloud_convergence" });
+      return;
+    }
+    if (exactCandidates.length > 1) { codes.push(`${family}:binding_ambiguous_candidate`); return; }
+    if (exactCandidates.length === 1) {
+      const cloudId = exactCandidates[0]; const cloudUuid = asText(cloudUuids[cloudId]);
+      if (!cloudUuid) { codes.push(`${family}:binding_missing_cloud_row`); return; }
+      pairs.set(localId, cloudId);
+      entries.push({ entityType, localLegacyId: localId, cloudUuid, companyId, source: "cloud_convergence" });
+    }
+  });
+  const pairedCloudIds = new Set();
+  pairs.forEach((cloudId) => {
+    if (pairedCloudIds.has(cloudId)) codes.push(`${family}:binding_uuid_reused`);
+    pairedCloudIds.add(cloudId);
+  });
+  return { pairs, entries, codes: [...new Set(codes)] };
 }
 
-function operationForFamily(family, local, cloud, baseline, plan) {
+function operationForFamily(family, local, cloud, baseline, plan, bindingPairs = null) {
   const localMap = mapById(local); const cloudMap = mapById(cloud); const baselineMap = mapById(baseline);
   if (localMap.duplicateIds.length || cloudMap.duplicateIds.length || baselineMap.duplicateIds.length) {
     plan.conflicts.push({ family, code: "duplicate_identity", count: 1 }); return;
   }
+  const pairedCloudIds = new Set(bindingPairs ? [...bindingPairs.values()] : []);
   const ids = new Set([...localMap.map.keys(), ...cloudMap.map.keys(), ...baselineMap.map.keys()]);
   ids.forEach((id) => {
-    const normalize = family === "customers" ? normalizeCustomerContract : family === "projects" ? normalizeProjectContract : (value) => value;
-    const classification = classifyCloudConvergenceEntity({ local: localMap.map.has(id) ? normalize(localMap.map.get(id)) : null, cloud: cloudMap.map.has(id) ? normalize(cloudMap.map.get(id)) : null, baseline: baselineMap.map.has(id) ? normalize(baselineMap.map.get(id)) : null });
-    plan.classifications.push({ family, id, classification });
-    if (classification === "cloud_only_addition") plan.additions[family].push(clone(cloudMap.map.get(id)));
+    const cloudId = bindingPairs?.get(id) || id;
+    if (!localMap.map.has(id) && pairedCloudIds.has(id)) return;
+    const localRow = localMap.map.has(id) ? localMap.map.get(id) : null;
+    const cloudRow = cloudMap.map.has(cloudId) ? cloudMap.map.get(cloudId) : null;
+    const baselineRow = baselineMap.map.has(id) ? baselineMap.map.get(id) : (baselineMap.map.has(cloudId) ? baselineMap.map.get(cloudId) : null);
+    let classification = classifyCloudConvergenceEntity({ local: normalizeFamilyEntityForId(family, localRow, id), cloud: normalizeFamilyEntityForId(family, cloudRow, id), baseline: normalizeFamilyEntityForId(family, baselineRow, id) });
+    if (family === "projects" && baselineRow && localRow && cloudRow) {
+      const baseCustomerId = normalizeProjectContract(baselineRow).customerId;
+      if (normalizeProjectContract(localRow).customerId !== baseCustomerId || normalizeProjectContract(cloudRow).customerId !== baseCustomerId) {
+        plan.conflicts.push({ family, id, code: "project_customer_relationship" }); return;
+      }
+    }
+    const classificationEntry = { family, id, classification }; plan.classifications.push(classificationEntry);
+    if (classification === "cloud_only_addition") plan.additions[family].push(clone(cloudRow));
     else if (classification === "local_only_addition" || classification === "local_changed") plan.localOnly = true;
-    else if (classification === "cloud_changed") plan.replacements[family].push(clone(cloudMap.map.get(id)));
+    else if (classification === "cloud_changed") plan.replacements[family].push(clone(cloudRow));
     else if (classification === "both_changed_conflict") {
-      const merged = mergeNonOverlappingCloudMetadata({ baseline: baselineMap.map.get(id), local: localMap.map.get(id), cloud: cloudMap.map.get(id), family });
-      if (merged) plan.replacements[family].push(merged);
+      const merged = mergeNonOverlappingCloudMetadata({ baseline: baselineRow, local: localRow, cloud: cloudRow, family });
+      if (merged) { classificationEntry.classification = "both_changed_non_overlapping"; plan.replacements[family].push(merged); }
       else plan.conflicts.push({ family, id, code: classification });
     } else if (["both_added_different", "local_missing_since_baseline", "cloud_missing_since_baseline"].includes(classification)) {
       plan.conflicts.push({ family, id, code: classification });
@@ -158,20 +243,38 @@ function planSupplemental(local, cloud, baseline, plan) {
   operationForFamily("scopeTemplates", localTemplates, cloudTemplates, baseTemplates, plan);
 }
 
-export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = null, cloudSnapshot = null, companyId = "" } = {}) {
+export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = null, cloudSnapshot = null, companyId = "", storage } = {}) {
   const plan = {
     version: CLOUD_CONVERGENCE_VERSION, safe: false, classifications: [], conflicts: [], additions: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] },
-    replacements: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] }, supplemental: {}, localOnly: false, codes: [],
+    replacements: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] }, supplemental: {}, localOnly: false, codes: [], bindingEntries: [],
   };
-  const cloudRelationshipCodes = relationshipCodes(cloud);
-  if (cloudRelationshipCodes.length) { plan.conflicts.push(...cloudRelationshipCodes.map((code) => ({ family: "relationships", code }))); return plan; }
-  const bindings = cloudSnapshot?.uuidMaps ? bindingCodes({ companyId, local, cloudSnapshot }) : [];
-  if (bindings.length) { plan.conflicts.push(...bindings.map((code) => ({ family: "bindings", code }))); return plan; }
-  ["customers", "projects", "estimates", "invoices"].forEach((family) => operationForFamily(family, asArray(local[family]), asArray(cloud[family]), asArray(baseline?.[family]), plan));
+  const graphCodes = [...relationshipCodes(local), ...relationshipCodes(cloud)];
+  if (graphCodes.length) { plan.conflicts.push(...[...new Set(graphCodes)].map((code) => ({ family: "relationships", code }))); return plan; }
+  const bindings = readCloudAssetBindings(companyId, storage);
+  const customerBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "customers", local: asArray(local.customers), cloud: asArray(cloud.customers), cloudSnapshot, bindings, companyId }) : null;
+  const localCustomerIdByCloudId = new Map(customerBindings ? [...customerBindings.pairs.entries()].map(([localId, cloudId]) => [cloudId, localId]) : []);
+  const cloudProjects = asArray(cloud.projects).map((project) => localCustomerIdByCloudId.has(asText(project?.customerId))
+    ? { ...project, customerId: localCustomerIdByCloudId.get(asText(project.customerId)) }
+    : project);
+  const projectBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "projects", local: asArray(local.projects), cloud: cloudProjects, cloudSnapshot, bindings, companyId }) : null;
+  const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || [])];
+  if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code }))); return plan; }
+  if (customerBindings || projectBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []));
+  operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs);
+  operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs);
+  ["estimates", "invoices"].forEach((family) => operationForFamily(family, asArray(local[family]), asArray(cloud[family]), asArray(baseline?.[family]), plan));
   planSupplemental(local, cloud, baseline, plan);
+  const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects") };
+  const finalRelationshipCodes = relationshipCodes(planned);
+  if (finalRelationshipCodes.length) plan.conflicts.push(...finalRelationshipCodes.map((code) => ({ family: "relationships", code })));
   if (cloudSnapshot?.supplemental?.status === "error" || cloudSnapshot?.supplemental?.status === "invalid") plan.codes.push("supplemental_skipped");
   plan.safe = plan.conflicts.length === 0;
   return plan;
+}
+
+function applyFamilyPlan(rows, plan, family) {
+  const replacementMap = new Map((plan.replacements[family] || []).map((row) => [entityId(row), row]));
+  return asArray(rows).map((row) => replacementMap.get(entityId(row)) || row).concat(plan.additions[family] || []);
 }
 
 function plannedStorageWrites(local, plan) {
@@ -222,15 +325,34 @@ export function recoverInterruptedCloudConvergence({ storage = localStorage } = 
   } catch { return { ok: false, code: "journal_rollback_failed" }; }
 }
 
-function recordConflicts({ storage, companyId, plan, baseline, local, cloud, attemptId }) {
+function familySnapshotForVault(snapshot, family, id) {
+  if (!id || !snapshot || !["customers", "projects"].includes(family)) return null;
+  return normalizeFamilyEntity(family, asArray(snapshot[family]).find((row) => entityId(row) === id) || null);
+}
+function conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId }) {
+  const family = conflict.family; const id = asText(conflict.id);
+  const baselineSnapshot = familySnapshotForVault(baseline, family, id);
+  const localSnapshot = familySnapshotForVault(local, family, id);
+  const cloudSnapshotValue = familySnapshotForVault(cloud, family, id);
+  const cloudUuid = asText(cloudSnapshot?.uuidMaps?.[family]?.[id]);
+  const evidence = { family, id, code: conflict.code, baselineSnapshot, localSnapshot, cloudSnapshot: cloudSnapshotValue, cloudUuid };
+  return {
+    key: `${companyId}:${family}:${id || asText(conflict.code)}:${stableCloudSyncHash(evidence)}`,
+    entityFamily: family, stableIdentity: id || asText(conflict.code), classificationCode: asText(conflict.code),
+    baselineSnapshot, baselineHash: stableCloudSyncHash(baselineSnapshot), localSnapshot, cloudSnapshot: cloudSnapshotValue,
+    cloudUuid: cloudUuid || null, attemptId, detectedAt: now(),
+  };
+}
+function recordConflicts({ storage, companyId, plan, baseline, local, cloud, cloudSnapshot, attemptId }) {
   if (!plan.conflicts.length) return true;
   try {
-    const current = JSON.parse(readRaw(storage, VAULT_KEY) || "{\"entries\":[]}");
+    const current = JSON.parse(readRaw(storage, VAULT_KEY) || "{\"version\":1,\"companyId\":\"\",\"entries\":[]}");
+    if (current.companyId && asText(current.companyId) !== companyId) return false;
     const entries = asArray(current.entries);
     plan.conflicts.forEach((conflict) => {
-      const key = `${companyId}:${conflict.family}:${conflict.id || conflict.code}:${stableCloudSyncHash({ baseline, local: local[conflict.family], cloud: cloud[conflict.family] })}`;
-      if (entries.some((entry) => entry.key === key)) return;
-      entries.push({ key, entityType: conflict.family, entityId: conflict.id || "", code: conflict.code, detectedAt: now(), attemptId, baseline: baseline?.[conflict.family] || null, local: local[conflict.family] || null, cloud: cloud[conflict.family] || null });
+      if (!["customers", "projects"].includes(conflict.family) || !conflict.id) return;
+      const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
+      if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });
     return writeRaw(storage, VAULT_KEY, JSON.stringify({ version: CLOUD_CONVERGENCE_VERSION, companyId, entries }));
   } catch { return false; }
@@ -245,14 +367,25 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
   const snapshot = cloudSnapshot || await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
   if (!snapshot?.ok) return { ok: false, status: "unavailable", code: snapshot?.code || "cloud_snapshot_failed", noWritesPerformed: true };
   const baseline = readCloudSyncBaseline(companyId, storage);
-  const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId });
+  const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId, storage });
   const attemptId = stableCloudSyncHash({ companyId, userId, queueRevision: beforeQueueRevision, local, cloud: snapshot.mapped, baseline: baseline?.version || 0 });
   if (!plan.safe) {
-    recordConflicts({ storage, companyId, plan, baseline: baseline?.snapshots || null, local, cloud: snapshot.mapped, attemptId });
+    const vaultJournal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous: { [VAULT_KEY]: beforeValues[VAULT_KEY] }, plannedFamilies: [VAULT_KEY] };
+    if (!writeJournal(storage, vaultJournal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
+    const recorded = recordConflicts({ storage, companyId, plan, baseline: baseline?.snapshots || null, local, cloud: snapshot.mapped, cloudSnapshot: snapshot, attemptId });
+    if (!recorded) {
+      const rollback = recoverInterruptedCloudConvergence({ storage });
+      return { ok: false, status: rollback.ok ? "rolled_back" : "critical_local_recovery_required", code: rollback.ok ? "conflict_vault_write_failed" : rollback.code, noWritesPerformed: true };
+    }
+    storage.removeItem(JOURNAL_KEY);
     return { ok: false, status: "conflict", code: "data_mismatch", conflictCount: plan.conflicts.length, noWritesPerformed: true };
   }
   const writes = plannedStorageWrites(local, plan);
-  if (Object.keys(writes).length === 0) return { ok: true, status: "matched", noWritesPerformed: true, localOnly: plan.localOnly };
+  const additionBindingEntries = Object.entries(ENTITY_BINDING_TYPES).flatMap(([family, entityType]) => (plan.additions[family] || [])
+    .filter((row) => !["customers", "projects"].includes(family))
+    .map((row) => ({ entityType, localLegacyId: entityId(row), cloudUuid: snapshot.uuidMaps?.[family]?.[entityId(row)], companyId, source: "cloud_convergence" })).filter((entry) => entry.cloudUuid));
+  const bindingEntries = [...plan.bindingEntries, ...additionBindingEntries];
+  if (Object.keys(writes).length === 0 && bindingEntries.length === 0) return { ok: true, status: "matched", noWritesPerformed: true, localOnly: plan.localOnly };
   const access = deviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "cloud_convergence" });
   if (!access?.ok) return { ok: false, status: "blocked", code: "device_not_active", noWritesPerformed: true };
   if (queueRevision() !== beforeQueueRevision || Object.entries(beforeValues).some(([key, value]) => readRaw(storage, key) !== value)) return { ok: false, status: "aborted", code: "local_changed_during_read", noWritesPerformed: true };
@@ -260,9 +393,11 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
   const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId: getOrCreateLocalDeviceId(storage), attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
   if (!writeJournal(storage, journal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
   try {
+    if (bindingEntries.length) {
+      const bindingWrite = setCloudAssetBindingsBatch(companyId, bindingEntries, { storage, reconciliationKeys: new Set(bindingEntries.filter((entry) => entry.reconciliation).map((entry) => `${entry.entityType}:${entry.localLegacyId}`)) });
+      if (!bindingWrite.ok || bindingWrite.skipped?.length) throw new Error("binding_write_failed");
+    }
     for (const [key, value] of Object.entries(writes)) { if (!writeRaw(storage, key, value)) throw new Error("local_write_failed"); }
-    const bindingEntries = Object.entries(ENTITY_BINDING_TYPES).flatMap(([family, entityType]) => (plan.additions[family] || []).map((row) => ({ entityType, localLegacyId: entityId(row), cloudUuid: snapshot.uuidMaps?.[family]?.[entityId(row)], companyId, source: "cloud_convergence" })).filter((entry) => entry.cloudUuid));
-    if (bindingEntries.length && !setCloudAssetBindingsBatch(companyId, bindingEntries, { storage }).ok) throw new Error("binding_write_failed");
     const localVerification = verifyLocalApply({ before: beforeValues, writes, storage, localBefore: local, plan, expectedQueueRevision: beforeQueueRevision });
     if (!localVerification.ok) throw new Error(localVerification.code);
     if (plan.localOnly) markCloudBackupDirty({ reason: "cloud_convergence_local_only", severity: "normal" });
