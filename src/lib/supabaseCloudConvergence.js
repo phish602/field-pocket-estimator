@@ -180,7 +180,7 @@ function estimateEvidenceCode(estimate, evidence) {
   return "";
 }
 
-const METADATA_MERGE_FAMILIES = new Set(["customers", "projects", "scopeTemplates", "companyProfile", "settings"]);
+const METADATA_MERGE_FAMILIES = new Set(["customers", "projects"]);
 const RELATIONSHIP_FIELDS = new Set(["id", "customerId", "projectId", "sourceEstimateId", "invoiceId", "convertedInvoiceId", "convertedInvoiceNumber"]);
 function changedFields(base, next) {
   const keys = new Set([...Object.keys(base || {}), ...Object.keys(next || {})]);
@@ -310,20 +310,20 @@ function operationForFamily(family, local, cloud, baseline, plan, bindingPairs =
   });
 }
 
+function isSupplementalRecord(value) { return value != null && typeof value === "object" && !Array.isArray(value); }
+function supplementalValue(value) { return isSupplementalRecord(value) && Object.keys(value).length === 0 ? null : value || null; }
 function planSupplemental(local, cloud, baseline, plan) {
   ["companyProfile", "settings"].forEach((family) => {
-    const localValue = local[family] || null; const cloudValue = cloud[family] || null; const base = baseline?.[family] || null;
-    if (!cloudValue) return;
+    const localValue = supplementalValue(local[family]); const cloudValue = supplementalValue(cloud[family]); const base = supplementalValue(baseline?.[family]);
+    if (cloudValue && !isSupplementalRecord(cloudValue)) { plan.conflicts.push({ family, id: family, code: "malformed_supplemental_record" }); return; }
     const classification = classifyCloudConvergenceEntity({ local: localValue, cloud: cloudValue, baseline: base });
     plan.classifications.push({ family, id: family, classification });
     if (!localValue && cloudValue) plan.supplemental[family] = clone(cloudValue);
     else if (classification === "cloud_changed") plan.supplemental[family] = clone(cloudValue);
-    else if (classification === "local_changed") plan.localOnly = true;
+    else if (classification === "local_changed" || classification === "local_only_addition") plan.localOnly = true;
     else if (classification === "both_changed_conflict") {
-      const merged = mergeNonOverlappingCloudMetadata({ baseline: base, local: localValue, cloud: cloudValue, family });
-      if (merged) plan.supplemental[family] = merged;
-      else plan.conflicts.push({ family, id: family, code: classification });
-    } else if (classification === "both_added_different") plan.conflicts.push({ family, id: family, code: classification });
+      plan.conflicts.push({ family, id: family, code: classification });
+    } else if (["both_added_different", "local_missing_since_baseline", "cloud_missing_since_baseline"].includes(classification)) plan.conflicts.push({ family, id: family, code: classification });
   });
   const localTemplates = asArray(local.scopeTemplates); const cloudTemplates = asArray(cloud.scopeTemplates); const baseTemplates = asArray(baseline?.scopeTemplates);
   operationForFamily("scopeTemplates", localTemplates, cloudTemplates, baseTemplates, plan);
@@ -434,7 +434,9 @@ export function recoverInterruptedCloudConvergence({ storage = localStorage } = 
 }
 
 function familySnapshotForVault(snapshot, family, id) {
-  if (!id || !snapshot || !["customers", "projects", "estimates", "invoices"].includes(family)) return null;
+  if (!id || !snapshot) return null;
+  if (["companyProfile", "settings"].includes(family)) return isSupplementalRecord(snapshot[family]) ? clone(snapshot[family]) : null;
+  if (!["customers", "projects", "estimates", "invoices", "scopeTemplates"].includes(family)) return null;
   return normalizeFamilyEntity(family, asArray(snapshot[family]).find((row) => entityId(row) === id) || null);
 }
 function conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId }) {
@@ -458,7 +460,7 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
     if (current.companyId && asText(current.companyId) !== companyId) return false;
     const entries = asArray(current.entries);
     plan.conflicts.forEach((conflict) => {
-      if (!["customers", "projects", "estimates", "invoices"].includes(conflict.family) || !conflict.id) return;
+      if (!["customers", "projects", "estimates", "invoices", "scopeTemplates", "companyProfile", "settings"].includes(conflict.family) || !conflict.id) return;
       const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
       if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });

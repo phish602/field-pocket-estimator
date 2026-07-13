@@ -1,4 +1,5 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
@@ -320,6 +321,48 @@ test("invoice baseline disappearance is ineligible and records only a safe confl
   expect(localMissing.safe).toBe(false); expect(cloudMissing.safe).toBe(false);
   expect(localMissing.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "local_missing_since_baseline" })]));
   expect(cloudMissing.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "cloud_missing_since_baseline" })]));
+});
+
+test("company profile converges as one protected record without field merges", () => {
+  const base = { companyName: "A", address: "One" };
+  const cloudOnly = buildCloudConvergencePlan({ local: emptySnapshot(), cloud: { ...emptySnapshot(), companyProfile: base } });
+  expect(cloudOnly.safe).toBe(true); expect(cloudOnly.supplemental.companyProfile).toEqual(base);
+  const localOnly = buildCloudConvergencePlan({ local: { ...emptySnapshot(), companyProfile: base }, cloud: emptySnapshot() });
+  expect(localOnly.safe).toBe(true); expect(localOnly.localOnly).toBe(true);
+  const remote = buildCloudConvergencePlan({ local: { ...emptySnapshot(), companyProfile: base }, cloud: { ...emptySnapshot(), companyProfile: { ...base, address: "Cloud" } }, baseline: { ...emptySnapshot(), companyProfile: base } });
+  expect(remote.safe).toBe(true); expect(remote.supplemental.companyProfile).toEqual({ ...base, address: "Cloud" });
+  const conflict = buildCloudConvergencePlan({ local: { ...emptySnapshot(), companyProfile: { ...base, address: "Local" } }, cloud: { ...emptySnapshot(), companyProfile: { ...base, address: "Cloud" } }, baseline: { ...emptySnapshot(), companyProfile: base } });
+  expect(conflict.safe).toBe(false); expect(conflict.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "companyProfile", code: "both_changed_conflict" })]));
+});
+
+test("settings use only the existing bundle record and block malformed or baseline disappearance", () => {
+  const base = { currency: "USD", taxRate: 5 };
+  const remote = buildCloudConvergencePlan({ local: { ...emptySnapshot(), settings: base }, cloud: { ...emptySnapshot(), settings: { currency: "CAD", taxRate: 5 } }, baseline: { ...emptySnapshot(), settings: base } });
+  expect(remote.safe).toBe(true); expect(remote.supplemental.settings).toEqual({ currency: "CAD", taxRate: 5 });
+  const malformed = buildCloudConvergencePlan({ local: emptySnapshot(), cloud: { ...emptySnapshot(), settings: [] } });
+  expect(malformed.safe).toBe(false); expect(malformed.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "settings", code: "malformed_supplemental_record" })]));
+  const missing = buildCloudConvergencePlan({ local: { ...emptySnapshot(), settings: base }, cloud: emptySnapshot(), baseline: { ...emptySnapshot(), settings: base } });
+  expect(missing.safe).toBe(false); expect(missing.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "settings", code: "cloud_missing_since_baseline" })]));
+});
+
+test("scope templates form a safe disjoint union but never field-merge or accept duplicates", () => {
+  const localTemplate = { id: "local", name: "Local", scopeText: "L" }; const cloudTemplate = { id: "cloud", name: "Cloud", scopeText: "C" };
+  const union = buildCloudConvergencePlan({ local: { ...emptySnapshot(), scopeTemplates: [localTemplate] }, cloud: { ...emptySnapshot(), scopeTemplates: [cloudTemplate] } });
+  expect(union.safe).toBe(true); expect(union.localOnly).toBe(true); expect(union.additions.scopeTemplates).toEqual([cloudTemplate]);
+  const base = { ...emptySnapshot(), scopeTemplates: [localTemplate] };
+  const concurrent = buildCloudConvergencePlan({ local: { ...base, scopeTemplates: [{ ...localTemplate, name: "Local 2" }] }, cloud: { ...base, scopeTemplates: [{ ...localTemplate, name: "Cloud 2" }] }, baseline: base });
+  expect(concurrent.safe).toBe(false); expect(concurrent.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "scopeTemplates", code: "both_changed_conflict" })]));
+  const duplicate = buildCloudConvergencePlan({ local: { ...emptySnapshot(), scopeTemplates: [localTemplate, localTemplate] }, cloud: emptySnapshot() });
+  expect(duplicate.safe).toBe(false); expect(duplicate.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "scopeTemplates", code: "duplicate_identity" })]));
+});
+
+test("supplemental conflicts write a deduplicated vault entry without exposing data in ordinary results", async () => {
+  const profile = { companyName: "Private", address: "Hidden" }; setLocalSnapshot({ ...emptySnapshot(), companyProfile: { ...profile, address: "Local" } }); setBaseline({ companyProfile: profile });
+  expect(buildLocalSnapshotFromStorage(localStorage).snapshot.companyProfile).toEqual({ ...profile, address: "Local" });
+  const snapshot = { ok: true, mapped: { ...emptySnapshot(), companyProfile: { ...profile, address: "Cloud" } }, uuidMaps: {}, supplemental: { status: "available" } };
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, cloudSnapshot: snapshot });
+  expect(result).toEqual(expect.objectContaining({ ok: false, status: "conflict", conflictCount: 1 })); expect(JSON.stringify(result)).not.toContain("Private");
+  const vault = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)); expect(vault.entries).toEqual([expect.objectContaining({ entityFamily: "companyProfile", classificationCode: "both_changed_conflict" })]);
 });
 
 test("safe convergence writes only additive local storage and never calls cloud mutation", async () => {
