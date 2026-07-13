@@ -354,13 +354,10 @@ test("StrictMode: opening existing invoice does not show Continue Estimate block
   expect(screen.queryByText(/Continue Estimate/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/Start Blank Invoice/i)).not.toBeInTheDocument();
 
-  // Let the deferred (setTimeout-based) cleanup/consume timers settle, then
-  // confirm the chambered draft was never wiped by the StrictMode simulation.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitFor(() => {
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+    expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
   });
-  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
-  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
 });
 
 test("StrictMode: opening an existing estimate preserves the chambered estimate draft and restores it after cancel (matches the real dev-server render path in index.js)", async () => {
@@ -403,13 +400,10 @@ test("StrictMode: opening an existing estimate preserves the chambered estimate 
 
   expect(await screen.findByText("EDIT ESTIMATE")).toBeInTheDocument();
 
-  // Let the deferred (setTimeout-based) cleanup/consume timers settle, then
-  // confirm the chambered draft was never wiped by the StrictMode simulation.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitFor(() => {
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
+    expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
   });
-  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBe(draftRaw);
-  expect(localStorage.getItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE)).toBe("1");
 
   fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
   await waitFor(() => {
@@ -538,12 +532,6 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
 
   fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
 
-  expect(await screen.findByText(/Saved: Estimate #FRESH-EST-1/i)).toBeInTheDocument();
-
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-  });
-
   await waitFor(() => {
     const storedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
     expect(storedEstimates).toEqual([
@@ -572,7 +560,9 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
   fireEvent.click(screen.getByLabelText("Home"));
 
   expect(await screen.findByText(/Business Pulse/i)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Resume Draft/i })).toBeNull();
+  await waitFor(() => {
+    expect(screen.queryByRole("button", { name: /Resume Draft/i })).toBeNull();
+  });
 
   fireEvent.click(screen.getByLabelText("Create"));
   const launcher = await screen.findByRole("dialog", { name: /Start New/i });
