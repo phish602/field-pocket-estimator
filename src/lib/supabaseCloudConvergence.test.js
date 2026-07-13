@@ -1,5 +1,5 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
-import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
 const baseLocal = () => ({ customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], invoices: [invoice("invoice-1")], companyProfile: null, settings: null, scopeTemplates: [] });
@@ -266,6 +266,60 @@ test("estimate conversion links require an already-safe matching invoice and del
   expect(linked.safe).toBe(true);
   const gone = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents }, cloud: { ...emptySnapshot(), ...parents, estimates: [estimate("gone")] }, baseline: { ...emptySnapshot(), ...parents, estimates: [estimate("gone")] } });
   expect(gone.safe).toBe(false); expect(gone.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", code: "local_missing_since_baseline" })]));
+});
+
+test("invoice comparison treats the header, line items, and payments as one financial document", () => {
+  const base = invoice("i"); const changed = { ...base, lineItems: [{ ...base.lineItems[0], quantity: 2 }], payments: [{ id: "pay-1", amount: 5, method: "card", status: "paid", paidAt: "2026-01-01" }] };
+  expect(normalizeInvoiceContract(base)).toEqual(expect.objectContaining({ id: "i", customerId: "customer-1", sourceEstimateId: "estimate-1" }));
+  const plan = buildCloudConvergencePlan({ local: { ...baseLocal(), invoices: [base] }, cloud: { ...baseLocal(), invoices: [changed] } });
+  expect(plan.safe).toBe(false); expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "both_added_different" })]));
+});
+
+test("valid cloud-only invoice imports atomically with its line items and payments while local-only invoices remain queued", () => {
+  const local = baseLocal(); const cloudOnly = { ...invoice("cloud-invoice"), lineItems: [{ id: "cloud-line", description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [{ id: "cloud-payment", amount: 10, method: "cash", status: "paid", paidAt: "2026-01-01" }] };
+  const cloud = { ...baseLocal(), invoices: [invoice("invoice-1"), cloudOnly] };
+  const plan = buildCloudConvergencePlan({ local, cloud });
+  expect(plan.safe).toBe(true); expect(plan.additions.invoices).toEqual([cloudOnly]);
+  const disjoint = buildCloudConvergencePlan({ local: { ...local, invoices: [invoice("local-invoice")] }, cloud: { ...cloud, invoices: [cloudOnly] } });
+  expect(disjoint.safe).toBe(true); expect(disjoint.localOnly).toBe(true); expect(disjoint.additions.invoices).toEqual([cloudOnly]);
+});
+
+test.each([
+  ["duplicate invoice number", { invoices: [invoice("a"), { ...invoice("b"), invoiceNumber: "a" }] }, "invoice_duplicate_number"],
+  ["duplicate child identity", { invoices: [{ ...invoice("a"), lineItems: [{ id: "line" }, { id: "line" }] }] }, "invoice_line_item_duplicate_identity"],
+  ["duplicate payment identity", { invoices: [{ ...invoice("a"), payments: [{ id: "pay" }, { id: "pay" }] }] }, "invoice_payment_duplicate_identity"],
+])("invoice %s blocks the whole graph", (_label, partial, code) => {
+  const cloud = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], ...partial };
+  const plan = buildCloudConvergencePlan({ local: emptySnapshot(), cloud });
+  expect(plan.safe).toBe(false); expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+});
+
+test("baseline invoice replaces only a proven remote complete document, preserves local-only changes, and blocks concurrent finances", () => {
+  const base = invoice("invoice-1"); const local = { ...baseLocal(), invoices: [base] }; const remote = { ...base, notes: "cloud", payments: [{ id: "p", amount: 2, method: "cash", status: "paid", paidAt: "2026-01-01" }] };
+  const replaced = buildCloudConvergencePlan({ local, cloud: { ...local, invoices: [remote] }, baseline: local });
+  expect(replaced.safe).toBe(true); expect(replaced.replacements.invoices).toEqual([remote]);
+  const localOnly = buildCloudConvergencePlan({ local: { ...local, invoices: [{ ...base, notes: "local" }] }, cloud: local, baseline: local });
+  expect(localOnly.safe).toBe(true); expect(localOnly.localOnly).toBe(true);
+  const conflict = buildCloudConvergencePlan({ local: { ...local, invoices: [{ ...base, amountPaid: 1 }] }, cloud: { ...local, invoices: [remote] }, baseline: local });
+  expect(conflict.safe).toBe(false); expect(conflict.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "both_changed_conflict" })]));
+});
+
+test("invoice parent, source-estimate, and payment binding contradictions fail closed", () => {
+  const badParent = buildCloudConvergencePlan({ local: emptySnapshot(), cloud: { ...emptySnapshot(), customers: [{ id: "c" }], projects: [{ id: "p", customerId: "c" }], estimates: [{ id: "e", customerId: "c", projectId: "p" }], invoices: [{ ...invoice("i"), customerId: "other", projectId: "p", sourceEstimateId: "e" }] } });
+  expect(badParent.safe).toBe(false); expect(badParent.conflicts[0].code).toBe("invoice_customer_relationship");
+  const local = { ...baseLocal(), invoices: [{ ...invoice("invoice-1"), payments: [{ id: "pay", amount: 1 }] }] }; const cloud = local;
+  setBindings({ invoice_payment: { pay: { cloudUuid: uuid(15), companyId: "company-1" } } });
+  const binding = buildCloudConvergencePlan({ local, cloud, cloudSnapshot: { uuidMaps: { invoices: { "invoice-1": uuid(16) }, invoicePayments: { pay: uuid(17) } } }, companyId: "company-1" });
+  expect(binding.safe).toBe(false); expect(binding.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invoice_payments:binding_conflict" })]));
+});
+
+test("invoice baseline disappearance is ineligible and records only a safe conflict result", () => {
+  const row = invoice("gone"); const base = { ...baseLocal(), invoices: [row] };
+  const localMissing = buildCloudConvergencePlan({ local: { ...base, invoices: [] }, cloud: base, baseline: base });
+  const cloudMissing = buildCloudConvergencePlan({ local: base, cloud: { ...base, invoices: [] }, baseline: base });
+  expect(localMissing.safe).toBe(false); expect(cloudMissing.safe).toBe(false);
+  expect(localMissing.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "local_missing_since_baseline" })]));
+  expect(cloudMissing.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices", code: "cloud_missing_since_baseline" })]));
 });
 
 test("safe convergence writes only additive local storage and never calls cloud mutation", async () => {

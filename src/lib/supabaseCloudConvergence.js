@@ -9,7 +9,7 @@ import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { readCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty } from "./cloudBackupQueue";
 import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
-import { mapLocalEstimateToBackendEstimate } from "../utils/backendDataMapper";
+import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
 import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 
 export const CLOUD_CONVERGENCE_VERSION = 1;
@@ -55,11 +55,22 @@ export function normalizeEstimateContract(estimate = {}) {
     document: { ...clone(estimate), id: "" },
   };
 }
+export function normalizeInvoiceContract(invoice = {}) {
+  return {
+    id: entityId(invoice), customerId: asText(invoice.customerId || invoice.customer?.id), projectId: asText(invoice.projectId || invoice.project?.id),
+    sourceEstimateId: asText(invoice.sourceEstimateId || invoice.sourceEstimateLegacyId || invoice.sourceEstimateSnapshot?.estimateId),
+    persisted: mapLocalInvoiceToBackendInvoice(invoice, {}),
+    // The complete local invoice is retained in the comparison contract so
+    // line items and payments can never be independently merged or patched.
+    document: { ...clone(invoice), id: "" },
+  };
+}
 function normalizeFamilyEntity(family, value) {
   if (!value) return null;
   if (family === "customers") return normalizeCustomerContract(value);
   if (family === "projects") return normalizeProjectContract(value);
   if (family === "estimates") return normalizeEstimateContract(value);
+  if (family === "invoices") return normalizeInvoiceContract(value);
   return value;
 }
 function normalizeFamilyEntityForId(family, value, canonicalId = "") {
@@ -126,7 +137,16 @@ function relationshipCodes(snapshot) {
     if (asText(row?.customerId) && !customers.has(asText(row?.customerId))) codes.push("invoice_customer_relationship");
     if (asText(row?.projectId) && !projects.has(asText(row?.projectId))) codes.push("invoice_project_relationship");
     if (asText(row?.sourceEstimateId) && !estimates.has(asText(row?.sourceEstimateId))) codes.push("invoice_estimate_relationship");
+    const project = asArray(snapshot.projects).find((candidate) => entityId(candidate) === asText(row?.projectId));
+    if (project && asText(row?.customerId) && asText(project?.customerId) !== asText(row?.customerId)) codes.push("invoice_project_customer_relationship");
+    const sourceEstimate = asArray(snapshot.estimates).find((candidate) => entityId(candidate) === asText(row?.sourceEstimateId));
+    if (sourceEstimate && asText(row?.customerId) && asText(sourceEstimate?.customerId) !== asText(row?.customerId)) codes.push("invoice_estimate_customer_relationship");
+    const lineIds = new Set(); const paymentIds = new Set();
+    if (asArray(row?.lineItems).some((child, index) => { const childId = asText(child?.id) || `index:${index}`; if (lineIds.has(childId)) return true; lineIds.add(childId); return false; })) codes.push("invoice_line_item_duplicate_identity");
+    if (asArray(row?.payments).some((payment) => { const paymentId = asText(payment?.id); if (!paymentId || paymentIds.has(paymentId)) return true; paymentIds.add(paymentId); return false; })) codes.push("invoice_payment_duplicate_identity");
   });
+  const invoiceNumbers = new Set();
+  asArray(snapshot.invoices).forEach((row) => { const number = asText(row?.invoiceNumber); if (!number) return; if (invoiceNumbers.has(number)) codes.push("invoice_duplicate_number"); invoiceNumbers.add(number); });
   return [...new Set(codes)];
 }
 
@@ -241,6 +261,21 @@ function bindingResolutionForFamily({ family, local, cloud, cloudSnapshot, bindi
   return { pairs, entries, codes: [...new Set(codes)] };
 }
 
+function paymentBindingResolution({ localInvoices, cloudInvoices, cloudSnapshot, bindings, companyId }) {
+  const table = bindings.bindings?.invoice_payment || {}; const cloudUuids = cloudSnapshot?.uuidMaps?.invoicePayments || {};
+  const codes = []; const entries = []; const uuidOwners = new Map();
+  Object.entries(table).forEach(([legacyId, binding]) => { const uuid = asText(binding?.cloudUuid); if (!uuid) return; const owners = uuidOwners.get(uuid) || []; owners.push(legacyId); uuidOwners.set(uuid, owners); });
+  [...uuidOwners.values()].forEach((owners) => { if (owners.length > 1) codes.push("invoice_payments:binding_uuid_reused"); });
+  const cloudPaymentById = new Map(asArray(cloudInvoices).flatMap((invoice) => asArray(invoice?.payments).map((payment) => [entityId(payment), payment])));
+  const localPaymentById = new Map(asArray(localInvoices).flatMap((invoice) => asArray(invoice?.payments).map((payment) => [entityId(payment), payment])));
+  localPaymentById.forEach((payment, paymentId) => {
+    const cloudPayment = cloudPaymentById.get(paymentId); const binding = table[paymentId]; const cloudUuid = asText(cloudUuids[paymentId]);
+    if (binding && cloudPayment && cloudUuid && asText(binding.cloudUuid) !== cloudUuid) { codes.push("invoice_payments:binding_conflict"); return; }
+    if (!binding && cloudPayment && cloudUuid && cloudSyncEqual(payment, cloudPayment)) entries.push({ entityType: "invoice_payment", localLegacyId: paymentId, cloudUuid, companyId, source: "cloud_convergence" });
+  });
+  return { codes: [...new Set(codes)], entries };
+}
+
 function operationForFamily(family, local, cloud, baseline, plan, bindingPairs = null) {
   const localMap = mapById(local); const cloudMap = mapById(cloud); const baselineMap = mapById(baseline);
   if (localMap.duplicateIds.length || cloudMap.duplicateIds.length || baselineMap.duplicateIds.length) {
@@ -317,19 +352,27 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     ...(localProjectIdByCloudId.has(asText(estimate?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(estimate.projectId)) } : {}),
   }));
   const estimateBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "estimates", local: asArray(local.estimates), cloud: cloudEstimates, cloudSnapshot, bindings, companyId }) : null;
-  const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || [])];
+  const localEstimateIdByCloudId = new Map(estimateBindings ? [...estimateBindings.pairs.entries()].map(([localId, cloudId]) => [cloudId, localId]) : []);
+  const cloudInvoices = asArray(cloud.invoices).map((invoice) => ({ ...invoice,
+    ...(localCustomerIdByCloudId.has(asText(invoice?.customerId)) ? { customerId: localCustomerIdByCloudId.get(asText(invoice.customerId)) } : {}),
+    ...(localProjectIdByCloudId.has(asText(invoice?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(invoice.projectId)) } : {}),
+    ...(localEstimateIdByCloudId.has(asText(invoice?.sourceEstimateId)) ? { sourceEstimateId: localEstimateIdByCloudId.get(asText(invoice.sourceEstimateId)) } : {}),
+  }));
+  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(local.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId }) : null;
+  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(local.invoices), cloudInvoices, cloudSnapshot, bindings, companyId }) : null;
+  const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || []), ...(invoiceBindings?.codes || []), ...(paymentBindings?.codes || [])];
   if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code }))); return plan; }
-  if (customerBindings || projectBindings || estimateBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []));
+  if (customerBindings || projectBindings || estimateBindings || invoiceBindings || paymentBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []), ...(invoiceBindings?.entries || []), ...(paymentBindings?.entries || []));
   operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs);
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs);
   operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs);
-  operationForFamily("invoices", asArray(local.invoices), asArray(cloud.invoices), asArray(baseline?.invoices), plan);
+  operationForFamily("invoices", asArray(local.invoices), cloudInvoices, asArray(baseline?.invoices), plan, invoiceBindings?.pairs);
   [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
     const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);
     if (code) plan.conflicts.push({ family: "estimates", id: entityId(estimate), code });
   });
   planSupplemental(local, cloud, baseline, plan);
-  const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects"), estimates: applyFamilyPlan(local.estimates, plan, "estimates") };
+  const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects"), estimates: applyFamilyPlan(local.estimates, plan, "estimates"), invoices: applyFamilyPlan(local.invoices, plan, "invoices") };
   const finalRelationshipCodes = relationshipCodes(planned);
   if (finalRelationshipCodes.length) plan.conflicts.push(...finalRelationshipCodes.map((code) => ({ family: "relationships", code })));
   if (cloudSnapshot?.supplemental?.status === "error" || cloudSnapshot?.supplemental?.status === "invalid") plan.codes.push("supplemental_skipped");
@@ -391,7 +434,7 @@ export function recoverInterruptedCloudConvergence({ storage = localStorage } = 
 }
 
 function familySnapshotForVault(snapshot, family, id) {
-  if (!id || !snapshot || !["customers", "projects", "estimates"].includes(family)) return null;
+  if (!id || !snapshot || !["customers", "projects", "estimates", "invoices"].includes(family)) return null;
   return normalizeFamilyEntity(family, asArray(snapshot[family]).find((row) => entityId(row) === id) || null);
 }
 function conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId }) {
@@ -415,7 +458,7 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
     if (current.companyId && asText(current.companyId) !== companyId) return false;
     const entries = asArray(current.entries);
     plan.conflicts.forEach((conflict) => {
-      if (!["customers", "projects", "estimates"].includes(conflict.family) || !conflict.id) return;
+      if (!["customers", "projects", "estimates", "invoices"].includes(conflict.family) || !conflict.id) return;
       const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
       if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });
