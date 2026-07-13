@@ -1,5 +1,5 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
-import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
 const baseLocal = () => ({ customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], invoices: [invoice("invoice-1")], companyProfile: null, settings: null, scopeTemplates: [] });
@@ -19,6 +19,10 @@ function setBindings(bindings) {
 }
 function setBaseline(snapshot) {
   localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE, JSON.stringify({ version: 1, companyId: "company-1", snapshots: { ...emptySnapshot(), ...snapshot } }));
+}
+const estimate = (id = "estimate-1", overrides = {}) => ({ id, customerId: "customer-1", projectId: "project-1", estimateNumber: id, status: "draft", total: 100, notes: "", terms: "", labor: { lines: [] }, materials: { items: [] }, ...overrides });
+function estimateEvidence(row, overrides = {}) {
+  return { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: row.id, estimate: row }, persisted: { legacy_local_id: row.id, customer_legacy_local_id: row.customerId, project_legacy_local_id: row.projectId }, lineItems: [], ...overrides };
 }
 
 beforeEach(() => localStorage.clear());
@@ -214,6 +218,54 @@ test("vault write failure restores the exact prior vault string and preserves cu
   expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "conflict_vault_write_failed" }));
   expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe(priorVault);
   expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBe("[]"); expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBe("[]");
+});
+
+test("estimate comparison treats the complete persisted document as money-critical", () => {
+  const base = estimate("e", { labor: { lines: [{ id: "l", hours: 1, rate: 5 }] } });
+  expect(normalizeEstimateContract(base)).toEqual(expect.objectContaining({ id: "e", customerId: "customer-1", projectId: "project-1" }));
+  const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+  const changed = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents, estimates: [base] }, cloud: { ...emptySnapshot(), ...parents, estimates: [{ ...base, labor: { lines: [{ id: "l", hours: 2, rate: 5 }] } }] } });
+  expect(changed.safe).toBe(false); expect(changed.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", code: "both_added_different" })]));
+});
+
+test("valid cloud-only estimate imports only with parents and exact restore-payload evidence", () => {
+  const row = estimate("cloud-estimate"); const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+  const plan = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents }, cloud: { ...emptySnapshot(), ...parents, estimates: [row] }, cloudSnapshot: { uuidMaps: { estimates: { "cloud-estimate": uuid(11) } }, estimateEvidence: { "cloud-estimate": estimateEvidence(row) } }, companyId: "company-1" });
+  expect(plan.safe).toBe(true); expect(plan.additions.estimates).toEqual([row]);
+});
+
+test.each([
+  ["missing payload", null, "estimate_restore_payload_missing"],
+  ["invalid payload", { restorePayload: { schema: "bad", version: 1, legacyLocalId: "cloud-estimate", estimate: estimate("cloud-estimate") } }, "estimate_restore_payload_invalid"],
+  ["child mismatch", { lineItems: [{ legacy_local_id: "unexpected" }] }, "estimate_line_item_mismatch"],
+])("estimate %s blocks with no partial import", (_label, evidenceOverride, code) => {
+  const row = estimate("cloud-estimate"); const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+  const evidence = evidenceOverride === null ? null : { ...estimateEvidence(row), ...evidenceOverride };
+  const plan = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents }, cloud: { ...emptySnapshot(), ...parents, estimates: [row] }, cloudSnapshot: { uuidMaps: { estimates: { "cloud-estimate": uuid(12) } }, estimateEvidence: { "cloud-estimate": evidence } }, companyId: "company-1" });
+  expect(plan.safe).toBe(false); expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", id: "cloud-estimate", code })]));
+});
+
+test("baseline estimate supports remote replacement, local-only queueing, same final state, and blocks concurrent differences", () => {
+  const base = estimate("e"); const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] }; const baseline = { ...emptySnapshot(), ...parents, estimates: [base] };
+  const remoteRow = estimate("e", { notes: "cloud" }); const snapshot = { uuidMaps: { estimates: { e: uuid(13) } }, estimateEvidence: { e: estimateEvidence(remoteRow) } };
+  const remote = buildCloudConvergencePlan({ local: baseline, cloud: { ...baseline, estimates: [remoteRow] }, baseline, cloudSnapshot: snapshot, companyId: "company-1" });
+  expect(remote.safe).toBe(true); expect(remote.replacements.estimates).toEqual([remoteRow]);
+  const localOnly = buildCloudConvergencePlan({ local: { ...baseline, estimates: [estimate("e", { notes: "local" })] }, cloud: baseline, baseline });
+  expect(localOnly.safe).toBe(true); expect(localOnly.localOnly).toBe(true);
+  const same = buildCloudConvergencePlan({ local: { ...baseline, estimates: [remoteRow] }, cloud: { ...baseline, estimates: [remoteRow] }, baseline });
+  expect(same.classifications).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", classification: "both_changed_same" })]));
+  const conflict = buildCloudConvergencePlan({ local: { ...baseline, estimates: [estimate("e", { notes: "local" })] }, cloud: { ...baseline, estimates: [remoteRow] }, baseline, cloudSnapshot: snapshot, companyId: "company-1" });
+  expect(conflict.safe).toBe(false); expect(conflict.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", code: "both_changed_conflict" })]));
+});
+
+test("estimate conversion links require an already-safe matching invoice and deletion ambiguity remains ineligible", () => {
+  const row = estimate("e", { convertedInvoiceId: "invoice-1" }); const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+  const missing = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents }, cloud: { ...emptySnapshot(), ...parents, estimates: [row] }, cloudSnapshot: { estimateEvidence: { e: estimateEvidence(row) } } });
+  expect(missing.safe).toBe(false); expect(missing.conflicts[0].code).toBe("estimate_converted_invoice_relationship");
+  const linked = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents, invoices: [{ id: "invoice-1", sourceEstimateId: "e" }] }, cloud: { ...emptySnapshot(), ...parents, invoices: [{ id: "invoice-1", sourceEstimateId: "e" }], estimates: [row] }, cloudSnapshot: { uuidMaps: { estimates: { e: uuid(14) } }, estimateEvidence: { e: estimateEvidence(row) } }, companyId: "company-1" });
+  expect(linked.safe).toBe(true);
+  const gone = buildCloudConvergencePlan({ local: { ...emptySnapshot(), ...parents }, cloud: { ...emptySnapshot(), ...parents, estimates: [estimate("gone")] }, baseline: { ...emptySnapshot(), ...parents, estimates: [estimate("gone")] } });
+  expect(gone.safe).toBe(false); expect(gone.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", code: "local_missing_since_baseline" })]));
 });
 
 test("safe convergence writes only additive local storage and never calls cloud mutation", async () => {

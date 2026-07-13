@@ -9,6 +9,8 @@ import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { readCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty } from "./cloudBackupQueue";
 import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { mapLocalEstimateToBackendEstimate } from "../utils/backendDataMapper";
+import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 
 export const CLOUD_CONVERGENCE_VERSION = 1;
 const JOURNAL_KEY = STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL;
@@ -41,10 +43,23 @@ export function normalizeCustomerContract(customer = {}) {
 export function normalizeProjectContract(project = {}) {
   return { id: entityId(project), customerId: asText(project.customerId || project.customer?.id), projectNumber: asText(project.projectNumber), projectName: asText(project.projectName || project.name), siteAddress: asText(project.siteAddress || project.projectAddress), status: asText(project.status || project.projectStatus), notes: asText(project.notes || project.projectNotes), scopeSummary: asText(project.scopeSummary || project.scopeNotes || project.additionalNotes) };
 }
+export function normalizeEstimateContract(estimate = {}) {
+  const mapped = mapLocalEstimateToBackendEstimate(estimate, {});
+  return {
+    id: entityId(estimate), customerId: asText(estimate.customerId || estimate.customer?.id), projectId: asText(estimate.projectId || estimate.project?.id),
+    convertedInvoiceId: asText(estimate.invoiceId || estimate.convertedInvoiceId || estimate.sourceInvoiceId || estimate.invoice?.id),
+    persisted: mapped,
+    // An estimate is a complete money-critical document. The payload object is
+    // part of its contract; this catches estimator inputs the flattened row
+    // cannot represent without inventing math during restore.
+    document: { ...clone(estimate), id: "" },
+  };
+}
 function normalizeFamilyEntity(family, value) {
   if (!value) return null;
   if (family === "customers") return normalizeCustomerContract(value);
   if (family === "projects") return normalizeProjectContract(value);
+  if (family === "estimates") return normalizeEstimateContract(value);
   return value;
 }
 function normalizeFamilyEntityForId(family, value, canonicalId = "") {
@@ -100,6 +115,12 @@ function relationshipCodes(snapshot) {
   asArray(snapshot.estimates).forEach((row) => {
     if (asText(row?.customerId) && !customers.has(asText(row?.customerId))) codes.push("estimate_customer_relationship");
     if (asText(row?.projectId) && !projects.has(asText(row?.projectId))) codes.push("estimate_project_relationship");
+    const invoiceId = asText(row?.invoiceId || row?.convertedInvoiceId || row?.sourceInvoiceId || row?.invoice?.id);
+    if (invoiceId) {
+      const invoice = asArray(snapshot.invoices).find((candidate) => entityId(candidate) === invoiceId);
+      if (!invoice) codes.push("estimate_converted_invoice_relationship");
+      else if (asText(invoice?.sourceEstimateId) !== entityId(row)) codes.push("estimate_converted_invoice_conflict");
+    }
   });
   asArray(snapshot.invoices).forEach((row) => {
     if (asText(row?.customerId) && !customers.has(asText(row?.customerId))) codes.push("invoice_customer_relationship");
@@ -107,6 +128,36 @@ function relationshipCodes(snapshot) {
     if (asText(row?.sourceEstimateId) && !estimates.has(asText(row?.sourceEstimateId))) codes.push("invoice_estimate_relationship");
   });
   return [...new Set(codes)];
+}
+
+function normalizedChildValue(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "object" && Number.isFinite(Number(value))) return Number(value);
+  if (Array.isArray(value)) return value.map(normalizedChildValue);
+  if (typeof value === "object") return Object.keys(value).sort().reduce((out, key) => ({ ...out, [key]: normalizedChildValue(value[key]) }), {});
+  return value;
+}
+function estimateEvidenceCode(estimate, evidence) {
+  const id = entityId(estimate); const payload = evidence?.restorePayload;
+  if (!evidence || !payload) return "estimate_restore_payload_missing";
+  if (asText(payload.schema) !== ESTIMATE_RESTORE_PAYLOAD_SCHEMA || String(payload.version) !== String(ESTIMATE_RESTORE_PAYLOAD_VERSION)) return "estimate_restore_payload_invalid";
+  if (asText(payload.legacyLocalId) !== id || entityId(payload.estimate) !== id || !cloudSyncEqual(payload.estimate, estimate)) return "estimate_restore_payload_identity_mismatch";
+  const persisted = evidence.persisted || {};
+  const mapped = mapLocalEstimateToBackendEstimate(payload.estimate, {});
+  const persistedFields = ["legacy_local_id", "customer_legacy_local_id", "project_legacy_local_id", "estimate_number", "status", "total_amount", "approved_total", "notes", "terms", "converted_invoice_legacy_local_id"];
+  if (persistedFields.some((field) => persisted[field] !== undefined && !cloudSyncEqual(persisted[field], mapped[field]))) return "estimate_restore_payload_persisted_mismatch";
+  const expected = asArray(mapped.line_items).map((item, index) => ({
+    legacy_local_id: `estimate:${id}:line:${Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index}`,
+    sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
+    description: item?.description ?? null, quantity: item?.quantity ?? null, unit: item?.unit ?? null,
+    unit_price: item?.unit_price ?? null, total_price: item?.total ?? null, metadata: item?.metadata ?? null, line_role: item?.kind ?? null,
+  }));
+  const children = asArray(evidence.lineItems); const childById = new Map();
+  if (children.some((child) => { const childId = asText(child?.legacy_local_id); if (!childId || childById.has(childId)) return true; childById.set(childId, child); return false; })) return "estimate_line_item_duplicate_identity";
+  if (expected.length !== children.length) return "estimate_line_item_mismatch";
+  const fields = ["sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata", "line_role"];
+  if (expected.some((row) => !childById.has(row.legacy_local_id) || fields.some((field) => !cloudSyncEqual(normalizedChildValue(row[field]), normalizedChildValue(childById.get(row.legacy_local_id)?.[field]))))) return "estimate_line_item_mismatch";
+  return "";
 }
 
 const METADATA_MERGE_FAMILIES = new Set(["customers", "projects", "scopeTemplates", "companyProfile", "settings"]);
@@ -248,7 +299,10 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     version: CLOUD_CONVERGENCE_VERSION, safe: false, classifications: [], conflicts: [], additions: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] },
     replacements: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] }, supplemental: {}, localOnly: false, codes: [], bindingEntries: [],
   };
-  const graphCodes = [...relationshipCodes(local), ...relationshipCodes(cloud)];
+  // An already-local converted invoice may legitimately point at the
+  // cloud-only estimate being added in this atomic plan. Final graph
+  // validation below still rejects it unless that estimate is actually safe.
+  const graphCodes = [...relationshipCodes(local).filter((code) => code !== "invoice_estimate_relationship"), ...relationshipCodes(cloud)];
   if (graphCodes.length) { plan.conflicts.push(...[...new Set(graphCodes)].map((code) => ({ family: "relationships", code }))); return plan; }
   const bindings = readCloudAssetBindings(companyId, storage);
   const customerBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "customers", local: asArray(local.customers), cloud: asArray(cloud.customers), cloudSnapshot, bindings, companyId }) : null;
@@ -257,14 +311,25 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     ? { ...project, customerId: localCustomerIdByCloudId.get(asText(project.customerId)) }
     : project);
   const projectBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "projects", local: asArray(local.projects), cloud: cloudProjects, cloudSnapshot, bindings, companyId }) : null;
-  const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || [])];
+  const localProjectIdByCloudId = new Map(projectBindings ? [...projectBindings.pairs.entries()].map(([localId, cloudId]) => [cloudId, localId]) : []);
+  const cloudEstimates = asArray(cloud.estimates).map((estimate) => ({ ...estimate,
+    ...(localCustomerIdByCloudId.has(asText(estimate?.customerId)) ? { customerId: localCustomerIdByCloudId.get(asText(estimate.customerId)) } : {}),
+    ...(localProjectIdByCloudId.has(asText(estimate?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(estimate.projectId)) } : {}),
+  }));
+  const estimateBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "estimates", local: asArray(local.estimates), cloud: cloudEstimates, cloudSnapshot, bindings, companyId }) : null;
+  const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || [])];
   if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code }))); return plan; }
-  if (customerBindings || projectBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []));
+  if (customerBindings || projectBindings || estimateBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []));
   operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs);
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs);
-  ["estimates", "invoices"].forEach((family) => operationForFamily(family, asArray(local[family]), asArray(cloud[family]), asArray(baseline?.[family]), plan));
+  operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs);
+  operationForFamily("invoices", asArray(local.invoices), asArray(cloud.invoices), asArray(baseline?.invoices), plan);
+  [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
+    const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);
+    if (code) plan.conflicts.push({ family: "estimates", id: entityId(estimate), code });
+  });
   planSupplemental(local, cloud, baseline, plan);
-  const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects") };
+  const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects"), estimates: applyFamilyPlan(local.estimates, plan, "estimates") };
   const finalRelationshipCodes = relationshipCodes(planned);
   if (finalRelationshipCodes.length) plan.conflicts.push(...finalRelationshipCodes.map((code) => ({ family: "relationships", code })));
   if (cloudSnapshot?.supplemental?.status === "error" || cloudSnapshot?.supplemental?.status === "invalid") plan.codes.push("supplemental_skipped");
@@ -326,7 +391,7 @@ export function recoverInterruptedCloudConvergence({ storage = localStorage } = 
 }
 
 function familySnapshotForVault(snapshot, family, id) {
-  if (!id || !snapshot || !["customers", "projects"].includes(family)) return null;
+  if (!id || !snapshot || !["customers", "projects", "estimates"].includes(family)) return null;
   return normalizeFamilyEntity(family, asArray(snapshot[family]).find((row) => entityId(row) === id) || null);
 }
 function conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId }) {
@@ -350,7 +415,7 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
     if (current.companyId && asText(current.companyId) !== companyId) return false;
     const entries = asArray(current.entries);
     plan.conflicts.forEach((conflict) => {
-      if (!["customers", "projects"].includes(conflict.family) || !conflict.id) return;
+      if (!["customers", "projects", "estimates"].includes(conflict.family) || !conflict.id) return;
       const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
       if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });

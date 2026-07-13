@@ -711,6 +711,28 @@ export async function readSupabaseCloudConvergenceSnapshot({ configured = false,
     invoices: Object.fromEntries(asArray(rowsByTable.invoices).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
     invoicePayments: Object.fromEntries(asArray(rowsByTable.invoice_payments).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
   };
+  // Convergence needs more than the restored estimate object: it must prove
+  // that the persisted row and flattened children still agree with the exact
+  // restore payload before an automatic local import/replacement is allowed.
+  const customerLegacyByUuid = buildLegacyIdMap(rowsByTable.customers);
+  const projectLegacyByUuid = buildLegacyIdMap(rowsByTable.projects);
+  const estimateEvidence = Object.fromEntries(asArray(rowsByTable.estimates).map((row) => {
+    const legacyId = asText(row?.legacy_local_id);
+    const estimateUuid = asText(row?.id);
+    return [legacyId, {
+      restorePayload: row?.restore_payload || null,
+      persisted: {
+        legacy_local_id: legacyId,
+        customer_legacy_local_id: customerLegacyByUuid.get(asText(row?.customer_id)) || "",
+        project_legacy_local_id: projectLegacyByUuid.get(asText(row?.project_id)) || "",
+        estimate_number: row?.estimate_number ?? null, status: row?.status ?? null,
+        total_amount: row?.total_amount ?? null, approved_total: row?.approved_total ?? null,
+        notes: row?.notes ?? null, terms: row?.terms ?? null,
+        converted_invoice_legacy_local_id: row?.converted_invoice_legacy_id ?? null,
+      },
+      lineItems: asArray(rowsByTable.estimate_line_items).filter((child) => asText(child?.estimate_id) === estimateUuid),
+    }];
+  }));
   return {
     ok: true,
     status: "ready",
@@ -718,6 +740,7 @@ export async function readSupabaseCloudConvergenceSnapshot({ configured = false,
     mapped,
     raw: rowsByTable,
     uuidMaps,
+    estimateEvidence,
     supplemental,
     counts: Object.fromEntries(ALL_CLOUD_TABLES.map((table) => [table, asArray(rowsByTable[table]).length])),
     restorePayloadCoverage: { valid: true, required: asArray(rowsByTable.estimates).length },
