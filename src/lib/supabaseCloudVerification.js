@@ -16,13 +16,9 @@ const ID_COMPARABLE_TABLES = [
   ["invoice_payments", "invoicePayments"],
 ];
 
-// Line-item legacy ids are generated deterministically (parent local id +
-// stable index) only inside the migration writer. That generation logic is
-// intentionally not duplicated here, so these two tables are verified by
-// count only, which is still enough to catch missing/extra rows.
-const COUNT_ONLY_TABLES = [
-  ["estimate_line_items", "estimateLineItems"],
-  ["invoice_line_items", "invoiceLineItems"],
+const CHILD_TABLES = [
+  ["estimate_line_items", "estimateLineItems", "estimates", "estimate_id", "estimates", true],
+  ["invoice_line_items", "invoiceLineItems", "invoices", "invoice_id", "invoices", false],
 ];
 
 function asText(value) {
@@ -71,6 +67,48 @@ function normalizeLegacyIds(values) {
       .map((value) => asText(value))
       .filter(Boolean)
   )].sort();
+}
+
+function normalizedChildValue(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "object" && Number.isFinite(Number(value))) return Number(value);
+  if (Array.isArray(value)) return value.map(normalizedChildValue);
+  if (typeof value === "object") return Object.keys(value).sort().reduce((out, key) => ({ ...out, [key]: normalizedChildValue(value[key]) }), {});
+  return value;
+}
+
+function sameChildContract(expected, cloud, { parentColumn, includeLineRole }) {
+  const fields = [parentColumn, "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"];
+  if (includeLineRole) fields.push("line_role");
+  return JSON.stringify(fields.map((field) => normalizedChildValue(expected?.[field])))
+    === JSON.stringify(fields.map((field) => normalizedChildValue(cloud?.[field])));
+}
+
+function expectedChildren(draft, parentKey, parentCloudRows, parentColumn, prefix, includeLineRole) {
+  const parentCloudId = new Map((Array.isArray(parentCloudRows) ? parentCloudRows : []).map((row) => [asText(row?.legacy_local_id), asText(row?.id)]));
+  const out = []; const duplicateIds = [];
+  (Array.isArray(draft?.[parentKey]) ? draft[parentKey] : []).forEach((parent) => {
+    const parentLegacyId = asText(parent?.legacy_local_id);
+    const parentId = parentCloudId.get(parentLegacyId) || "";
+    (Array.isArray(parent?.line_items) ? parent.line_items : []).forEach((item, index) => {
+      const sortOrder = Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index;
+      const legacyId = `${prefix}:${parentLegacyId}:line:${sortOrder}`;
+      if (out.some((row) => row.legacy_local_id === legacyId)) duplicateIds.push(legacyId);
+      out.push({
+        legacy_local_id: legacyId,
+        [parentColumn]: parentId,
+        sort_order: sortOrder,
+        description: item?.description ?? null,
+        quantity: item?.quantity ?? null,
+        unit: item?.unit ?? null,
+        unit_price: item?.unit_price ?? null,
+        total_price: item?.total ?? null,
+        metadata: item?.metadata ?? null,
+        ...(includeLineRole ? { line_role: item?.kind ?? null } : {}),
+      });
+    });
+  });
+  return { rows: out, duplicateIds };
 }
 
 function hasValidEstimateRestorePayload(row) {
@@ -346,10 +384,8 @@ export async function runSupabaseCloudVerification({
     }
   }
 
-  for (const [table, key] of COUNT_ONLY_TABLES) {
-    const columns = table === "estimate_line_items"
-      ? "id, legacy_local_id, estimate_id"
-      : "id, legacy_local_id";
+  for (const [table, key, parentTable, parentColumn, parentKey, includeLineRole] of CHILD_TABLES) {
+    const columns = `id, legacy_local_id, ${parentColumn}, sort_order, description, quantity, unit, unit_price, total_price, metadata${includeLineRole ? ", line_role" : ""}`;
     const { rows, error } = await readCloudRows(client, table, companyId, columns);
     if (error) {
       tableResults.push(buildUnavailableTableResult(table, localCounts[key], error));
@@ -363,15 +399,36 @@ export async function runSupabaseCloudVerification({
       && Number(rows.length) >= Number(localCounts[key])
       && (Array.isArray(rows) ? rows : []).filter((row) => preservedSkippedCloudEstimateRowIds.has(asText(row?.estimate_id))).length
         === Number(rows.length) - Number(localCounts[key]);
-    const matched = localCounts[key] === rows.length || preservedEstimateLineItemsMatched;
+    const comparableRows = preservedEstimateLineItemsMatched
+      ? rows.filter((row) => !preservedSkippedCloudEstimateRowIds.has(asText(row?.[parentColumn])))
+      : rows;
+    const expected = expectedChildren(draft, parentKey, cloudRowsByTable[parentTable], parentColumn, parentKey === "estimates" ? "estimate" : "invoice", includeLineRole);
+    const cloudByLegacyId = new Map();
+    const duplicateCloudIds = [];
+    comparableRows.forEach((row) => {
+      const legacyId = asText(row?.legacy_local_id);
+      if (!legacyId || cloudByLegacyId.has(legacyId)) duplicateCloudIds.push(legacyId || "missing");
+      else cloudByLegacyId.set(legacyId, row);
+    });
+    const expectedByLegacyId = new Map(expected.rows.map((row) => [row.legacy_local_id, row]));
+    const missing = expected.rows.filter((row) => !cloudByLegacyId.has(row.legacy_local_id)).map((row) => row.legacy_local_id).sort();
+    const extra = comparableRows.filter((row) => !expectedByLegacyId.has(asText(row?.legacy_local_id))).map((row) => asText(row?.legacy_local_id)).filter(Boolean).sort();
+    const semanticMismatchCount = expected.rows.filter((row) => {
+      const cloud = cloudByLegacyId.get(row.legacy_local_id);
+      return cloud && !sameChildContract(row, cloud, { parentColumn, includeLineRole });
+    }).length;
+    const matched = (localCounts[key] === comparableRows.length || preservedEstimateLineItemsMatched)
+      && expected.duplicateIds.length === 0 && duplicateCloudIds.length === 0 && missing.length === 0 && extra.length === 0 && semanticMismatchCount === 0;
     tableResults.push({
       table,
       localCount: localCounts[key],
       cloudCount: rows.length,
       status: matched ? "matched" : "mismatch",
-      missingLegacyIds: [],
-      extraLegacyIds: [],
-      countOnly: true,
+      missingLegacyIds: missing,
+      extraLegacyIds: extra,
+      countOnly: false,
+      duplicateIdentityCount: expected.duplicateIds.length + duplicateCloudIds.length,
+      semanticMismatchCount,
       preservedExtraLegacyIds: preservedEstimateLineItemsMatched ? preservedSkippedIds : [],
     });
   }

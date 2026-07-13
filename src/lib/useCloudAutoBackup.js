@@ -18,12 +18,16 @@ import {
   markCloudBackupOfflinePending,
   recordCloudBackupAttemptFailure,
   applyCloudBackupResultToQueue,
+  markCloudBackupDirty,
   CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
 import { runSupabaseCloudOnboardingBackup } from "./supabaseCloudOnboarding";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanApplyLocalRestore } from "./supabaseDeviceLock";
+import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
+import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
 
 // Test-friendly, overridable debounce constants. Immediate covers
 // money-critical queue entries (invoices/payments); normal covers
@@ -51,6 +55,10 @@ function isEligibleQueueState(queueState) {
     && !["remote_changed", "conflict"].includes(String(queueState?.status || ""));
 }
 
+function hasUnresolvedConvergenceJournal() {
+  try { return Boolean(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)); } catch { return true; }
+}
+
 function queueIdentity(queueState, companyId) {
   return [
     String(queueState?.companyId || companyId || "").trim(),
@@ -75,6 +83,18 @@ function isBrowserOnline() {
 function retryDelayMs(retryCount) {
   const exponent = Math.max(0, Math.min(6, Number(retryCount || 0) - 1));
   return Math.min(CLOUD_AUTO_BACKUP_MAX_RETRY_DELAY_MS, 1500 * (2 ** exponent));
+}
+
+async function captureAutomaticBackupBaseline({ result, params, queueGeneration }) {
+  if (result?.status !== "backup_completed" || !result?.verification?.ok || !result?.verification?.allMatched) return { ok: true, skipped: true };
+  const warnings = Array.isArray(result.verification?.notices) && result.verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+  if (warnings) return { ok: false, code: "verification_requires_attention" };
+  const access = await ensureCurrentDeviceCanApplyLocalRestore({ configured: params.configured, user: params.user, company: params.company, storage: localStorage, reason: "backup_baseline_capture" });
+  if (!access?.ok) return { ok: false, code: "device_not_active", deviceLockLost: Boolean(access?.deviceLockLost) };
+  if (Number(readCloudBackupQueueState()?.localMutationRevision || 0) !== Number(queueGeneration || 0)) return { ok: false, code: "newer_queue_revision" };
+  const cloudSnapshot = await readSupabaseCloudConvergenceSnapshot({ configured: params.configured, user: params.user, company: params.company });
+  const captured = captureVerifiedCloudSyncBaseline({ storage: localStorage, companyId: params.company?.id, queueRevision: queueGeneration, cloudSnapshot, verified: true, deviceAccess: access });
+  return captured.ok ? { ok: true } : { ok: false, code: captured.code || "baseline_write_failed" };
 }
 
 export default function useCloudAutoBackup({
@@ -122,6 +142,7 @@ export default function useCloudAutoBackup({
       const params = paramsRef.current;
       if (!canRunAutomatically(params)) return;
       if (runningNow) return;
+      if (hasUnresolvedConvergenceJournal()) return;
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
@@ -134,7 +155,12 @@ export default function useCloudAutoBackup({
         return;
       }
 
-      if (!acquireCloudBackupRunLock()) return;
+      if (!acquireCloudBackupRunLock()) {
+        // Convergence and backup share this lock. Keep the queue intact and
+        // recheck later instead of dropping a pending local mutation.
+        scheduleCheck();
+        return;
+      }
       if (recoveringNeedsAttention) needsAttentionRecoveryAttemptsRef.current.add(recoveryKey);
       setRunningState(true);
       const activeDeviceId = getOrCreateLocalDeviceId(localStorage);
@@ -143,7 +169,7 @@ export default function useCloudAutoBackup({
       let deviceLockLost = false;
 
       try {
-        const result = await runSupabaseCloudOnboardingBackup({
+        let result = await runSupabaseCloudOnboardingBackup({
           storageSnapshot: localStorage,
           configured: params.configured,
           user: params.user,
@@ -151,6 +177,11 @@ export default function useCloudAutoBackup({
           role: params.role,
           queueGeneration,
         });
+        const baseline = await captureAutomaticBackupBaseline({ result, params, queueGeneration });
+        if (!baseline.ok) {
+          markCloudBackupDirty({ reason: "cloud_sync_baseline_incomplete", severity: "normal" });
+          result = { ...result, status: "needs_attention", error: "Cloud backup needs another verification before it can be marked complete.", deviceLockLost: baseline.deviceLockLost };
+        }
         deviceLockLost = Boolean(result?.deviceLockLost);
 
         // Both the automatic worker and the manual Retry Sync button classify a
@@ -178,6 +209,7 @@ export default function useCloudAutoBackup({
     const scheduleCheck = () => {
       const params = paramsRef.current;
       if (!canRunAutomatically(params) || runningNow) return;
+      if (hasUnresolvedConvergenceJournal()) return;
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
@@ -200,6 +232,7 @@ export default function useCloudAutoBackup({
     const attemptNowIfSafe = () => {
       const params = paramsRef.current;
       if (!canRunAutomatically(params) || runningNow) return;
+      if (hasUnresolvedConvergenceJournal()) return;
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;

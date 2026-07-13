@@ -821,7 +821,7 @@ describe("supabaseCloudRestore", () => {
           }),
         }),
       ]));
-      expect(storage.setItem).toHaveBeenCalledTimes(3);
+      expect(storage.setItem).toHaveBeenCalledTimes(4);
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-customers-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-projects-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-invoices-v1", expect.any(String));
@@ -961,7 +961,7 @@ describe("supabaseCloudRestore", () => {
       expect(result.blockers).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: "estimates_not_reconstructable" }),
       ]));
-      expect(storage.setItem).toHaveBeenCalledTimes(3);
+      expect(storage.setItem).toHaveBeenCalledTimes(4);
       expect(storage.setItem).not.toHaveBeenCalledWith("estipaid-estimates-v1", expect.anything());
     });
 
@@ -994,7 +994,7 @@ describe("supabaseCloudRestore", () => {
       expect(result.partial).toBe(false);
       expect(result.blockers).toEqual([]);
       expect(result.restoredCounts).toEqual(expect.objectContaining({ estimates: 1 }));
-      expect(storage.setItem).toHaveBeenCalledTimes(4);
+      expect(storage.setItem).toHaveBeenCalledTimes(5);
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-estimates-v1", expect.any(String));
 
       const restoredEstimates = JSON.parse(storage.__store["estipaid-estimates-v1"]);

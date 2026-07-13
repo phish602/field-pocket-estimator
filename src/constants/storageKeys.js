@@ -31,4 +31,7 @@ export const STORAGE_KEYS = {
   CLOUD_AUTO_BACKUP_PAUSE: "estipaid-cloud-auto-backup-pause-v1",
   CLOUD_PARTIAL_RECOVERY_STATUS: "estipaid-cloud-partial-recovery-status-v1",
   CLOUD_ASSET_BINDINGS: "estipaid-cloud-asset-bindings-v1",
+  CLOUD_SYNC_BASELINE: "estipaid-cloud-sync-baseline-v1",
+  CLOUD_SYNC_CONFLICT_VAULT: "estipaid-cloud-sync-conflict-vault-v1",
+  CLOUD_CONVERGENCE_JOURNAL: "estipaid-cloud-convergence-journal-v1",
 };

@@ -82,6 +82,15 @@ test("no pending queue does not run a backup", async () => {
   unmount();
 });
 
+test("an unresolved convergence journal blocks automatic cloud backup", async () => {
+  markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
+  localStorage.setItem("estipaid-cloud-convergence-journal-v1", JSON.stringify({ version: 1, previous: {} }));
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  unmount();
+});
+
 test("signed-out state (enabled=false) does not run a backup", async () => {
   markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
 

@@ -67,8 +67,8 @@ function defaultMatchingRows() {
     }],
     invoices: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
     invoice_payments: [{ id: "db_pay_1", legacy_local_id: "pay_1" }],
-    estimate_line_items: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0" }],
-    invoice_line_items: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0" }],
+    estimate_line_items: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1", sort_order: 0, description: "Labor", quantity: 1, unit: null, unit_price: 100, total_price: null, metadata: null, line_role: "labor" }],
+    invoice_line_items: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0", invoice_id: "db_inv_1", sort_order: 0, description: "Material", quantity: 1, unit: null, unit_price: 100, total_price: 100, metadata: null }],
   };
 }
 
@@ -175,8 +175,8 @@ describe("supabaseCloudVerification", () => {
       expect.objectContaining({ table: "estimates", status: "matched" }),
       expect.objectContaining({ table: "invoices", status: "matched" }),
       expect.objectContaining({ table: "invoice_payments", status: "matched" }),
-      expect.objectContaining({ table: "estimate_line_items", status: "matched", countOnly: true }),
-      expect.objectContaining({ table: "invoice_line_items", status: "matched", countOnly: true }),
+      expect.objectContaining({ table: "estimate_line_items", status: "matched", countOnly: false }),
+      expect.objectContaining({ table: "invoice_line_items", status: "matched", countOnly: false }),
     ]));
     expect(result.notices).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -302,8 +302,8 @@ describe("supabaseCloudVerification", () => {
       { id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null },
     ];
     rows.estimate_line_items = [
-      { id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1" },
-      { id: "db_est_line_2", legacy_local_id: "estimate:est_2:line:0", estimate_id: "db_est_2" },
+      { id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1", sort_order: 0, description: "Labor", quantity: 1, unit: null, unit_price: 100, total_price: null, metadata: null, line_role: "labor" },
+      { id: "db_est_line_2", legacy_local_id: "estimate:est_2:line:0", estimate_id: "db_est_2", sort_order: 0, description: "Older", quantity: 1, unit: null, unit_price: 1, total_price: 1, metadata: null, line_role: "labor" },
     ];
     const mockClient = createMockClient(rows);
     mockGetSupabaseClient.mockReturnValue(mockClient);
@@ -406,7 +406,7 @@ describe("supabaseCloudVerification", () => {
 
     expect(result.allMatched).toBe(false);
     expect(result.tableResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ table: "estimate_line_items", status: "mismatch", localCount: 1, cloudCount: 0, countOnly: true }),
+      expect.objectContaining({ table: "estimate_line_items", status: "mismatch", localCount: 1, cloudCount: 0, countOnly: false }),
     ]));
   });
 

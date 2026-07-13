@@ -4,6 +4,8 @@ import { setCloudAssetBindingsBatch } from "./cloudAssetBindings";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
+import { readCloudBackupQueueState } from "./cloudBackupQueue";
+import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
 import {
   ensureCurrentDeviceCanWriteCloud,
@@ -616,6 +618,112 @@ function buildLocalRestorePayload({ customers, projects, invoices, invoicePaymen
   };
 }
 
+function findDuplicateLegacyIds(rows, table) {
+  const seen = new Set();
+  const duplicates = [];
+  asArray(rows).forEach((row) => {
+    const legacyId = asText(row?.legacy_local_id);
+    if (!legacyId) {
+      duplicates.push(`${table}:missing_legacy_id`);
+    } else if (seen.has(legacyId)) {
+      duplicates.push(`${table}:duplicate_legacy_id`);
+    } else {
+      seen.add(legacyId);
+    }
+  });
+  return duplicates;
+}
+
+function validateCloudConvergenceGraph(rowsByTable) {
+  const customers = asArray(rowsByTable.customers);
+  const projects = asArray(rowsByTable.projects);
+  const estimates = asArray(rowsByTable.estimates);
+  const invoices = asArray(rowsByTable.invoices);
+  const estimateLineItems = asArray(rowsByTable.estimate_line_items);
+  const invoiceLineItems = asArray(rowsByTable.invoice_line_items);
+  const invoicePayments = asArray(rowsByTable.invoice_payments);
+  const codes = [
+    ...findDuplicateLegacyIds(customers, "customers"),
+    ...findDuplicateLegacyIds(projects, "projects"),
+    ...findDuplicateLegacyIds(estimates, "estimates"),
+    ...findDuplicateLegacyIds(invoices, "invoices"),
+    ...findDuplicateLegacyIds(invoicePayments, "invoice_payments"),
+  ];
+  const customerIds = new Set(customers.map((row) => asText(row?.id)));
+  const projectIds = new Set(projects.map((row) => asText(row?.id)));
+  const estimateIds = new Set(estimates.map((row) => asText(row?.id)));
+  const invoiceIds = new Set(invoices.map((row) => asText(row?.id)));
+  projects.forEach((row) => { if (!customerIds.has(asText(row?.customer_id))) codes.push("projects:orphan_customer"); });
+  estimates.forEach((row) => {
+    if (asText(row?.customer_id) && !customerIds.has(asText(row?.customer_id))) codes.push("estimates:orphan_customer");
+    if (asText(row?.project_id) && !projectIds.has(asText(row?.project_id))) codes.push("estimates:orphan_project");
+    if (!hasValidRestorePayload(row)) codes.push("estimates:invalid_restore_payload");
+  });
+  invoices.forEach((row) => {
+    if (asText(row?.customer_id) && !customerIds.has(asText(row?.customer_id))) codes.push("invoices:orphan_customer");
+    if (asText(row?.project_id) && !projectIds.has(asText(row?.project_id))) codes.push("invoices:orphan_project");
+    if (asText(row?.estimate_id) && !estimateIds.has(asText(row?.estimate_id))) codes.push("invoices:orphan_estimate");
+  });
+  estimateLineItems.forEach((row) => { if (!estimateIds.has(asText(row?.estimate_id))) codes.push("estimate_line_items:orphan_estimate"); });
+  invoiceLineItems.forEach((row) => { if (!invoiceIds.has(asText(row?.invoice_id))) codes.push("invoice_line_items:orphan_invoice"); });
+  invoicePayments.forEach((row) => { if (!invoiceIds.has(asText(row?.invoice_id))) codes.push("invoice_payments:orphan_invoice"); });
+  return [...new Set(codes)];
+}
+
+// Read-only convergence snapshot. This intentionally reuses the restore
+// mapper but never invokes restore, writes localStorage, or mutates cloud.
+export async function readSupabaseCloudConvergenceSnapshot({ configured = false, user = null, company = null, client: injectedClient = null } = {}) {
+  const gated = gateBasicPrerequisites({ configured, user, company });
+  if (gated) return { ok: false, status: gated, code: gated, noWritesPerformed: true };
+  const client = injectedClient || getSupabaseClient();
+  if (!client?.from) return { ok: false, status: "error", code: "supabase_not_configured", noWritesPerformed: true };
+  const companyId = asText(company?.id);
+  const rowsByTable = {};
+  for (const table of ALL_CLOUD_TABLES) {
+    const read = await readCloudRows(client, table, companyId);
+    if (read.error) return { ok: false, status: "error", code: `${table}_read_failed`, noWritesPerformed: true };
+    rowsByTable[table] = read.rows;
+  }
+  const graphCodes = validateCloudConvergenceGraph(rowsByTable);
+  if (graphCodes.length > 0) return { ok: false, status: "invalid", code: graphCodes[0], codes: graphCodes, noWritesPerformed: true };
+  const appBundle = await readAppRestoreBundleResult(client, companyId);
+  const supplemental = appBundle.status === "available"
+    ? { status: "available", bundle: appBundle.bundle, codes: [] }
+    : { status: appBundle.status, bundle: null, codes: asArray(appBundle.notices).map((notice) => asText(notice?.code)).filter(Boolean) };
+  let mapped;
+  try {
+    mapped = buildLocalRestorePayload({
+      customers: rowsByTable.customers,
+      projects: rowsByTable.projects,
+      estimates: rowsByTable.estimates,
+      invoices: rowsByTable.invoices,
+      invoicePayments: rowsByTable.invoice_payments,
+      invoiceLineItems: rowsByTable.invoice_line_items,
+      appRestoreBundle: supplemental.bundle,
+    });
+  } catch {
+    return { ok: false, status: "invalid", code: "cloud_mapping_failed", noWritesPerformed: true };
+  }
+  const uuidMaps = {
+    customers: Object.fromEntries(asArray(rowsByTable.customers).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
+    projects: Object.fromEntries(asArray(rowsByTable.projects).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
+    estimates: Object.fromEntries(asArray(rowsByTable.estimates).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
+    invoices: Object.fromEntries(asArray(rowsByTable.invoices).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
+    invoicePayments: Object.fromEntries(asArray(rowsByTable.invoice_payments).map((row) => [asText(row?.legacy_local_id), asText(row?.id)])),
+  };
+  return {
+    ok: true,
+    status: "ready",
+    noWritesPerformed: true,
+    mapped,
+    raw: rowsByTable,
+    uuidMaps,
+    supplemental,
+    counts: Object.fromEntries(ALL_CLOUD_TABLES.map((table) => [table, asArray(rowsByTable[table]).length])),
+    restorePayloadCoverage: { valid: true, required: asArray(rowsByTable.estimates).length },
+  };
+}
+
 function dispatchLocalStorageEvent(key, value) {
   try {
     if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
@@ -875,6 +983,17 @@ export async function executeSupabaseCloudRestore({
     fetched,
     restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
   });
+  // Restore is an exact cloud-to-local reconstruction. Capture a durable
+  // three-way baseline only after the local apply and binding capture have
+  // succeeded; a failed baseline never changes restored business data.
+  const baselineCapture = captureVerifiedCloudSyncBaseline({
+    storage,
+    companyId,
+    queueRevision: Number(readCloudBackupQueueState()?.localMutationRevision || 0),
+    cloudSnapshot: { ok: true, mapped: payload },
+    verified: true,
+    deviceAccess: applyAccess,
+  });
 
   dispatchChangeEvents({
     includeEstimates: payload.estimates.length > 0,
@@ -937,6 +1056,7 @@ export async function executeSupabaseCloudRestore({
       : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
     appBundleRestored: appBundle.status === "available",
     appBundleSummary: appBundle.captureSummary,
+    baselineCaptured: Boolean(baselineCapture?.ok),
     noWritesPerformed: false,
     noExistingLocalDataOverwritten: !overwritingExistingLocalData,
     restoredCounts: {

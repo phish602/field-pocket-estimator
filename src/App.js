@@ -24,6 +24,7 @@ import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
 import useSupabaseAuth from "./lib/useSupabaseAuth";
 import useSupabaseAccount from "./lib/useSupabaseAccount";
 import useCloudAutoBackup from "./lib/useCloudAutoBackup";
+import useCloudAutoConvergence from "./lib/useCloudAutoConvergence";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "./lib/useCloudRestorePrompt";
 import CloudBackupStatusBadge from "./components/CloudBackupStatusBadge";
@@ -4553,6 +4554,13 @@ export default function App() {
   // Gate 13B: background automatic cloud backup worker. Called unconditionally
   // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
   // Supabase is configured, and a workspace exists.
+  useCloudAutoConvergence({
+    configured: auth.configured,
+    user: auth.user,
+    company: account.company,
+    deviceLock,
+  });
+
   useCloudAutoBackup({
     enabled: Boolean(auth.configured && auth.session && !deviceLock.isLocked),
     configured: auth.configured,
