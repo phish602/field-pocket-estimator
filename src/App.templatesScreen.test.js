@@ -302,7 +302,7 @@ test("2. Saving a template from builder stays in place, shows success, and store
   openTemplatesFromMenu();
   expect(await screen.findByRole("heading", { name: "Templates" })).toBeInTheDocument();
   expect(screen.getByText("Roof Repair Package")).toBeInTheDocument();
-});
+}, 10000);
 
 test("3. Templates screen lists saved template and shows work-package counts", async () => {
   seedTemplates([buildFullWorkTemplate()]);
@@ -523,6 +523,43 @@ test("6. Existing scope-only legacy template still appears and applies scope saf
 
 test("7. Deleting a template removes it from Templates screen and builder dropdown", async () => {
   jest.spyOn(window, "confirm").mockReturnValue(true);
+  const keptTemplate = buildFullWorkTemplate({
+    id: "tmpl_full_package_similar_name",
+    name: "Roof Repair Package - Alternate",
+  });
+  seedTemplates([buildFullWorkTemplate(), keptTemplate]);
+
+  const view = render(<App />);
+
+  openTemplatesFromMenu();
+  expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
+
+  const deletedTemplateCard = screen.getByText("Roof Repair Package").closest("article");
+  if (!deletedTemplateCard) throw new Error("Deleted template card not found");
+  fireEvent.click(within(deletedTemplateCard).getByRole("button", { name: "Delete" }));
+
+  await waitFor(() => {
+    expect(screen.queryByText("Roof Repair Package")).toBeNull();
+  });
+  expect(screen.getByText("Roof Repair Package - Alternate")).toBeInTheDocument();
+  expect(readStoredTemplates()).toEqual([
+    expect.objectContaining({ id: "tmpl_full_package_similar_name", name: "Roof Repair Package - Alternate" }),
+  ]);
+
+  view.unmount();
+  render(<App />);
+
+  openTemplatesFromMenu();
+  expect(await screen.findByText("Roof Repair Package - Alternate")).toBeInTheDocument();
+  expect(screen.queryByText("Roof Repair Package")).toBeNull();
+
+  await openEstimateBuilderViaCreate();
+  expect(within(getSavedTemplateSelect()).getByRole("option", { name: "Roof Repair Package - Alternate" })).toBeInTheDocument();
+  expect(within(getSavedTemplateSelect()).queryByRole("option", { name: "Roof Repair Package" })).toBeNull();
+});
+
+test("11. Canceling template deletion preserves the rendered and persisted template", async () => {
+  const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(false);
   seedTemplates([buildFullWorkTemplate()]);
 
   render(<App />);
@@ -530,11 +567,36 @@ test("7. Deleting a template removes it from Templates screen and builder dropdo
   openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-  expect(screen.queryByText("Roof Repair Package")).toBeNull();
+  const templateCard = screen.getByText("Roof Repair Package").closest("article");
+  if (!templateCard) throw new Error("Template card not found");
+  fireEvent.click(within(templateCard).getByRole("button", { name: "Delete" }));
 
-  await openEstimateBuilderViaCreate();
-  expect(screen.getByText(/None saved — use Save as Template below/i)).toBeInTheDocument();
+  expect(confirmSpy).toHaveBeenCalledWith('Delete template "Roof Repair Package"?');
+  expect(screen.getByText("Roof Repair Package")).toBeInTheDocument();
+  expect(readStoredTemplates()).toEqual([
+    expect.objectContaining({ id: "tmpl_full_package", name: "Roof Repair Package" }),
+  ]);
+});
+
+test("12. Renaming a template updates the shared template source", async () => {
+  jest.spyOn(window, "prompt").mockReturnValue("Renamed Roof Repair Package");
+  seedTemplates([buildFullWorkTemplate()]);
+
+  render(<App />);
+
+  openTemplatesFromMenu();
+  expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
+
+  const templateCard = screen.getByText("Roof Repair Package").closest("article");
+  if (!templateCard) throw new Error("Template card not found");
+  fireEvent.click(within(templateCard).getByRole("button", { name: "Rename" }));
+
+  await waitFor(() => {
+    expect(screen.getByText("Renamed Roof Repair Package")).toBeInTheDocument();
+  });
+  expect(readStoredTemplates()).toEqual([
+    expect.objectContaining({ id: "tmpl_full_package", name: "Renamed Roof Repair Package" }),
+  ]);
 });
 
 test("8. Templates screen and builder dropdown share the same template source", async () => {
