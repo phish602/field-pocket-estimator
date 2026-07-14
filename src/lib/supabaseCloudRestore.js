@@ -485,7 +485,7 @@ function mapCloudCustomerToLocal(row) {
   };
 }
 
-function mapCloudProjectToLocal(row, customerIdByCloudId) {
+export function mapCloudProjectToLocal(row, customerIdByCloudId) {
   const id = requireLegacyId(row, "projects");
   return {
     id,
@@ -675,7 +675,13 @@ function validateCloudConvergenceGraph(rowsByTable) {
   const projectIds = new Set(projects.map((row) => asText(row?.id)));
   const estimateIds = new Set(estimates.map((row) => asText(row?.id)));
   const invoiceIds = new Set(invoices.map((row) => asText(row?.id)));
-  projects.forEach((row) => { if (!customerIds.has(asText(row?.customer_id))) codes.push("projects:orphan_customer"); });
+  // A project may be legitimately unassigned (customer_id null/empty). Only a
+  // NONEMPTY customer reference that resolves to no customer row is an orphan --
+  // matching how estimates and invoices already validate their customer.
+  projects.forEach((row) => {
+    const customerId = asText(row?.customer_id);
+    if (customerId && !customerIds.has(customerId)) codes.push("projects:orphan_customer");
+  });
   estimates.forEach((row) => {
     if (asText(row?.customer_id) && !customerIds.has(asText(row?.customer_id))) codes.push("estimates:orphan_customer");
     if (asText(row?.project_id) && !projectIds.has(asText(row?.project_id))) codes.push("estimates:orphan_project");

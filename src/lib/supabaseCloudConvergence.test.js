@@ -561,7 +561,7 @@ function writerInvoiceChildRows(parentLegacyId, parentCloudId, backendLines, idP
 
 // Real Supabase-shaped UUIDs so asset-binding writes succeed exactly as they do
 // in production (fake ids would fail isValidCloudUuid and mask the real defect).
-const U = { cust1: uuid(101), cust2: uuid(102), proj1: uuid(201), proj2: uuid(202), est1: uuid(301), inv: (i) => uuid(400 + i) };
+const U = { cust1: uuid(101), cust2: uuid(102), proj1: uuid(201), proj2: uuid(202), projCl: uuid(203), est1: uuid(301), inv: (i) => uuid(400 + i) };
 
 function buildRawCloudTables() {
   const customers = [
@@ -571,6 +571,9 @@ function buildRawCloudTables() {
   const projects = [
     { id: U.proj1, legacy_local_id: "proj-1", customer_id: U.cust1, project_number: "P-1", project_name: "Proj 1" },
     { id: U.proj2, legacy_local_id: "proj-2", customer_id: U.cust2, project_number: "P-2", project_name: "Proj 2" },
+    // Gate 16D: a legitimately unassigned (customerless) project -- customer_id
+    // is null in the cloud and restores as customerId "".
+    { id: U.projCl, legacy_local_id: "proj-cl", customer_id: null, project_number: "P-CL", project_name: "Unassigned" },
   ];
   const est1Local = estimate("est-1", { customerId: "cust-1", projectId: "proj-1", estimateNumber: "EST-1" });
   const mappedEst1 = mapLocalEstimateToBackendEstimate(est1Local, {});
@@ -721,6 +724,11 @@ describe("Gate 16C real hook-to-convergence (no injected device access)", () => 
     setLocalSnapshot(nine.mapped);
     setBaseline(nine.mapped);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+    // 1/2: the raw cloud snapshot accepts customer_id null and restores the
+    // unassigned project as customerId "".
+    const seededProjects = JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS));
+    const seededCustomerless = seededProjects.find((p) => p.id === "proj-cl");
+    expect(seededCustomerless.customerId).toBe("");
 
     // Cloud now has all ten invoices; the same client serves the active-device row.
     getSupabaseClient.mockReturnValue(clientWithActiveDevice(raw, localId));
@@ -743,8 +751,19 @@ describe("Gate 16C real hook-to-convergence (no injected device access)", () => 
       const invoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
       expect(invoices.find((v) => v.id === "inv-10").lineItems).toHaveLength(6);
 
-      // 7/8: baseline contains ten invoices; journal removed after success.
+      // 3/9/10/11: no project relationship conflict blocked the run; the
+      // customerless project is unchanged (still customerless) and none deleted.
+      const projectsAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS));
+      expect(projectsAfter).toEqual(seededProjects);
+      expect(projectsAfter.find((p) => p.id === "proj-cl").customerId).toBe("");
+
+      // 7/8/12: baseline contains ten invoices and the customerless project;
+      // journal removed after success.
       await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10));
+      const baselineSnapshots = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots;
+      const baselineProjCl = baselineSnapshots.projects.find((p) => p.id === "proj-cl");
+      expect(baselineProjCl).toBeTruthy(); // still present, still no customer
+      expect(baselineProjCl.customerId || "").toBe("");
       expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
 
       // 9: queue clean after verified completion.
@@ -767,5 +786,108 @@ describe("Gate 16C real hook-to-convergence (no injected device access)", () => 
       window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
       window.removeEventListener("estipaid:invoices-changed", invoicesChanged);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 16D: an unassigned (customerless) project is valid. A blank project
+// customer relationship makes no claim; only a NONEMPTY dangling customer
+// reference is a genuine orphan.
+// ---------------------------------------------------------------------------
+describe("Gate 16D customerless project relationship", () => {
+  const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+
+  test("Case A convergence: a customerless project (customerId '') produces no relationship conflict", () => {
+    const plan = buildCloudConvergencePlan({
+      local: { ...emptySnapshot(), customers: [{ id: "c1" }], projects: [{ id: "p1", customerId: "" }] },
+      cloud: { ...emptySnapshot(), customers: [{ id: "c1" }], projects: [{ id: "p1", customerId: "" }] },
+    });
+    expect(plan.conflicts.find((c) => c.code === "project_customer_relationship")).toBeUndefined();
+  });
+
+  test("Case B convergence: a nonempty dangling project customer still blocks", () => {
+    const plan = buildCloudConvergencePlan({
+      local: { ...emptySnapshot(), customers: [{ id: "c1" }], projects: [{ id: "p1", customerId: "missing-c" }] },
+      cloud: { ...emptySnapshot(), customers: [{ id: "c1" }] },
+    });
+    expect(plan.safe).toBe(false);
+    expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ code: "project_customer_relationship" })]));
+  });
+
+  test("Case C convergence: a blank project customer does not conflict with a dependent document customer", () => {
+    const plan = buildCloudConvergencePlan({
+      local: {
+        ...emptySnapshot(),
+        customers: [{ id: "c1" }],
+        projects: [{ id: "p1", customerId: "" }],
+        invoices: [{ ...invoice("i1"), customerId: "c1", projectId: "p1", sourceEstimateId: "", lineItems: [], payments: [] }],
+      },
+      cloud: {
+        ...emptySnapshot(),
+        customers: [{ id: "c1" }],
+        projects: [{ id: "p1", customerId: "" }],
+        invoices: [{ ...invoice("i1"), customerId: "c1", projectId: "p1", sourceEstimateId: "", lineItems: [], payments: [] }],
+      },
+    });
+    expect(plan.conflicts.find((c) => c.code === "invoice_project_customer_relationship")).toBeUndefined();
+  });
+
+  test("Case C negative: two nonempty different project/document customer IDs still conflict", () => {
+    const plan = buildCloudConvergencePlan({
+      local: {
+        ...emptySnapshot(),
+        customers: [{ id: "c1" }, { id: "c2" }],
+        projects: [{ id: "p1", customerId: "c2" }],
+        invoices: [{ ...invoice("i1"), customerId: "c1", projectId: "p1", sourceEstimateId: "", lineItems: [], payments: [] }],
+      },
+      cloud: { ...emptySnapshot(), customers: [{ id: "c1" }, { id: "c2" }], projects: [{ id: "p1", customerId: "c2" }] },
+    });
+    expect(plan.safe).toBe(false);
+    expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invoice_project_customer_relationship" })]));
+  });
+
+  test("Case A raw cloud: project customer_id null is accepted and restores as customerId ''", async () => {
+    getSupabaseClient.mockReturnValue(rawCloudClient({
+      customers: [{ id: uuid(1), legacy_local_id: "c1", display_name: "C1", customer_type: "residential" }],
+      projects: [{ id: uuid(2), legacy_local_id: "p1", customer_id: null, project_number: "P-1", project_name: "Unassigned" }],
+      estimates: [], invoices: [], invoice_payments: [], estimate_line_items: [], invoice_line_items: [],
+    }));
+    const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+    expect(snapshot.ok).toBe(true);
+    expect(snapshot.mapped.projects.find((p) => p.id === "p1").customerId).toBe("");
+  });
+
+  test("Case B raw cloud: a nonempty dangling project customer_id stays blocked", async () => {
+    getSupabaseClient.mockReturnValue(rawCloudClient({
+      customers: [{ id: uuid(1), legacy_local_id: "c1", display_name: "C1", customer_type: "residential" }],
+      projects: [{ id: uuid(2), legacy_local_id: "p1", customer_id: uuid(99), project_number: "P-1", project_name: "Dangling" }],
+      estimates: [], invoices: [], invoice_payments: [], estimate_line_items: [], invoice_line_items: [],
+    }));
+    const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+    expect(snapshot.ok).toBe(false);
+    expect(snapshot.code).toBe("projects:orphan_customer");
+  });
+
+  test("Case B negative: a genuine dangling project blocks convergence with zero local writes and no import", async () => {
+    const raw = buildRawCloudTables();
+    // Seed a valid local snapshot of nine invoices.
+    getSupabaseClient.mockReturnValue(rawCloudClient(rawTablesWithoutTenth(raw)));
+    const nine = await readSupabaseCloudConvergenceSnapshot(ctx);
+    setLocalSnapshot(nine.mapped);
+    setBaseline(nine.mapped);
+    const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+    const projectsBefore = localStorage.getItem(STORAGE_KEYS.PROJECTS);
+
+    // Cloud now carries a genuinely dangling project (nonempty missing customer)
+    // alongside the tenth invoice.
+    const dangling = { ...raw, projects: [...raw.projects, { id: uuid(77), legacy_local_id: "proj-bad", customer_id: uuid(88), project_number: "P-BAD", project_name: "Dangling" }] };
+    getSupabaseClient.mockReturnValue(rawCloudClient(dangling));
+
+    const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, verifyCloud: runSupabaseCloudVerification });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("projects:orphan_customer");
+    // No invoice imported; no local business-data write; no relationship guessed.
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+    expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBe(projectsBefore);
   });
 });

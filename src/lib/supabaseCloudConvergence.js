@@ -215,7 +215,13 @@ function relationshipCodes(snapshot) {
   const projects = new Set(asArray(snapshot.projects).map(entityId));
   const estimates = new Set(asArray(snapshot.estimates).map(entityId));
   const codes = [];
-  asArray(snapshot.projects).forEach((row) => { if (!customers.has(asText(row?.customerId))) codes.push("project_customer_relationship"); });
+  // An unassigned project (customerId null/empty) makes no customer claim and is
+  // valid. Only a NONEMPTY customer reference that resolves to no customer is a
+  // conflict -- consistent with the estimate/invoice customer checks below.
+  asArray(snapshot.projects).forEach((row) => {
+    const customerId = asText(row?.customerId);
+    if (customerId && !customers.has(customerId)) codes.push("project_customer_relationship");
+  });
   asArray(snapshot.estimates).forEach((row) => {
     if (asText(row?.customerId) && !customers.has(asText(row?.customerId))) codes.push("estimate_customer_relationship");
     if (asText(row?.projectId) && !projects.has(asText(row?.projectId))) codes.push("estimate_project_relationship");
@@ -231,7 +237,10 @@ function relationshipCodes(snapshot) {
     if (asText(row?.projectId) && !projects.has(asText(row?.projectId))) codes.push("invoice_project_relationship");
     if (asText(row?.sourceEstimateId) && !estimates.has(asText(row?.sourceEstimateId))) codes.push("invoice_estimate_relationship");
     const project = asArray(snapshot.projects).find((candidate) => entityId(candidate) === asText(row?.projectId));
-    if (project && asText(row?.customerId) && asText(project?.customerId) !== asText(row?.customerId)) codes.push("invoice_project_customer_relationship");
+    // Only conflict when BOTH the project and the invoice claim a customer and
+    // they differ. A blank project customer makes no claim and never conflicts;
+    // the relationship is never guessed or copied from the document.
+    if (project && asText(row?.customerId) && asText(project?.customerId) && asText(project?.customerId) !== asText(row?.customerId)) codes.push("invoice_project_customer_relationship");
     const sourceEstimate = asArray(snapshot.estimates).find((candidate) => entityId(candidate) === asText(row?.sourceEstimateId));
     if (sourceEstimate && asText(row?.customerId) && asText(sourceEstimate?.customerId) !== asText(row?.customerId)) codes.push("invoice_estimate_customer_relationship");
     const lineIds = new Set(); const paymentIds = new Set();

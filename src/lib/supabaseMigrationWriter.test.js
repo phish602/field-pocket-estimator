@@ -2191,3 +2191,49 @@ describe("supabaseMigrationWriter cloud asset binding capture", () => {
     expect(getCloudAssetBinding("customer", "cust_1", "company_1")).toBeNull();
   });
 });
+
+describe("supabaseMigrationWriter customerless project (Gate 16D)", () => {
+  beforeEach(() => {
+    mockGetSupabaseClient.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+  });
+
+  test("a customerless project is written with customer_id null while an assigned project keeps its customer", async () => {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 2, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 },
+      existingCustomerRows: [{ id: "db_cust", legacy_local_id: "cust_1", display_name: "Acme Co" }],
+      existingProjectRows: [{ id: "db_proj", legacy_local_id: "proj_1", customer_id: "db_cust", project_number: "P-1" }],
+      existingEstimateRows: [{ id: "db_est", legacy_local_id: "est_1", customer_id: "db_cust", project_id: "db_proj", estimate_number: "EST-1" }],
+      existingInvoiceRows: [{ id: "db_inv", legacy_local_id: "inv_1", customer_id: "db_cust", project_id: "db_proj", estimate_id: "db_est", invoice_number: "INV-1" }],
+      existingPaymentRows: [{ id: "db_pay", legacy_local_id: "pay_1", invoice_id: "db_inv" }],
+      customerRows: [{ id: "db_cust", legacy_local_id: "cust_1" }],
+      projectRows: [{ id: "db_proj", legacy_local_id: "proj_1" }, { id: "db_proj_cl", legacy_local_id: "proj_cl" }],
+      estimateRows: [{ id: "db_est", legacy_local_id: "est_1" }],
+      invoiceRows: [{ id: "db_inv", legacy_local_id: "inv_1" }],
+      paymentRows: [{ id: "db_pay", legacy_local_id: "pay_1" }],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({
+        customers: [{ id: "cust_1", type: "residential", fullName: "Acme Co" }],
+        projects: [
+          { id: "proj_1", customerId: "cust_1", projectName: "Roof Repair", projectNumber: "P-1" },
+          { id: "proj_cl", customerId: "", projectName: "Unassigned" },
+        ],
+      }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({ localCounts: { customers: 1, projects: 2, estimates: 1, estimateLineItems: 1, invoices: 1, invoiceLineItems: 1, invoicePayments: 1 } }),
+    });
+
+    expect(result.ok).toBe(true);
+    const projectPayloads = mockClient.writeChains.projects.upsert.mock.calls[0][0];
+    expect(projectPayloads.find((p) => p.legacy_local_id === "proj_cl").customer_id).toBeNull();
+    expect(projectPayloads.find((p) => p.legacy_local_id === "proj_1").customer_id).toBe("db_cust");
+  });
+});

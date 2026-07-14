@@ -368,3 +368,13 @@ describe("backendDataMapper", () => {
     ]));
   });
 });
+
+describe("Gate 16D customerless project mapping", () => {
+  test("a customerless project maps to an empty customer_legacy_local_id", () => {
+    const context = createBackendMappingContext({ companyId: "company_1", userId: "user_1" });
+    // The empty customer relationship is omitted entirely (no customer claim).
+    expect(mapLocalProjectToBackendProject({ id: "p1", projectName: "Unassigned", customerId: "" }, context).customer_legacy_local_id).toBeUndefined();
+    // An assigned project still carries its customer relationship.
+    expect(mapLocalProjectToBackendProject({ id: "p2", projectName: "Assigned", customerId: "cust_1" }, context).customer_legacy_local_id).toBe("cust_1");
+  });
+});

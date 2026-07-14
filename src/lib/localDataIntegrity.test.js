@@ -493,3 +493,21 @@ describe("localDataIntegrity", () => {
     expect(decision.screenState).toBe(LOCAL_DATA_DECISION.SAFE_TO_BACKUP);
   });
 });
+
+describe("Gate 16D customerless project integrity", () => {
+  test("a customerless project (customerId '') is valid and produces no blocker", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot({
+      customers: [{ id: "cust_1", name: "Acme" }],
+      projects: [{ id: "proj_1", customerId: "", projectName: "Unassigned" }],
+    }));
+    expect((integrity.blockers || []).some((b) => String(b?.code || "") === "project_customer_missing")).toBe(false);
+  });
+
+  test("a nonempty missing project customer reference is still blocked", () => {
+    const integrity = scanLocalDataIntegrity(buildSnapshot({
+      customers: [{ id: "cust_1", name: "Acme" }],
+      projects: [{ id: "proj_1", customerId: "cust_missing", projectName: "Dangling" }],
+    }));
+    expect((integrity.blockers || []).some((b) => String(b?.code || "") === "project_customer_missing")).toBe(true);
+  });
+});

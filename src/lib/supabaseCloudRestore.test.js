@@ -1358,3 +1358,14 @@ describe("invoice line-item round trip preserves the canonical child contract", 
     expect(local.every((c) => c.kind && Number.isFinite(c.unitCost))).toBe(true);
   });
 });
+
+describe("mapCloudProjectToLocal customerless projects (Gate 16D)", () => {
+  const { mapCloudProjectToLocal } = require("./supabaseCloudRestore");
+
+  test("a cloud project with customer_id null restores as customerId ''", () => {
+    const byCloudId = new Map([["db-cust-1", "cust-1"]]);
+    expect(mapCloudProjectToLocal({ id: "db-p1", legacy_local_id: "proj-cl", customer_id: null, project_name: "Unassigned" }, byCloudId).customerId).toBe("");
+    // An assigned project resolves its cloud customer id back to the local id.
+    expect(mapCloudProjectToLocal({ id: "db-p2", legacy_local_id: "proj-1", customer_id: "db-cust-1", project_name: "Assigned" }, byCloudId).customerId).toBe("cust-1");
+  });
+});
