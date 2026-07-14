@@ -4561,8 +4561,17 @@ export default function App() {
     deviceLock,
   });
 
+  // Automatic backup requires a fully verified active device -- not merely an
+  // "unlocked" one. A ready-but-unverified/inactive device must not start a
+  // backup (cloud writes stay disabled until ownership is confirmed active).
   useCloudAutoBackup({
-    enabled: Boolean(auth.configured && auth.session && !deviceLock.isLocked),
+    enabled: Boolean(
+      auth.configured && auth.session
+      && deviceLock.ready === true
+      && deviceLock.loading === false
+      && deviceLock.isActive === true
+      && deviceLock.isLocked === false
+    ),
     configured: auth.configured,
     user: auth.user,
     company: account.company,

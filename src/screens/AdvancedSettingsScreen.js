@@ -12,7 +12,7 @@ import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap"
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
-import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult } from "../lib/supabaseCloudConvergence";
+import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult, requestCloudConvergence } from "../lib/supabaseCloudConvergence";
 import {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
@@ -56,6 +56,27 @@ const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+// Requests a fresh automatic-convergence attempt and resolves with the next safe
+// result event, or the last known result after a bounded timeout. Never calls
+// Restore/Replace -- it only asks the automatic hook to try again.
+function requestAndAwaitCloudConvergence(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      try { window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult); } catch {}
+      resolve(value);
+    };
+    const onResult = (event) => finish(event?.detail || getLastCloudConvergenceResult() || null);
+    try { window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult); } catch { finish(getLastCloudConvergenceResult() || null); return; }
+    requestCloudConvergence();
+    timer = setTimeout(() => finish(getLastCloudConvergenceResult() || null), timeoutMs);
+  });
 }
 
 // Tables the deliberate "Replace Cloud Backup With This Device" action is
@@ -881,18 +902,31 @@ export default function AdvancedSettingsScreen({
   const restoreActionAvailable = restoreAvailability.available;
   // A safe technical reason when the last automatic convergence did not succeed,
   // so the screen never claims zero blockers with no sign the sync failed. Only
-  // the safe code is shown -- no names, numbers, or record details.
+  // the safe code is shown -- no names, numbers, or record details. Cleared once
+  // a later matched/converged result arrives (convergenceResult.ok === true).
   const convergenceFailureReason = convergenceResult && convergenceResult.ok === false
-    ? `Automatic cloud sync did not finish (${String(convergenceResult.code || convergenceResult.status || "unknown").trim()}).`
+    ? `Automatic cloud sync stopped: ${String(convergenceResult.code || convergenceResult.status || "unknown").trim()}.`
     : "";
+  // Safe automatic-sync state for the Data Check section (no sensitive details).
+  const automaticSyncState = convergenceResult
+    ? {
+        status: String(convergenceResult.status || "").trim(),
+        code: String(convergenceResult.code || "").trim(),
+        stage: String(convergenceResult.stage || "").trim(),
+        retryable: Boolean(convergenceResult.retryable),
+        ok: Boolean(convergenceResult.ok),
+      }
+    : null;
   const cloudBackupDetail = String(
     (replaceEstimateLineItemsPermissionBlocked
       ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
       : "")
       || cloudDecision?.firstBlocker?.message
       || (showDeveloperCloudTools ? cloudDecision?.firstSafeRepair?.message : "")
-      || backupAttentionDetail
+      // Convergence failure reason precedes the generic verification message so a
+      // real automatic-sync stop is never masked by generic mismatch copy.
       || convergenceFailureReason
+      || backupAttentionDetail
       || ""
   ).trim();
   const mismatchTableDetails = describeVerificationMismatchTables(onboardingStatus?.verification || cloudVerification);
@@ -1031,6 +1065,11 @@ export default function AdvancedSettingsScreen({
     try {
       setOnboardingStatusBusy(true);
       setCloudStatusMessage("");
+      // First ask the automatic hook to actually attempt convergence (import the
+      // eligible cloud-only records), then await its safe result, THEN re-verify.
+      // This never invokes manual Restore or Replace.
+      const convergence = await requestAndAwaitCloudConvergence();
+      if (convergence) setConvergenceResult(convergence);
       const result = await checkSupabaseCloudOnboardingStatus({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
@@ -2049,6 +2088,18 @@ export default function AdvancedSettingsScreen({
                             {line}
                           </div>
                         ))}
+                      </div>
+                    ) : null}
+                    {automaticSyncState && !automaticSyncState.ok ? (
+                      <div
+                        data-testid="automatic-sync-state"
+                        className="pe-field-helper"
+                        style={{ opacity: 0.82 }}
+                      >
+                        {`Automatic sync — status: ${automaticSyncState.status || "unknown"}`}
+                        {automaticSyncState.code ? `, code: ${automaticSyncState.code}` : ""}
+                        {automaticSyncState.stage ? `, stage: ${automaticSyncState.stage}` : ""}
+                        {`, retryable: ${automaticSyncState.retryable ? "yes" : "no"}`}
                       </div>
                     ) : null}
                     {restoreResult ? (

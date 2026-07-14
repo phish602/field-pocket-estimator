@@ -149,7 +149,7 @@ test("dispatches a safe convergence-result event for a FAILED outcome (not only 
   const detail = seen.mock.calls[0][0];
   expect(detail).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
   // Only safe fields -- no names, numbers, descriptions, totals, or ids.
-  expect(Object.keys(detail).sort()).toEqual(["at", "blockerCount", "changedFamilies", "code", "conflictCount", "noCloudWritesPerformed", "noWritesPerformed", "ok", "status"]);
+  expect(Object.keys(detail).sort()).toEqual(["at", "attempt", "blockerCount", "changedFamilies", "code", "conflictCount", "noCloudWritesPerformed", "noWritesPerformed", "ok", "retryable", "stage", "status"]);
 });
 
 test("dispatches the result event for a converged outcome with only changed-family booleans", async () => {
@@ -159,4 +159,69 @@ test("dispatches the result event for a converged outcome with only changed-fami
   renderHook(() => useCloudAutoConvergence(props()));
   await waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
   expect(seen.mock.calls[0][0].changedFamilies).toEqual(expect.objectContaining({ invoices: true, customers: false }));
+});
+
+const { getLastCloudConvergenceResult, requestCloudConvergence } = require("./supabaseCloudConvergence");
+const READY_UNVERIFIED = { ready: true, loading: false, isActive: false, isLocked: false };
+
+test("a ready-but-unverified device re-reads ownership once and runs when it becomes active", async () => {
+  const refresh = jest.fn(async () => ({ ready: true, loading: false, isActive: true, isLocked: false }));
+  renderHook(() => useCloudAutoConvergence(props({ deviceLock: { ...READY_UNVERIFIED, refresh } })));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+});
+
+test("a ready-but-unverified device that stays unverified publishes device_access_unverified and does not run", async () => {
+  const refresh = jest.fn(async () => ({ ...READY_UNVERIFIED }));
+  const seen = jest.fn();
+  window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, (e) => seen(e.detail));
+  renderHook(() => useCloudAutoConvergence(props({ deviceLock: { ...READY_UNVERIFIED, refresh } })));
+  await waitFor(() => expect(seen).toHaveBeenCalled());
+  const detail = seen.mock.calls[seen.mock.calls.length - 1][0];
+  expect(detail).toEqual(expect.objectContaining({ status: "skipped", code: "device_access_unverified", stage: "device_access", retryable: true }));
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  expect(refresh).toHaveBeenCalledTimes(1); // once per cycle, no takeover
+});
+
+test("a locked device publishes device_locked and performs no convergence", async () => {
+  const seen = jest.fn();
+  window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, (e) => seen(e.detail));
+  renderHook(() => useCloudAutoConvergence(props({ deviceLock: { ready: true, loading: false, isActive: false, isLocked: true } })));
+  await waitFor(() => expect(seen).toHaveBeenCalled());
+  expect(seen.mock.calls.some((c) => c[0].code === "device_locked" && c[0].retryable === false)).toBe(true);
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+});
+
+test("offline publishes a retryable offline result and does not run", async () => {
+  const spy = jest.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+  const seen = jest.fn();
+  window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, (e) => seen(e.detail));
+  renderHook(() => useCloudAutoConvergence(props()));
+  await waitFor(() => expect(seen).toHaveBeenCalled());
+  expect(seen.mock.calls.some((c) => c[0].code === "offline" && c[0].retryable === true && c[0].stage === "eligibility")).toBe(true);
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  spy.mockRestore();
+});
+
+test("a busy shared lock retries on a bounded timer and later succeeds without any focus event", async () => {
+  jest.useFakeTimers();
+  try {
+    acquireCloudBackupRunLock(); // worker holds the lock
+    renderHook(() => useCloudAutoConvergence(props()));
+    await Promise.resolve(); await Promise.resolve();
+    expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+    // Free the lock, then let the bounded retry (1s) fire -- no lifecycle event.
+    releaseCloudBackupRunLock();
+    await act(async () => { jest.advanceTimersByTime(1000); await Promise.resolve(); await Promise.resolve(); });
+    expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("an explicit convergence request starts a fresh attempt cycle", async () => {
+  renderHook(() => useCloudAutoConvergence(props()));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  act(() => { requestCloudConvergence(); });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
 });

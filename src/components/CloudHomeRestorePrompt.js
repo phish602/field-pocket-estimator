@@ -41,6 +41,7 @@ import {
   RECOVERY_CONTINUATION_STATUS,
 } from "../lib/cloudSafeRecovery";
 import { readCloudPartialRecoveryStatus } from "../lib/cloudPartialRecoveryStatus";
+import { requestCloudConvergence } from "../lib/supabaseCloudConvergence";
 import {
   updateEstimateRestorePayloads,
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
@@ -655,6 +656,13 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const runBackup = async () => {
     setBackingUp(true);
     setContinuationResult(null);
+    // A local/cloud mismatch can be bidirectional: this device may hold records
+    // the cloud lacks (handled by the backup below) AND the cloud may hold
+    // records this device lacks (imported by automatic convergence). Ask the
+    // automatic hook to attempt convergence too -- never Restore or Replace.
+    if (state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS) {
+      requestCloudConvergence();
+    }
     try {
       const storedRecoveryStatus = readCloudPartialRecoveryStatus(localStorage);
       const result = await runSupabaseCloudOnboardingBackup({

@@ -109,9 +109,42 @@ function queueRevision() { return Number(readCloudBackupQueueState()?.localMutat
 // only a timestamp, ok, status, a safe technical code, no-write flags,
 // changed-family booleans, and safe counts.
 export const CLOUD_CONVERGENCE_RESULT_EVENT = "estipaid:cloud-convergence-result";
+// Gate 16C: an explicit request to run a fresh automatic-convergence attempt
+// cycle (used by "Recheck Cloud Status" and the Home mismatch retry). It never
+// invokes Restore/Replace -- it only asks the automatic hook to try again.
+export const CLOUD_CONVERGENCE_REQUEST_EVENT = "estipaid:cloud-convergence-request";
+
+export const CLOUD_CONVERGENCE_STAGES = [
+  "eligibility", "journal_recovery", "run_lock", "cloud_snapshot", "planning", "device_access",
+  "bindings", "local_apply", "verification", "completion_access", "baseline", "rollback", "completed",
+];
 
 let lastConvergenceResult = null;
 export function getLastCloudConvergenceResult() { return lastConvergenceResult; }
+
+// Infers the lifecycle stage for a convergence result when the caller did not
+// set one explicitly (the automatic hook sets stages for its own skip outcomes).
+function inferConvergenceStage(result) {
+  const explicit = asText(result?.stage);
+  if (explicit) return explicit;
+  const status = asText(result?.status);
+  const code = asText(result?.code);
+  if (status === "converged" || status === "matched") return "completed";
+  if (status === "conflict") return "planning";
+  if (status === "mismatch") return "verification";
+  if (status === "blocked") return "device_access";
+  if (status === "aborted") return "local_apply";
+  if (code === "cloud_verification_failed") return "verification";
+  if (code === "convergence_completion_guard_failed") return "completion_access";
+  if (code === "baseline_write_failed") return "baseline";
+  if (code === "binding_write_failed") return "bindings";
+  if (code === "local_write_failed" || code === "local_write_mismatch" || code === "local_changed_during_read") return "local_apply";
+  if (code === "cloud_snapshot_failed" || /_read_failed$/.test(code)) return "cloud_snapshot";
+  if (code === "prerequisites_missing") return "eligibility";
+  if (code === "journal_write_failed" || code === "journal_rollback_failed") return "journal_recovery";
+  if (status === "rolled_back" || status === "critical" || status === "critical_local_recovery_required") return "rollback";
+  return "";
+}
 
 export function buildSafeConvergenceResult(result) {
   const changed = result?.changedFamilies || {};
@@ -120,6 +153,9 @@ export function buildSafeConvergenceResult(result) {
     ok: Boolean(result?.ok),
     status: asText(result?.status),
     code: asText(result?.code),
+    stage: inferConvergenceStage(result),
+    retryable: Boolean(result?.retryable),
+    attempt: Number(result?.attempt || 0),
     noWritesPerformed: Boolean(result?.noWritesPerformed),
     noCloudWritesPerformed: Boolean(result?.noCloudWritesPerformed),
     changedFamilies: {
@@ -130,6 +166,18 @@ export function buildSafeConvergenceResult(result) {
     conflictCount: Number(result?.conflictCount || 0),
     blockerCount: Number(result?.mismatch?.blockerCount || 0),
   };
+}
+
+// Asks the automatic-convergence hook to start a fresh bounded attempt cycle.
+// Safe to call from any status surface; it never performs a write itself.
+export function requestCloudConvergence() {
+  try {
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent(CLOUD_CONVERGENCE_REQUEST_EVENT));
+      return true;
+    }
+  } catch {}
+  return false;
 }
 
 // Records the last result in memory and dispatches the safe result event for any

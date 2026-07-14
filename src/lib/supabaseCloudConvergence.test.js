@@ -679,3 +679,93 @@ test("Gate 16B raw-cloud round trip: a real semantic child mismatch rolls back t
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual(before);
   expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
 });
+
+// ---------------------------------------------------------------------------
+// Gate 16C: real hook-to-convergence path. Starts at useCloudAutoConvergence
+// (not runSupabaseCloudConvergence directly), and does NOT inject deviceAccess.
+// The device-lock cloud reads are mocked so the REAL ensureCurrentDeviceCanApply
+// LocalRestore path proves this browser is active at both ownership checks.
+// ---------------------------------------------------------------------------
+describe("Gate 16C real hook-to-convergence (no injected device access)", () => {
+  const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
+  const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
+  const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+  const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
+  const { renderHook, waitFor } = require("@testing-library/react");
+
+  afterEach(() => releaseCloudBackupRunLock());
+
+  // A thenable client that also serves the device-lock app_settings row so the
+  // real ownership checks see THIS device as active. The restore-bundle read
+  // gets the same row (it fails bundle validation -> supplemental skipped).
+  function clientWithActiveDevice(rowsByTable, activeDeviceId) {
+    const from = jest.fn((table) => {
+      const resolveData = () => {
+        if (table === "app_settings") return { data: [{ id: "dl-row", setting_value: { activeDeviceId, activeDeviceName: "Test Device", userId: "u" } }], error: null };
+        return { data: rowsByTable[table] || [], error: null };
+      };
+      const chain = { select: jest.fn(() => chain), eq: jest.fn(() => chain), then: (resolve) => resolve(resolveData()) };
+      return chain;
+    });
+    return { from };
+  }
+
+  test("device lock loads then becomes active; the hook imports the tenth invoice through the real ownership path", async () => {
+    const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+    const raw = buildRawCloudTables();
+    const localId = getOrCreateLocalDeviceId(localStorage);
+
+    // Seed local storage from a real cloud read of the first nine invoices.
+    getSupabaseClient.mockReturnValue(clientWithActiveDevice(rawTablesWithoutTenth(raw), localId));
+    const nine = await readSupabaseCloudConvergenceSnapshot(ctx);
+    setLocalSnapshot(nine.mapped);
+    setBaseline(nine.mapped);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+
+    // Cloud now has all ten invoices; the same client serves the active-device row.
+    getSupabaseClient.mockReturnValue(clientWithActiveDevice(raw, localId));
+
+    const results = [];
+    const onResult = (e) => results.push(e.detail);
+    const invoicesChanged = jest.fn();
+    window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+    window.addEventListener("estipaid:invoices-changed", invoicesChanged);
+    try {
+      // 1/2: device lock begins loading, then becomes ready + active.
+      const { rerender } = renderHook((lock) => useCloudAutoConvergence({ ...ctx, deviceLock: lock }), {
+        initialProps: { ready: false, loading: true, isActive: false, isLocked: false },
+      });
+      rerender({ ready: true, loading: false, isActive: true, isLocked: false });
+
+      // 3/4/5/6: the hook runs convergence, imports exactly one cloud-only invoice
+      // (with all six children surviving real strict verification), leaving ten.
+      await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10), { timeout: 5000 });
+      const invoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(invoices.find((v) => v.id === "inv-10").lineItems).toHaveLength(6);
+
+      // 7/8: baseline contains ten invoices; journal removed after success.
+      await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10));
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+
+      // 9: queue clean after verified completion.
+      const queue = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE) || "{}");
+      expect(Boolean(queue.pending)).toBe(false);
+
+      // 10: a converged result event is published (13: with no cloud writes).
+      await waitFor(() => expect(results.some((r) => r.ok && r.status === "converged" && r.noCloudWritesPerformed)).toBe(true));
+
+      // 11: the invoice-family change event is published exactly once.
+      await waitFor(() => expect(invoicesChanged).toHaveBeenCalledTimes(1));
+
+      // 12: a second explicit request is idempotent (still ten, matched).
+      const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
+      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request"));
+      await waitFor(() => expect(results.some((r) => r.ok && r.status === "matched")).toBe(true), { timeout: 5000 });
+      expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
+      expect(invoicesChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+      window.removeEventListener("estipaid:invoices-changed", invoicesChanged);
+    }
+  });
+});

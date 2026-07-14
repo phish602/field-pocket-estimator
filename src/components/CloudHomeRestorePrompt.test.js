@@ -927,3 +927,22 @@ test("Not now dismisses the prompt", async () => {
 
   expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
 });
+
+test("a local/cloud mismatch backup also requests automatic convergence (not restore/replace)", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED, noWritesPerformed: false });
+  const requestSeen = jest.fn();
+  const restoreBefore = executeSupabaseCloudRestore.mock.calls.length;
+  window.addEventListener("estipaid:cloud-convergence-request", requestSeen);
+  try {
+    await renderAndSettle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back Up Now" }));
+    });
+    expect(requestSeen).toHaveBeenCalledTimes(1);
+    // It never invokes manual Restore/Replace.
+    expect(executeSupabaseCloudRestore.mock.calls.length).toBe(restoreBefore);
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", requestSeen);
+  }
+});
