@@ -1,6 +1,7 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { setCloudAssetBindingsBatch } from "./cloudAssetBindings";
+import { compareRestoredLineItemOrder } from "./cloudLineItemContract";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
@@ -498,15 +499,31 @@ function mapCloudProjectToLocal(row, customerIdByCloudId) {
   };
 }
 
-function mapCloudInvoiceLineItem(row) {
-  return {
+// Restores an invoice line item from its cloud row WITHOUT losing the fields the
+// shared line-item contract needs to round-trip: the source sort_order, the
+// child kind (metadata.kind), and the internal unit cost (metadata.unit_cost).
+// Field names match what the backend mapper already understands (kind,
+// sort_order, unit, unitCost), so the restored child re-maps to the exact same
+// canonical cloud row. No raw cloud UUID is stored in the business record.
+export function mapCloudInvoiceLineItem(row) {
+  const metadata = (row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)) ? row.metadata : {};
+  const item = {
     id: requireLegacyId(row, "invoice_line_items"),
     description: row?.description || "",
     quantity: row?.quantity ?? null,
-    unit: row?.unit || "",
+    unit: row?.unit ?? null,
     price: row?.unit_price ?? null,
     total: row?.total_price ?? null,
   };
+  const kind = asText(metadata.kind);
+  if (kind) item.kind = kind;
+  if (row?.sort_order !== null && row?.sort_order !== undefined && Number.isFinite(Number(row.sort_order))) {
+    item.sort_order = Number(row.sort_order);
+  }
+  if (metadata.unit_cost !== null && metadata.unit_cost !== undefined && Number.isFinite(Number(metadata.unit_cost))) {
+    item.unitCost = Number(metadata.unit_cost);
+  }
+  return item;
 }
 
 function mapCloudPayment(row) {
@@ -570,20 +587,25 @@ function buildLocalRestorePayload({ customers, projects, invoices, invoicePaymen
   const projectIdByCloudId = buildLegacyIdMap(projects);
   const invoiceLegacyIdByCloudId = buildLegacyIdMap(invoices);
 
+  // Group children by their invoice parent first, then order each group by the
+  // deterministic legacy_local_id stable index (with safe fallbacks). Ordering
+  // only by sort_order is not enough: labor/material/generic groups can share
+  // sort_order values, so the canonical stable index is what restores the exact
+  // child order the writer contract produced.
+  const rawByInvoiceCloudId = new Map();
+  (Array.isArray(invoiceLineItems) ? invoiceLineItems : []).forEach((row, fetchPos) => {
+    const invoiceCloudId = asText(row?.invoice_id);
+    if (!invoiceLegacyIdByCloudId.has(invoiceCloudId)) {
+      throw new Error("An invoice line item references an invoice that was not found in the cloud read.");
+    }
+    const list = rawByInvoiceCloudId.get(invoiceCloudId) || [];
+    list.push({ ...row, __fetchPos: fetchPos });
+    rawByInvoiceCloudId.set(invoiceCloudId, list);
+  });
   const lineItemsByInvoiceCloudId = new Map();
-  (Array.isArray(invoiceLineItems) ? invoiceLineItems : [])
-    .slice()
-    .sort((a, b) => Number(a?.sort_order || 0) - Number(b?.sort_order || 0))
-    .forEach((row) => {
-      const invoiceCloudId = asText(row?.invoice_id);
-      if (!invoiceLegacyIdByCloudId.has(invoiceCloudId)) {
-        throw new Error("An invoice line item references an invoice that was not found in the cloud read.");
-      }
-      const mapped = mapCloudInvoiceLineItem(row);
-      const list = lineItemsByInvoiceCloudId.get(invoiceCloudId) || [];
-      list.push(mapped);
-      lineItemsByInvoiceCloudId.set(invoiceCloudId, list);
-    });
+  rawByInvoiceCloudId.forEach((rows, invoiceCloudId) => {
+    lineItemsByInvoiceCloudId.set(invoiceCloudId, rows.slice().sort(compareRestoredLineItemOrder).map(mapCloudInvoiceLineItem));
+  });
 
   const paymentsByInvoiceCloudId = new Map();
   (Array.isArray(invoicePayments) ? invoicePayments : []).forEach((row) => {

@@ -4,10 +4,14 @@ import useCloudAutoConvergence from "./useCloudAutoConvergence";
 import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } from "./supabaseCloudConvergence";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock, isCloudBackupRunLocked } from "./cloudBackupRunLock";
 
-jest.mock("./supabaseCloudConvergence", () => ({
-  runSupabaseCloudConvergence: jest.fn(),
-  recoverInterruptedCloudConvergence: jest.fn(),
-}));
+jest.mock("./supabaseCloudConvergence", () => {
+  const actual = jest.requireActual("./supabaseCloudConvergence");
+  return {
+    ...actual,
+    runSupabaseCloudConvergence: jest.fn(),
+    recoverInterruptedCloudConvergence: jest.fn(),
+  };
+});
 
 const ACTIVE_LOCK = { ready: true, loading: false, isActive: true, isLocked: false };
 const props = (overrides = {}) => ({ configured: true, user: { id: "user-1" }, company: { id: "company-1" }, deviceLock: ACTIVE_LOCK, ...overrides });
@@ -132,4 +136,27 @@ test("a converged run dispatches change events only for the families that change
   window.removeEventListener("estipaid:customers-changed", customersChanged);
   window.removeEventListener("estipaid:invoices-changed", invoicesChanged);
   window.removeEventListener("estipaid:estimates-changed", estimatesChanged);
+});
+
+const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
+
+test("dispatches a safe convergence-result event for a FAILED outcome (not only success)", async () => {
+  runSupabaseCloudConvergence.mockResolvedValue({ ok: false, status: "rolled_back", code: "cloud_verification_failed", noCloudWritesPerformed: true, mismatch: { blockerCount: 0 } });
+  const seen = jest.fn();
+  window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, (e) => seen(e.detail));
+  renderHook(() => useCloudAutoConvergence(props()));
+  await waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
+  const detail = seen.mock.calls[0][0];
+  expect(detail).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
+  // Only safe fields -- no names, numbers, descriptions, totals, or ids.
+  expect(Object.keys(detail).sort()).toEqual(["at", "blockerCount", "changedFamilies", "code", "conflictCount", "noCloudWritesPerformed", "noWritesPerformed", "ok", "status"]);
+});
+
+test("dispatches the result event for a converged outcome with only changed-family booleans", async () => {
+  runSupabaseCloudConvergence.mockResolvedValue({ ok: true, status: "converged", changedFamilies: { invoices: true }, noCloudWritesPerformed: true });
+  const seen = jest.fn();
+  window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, (e) => seen(e.detail));
+  renderHook(() => useCloudAutoConvergence(props()));
+  await waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
+  expect(seen.mock.calls[0][0].changedFamilies).toEqual(expect.objectContaining({ invoices: true, customers: false }));
 });

@@ -94,3 +94,40 @@ describe("cloudLineItemContract whole-parent construction", () => {
     expect(duplicateIds).toEqual([]);
   });
 });
+
+describe("cloudLineItemContract deterministic restore ordering", () => {
+  const { parseLineItemStableIndex, compareRestoredLineItemOrder } = require("./cloudLineItemContract");
+
+  test("parses the stable index from a canonical legacy id, null otherwise", () => {
+    expect(parseLineItemStableIndex("invoice:inv-1:line:3")).toBe(3);
+    expect(parseLineItemStableIndex("estimate:est-1:line:0")).toBe(0);
+    expect(parseLineItemStableIndex("weird-id")).toBeNull();
+    expect(parseLineItemStableIndex("")).toBeNull();
+    expect(parseLineItemStableIndex(null)).toBeNull();
+  });
+
+  test("orders by stable index first, regardless of overlapping sort_order", () => {
+    const rows = [
+      { legacy_local_id: "invoice:i:line:2", sort_order: 0, __fetchPos: 0 },
+      { legacy_local_id: "invoice:i:line:0", sort_order: 0, __fetchPos: 1 },
+      { legacy_local_id: "invoice:i:line:1", sort_order: 1, __fetchPos: 2 },
+    ];
+    expect(rows.slice().sort(compareRestoredLineItemOrder).map((r) => r.legacy_local_id))
+      .toEqual(["invoice:i:line:0", "invoice:i:line:1", "invoice:i:line:2"]);
+  });
+
+  test("falls back to finite sort_order, then legacy id, then fetched position when the id is unparseable", () => {
+    const rows = [
+      { legacy_local_id: "zzz", sort_order: 5, __fetchPos: 0 },
+      { legacy_local_id: "aaa", sort_order: 2, __fetchPos: 1 },
+      { legacy_local_id: "bbb", __fetchPos: 2 }, // missing sort_order -> last
+    ];
+    expect(rows.slice().sort(compareRestoredLineItemOrder).map((r) => r.legacy_local_id)).toEqual(["aaa", "zzz", "bbb"]);
+    // Same sort_order and unparseable ids -> tie broken by legacy id then position.
+    const tied = [
+      { legacy_local_id: "b", sort_order: 1, __fetchPos: 1 },
+      { legacy_local_id: "a", sort_order: 1, __fetchPos: 0 },
+    ];
+    expect(tied.slice().sort(compareRestoredLineItemOrder).map((r) => r.legacy_local_id)).toEqual(["a", "b"]);
+  });
+});

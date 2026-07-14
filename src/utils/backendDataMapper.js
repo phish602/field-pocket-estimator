@@ -200,15 +200,23 @@ function extractDocumentLineItems(record = {}, kind = "") {
   const genericItems = Array.isArray(record?.lineItems) ? record.lineItems : (Array.isArray(record?.items) ? record.items : []);
 
   const mapItem = (item = {}, itemKind = "", index = 0) => {
+    // Preserve an explicit child kind / source sort_order / unit when the record
+    // carries them (e.g. a cloud-restored invoice child). Ordinary local records
+    // (estimator labor/material lines) do not carry these fields, so they keep
+    // the existing forced kind and array-index sort_order behavior.
+    const explicitKind = pickText(item?.kind);
+    const explicitSortOrder = item?.sort_order ?? item?.sortOrder;
+    const hasExplicitSortOrder = explicitSortOrder !== null && explicitSortOrder !== undefined && explicitSortOrder !== "" && Number.isFinite(Number(explicitSortOrder));
     const mapped = {
-      kind: itemKind || kind || "line_item",
+      kind: explicitKind || itemKind || kind || "line_item",
       legacy_local_id: buildLegacyLocalId(item),
       description: pickText(item?.description, item?.name, item?.title, item?.label, item?.notes, item?.text),
       quantity: toNumberOrNull(item?.quantity ?? item?.qty ?? item?.count),
+      unit: pickText(item?.unit, item?.units, item?.uom),
       unit_price: toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price),
       unit_cost: toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal),
       total: toNumberOrNull(item?.total ?? item?.amount),
-      sort_order: index,
+      sort_order: hasExplicitSortOrder ? Number(explicitSortOrder) : index,
     };
     Object.keys(mapped).forEach((key) => {
       if (mapped[key] === null || mapped[key] === "" || mapped[key] === undefined) delete mapped[key];

@@ -1305,3 +1305,56 @@ describe("executeSupabaseCloudRestore — cloud asset binding capture", () => {
     expect(readCloudAssetBindings("company_1").bindings.customer).toEqual({});
   });
 });
+
+// Gate 16B: invoice line-item cloud round-trip stress. For every valid child the
+// canonical cloud contract must survive: cloud row -> restored local child ->
+// backend draft -> expected cloud row, identical on identity + all fields.
+describe("invoice line-item round trip preserves the canonical child contract", () => {
+  const { mapCloudInvoiceLineItem } = require("./supabaseCloudRestore");
+  const { buildParentLineItemContract, compareRestoredLineItemOrder } = require("./cloudLineItemContract");
+  const { mapLocalInvoiceToBackendInvoice } = require("../utils/backendDataMapper");
+
+  const CANONICAL_FIELDS = ["legacy_local_id", "invoice_id", "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"];
+  const canonical = (rows) => rows.map((row) => CANONICAL_FIELDS.reduce((out, f) => ({ ...out, [f]: row[f] ?? null }), {}));
+
+  function roundTrip(backendChildren) {
+    const cloud1 = buildParentLineItemContract({ entityType: "invoice", parentLegacyId: "inv-x", parentCloudId: "db-inv-x", parentColumn: "invoice_id", items: backendChildren })
+      .rows.map((row, i) => ({ id: `db-il-${i}`, ...row }));
+    // Restore: deterministic ordering + faithful field mapping.
+    const localChildren = cloud1.map((r, i) => ({ ...r, __fetchPos: i })).sort(compareRestoredLineItemOrder).map(mapCloudInvoiceLineItem);
+    const backend2 = mapLocalInvoiceToBackendInvoice({ id: "inv-x", customerId: "c", projectId: "p", lineItems: localChildren, payments: [] }, {}).line_items;
+    const cloud2 = buildParentLineItemContract({ entityType: "invoice", parentLegacyId: "inv-x", parentCloudId: "db-inv-x", parentColumn: "invoice_id", items: backend2 }).rows;
+    return { cloud1, cloud2 };
+  }
+
+  test.each([
+    ["labor child with unit cost", [{ kind: "labor", sort_order: 0, description: "Framing", quantity: 2, unit: "hr", unit_price: 75, total: 150, unit_cost: 45 }]],
+    ["material child with unit cost", [{ kind: "material", sort_order: 0, description: "Lumber", quantity: 10, unit: "ea", unit_price: 12.5, total: 125, unit_cost: 8 }]],
+    ["generic invoice child", [{ kind: "invoice", sort_order: 0, description: "Permit", quantity: 1, unit_price: 60, total: 60 }]],
+    ["duplicate source sort orders across kinds", [
+      { kind: "labor", sort_order: 0, description: "L0", quantity: 1, unit: "hr", unit_price: 50, total: 50, unit_cost: 30 },
+      { kind: "labor", sort_order: 1, description: "L1", quantity: 1, unit: "hr", unit_price: 55, total: 55, unit_cost: 33 },
+      { kind: "material", sort_order: 0, description: "M0", quantity: 2, unit: "ea", unit_price: 10, total: 20, unit_cost: 6 },
+      { kind: "material", sort_order: 1, description: "M1", quantity: 1, unit: "box", unit_price: 15, total: 15, unit_cost: 9 },
+      { kind: "invoice", sort_order: 2, description: "G2", quantity: 1, unit_price: 12, total: 12 },
+    ]],
+    ["missing sort order", [{ kind: "material", description: "No sort", quantity: 1, unit: "ea", unit_price: 9, total: 9, unit_cost: 4 }]],
+    ["nonempty unit and decimal quantity/price", [{ kind: "material", sort_order: 0, description: "Paint", quantity: 1.5, unit: "gal", unit_price: 39.99, total: 59.99, unit_cost: 22.5 }]],
+    ["null optional values", [{ kind: "invoice", sort_order: 0, description: "Bare", quantity: null, unit: null, unit_price: null, total: null }]],
+  ])("round-trips: %s", (_label, backendChildren) => {
+    const { cloud1, cloud2 } = roundTrip(backendChildren);
+    expect(canonical(cloud2)).toEqual(canonical(cloud1));
+  });
+
+  test("a malformed deterministic legacy id falls back safely and still restores every child", () => {
+    // Cloud rows whose legacy ids cannot be parsed still map to local children.
+    const rows = [
+      { id: "a", invoice_id: "db-inv-x", legacy_local_id: "not-canonical", sort_order: 1, description: "B", quantity: 1, unit: "ea", unit_price: 2, total_price: 2, metadata: { kind: "material", unit_cost: 1 } },
+      { id: "b", invoice_id: "db-inv-x", legacy_local_id: "also-weird", sort_order: 0, description: "A", quantity: 1, unit: "ea", unit_price: 3, total_price: 3, metadata: { kind: "labor", unit_cost: 2 } },
+    ];
+    const local = rows.map((r, i) => ({ ...r, __fetchPos: i })).sort(compareRestoredLineItemOrder).map(mapCloudInvoiceLineItem);
+    // Fallback ordering: finite sort_order ascending -> "A" (0) before "B" (1).
+    expect(local.map((c) => c.description)).toEqual(["A", "B"]);
+    expect(local.every((c) => c.kind && Number.isFinite(c.unitCost))).toBe(true);
+  });
+});

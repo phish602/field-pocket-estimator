@@ -12,6 +12,7 @@ import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap"
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
+import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult } from "../lib/supabaseCloudConvergence";
 import {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
@@ -300,6 +301,8 @@ export default function AdvancedSettingsScreen({
   const [cloudVerification, setCloudVerification] = useState(null);
   const [onboardingStatusBusy, setOnboardingStatusBusy] = useState(false);
   const [onboardingStatus, setOnboardingStatus] = useState(null);
+  const [convergenceResult, setConvergenceResult] = useState(() => getLastCloudConvergenceResult());
+  const [convergenceTick, setConvergenceTick] = useState(0);
   const [onboardingBackupBusy, setOnboardingBackupBusy] = useState(false);
   const [autoBackupQueueState, setAutoBackupQueueState] = useState(() => readCloudBackupQueueState());
   const [autoBackupWorkerRunning, setAutoBackupWorkerRunning] = useState(false);
@@ -682,7 +685,20 @@ export default function AdvancedSettingsScreen({
     return () => {
       active = false;
     };
-  }, [isSupabaseReady, user, company, accountRole]);
+  }, [isSupabaseReady, user, company, accountRole, convergenceTick]);
+
+  // Automatic convergence finished (any outcome): re-run the onboarding/cloud
+  // verification check so a stale pre-convergence mismatch is replaced. A
+  // verified success reaches Cloud OK; a failure keeps the mismatch and records
+  // a safe technical reason for display.
+  useEffect(() => {
+    const onConvergenceResult = (event) => {
+      setConvergenceResult(event?.detail || getLastCloudConvergenceResult());
+      setConvergenceTick((value) => value + 1);
+    };
+    try { window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onConvergenceResult); } catch {}
+    return () => { try { window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onConvergenceResult); } catch {} };
+  }, []);
 
   const runCloudBackup = async () => {
     if (!ensureUnlockedForWrite()) return;
@@ -863,6 +879,12 @@ export default function AdvancedSettingsScreen({
     partialLocalSnapshot: partialLocalSnapshotState,
   });
   const restoreActionAvailable = restoreAvailability.available;
+  // A safe technical reason when the last automatic convergence did not succeed,
+  // so the screen never claims zero blockers with no sign the sync failed. Only
+  // the safe code is shown -- no names, numbers, or record details.
+  const convergenceFailureReason = convergenceResult && convergenceResult.ok === false
+    ? `Automatic cloud sync did not finish (${String(convergenceResult.code || convergenceResult.status || "unknown").trim()}).`
+    : "";
   const cloudBackupDetail = String(
     (replaceEstimateLineItemsPermissionBlocked
       ? "Replace reached estimate line item cleanup, but this account does not have permission to delete those cloud rows. Cloud backup cannot be replaced until estimate_line_items cleanup is allowed."
@@ -870,6 +892,7 @@ export default function AdvancedSettingsScreen({
       || cloudDecision?.firstBlocker?.message
       || (showDeveloperCloudTools ? cloudDecision?.firstSafeRepair?.message : "")
       || backupAttentionDetail
+      || convergenceFailureReason
       || ""
   ).trim();
   const mismatchTableDetails = describeVerificationMismatchTables(onboardingStatus?.verification || cloudVerification);

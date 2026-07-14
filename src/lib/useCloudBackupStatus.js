@@ -10,6 +10,7 @@ import {
   previewSupabaseCloudRestore,
 } from "./supabaseCloudRestore";
 import { checkSupabaseCloudOnboardingStatus } from "./supabaseCloudOnboarding";
+import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult } from "./supabaseCloudConvergence";
 import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
 import useDeviceLockStatus from "./useDeviceLockStatus";
@@ -59,6 +60,7 @@ export default function useCloudBackupStatus() {
   const [restorePreview, setRestorePreview] = useState(null);
   const [restorePreviewLoading, setRestorePreviewLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [convergenceResult, setConvergenceResult] = useState(() => getLastCloudConvergenceResult());
 
   useEffect(() => {
     const refresh = () => {
@@ -104,6 +106,15 @@ export default function useCloudBackupStatus() {
       armRestoreBannerTimer(CLOUD_BACKUP_RESTORE_BANNER_DURATION_MS);
     };
 
+    // Automatic convergence finished (any outcome): re-run cloud verification so
+    // the chip stops showing a stale pre-convergence mismatch. A verified success
+    // reaches Cloud OK; a failure keeps the mismatch and carries a safe reason.
+    const onConvergenceResult = (event) => {
+      setConvergenceResult(event?.detail || getLastCloudConvergenceResult());
+      refresh();
+      setRefreshToken((value) => value + 1);
+    };
+
     refresh();
 
     if (isRestoreRecent()) {
@@ -114,6 +125,7 @@ export default function useCloudBackupStatus() {
       window.addEventListener("pe-localstorage", onStorageEvent);
       window.addEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
       window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onRestoreComplete);
+      window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onConvergenceResult);
       window.addEventListener("estipaid:customers-changed", refresh);
       window.addEventListener("estipaid:projects-changed", refresh);
       window.addEventListener("estipaid:estimates-changed", refresh);
@@ -126,6 +138,7 @@ export default function useCloudBackupStatus() {
         window.removeEventListener("pe-localstorage", onStorageEvent);
         window.removeEventListener(CLOUD_AUTO_BACKUP_RUNNING_EVENT, onWorkerRunningEvent);
         window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onRestoreComplete);
+        window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onConvergenceResult);
         window.removeEventListener("estipaid:customers-changed", refresh);
         window.removeEventListener("estipaid:projects-changed", refresh);
         window.removeEventListener("estipaid:estimates-changed", refresh);
@@ -225,6 +238,7 @@ export default function useCloudBackupStatus() {
       decision,
       refreshCloudStatus,
       deviceLock,
+      convergenceResult,
     };
   }
 
@@ -256,5 +270,6 @@ export default function useCloudBackupStatus() {
     decision,
     refreshCloudStatus,
     deviceLock,
+    convergenceResult,
   };
 }

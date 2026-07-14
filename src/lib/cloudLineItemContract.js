@@ -73,6 +73,35 @@ export function buildLineItemMetadata(item, { includeKind = false } = {}) {
   return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
+// Parses the deterministic stable index out of a `${entityType}:${parent}:line:${n}`
+// legacy id. Returns null when the id does not follow the contract, so callers
+// can fall back safely instead of guessing.
+export function parseLineItemStableIndex(legacyLocalId) {
+  const match = /:line:(-?\d+)$/.exec(asText(legacyLocalId));
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isInteger(index) ? index : null;
+}
+
+// Deterministic restore ordering for line items sharing one parent: prefer the
+// canonical legacy_local_id stable index; fall back to finite sort_order, then
+// the legacy id, then the original fetched position. Never relies on unspecified
+// Supabase row order. `row.__fetchPos` (if set) is the original fetched index.
+export function compareRestoredLineItemOrder(a, b) {
+  const ai = parseLineItemStableIndex(a?.legacy_local_id);
+  const bi = parseLineItemStableIndex(b?.legacy_local_id);
+  if (ai !== null && bi !== null && ai !== bi) return ai - bi;
+  if (ai !== null && bi === null) return -1;
+  if (ai === null && bi !== null) return 1;
+  const as = Number.isFinite(Number(a?.sort_order)) ? Number(a.sort_order) : Number.POSITIVE_INFINITY;
+  const bs = Number.isFinite(Number(b?.sort_order)) ? Number(b.sort_order) : Number.POSITIVE_INFINITY;
+  if (as !== bs) return as - bs;
+  const al = asText(a?.legacy_local_id);
+  const bl = asText(b?.legacy_local_id);
+  if (al !== bl) return al < bl ? -1 : 1;
+  return (Number(a?.__fetchPos) || 0) - (Number(b?.__fetchPos) || 0);
+}
+
 export function lineItemIncludesLineRole(entityType) { return entityType === "estimate"; }
 export function lineItemIncludesKind(entityType) { return entityType === "invoice"; }
 

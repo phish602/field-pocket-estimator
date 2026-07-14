@@ -102,6 +102,50 @@ function snapshotValues(storage) {
 }
 function queueRevision() { return Number(readCloudBackupQueueState()?.localMutationRevision || 0); }
 
+// Gate 16B: a single safe automatic-convergence result contract so status
+// surfaces can react to EVERY outcome (not just success), similar to the
+// restore-complete event pattern. The payload is deliberately non-sensitive:
+// no names, numbers, descriptions, totals, payment details, payloads, or ids --
+// only a timestamp, ok, status, a safe technical code, no-write flags,
+// changed-family booleans, and safe counts.
+export const CLOUD_CONVERGENCE_RESULT_EVENT = "estipaid:cloud-convergence-result";
+
+let lastConvergenceResult = null;
+export function getLastCloudConvergenceResult() { return lastConvergenceResult; }
+
+export function buildSafeConvergenceResult(result) {
+  const changed = result?.changedFamilies || {};
+  return {
+    at: Date.now(),
+    ok: Boolean(result?.ok),
+    status: asText(result?.status),
+    code: asText(result?.code),
+    noWritesPerformed: Boolean(result?.noWritesPerformed),
+    noCloudWritesPerformed: Boolean(result?.noCloudWritesPerformed),
+    changedFamilies: {
+      customers: Boolean(changed.customers), projects: Boolean(changed.projects), estimates: Boolean(changed.estimates),
+      invoices: Boolean(changed.invoices), scopeTemplates: Boolean(changed.scopeTemplates),
+      companyProfile: Boolean(changed.companyProfile), settings: Boolean(changed.settings),
+    },
+    conflictCount: Number(result?.conflictCount || 0),
+    blockerCount: Number(result?.mismatch?.blockerCount || 0),
+  };
+}
+
+// Records the last result in memory and dispatches the safe result event for any
+// status (converged, matched, conflict, mismatch, blocked, rolled_back,
+// critical, unavailable, ...). Never throws.
+export function recordCloudConvergenceResult(result) {
+  const safe = buildSafeConvergenceResult(result);
+  lastConvergenceResult = safe;
+  try {
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent(CLOUD_CONVERGENCE_RESULT_EVENT, { detail: safe }));
+    }
+  } catch {}
+  return safe;
+}
+
 export function classifyCloudConvergenceEntity({ local, cloud, baseline } = {}) {
   if (!baseline) {
     if (!local && cloud) return "cloud_only_addition";

@@ -4,7 +4,7 @@
 import { useEffect, useRef } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
-import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } from "./supabaseCloudConvergence";
+import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence, recordCloudConvergenceResult } from "./supabaseCloudConvergence";
 
 function online() { try { return typeof navigator === "undefined" || navigator.onLine !== false; } catch { return true; } }
 
@@ -70,7 +70,12 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         if (!acquireCloudBackupRunLock()) return;
         try {
           const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: cfg, user: usr, company: cmp });
-          if (!disposed && result?.ok && (result.status === "converged" || result.status === "matched")) {
+          if (disposed) return;
+          // Surface EVERY outcome to status surfaces via the safe result event.
+          recordCloudConvergenceResult(result);
+          // Only a verified success dispatches family-change events (and only for
+          // families that actually changed) -- never for rolled-back work.
+          if (result?.ok && (result.status === "converged" || result.status === "matched")) {
             dispatchConvergenceChangeEvents(result);
           }
         } finally {

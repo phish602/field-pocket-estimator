@@ -117,3 +117,22 @@ test("surfaces automatic safe repair failure state from onboarding checks", asyn
   await waitFor(() => expect(result.current.onboardingStatus?.automaticSafeRepair?.failed).toBe(true));
   expect(result.current.chipState).toBe("backup_failed");
 });
+
+describe("automatic convergence result wiring (Gate 16B)", () => {
+  test("re-runs cloud verification when an automatic convergence result arrives", async () => {
+    signInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "cloud_verified_current", verification: { ok: true, allMatched: true, notices: [] } });
+    renderHook(() => useCloudBackupStatus());
+    await waitFor(() => expect(checkSupabaseCloudOnboardingStatus).toHaveBeenCalledTimes(1));
+    act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "converged", code: "" } })); });
+    await waitFor(() => expect(checkSupabaseCloudOnboardingStatus).toHaveBeenCalledTimes(2));
+  });
+
+  test("exposes the safe convergence result so a failed automatic sync stays visible", async () => {
+    signInWithCompany();
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "cloud_verified_current", verification: { ok: true, allMatched: false, notices: [] } });
+    const { result } = renderHook(() => useCloudBackupStatus());
+    act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: false, status: "rolled_back", code: "cloud_verification_failed" } })); });
+    await waitFor(() => expect(result.current.convergenceResult).toEqual(expect.objectContaining({ ok: false, code: "cloud_verification_failed" })));
+  });
+});

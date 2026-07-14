@@ -1,6 +1,11 @@
+jest.mock("./supabaseClient", () => ({ getSupabaseClient: jest.fn(() => null) }));
+
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { getSupabaseClient } from "./supabaseClient";
+import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
+import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
 const baseLocal = () => ({ customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], invoices: [invoice("invoice-1")], companyProfile: null, settings: null, scopeTemplates: [] });
@@ -513,4 +518,164 @@ test("live stale-device fixture: the tenth cloud invoice imports atomically, exi
   const second = await runSupabaseCloudConvergence({ ...ctx, cloudSnapshot: snapshot });
   expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched", noWritesPerformed: true }));
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10);
+});
+
+// ---------------------------------------------------------------------------
+// Gate 16B: the real invoice cloud-pull round trip. Raw Supabase rows are read
+// through readSupabaseCloudConvergenceSnapshot, converged, and checked by the
+// REAL runSupabaseCloudVerification (no stubbed allMatched). The tenth invoice
+// carries production-shaped children: labor/material/generic kinds, overlapping
+// per-category sort orders, metadata.kind + metadata.unit_cost, and a unit.
+// ---------------------------------------------------------------------------
+const { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } = require("./supabaseEstimateRestorePayload");
+
+// A thenable query chain: from(t).select(...).eq(...).eq(...)... resolves to the
+// table's rows. app_settings resolves empty (no restore bundle).
+function rawCloudClient(rowsByTable) {
+  const from = jest.fn((table) => {
+    const result = { data: table === "app_settings" ? [] : (rowsByTable[table] || []), error: null };
+    const chain = { select: jest.fn(() => chain), eq: jest.fn(() => chain), then: (resolve) => resolve(result) };
+    return chain;
+  });
+  return { from };
+}
+
+function inv10BackendLines() {
+  // 6 children: overlapping per-category sort orders, kinds, unit_cost, unit,
+  // decimals and a null-unit generic line.
+  return [
+    { kind: "labor", sort_order: 0, description: "Framing labor", quantity: 2, unit: "hr", unit_price: 75, total: 150, unit_cost: 45 },
+    { kind: "labor", sort_order: 1, description: "Finish labor", quantity: 1, unit: "hr", unit_price: 80, total: 80, unit_cost: 50 },
+    { kind: "material", sort_order: 0, description: "Lumber", quantity: 10, unit: "ea", unit_price: 12.5, total: 125, unit_cost: 8 },
+    { kind: "material", sort_order: 1, description: "Fasteners", quantity: 1, unit: "box", unit_price: 20, total: 20, unit_cost: 11 },
+    { kind: "invoice", sort_order: 2, description: "Permit fee", quantity: 1, unit: null, unit_price: 60, total: 60 },
+    { kind: "material", sort_order: 2, description: "Paint", quantity: 1.5, unit: "gal", unit_price: 40, total: 60, unit_cost: 22 },
+  ];
+}
+
+// Raw cloud invoice_line_item rows produced through the shared writer contract.
+function writerInvoiceChildRows(parentLegacyId, parentCloudId, backendLines, idPrefix) {
+  return buildParentLineItemContract({ entityType: "invoice", parentLegacyId, parentCloudId, parentColumn: "invoice_id", items: backendLines })
+    .rows.map((row, idx) => ({ id: `${idPrefix}-${idx}`, ...row }));
+}
+
+// Real Supabase-shaped UUIDs so asset-binding writes succeed exactly as they do
+// in production (fake ids would fail isValidCloudUuid and mask the real defect).
+const U = { cust1: uuid(101), cust2: uuid(102), proj1: uuid(201), proj2: uuid(202), est1: uuid(301), inv: (i) => uuid(400 + i) };
+
+function buildRawCloudTables() {
+  const customers = [
+    { id: U.cust1, legacy_local_id: "cust-1", display_name: "Cust 1", customer_type: "residential" },
+    { id: U.cust2, legacy_local_id: "cust-2", display_name: "Cust 2", customer_type: "residential" },
+  ];
+  const projects = [
+    { id: U.proj1, legacy_local_id: "proj-1", customer_id: U.cust1, project_number: "P-1", project_name: "Proj 1" },
+    { id: U.proj2, legacy_local_id: "proj-2", customer_id: U.cust2, project_number: "P-2", project_name: "Proj 2" },
+  ];
+  const est1Local = estimate("est-1", { customerId: "cust-1", projectId: "proj-1", estimateNumber: "EST-1" });
+  const mappedEst1 = mapLocalEstimateToBackendEstimate(est1Local, {});
+  const estimates = [{
+    id: U.est1, legacy_local_id: "est-1", customer_id: U.cust1, project_id: U.proj1,
+    estimate_number: mappedEst1.estimate_number, status: mappedEst1.status, total_amount: mappedEst1.total_amount,
+    approved_total: mappedEst1.approved_total ?? null, notes: mappedEst1.notes, terms: mappedEst1.terms,
+    converted_invoice_legacy_id: mappedEst1.converted_invoice_legacy_local_id ?? null,
+    restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: "est-1", estimate: est1Local },
+    restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
+  }];
+  // 9 existing invoices, one simple line each (no explicit kind/unit_cost).
+  const invoiceRows = [];
+  const invoiceLineRows = [];
+  for (let i = 1; i <= 9; i++) {
+    const legacy = `inv-${i}`;
+    const cloudId = U.inv(i);
+    invoiceRows.push({ id: cloudId, legacy_local_id: legacy, customer_id: U.cust1, project_id: U.proj1, source_estimate_legacy_id: "", invoice_number: `INV-${i}`, status: "sent", payment_status: "unpaid", total_amount: 100, amount_paid: 0, balance_remaining: 100, invoice_date: "2026-07-01", due_date: "2026-08-01", notes: "" });
+    writerInvoiceChildRows(legacy, cloudId, [{ kind: "invoice", sort_order: 0, description: "Service", quantity: 1, unit_price: 100, total: 100 }], `db-il-${i}`).forEach((r) => invoiceLineRows.push(r));
+  }
+  // The tenth, cloud-only invoice with a valid source estimate and 6 children.
+  invoiceRows.push({ id: U.inv(10), legacy_local_id: "inv-10", customer_id: U.cust1, project_id: U.proj1, source_estimate_legacy_id: "est-1", invoice_number: "INV-10", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
+  writerInvoiceChildRows("inv-10", U.inv(10), inv10BackendLines(), "db-il-10").forEach((r) => invoiceLineRows.push(r));
+
+  return { customers, projects, estimates, invoices: invoiceRows, invoice_payments: [], estimate_line_items: [], invoice_line_items: invoiceLineRows, est1Local };
+}
+
+// The stale device's local data came from the cloud originally, so its nine
+// invoices already carry the canonical restored shape. Derive them through the
+// same real mapping (a cloud read of the first nine invoices) rather than
+// hand-building an unrealistic shape.
+function rawTablesWithoutTenth(raw) {
+  return {
+    ...raw,
+    invoices: raw.invoices.filter((v) => v.legacy_local_id !== "inv-10"),
+    invoice_line_items: raw.invoice_line_items.filter((r) => r.invoice_id !== U.inv(10)),
+  };
+}
+
+test("Gate 16B raw-cloud round trip: the tenth invoice survives snapshot mapping and REAL strict verification", async () => {
+  const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+  const raw = buildRawCloudTables();
+
+  // Seed local storage from a real cloud read of the first nine invoices.
+  getSupabaseClient.mockReturnValue(rawCloudClient(rawTablesWithoutTenth(raw)));
+  const nineSnapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+  expect(nineSnapshot.ok).toBe(true);
+  setLocalSnapshot(nineSnapshot.mapped);
+  setBaseline(nineSnapshot.mapped);
+
+  // Now the cloud has all ten invoices.
+  const client = rawCloudClient(raw);
+  getSupabaseClient.mockReturnValue(client);
+  const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+  expect(snapshot.ok).toBe(true);
+  // 3/4. The tenth invoice mapped with all six children.
+  const mappedInv10 = snapshot.mapped.invoices.find((inv) => inv.id === "inv-10");
+  expect(mappedInv10.lineItems).toHaveLength(6);
+
+  const before = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  expect(before).toHaveLength(9);
+
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+
+  // 7/8/9: strict (real) verification passed, no rollback, ten invoices remain.
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", imported: 1, noCloudWritesPerformed: true }));
+  const after = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  expect(after).toHaveLength(10);
+  const imported = after.find((inv) => inv.id === "inv-10");
+  expect(imported.lineItems).toHaveLength(6);
+  // 11: existing nine invoices unchanged and in the same order.
+  expect(after.slice(0, 9)).toEqual(before);
+  // 13: journal removed; 12: baseline has ten invoices.
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10);
+  // 14: no cloud mutation.
+  const mutated = client.from.mock.results.some((r) => r.value && (r.value.insert || r.value.update || r.value.delete || r.value.upsert || r.value.rpc));
+  expect(mutated).toBe(false);
+
+  // 15: a second run is idempotent.
+  const second = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10);
+});
+
+test("Gate 16B raw-cloud round trip: a real semantic child mismatch rolls back to nine invoices", async () => {
+  const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+  const raw = buildRawCloudTables();
+  getSupabaseClient.mockReturnValue(rawCloudClient(rawTablesWithoutTenth(raw)));
+  const nineSnapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+  setLocalSnapshot(nineSnapshot.mapped);
+  setBaseline(nineSnapshot.mapped);
+  const before = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  expect(before).toHaveLength(9);
+
+  // Build the import snapshot from the clean cloud, but let the REAL verifier read
+  // a cloud where one tenth-invoice child was semantically corrupted after import.
+  getSupabaseClient.mockReturnValue(rawCloudClient(raw));
+  const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+  const corrupted = { ...raw, invoice_line_items: raw.invoice_line_items.map((r) => (r.id === "db-il-10-0" ? { ...r, description: "TAMPERED" } : r)) };
+  getSupabaseClient.mockReturnValue(rawCloudClient(corrupted));
+
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+  expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
+  // Exact rollback: nine invoices restored byte-for-byte.
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toEqual(before);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
 });
