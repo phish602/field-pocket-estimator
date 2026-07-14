@@ -3,6 +3,7 @@ import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 import { readCloudAssetBindings } from "./cloudAssetBindings";
+import { buildParentLineItemContract } from "./cloudLineItemContract";
 
 export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v1";
 
@@ -84,29 +85,29 @@ function sameChildContract(expected, cloud, { parentColumn, includeLineRole }) {
     === JSON.stringify(fields.map((field) => normalizedChildValue(cloud?.[field])));
 }
 
+// Expected cloud child rows are built from the SHARED line-item contract, so the
+// verifier's identity + metadata match exactly what the migration writer
+// persisted (sanitized parent segment, whole-parent stable index, and
+// metadata.unit_cost / metadata.kind). prefix is the entity type ("estimate" |
+// "invoice"). Cross-parent id collisions (e.g. two parents sanitizing to the
+// same segment) are still surfaced as duplicates.
 function expectedChildren(draft, parentKey, parentCloudRows, parentColumn, prefix, includeLineRole) {
   const parentCloudId = new Map((Array.isArray(parentCloudRows) ? parentCloudRows : []).map((row) => [asText(row?.legacy_local_id), asText(row?.id)]));
   const out = []; const duplicateIds = [];
   (Array.isArray(draft?.[parentKey]) ? draft[parentKey] : []).forEach((parent) => {
     const parentLegacyId = asText(parent?.legacy_local_id);
-    const parentId = parentCloudId.get(parentLegacyId) || "";
-    (Array.isArray(parent?.line_items) ? parent.line_items : []).forEach((item, index) => {
-      const sortOrder = Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index;
-      const legacyId = `${prefix}:${parentLegacyId}:line:${sortOrder}`;
-      if (out.some((row) => row.legacy_local_id === legacyId)) duplicateIds.push(legacyId);
-      out.push({
-        legacy_local_id: legacyId,
-        [parentColumn]: parentId,
-        sort_order: sortOrder,
-        description: item?.description ?? null,
-        quantity: item?.quantity ?? null,
-        unit: item?.unit ?? null,
-        unit_price: item?.unit_price ?? null,
-        total_price: item?.total ?? null,
-        metadata: item?.metadata ?? null,
-        ...(includeLineRole ? { line_role: item?.kind ?? null } : {}),
-      });
+    const contract = buildParentLineItemContract({
+      entityType: prefix,
+      parentLegacyId,
+      parentCloudId: parentCloudId.get(parentLegacyId) || "",
+      parentColumn,
+      items: parent?.line_items,
     });
+    contract.rows.forEach((row) => {
+      if (out.some((existing) => existing.legacy_local_id === row.legacy_local_id)) duplicateIds.push(row.legacy_local_id);
+      out.push(row);
+    });
+    duplicateIds.push(...contract.duplicateIds);
   });
   return { rows: out, duplicateIds };
 }

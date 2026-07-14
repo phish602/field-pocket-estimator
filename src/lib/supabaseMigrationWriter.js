@@ -14,6 +14,7 @@ import {
   hasPermanentCloudIdentityConflict,
 } from "./cloudIdentityReconciliation";
 import { setCloudAssetBindingsBatch, getCloudAssetBindingUuidMap } from "./cloudAssetBindings";
+import { buildParentLineItemContract } from "./cloudLineItemContract";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -301,50 +302,10 @@ function countDraftLineItems(draft) {
   };
 }
 
-function sanitizeLegacyIdSegment(value, fallback = "line_item") {
-  const normalized = asText(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-  return normalized || fallback;
-}
-
-// Raw local line-item ids may be missing, reused, parent-scoped, or duplicated
-// across the company, so they are never used as the Supabase legacy_local_id.
-// stableIndex prefers sort_order only when every item in the parent's line_items
-// array has a defined, mutually-unique sort_order; otherwise it falls back to the
-// item's position in the normalized draft array. Mixing the two within one parent
-// could let a sort_order value collide with another item's array index, so the
-// choice is made once for the whole parent, not per item.
-function computeStableLineItemIndexes(items) {
-  const list = Array.isArray(items) ? items : [];
-  const sortOrders = list.map((item) => {
-    const raw = item?.sort_order;
-    if (raw === null || raw === undefined || raw === "") return null;
-    const num = Number(raw);
-    return Number.isFinite(num) ? num : null;
-  });
-  const allDefined = sortOrders.every((value) => value !== null);
-  const allUnique = allDefined && new Set(sortOrders).size === sortOrders.length;
-  if (allDefined && allUnique) return sortOrders;
-  return list.map((_, index) => index);
-}
-
-function buildDeterministicLineItemLegacyId(parentLegacyId, stableIndex, entityType) {
-  const safeParent = sanitizeLegacyIdSegment(parentLegacyId, "parent");
-  return `${entityType}:${safeParent}:line:${stableIndex}`;
-}
-
-function buildLineItemMetadata(item, { includeKind = false } = {}) {
-  const metadata = {};
-  const unitCost = item?.unit_cost;
-  if (unitCost !== null && unitCost !== undefined && unitCost !== "") {
-    const nextCost = Number(unitCost);
-    if (Number.isFinite(nextCost)) metadata.unit_cost = nextCost;
-  }
-  if (includeKind) {
-    const kind = asText(item?.kind);
-    if (kind) metadata.kind = kind;
-  }
-  return Object.keys(metadata).length > 0 ? metadata : null;
-}
+// Line-item child identity (parent sanitization, whole-parent stable indexing,
+// deterministic legacy_local_id, persisted sort_order, and metadata) now lives
+// in ./cloudLineItemContract so the writer, verifier, and convergence evidence
+// all produce identical child rows. See buildParentLineItemContract.
 
 function projectHasRealActivity(project, localSnapshot) {
   const projectId = asText(project?.id || project?.legacy_local_id || project?.legacyLocalId);
@@ -555,10 +516,11 @@ function mapEstimateLineItemPayloads(draft, estimateIdByLegacyId) {
     const estimateId = estimateIdByLegacyId.get(parentLegacyId) || "";
     const companyId = asText(estimate?.company_id);
     const items = Array.isArray(estimate?.line_items) ? estimate.line_items : [];
-    const stableIndexes = computeStableLineItemIndexes(items);
+    const contract = buildParentLineItemContract({ entityType: "estimate", parentLegacyId, parentCloudId: estimateId, parentColumn: "estimate_id", items });
 
     items.forEach((item, index) => {
-      const legacyLocalId = buildDeterministicLineItemLegacyId(parentLegacyId, stableIndexes[index], "estimate");
+      const { metadata, ...contractRow } = contract.rows[index];
+      const legacyLocalId = contractRow.legacy_local_id;
 
       const rawId = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
       if (rawId) {
@@ -580,18 +542,9 @@ function mapEstimateLineItemPayloads(draft, estimateIdByLegacyId) {
       }
       seenLegacyIds.add(legacyLocalId);
 
-      const metadata = buildLineItemMetadata(item);
       payloads.push({
         company_id: companyId,
-        estimate_id: estimateId,
-        legacy_local_id: legacyLocalId,
-        sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
-        description: item?.description || null,
-        quantity: item?.quantity ?? null,
-        unit: item?.unit || null,
-        unit_price: item?.unit_price ?? null,
-        total_price: item?.total ?? null,
-        line_role: item?.kind || null,
+        ...contractRow,
         ...(metadata ? { metadata } : {}),
       });
     });
@@ -621,10 +574,11 @@ function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
     const invoiceId = invoiceIdByLegacyId.get(parentLegacyId) || "";
     const companyId = asText(invoice?.company_id);
     const items = Array.isArray(invoice?.line_items) ? invoice.line_items : [];
-    const stableIndexes = computeStableLineItemIndexes(items);
+    const contract = buildParentLineItemContract({ entityType: "invoice", parentLegacyId, parentCloudId: invoiceId, parentColumn: "invoice_id", items });
 
     items.forEach((item, index) => {
-      const legacyLocalId = buildDeterministicLineItemLegacyId(parentLegacyId, stableIndexes[index], "invoice");
+      const { metadata, ...contractRow } = contract.rows[index];
+      const legacyLocalId = contractRow.legacy_local_id;
 
       const rawId = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
       if (rawId) {
@@ -646,17 +600,9 @@ function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
       }
       seenLegacyIds.add(legacyLocalId);
 
-      const metadata = buildLineItemMetadata(item, { includeKind: true });
       payloads.push({
         company_id: companyId,
-        invoice_id: invoiceId,
-        legacy_local_id: legacyLocalId,
-        sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
-        description: item?.description || null,
-        quantity: item?.quantity ?? null,
-        unit: item?.unit || null,
-        unit_price: item?.unit_price ?? null,
-        total_price: item?.total ?? null,
+        ...contractRow,
         ...(metadata ? { metadata } : {}),
       });
     });

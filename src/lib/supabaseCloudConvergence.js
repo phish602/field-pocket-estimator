@@ -10,6 +10,7 @@ import { readCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty 
 import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
+import { buildParentLineItemContract } from "./cloudLineItemContract";
 import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 
 export const CLOUD_CONVERGENCE_VERSION = 1;
@@ -166,12 +167,10 @@ function estimateEvidenceCode(estimate, evidence) {
   const mapped = mapLocalEstimateToBackendEstimate(payload.estimate, {});
   const persistedFields = ["legacy_local_id", "customer_legacy_local_id", "project_legacy_local_id", "estimate_number", "status", "total_amount", "approved_total", "notes", "terms", "converted_invoice_legacy_local_id"];
   if (persistedFields.some((field) => persisted[field] !== undefined && !cloudSyncEqual(persisted[field], mapped[field]))) return "estimate_restore_payload_persisted_mismatch";
-  const expected = asArray(mapped.line_items).map((item, index) => ({
-    legacy_local_id: `estimate:${id}:line:${Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index}`,
-    sort_order: Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index,
-    description: item?.description ?? null, quantity: item?.quantity ?? null, unit: item?.unit ?? null,
-    unit_price: item?.unit_price ?? null, total_price: item?.total ?? null, metadata: item?.metadata ?? null, line_role: item?.kind ?? null,
-  }));
+  // Expected child rows use the SHARED line-item contract, so convergence
+  // evidence, the verifier, and the writer all agree on identity, sort_order,
+  // and metadata (metadata.unit_cost for estimates; kind lives in line_role).
+  const expected = buildParentLineItemContract({ entityType: "estimate", parentLegacyId: id, parentColumn: "estimate_id", items: mapped.line_items }).rows;
   const children = asArray(evidence.lineItems); const childById = new Map();
   if (children.some((child) => { const childId = asText(child?.legacy_local_id); if (!childId || childById.has(childId)) return true; childById.set(childId, child); return false; })) return "estimate_line_item_duplicate_identity";
   if (expected.length !== children.length) return "estimate_line_item_mismatch";
@@ -367,10 +366,26 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs);
   operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs);
   operationForFamily("invoices", asArray(local.invoices), cloudInvoices, asArray(baseline?.invoices), plan, invoiceBindings?.pairs);
+  // Additions and replacements must always prove restore-payload + child evidence.
   [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
     const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);
     if (code) plan.conflicts.push({ family: "estimates", id: entityId(estimate), code });
   });
+  // A matched estimate header can still hide diverged, duplicated, or missing
+  // cloud child rows, so every OTHER cloud estimate that participates in the
+  // final graph is proven too -- not just additions/replacements. Gated on the
+  // evidence map being present (production always provides it) so evidence-
+  // agnostic planner unit cases are unaffected.
+  if (cloudSnapshot?.estimateEvidence) {
+    const alreadyChecked = new Set([...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].map((estimate) => entityId(estimate)));
+    const conflictedEstimateIds = new Set(plan.conflicts.filter((conflict) => conflict.family === "estimates" && conflict.id).map((conflict) => conflict.id));
+    asArray(cloudEstimates).forEach((estimate) => {
+      const id = entityId(estimate);
+      if (!id || alreadyChecked.has(id) || conflictedEstimateIds.has(id)) return;
+      const code = estimateEvidenceCode(estimate, cloudSnapshot.estimateEvidence[id]);
+      if (code) { plan.conflicts.push({ family: "estimates", id, code }); conflictedEstimateIds.add(id); }
+    });
+  }
   planSupplemental(local, cloud, baseline, plan);
   const planned = { ...local, customers: applyFamilyPlan(local.customers, plan, "customers"), projects: applyFamilyPlan(local.projects, plan, "projects"), estimates: applyFamilyPlan(local.estimates, plan, "estimates"), invoices: applyFamilyPlan(local.invoices, plan, "invoices") };
   const finalRelationshipCodes = relationshipCodes(planned);
@@ -383,6 +398,20 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
 function applyFamilyPlan(rows, plan, family) {
   const replacementMap = new Map((plan.replacements[family] || []).map((row) => [entityId(row), row]));
   return asArray(rows).map((row) => replacementMap.get(entityId(row)) || row).concat(plan.additions[family] || []);
+}
+
+// Which local families a converged plan actually wrote, so the caller dispatches
+// change events only for those (never for unchanged families).
+function convergenceChangedFamilies(writes, plan) {
+  return {
+    customers: Boolean(writes[FAMILY_KEYS.customers]),
+    projects: Boolean(writes[FAMILY_KEYS.projects]),
+    estimates: Boolean(writes[FAMILY_KEYS.estimates]),
+    invoices: Boolean(writes[FAMILY_KEYS.invoices]),
+    scopeTemplates: Boolean(writes[FAMILY_KEYS.scopeTemplates]),
+    companyProfile: Boolean(plan?.supplemental?.companyProfile),
+    settings: Boolean(plan?.supplemental?.settings),
+  };
 }
 
 function plannedStorageWrites(local, plan) {
@@ -495,7 +524,36 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
     .filter((row) => !["customers", "projects"].includes(family))
     .map((row) => ({ entityType, localLegacyId: entityId(row), cloudUuid: snapshot.uuidMaps?.[family]?.[entityId(row)], companyId, source: "cloud_convergence" })).filter((entry) => entry.cloudUuid));
   const bindingEntries = [...plan.bindingEntries, ...additionBindingEntries];
-  if (Object.keys(writes).length === 0 && bindingEntries.length === 0) return { ok: true, status: "matched", noWritesPerformed: true, localOnly: plan.localOnly };
+  if (Object.keys(writes).length === 0 && bindingEntries.length === 0) {
+    // Local-only differences stay local and keep the backup pending; they must
+    // not require strict allMatched before the backup worker runs.
+    if (plan.localOnly) return { ok: true, status: "matched", noWritesPerformed: true, localOnly: true };
+    // Nothing to import, but a "matched" verdict must not be trusted on the
+    // planner's document comparison alone: a stale device can look matched while
+    // the cloud holds extra flattened children under the shared identity
+    // contract. Require strict shared verification before reporting matched.
+    const verification = await verifyCloud({ storageSnapshot: storage, configured, user, company });
+    const warning = Array.isArray(verification?.notices) && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+    const blocker = Array.isArray(verification?.blockers) && verification.blockers.length > 0;
+    const repairAvailable = Boolean(verification?.availableRepairs?.length || verification?.repairs?.length);
+    if (!verification?.ok || !verification?.allMatched || warning || blocker || repairAvailable) {
+      // Safe mismatch: expose only non-sensitive counts/codes, write no local
+      // business data, and never report a successful matched state.
+      return {
+        ok: false, status: "mismatch", code: "verification_mismatch", noWritesPerformed: true, noCloudWritesPerformed: true, localOnly: false,
+        mismatch: {
+          verificationOk: Boolean(verification?.ok),
+          allMatched: Boolean(verification?.allMatched),
+          blockerCount: Array.isArray(verification?.blockers) ? verification.blockers.length : 0,
+          repairAvailable,
+          noticeCodes: Array.isArray(verification?.notices)
+            ? [...new Set(verification.notices.filter((notice) => notice?.level === "warning" || notice?.level === "error").map((notice) => asText(notice?.code)).filter(Boolean))]
+            : [],
+        },
+      };
+    }
+    return { ok: true, status: "matched", noWritesPerformed: true, localOnly: false };
+  }
   const access = deviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "cloud_convergence" });
   if (!access?.ok) return { ok: false, status: "blocked", code: "device_not_active", noWritesPerformed: true };
   if (queueRevision() !== beforeQueueRevision || Object.entries(beforeValues).some(([key, value]) => readRaw(storage, key) !== value)) return { ok: false, status: "aborted", code: "local_changed_during_read", noWritesPerformed: true };
@@ -524,7 +582,10 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
       clearCloudBackupDirty("cloud_convergence_verified", { expectedRevision: beforeQueueRevision });
     }
     storage.removeItem(JOURNAL_KEY);
-    return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, noCloudWritesPerformed: true };
+    // Only after the journal is removed (success is final) do we report which
+    // local families actually changed, so the caller can refresh exactly those
+    // screens without a full reload. Never returned on a rolled-back path.
+    return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, noCloudWritesPerformed: true, changedFamilies: convergenceChangedFamilies(writes, plan) };
   } catch (error) {
     const rollback = recoverInterruptedCloudConvergence({ storage });
     if (!rollback.ok) return { ok: false, status: "critical_local_recovery_required", code: rollback.code, noCloudWritesPerformed: true };

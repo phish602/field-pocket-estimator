@@ -68,7 +68,9 @@ function defaultMatchingRows() {
     invoices: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
     invoice_payments: [{ id: "db_pay_1", legacy_local_id: "pay_1" }],
     estimate_line_items: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1", sort_order: 0, description: "Labor", quantity: 1, unit: null, unit_price: 100, total_price: null, metadata: null, line_role: "labor" }],
-    invoice_line_items: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0", invoice_id: "db_inv_1", sort_order: 0, description: "Material", quantity: 1, unit: null, unit_price: 100, total_price: 100, metadata: null }],
+    // Invoice line items carry kind inside metadata (the writer's real output);
+    // estimate line items carry kind in the line_role column instead.
+    invoice_line_items: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0", invoice_id: "db_inv_1", sort_order: 0, description: "Material", quantity: 1, unit: null, unit_price: 100, total_price: 100, metadata: { kind: "invoice" } }],
   };
 }
 
@@ -449,4 +451,98 @@ describe("supabaseCloudVerification", () => {
       expect.objectContaining({ level: "error", code: "projects_read_failed" }),
     ]));
   });
+});
+
+// Gate 16A live stale-device regression: the writer and verifier must generate
+// identical child identities so correctly-written children never look cloud-only.
+// This builds cloud rows via the SHARED contract from the same local snapshot the
+// verifier maps, including estimates whose labor + material sort orders overlap
+// (both starting at 0) -- the exact shape that used to produce false cloud-only
+// estimate line items.
+const { buildParentLineItemContract } = require("./cloudLineItemContract");
+const { mapLocalSnapshotToBackendDraft } = require("../utils/backendDataMapper");
+
+function liveShapeLocalData() {
+  const customers = Array.from({ length: 7 }, (_, i) => ({ id: `cust-${i + 1}`, name: `Customer ${i + 1}` }));
+  const projects = Array.from({ length: 11 }, (_, i) => ({ id: `proj-${i + 1}`, customerId: `cust-${(i % 7) + 1}`, projectName: `Project ${i + 1}` }));
+  // 12 estimates whose labor/material line counts sum to exactly 22 line items,
+  // several with overlapping per-category sort orders (labor 0.. and material 0..).
+  const estimateSpecs = [
+    { labor: 2, material: 2 }, { labor: 2, material: 1 }, { labor: 1, material: 1 }, { labor: 1, material: 1 },
+    { labor: 1, material: 1 }, { labor: 1, material: 1 }, { labor: 1, material: 1 }, { labor: 1, material: 1 },
+    { labor: 1, material: 0 }, { labor: 1, material: 1 }, { labor: 0, material: 0 }, { labor: 0, material: 0 },
+  ];
+  const estimates = estimateSpecs.map((spec, i) => {
+    const id = `est-${i + 1}`;
+    return {
+      id, customerId: `cust-${(i % 7) + 1}`, projectId: `proj-${(i % 11) + 1}`, estimateNumber: `EST-${i + 1}`,
+      total: 100, status: "draft", notes: "", terms: "",
+      labor: { lines: Array.from({ length: spec.labor }, (_, j) => ({ id: `${id}-lab-${j}`, description: `Labor ${j}`, quantity: 1, rate: 100 + j, cost: 60 + j })) },
+      materials: { items: Array.from({ length: spec.material }, (_, j) => ({ id: `${id}-mat-${j}`, description: `Material ${j}`, quantity: 1, price: 50 + j, cost: 30 + j })) },
+    };
+  });
+  // 9 invoices, each with one line item; 4 payments spread across them.
+  const invoices = Array.from({ length: 9 }, (_, i) => ({
+    id: `inv-${i + 1}`, customerId: `cust-${(i % 7) + 1}`, projectId: `proj-${(i % 11) + 1}`,
+    sourceEstimateId: `est-${i + 1}`, invoiceNumber: `INV-${i + 1}`, invoiceTotal: 100, amountPaid: 0, balanceRemaining: 100,
+    status: "sent", paymentStatus: "unpaid",
+    lineItems: [{ id: `inv-${i + 1}-line`, description: "Service", quantity: 1, price: 100, total: 100 }],
+    payments: i < 4 ? [{ id: `pay-${i + 1}`, amount: 25, method: "cash", status: "paid", paidAt: "2026-07-01" }] : [],
+  }));
+  const scopeTemplates = [{ id: "tmpl-1", name: "Template 1", scopeText: "Scope" }];
+  return { customers, projects, estimates, invoices, scopeTemplates };
+}
+
+function writerShapedCloudRows(localData) {
+  const draft = mapLocalSnapshotToBackendDraft(localData, { companyId: "company_1", userId: "user_1" });
+  const parentRows = (list, prefix) => list.map((r, i) => ({ id: `db_${prefix}_${i}`, legacy_local_id: r.legacy_local_id }));
+  const estimates = draft.estimates.map((e, i) => ({ id: `db_est_${i}`, legacy_local_id: e.legacy_local_id, restore_payload: { schema: "estipaid.estimate.restore_payload", version: 1, estimate: { id: e.legacy_local_id } }, restore_payload_version: "1" }));
+  const estIdBy = Object.fromEntries(estimates.map((r) => [r.legacy_local_id, r.id]));
+  const invoices = draft.invoices.map((v, i) => ({ id: `db_inv_${i}`, legacy_local_id: v.legacy_local_id }));
+  const invIdBy = Object.fromEntries(invoices.map((r) => [r.legacy_local_id, r.id]));
+  const estimate_line_items = [];
+  draft.estimates.forEach((e) => {
+    buildParentLineItemContract({ entityType: "estimate", parentLegacyId: e.legacy_local_id, parentCloudId: estIdBy[e.legacy_local_id], parentColumn: "estimate_id", items: e.line_items }).rows.forEach((row, idx) => {
+      estimate_line_items.push({ id: `db_el_${e.legacy_local_id}_${idx}`, ...row });
+    });
+  });
+  const invoice_line_items = [];
+  draft.invoices.forEach((v) => {
+    buildParentLineItemContract({ entityType: "invoice", parentLegacyId: v.legacy_local_id, parentCloudId: invIdBy[v.legacy_local_id], parentColumn: "invoice_id", items: v.line_items }).rows.forEach((row, idx) => {
+      invoice_line_items.push({ id: `db_il_${v.legacy_local_id}_${idx}`, ...row });
+    });
+  });
+  return {
+    customers: parentRows(draft.customers, "cust"),
+    projects: parentRows(draft.projects, "proj"),
+    estimates,
+    invoices,
+    invoice_payments: draft.invoicePayments.map((p, i) => ({ id: `db_pay_${i}`, legacy_local_id: p.legacy_local_id })),
+    estimate_line_items,
+    invoice_line_items,
+  };
+}
+
+test("live stale-device shape: writer-shaped children with overlapping sort orders verify as allMatched (22 estimate line items)", async () => {
+  const localData = liveShapeLocalData();
+  const cloudRows = writerShapedCloudRows(localData);
+  // Sanity: the fixture really carries 22 estimate line items and overlapping ids.
+  expect(cloudRows.estimate_line_items).toHaveLength(22);
+  expect(cloudRows.invoice_line_items).toHaveLength(9);
+  expect(cloudRows.estimate_line_items.filter((r) => r.legacy_local_id === "estimate:est-1:line:2")).toHaveLength(1);
+
+  const mockClient = createMockClient(cloudRows);
+  mockGetSupabaseClient.mockReturnValue(mockClient);
+
+  const result = await runSupabaseCloudVerification({
+    storageSnapshot: buildStorageSnapshot(localData),
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "BVW Contracting Solutions" },
+  });
+
+  expect(result.allMatched).toBe(true);
+  const byTable = Object.fromEntries(result.tableResults.map((r) => [r.table, r]));
+  expect(byTable.estimate_line_items).toMatchObject({ status: "matched", localCount: 22, cloudCount: 22, missingLegacyIds: [], extraLegacyIds: [] });
+  expect(byTable.invoice_line_items).toMatchObject({ status: "matched", localCount: 9, cloudCount: 9, missingLegacyIds: [], extraLegacyIds: [] });
 });

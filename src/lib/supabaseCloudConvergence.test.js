@@ -400,3 +400,117 @@ test("failed strict cloud verification rolls back the exact prior invoice string
   expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
   expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
 });
+
+// ---------------------------------------------------------------------------
+// Gate 16A: no-write matched verdicts require strict verification, and the exact
+// live stale-device fixture (7 customers / 11 projects / 12 estimates /
+// 9 invoices / 4 payments / 1 template, cloud +1 invoice with 6 children).
+// ---------------------------------------------------------------------------
+const { mapLocalEstimateToBackendEstimate } = require("../utils/backendDataMapper");
+const { buildParentLineItemContract } = require("./cloudLineItemContract");
+
+test("a no-write, non-local-only result requires strict verification before reporting matched", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local); // local == cloud == baseline -> nothing to write
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+
+  // The verifier disagrees with the planner (cloud holds extra flattened rows).
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: false, notices: [], blockers: [], availableRepairs: [] }));
+  const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, cloudSnapshot: snapshot, verifyCloud });
+
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(result).toEqual(expect.objectContaining({ ok: false, status: "mismatch", code: "verification_mismatch", noWritesPerformed: true }));
+  expect(result.mismatch).toEqual(expect.objectContaining({ allMatched: false }));
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before); // no local business write
+});
+
+test("a no-write result reports matched only when strict verification passes", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, cloudSnapshot: snapshot, verifyCloud });
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "matched", noWritesPerformed: true, localOnly: false }));
+});
+
+function liveLocal() {
+  const customers = Array.from({ length: 7 }, (_, i) => ({ id: `cust-${i + 1}`, fullName: `Customer ${i + 1}` }));
+  const projects = Array.from({ length: 11 }, (_, i) => ({ id: `proj-${i + 1}`, customerId: `cust-${(i % 7) + 1}`, projectName: `Project ${i + 1}` }));
+  const specs = [4, 3, 2, 2, 2, 2, 2, 2, 1, 2, 0, 0]; // total 22 line items
+  const estimates = specs.map((count, i) => {
+    const id = `est-${i + 1}`;
+    const laborCount = Math.ceil(count / 2);
+    const materialCount = count - laborCount;
+    return estimate(id, {
+      customerId: `cust-${(i % 7) + 1}`, projectId: `proj-${(i % 11) + 1}`, estimateNumber: `EST-${i + 1}`,
+      labor: { lines: Array.from({ length: laborCount }, (_, j) => ({ id: `${id}-lab-${j}`, description: `Labor ${j}`, quantity: 1, rate: 100 + j, cost: 60 + j })) },
+      materials: { items: Array.from({ length: materialCount }, (_, j) => ({ id: `${id}-mat-${j}`, description: `Material ${j}`, quantity: 1, price: 50 + j, cost: 30 + j })) },
+    });
+  });
+  const invoices = Array.from({ length: 9 }, (_, i) => ({
+    ...invoice(`inv-${i + 1}`), customerId: `cust-${(i % 7) + 1}`, projectId: `proj-${(i % 11) + 1}`, sourceEstimateId: `est-${i + 1}`, invoiceNumber: `INV-${i + 1}`,
+    payments: i < 4 ? [{ id: `pay-${i + 1}`, amount: 25, method: "cash", status: "paid", paidAt: "2026-07-01" }] : [],
+  }));
+  return { ...emptySnapshot(), customers, projects, estimates, invoices, scopeTemplates: [{ id: "tmpl-1", name: "Template 1", scopeText: "Scope" }] };
+}
+
+function liveEstimateEvidence(estimates) {
+  return Object.fromEntries(estimates.map((est) => {
+    const mapped = mapLocalEstimateToBackendEstimate(est, {});
+    const lineItems = buildParentLineItemContract({ entityType: "estimate", parentLegacyId: est.id, parentColumn: "estimate_id", items: mapped.line_items }).rows;
+    return [est.id, { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: est.id, estimate: est }, persisted: { legacy_local_id: est.id, customer_legacy_local_id: est.customerId, project_legacy_local_id: est.projectId }, lineItems }];
+  }));
+}
+
+test("live stale-device fixture: the tenth cloud invoice imports atomically, existing data stays intact, and a second run is idempotent", async () => {
+  const local = liveLocal();
+  setLocalSnapshot(local);
+  setBaseline(local); // verified baseline matching the stale local state
+  // Clean local backup queue (a remote-only change must not need a pending entry).
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBeNull();
+
+  const cloudInvoice10 = {
+    ...invoice("inv-10"), customerId: "cust-1", projectId: "proj-1", sourceEstimateId: "", invoiceNumber: "INV-10",
+    lineItems: Array.from({ length: 6 }, (_, j) => ({ id: `inv-10-line-${j}`, description: `Line ${j}`, quantity: 1, price: 10 + j, total: 10 + j })),
+    payments: [],
+  };
+  const snapshot = {
+    ok: true,
+    mapped: { ...local, invoices: [...local.invoices, cloudInvoice10] },
+    estimateEvidence: liveEstimateEvidence(local.estimates),
+    supplemental: { status: "missing" },
+  };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
+  const ctx = { storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, verifyCloud };
+
+  const firstInvoicesBefore = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  const result = await runSupabaseCloudConvergence({ ...ctx, cloudSnapshot: snapshot });
+
+  // 4. The tenth invoice imports with all six children; strict verification ran.
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", imported: 1, noCloudWritesPerformed: true }));
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  const invoicesAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  expect(invoicesAfter).toHaveLength(10);
+  const imported = invoicesAfter.find((inv) => inv.id === "inv-10");
+  expect(imported.lineItems).toHaveLength(6);
+  // 5. Existing local invoices and their ordering remain intact.
+  expect(invoicesAfter.slice(0, 9)).toEqual(firstInvoicesBefore);
+  // Customers/projects/estimates arrays are untouched (additive only).
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toEqual(local.customers);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toEqual(local.projects);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual(local.estimates);
+  // 9. The journal is removed only after success.
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  // 8. The baseline refreshes to the verified converged state.
+  const baseline = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE));
+  expect(baseline.snapshots.invoices).toHaveLength(10);
+
+  // 11. A second run is idempotent: nothing left to import, matched after strict verify.
+  const second = await runSupabaseCloudConvergence({ ...ctx, cloudSnapshot: snapshot });
+  expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched", noWritesPerformed: true }));
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10);
+});
