@@ -169,7 +169,9 @@ function normalizeQueueState(raw) {
     attempts: Number.isFinite(Number(raw.attempts)) && Number(raw.attempts) >= 0 ? Number(raw.attempts) : 0,
     retryCount: Number.isFinite(Number(raw.retryCount)) && Number(raw.retryCount) >= 0 ? Number(raw.retryCount) : Number(raw.attempts || 0),
     localMutationRevision: Number.isFinite(Number(raw.localMutationRevision)) && Number(raw.localMutationRevision) >= 0 ? Number(raw.localMutationRevision) : 0,
-    syncingRevision: Number.isFinite(Number(raw.syncingRevision)) ? Number(raw.syncingRevision) : null,
+    syncingRevision: raw.syncingRevision === null || raw.syncingRevision === undefined || raw.syncingRevision === ""
+      ? null
+      : Number.isFinite(Number(raw.syncingRevision)) ? Number(raw.syncingRevision) : null,
     companyId: String(raw.companyId || "").trim(),
     activeDeviceId: String(raw.activeDeviceId || "").trim(),
     lastErrorCode: String(raw.lastErrorCode || "").trim(),
@@ -177,6 +179,31 @@ function normalizeQueueState(raw) {
     documentId: String(raw.documentId || "").trim(),
     lastError: String(raw.lastError || "").trim(),
   };
+}
+
+// Unlike readCloudBackupQueueState(), this reader never invents a default
+// queue. It is for safety gates that must distinguish an actually persisted,
+// schema-v2 verified backup from a fresh device that merely looks clean.
+export function readPersistedCloudBackupQueueState(storage) {
+  try {
+    const target = storage || (canUseStorage() ? localStorage : null);
+    const raw = target?.getItem?.(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+    if (raw === null || raw === undefined || raw === "") return { ok: false, exists: false, code: "queue_missing", state: null };
+    const parsed = JSON.parse(raw);
+    const schemaValid = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && parsed.schemaVersion === CLOUD_BACKUP_QUEUE_SCHEMA_VERSION
+      && typeof parsed.pending === "boolean" && isValidStatus(parsed.status)
+      && Array.isArray(parsed.reasons) && Array.isArray(parsed.domains)
+      && Number.isFinite(Number(parsed.localMutationRevision)) && Number(parsed.localMutationRevision) >= 0
+      && (parsed.syncingRevision === null || Number.isFinite(Number(parsed.syncingRevision)))
+      && typeof parsed.companyId === "string";
+    if (!schemaValid) {
+      return { ok: false, exists: true, code: "queue_unverified", state: null };
+    }
+    return { ok: true, exists: true, raw, state: normalizeQueueState(parsed) };
+  } catch {
+    return { ok: false, exists: true, code: "queue_unverified", state: null };
+  }
 }
 
 function readAutoBackupPauseSnapshot() {

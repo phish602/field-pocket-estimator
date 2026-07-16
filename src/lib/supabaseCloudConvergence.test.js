@@ -2,7 +2,7 @@ jest.mock("./supabaseClient", () => ({ getSupabaseClient: jest.fn(() => null) })
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
-import { buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 import { getSupabaseClient } from "./supabaseClient";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
@@ -26,6 +26,14 @@ function setBindings(bindings) {
 function setBaseline(snapshot) {
   localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE, JSON.stringify({ version: 1, companyId: "company-1", snapshots: { ...emptySnapshot(), ...snapshot } }));
 }
+function setVerifiedCleanQueue(companyId = "company-1", revision = 0) {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    schemaVersion: "2.0.0", pending: false, status: "clean", companyId,
+    lastSuccessfulBackupAt: Date.now() - 1000, lastVerifiedAt: Date.now() - 500,
+    localMutationRevision: revision, syncingRevision: null, retryCount: 0,
+    nextRetryAt: null, lastError: "", lastErrorCode: "", reasons: [], domains: [],
+  }));
+}
 const estimate = (id = "estimate-1", overrides = {}) => ({ id, customerId: "customer-1", projectId: "project-1", estimateNumber: id, status: "draft", total: 100, notes: "", terms: "", labor: { lines: [] }, materials: { items: [] }, ...overrides });
 function estimateEvidence(row, overrides = {}) {
   return { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: row.id, estimate: row }, persisted: { legacy_local_id: row.id, customer_legacy_local_id: row.customerId, project_legacy_local_id: row.projectId }, lineItems: [], ...overrides };
@@ -43,6 +51,69 @@ test("different shared financial document without baseline is a conflict", () =>
   const local = baseLocal(); const cloud = { ...baseLocal(), invoices: [{ ...invoice("invoice-1"), invoiceTotal: 11 }] };
   const plan = buildCloudConvergencePlan({ local, cloud });
   expect(plan.safe).toBe(false); expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "invoices" })]));
+});
+
+describe("verified clean-replica bootstrap", () => {
+  const cleanRaw = () => ({ estimates: [], invoices: [], invoice_line_items: [], invoice_payments: [] });
+  const bootstrapSnapshot = (mapped) => ({
+    ok: true, mapped, raw: cleanRaw(), supplemental: { status: "missing" },
+    uuidMaps: { customers: { "customer-1": uuid(91) }, projects: { "project-1": uuid(92) }, estimates: {}, invoices: {}, invoicePayments: {} },
+    estimateEvidence: {},
+  });
+
+  test("requires a persisted clean queue and supplied storage, never a synthesized default", () => {
+    const local = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1", notes: "stale" }] };
+    const cloud = { ...local, projects: [{ ...local.projects[0], notes: "cloud" }] };
+    const snapshot = bootstrapSnapshot(cloud);
+    expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local, cloud, cloudSnapshot: snapshot })).toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_queue_missing" }));
+    setVerifiedCleanQueue();
+    expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local, cloud, cloudSnapshot: snapshot })).toEqual(expect.objectContaining({ ok: true, bootstrap: true, bootstrapReason: "verified_clean_replica" }));
+  });
+
+  test("replaces only proven stale shared records, preserves order, and appends cloud additions", () => {
+    const local = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1", notes: "stale" }] };
+    const cloud = { ...local, projects: [{ ...local.projects[0], notes: "canonical" }, { id: "project-2", customerId: "customer-1", notes: "added" }] };
+    setVerifiedCleanQueue();
+    const plan = buildCloudConvergencePlan({ local, cloud, companyId: "company-1", storage: localStorage, cloudSnapshot: bootstrapSnapshot(cloud) });
+    expect(plan).toEqual(expect.objectContaining({ safe: true, bootstrap: true, bootstrapReason: "verified_clean_replica" }));
+    expect(plan.replacements.projects).toEqual([cloud.projects[0]]);
+    expect(plan.additions.projects).toEqual([cloud.projects[1]]);
+  });
+
+  test("returns safe conflict diagnostics while preserving data_mismatch compatibility when bootstrap proof fails", async () => {
+    const local = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1", notes: "stale" }] };
+    const cloud = { ...local, projects: [{ ...local.projects[0], notes: "cloud" }] };
+    setLocalSnapshot(local);
+    const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, cloudSnapshot: bootstrapSnapshot(cloud) });
+    expect(result).toEqual(expect.objectContaining({ status: "conflict", code: "data_mismatch", bootstrapCode: "baseline_bootstrap_queue_missing" }));
+    expect(result.conflictSummary).toEqual([{ family: "projects", code: "both_added_different", count: 1 }]);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toEqual(local.projects);
+  });
+
+  test("applies a verified bootstrap locally, captures baseline and creates bindings without cloud writes", async () => {
+    const local = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1", notes: "stale" }] };
+    const cloud = { ...local, projects: [{ ...local.projects[0], notes: "canonical" }] };
+    setLocalSnapshot(local); setVerifiedCleanQueue("company-1", 0);
+    const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], repairs: [] }));
+    const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: true, user: { id: "u" }, company: { id: "company-1" }, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: bootstrapSnapshot(cloud), verifyCloud });
+    expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica", noCloudWritesPerformed: true }));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toEqual(cloud.projects);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.projects).toEqual(cloud.projects);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings.project["project-1"].cloudUuid).toBe(uuid(92));
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+    expect(verifyCloud).toHaveBeenCalled();
+  });
+
+  test.each([
+    ["pending queue", () => { setVerifiedCleanQueue(); const state = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)); state.pending = true; state.status = "pending"; localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(state)); }, "baseline_bootstrap_local_pending"],
+    ["company mismatch", () => setVerifiedCleanQueue("other-company"), "baseline_bootstrap_queue_unverified"],
+    ["local-only record", () => setVerifiedCleanQueue(), "baseline_bootstrap_local_only_records"],
+  ])("fails closed for %s", (_label, setup, expectedCode) => {
+    const local = { ...emptySnapshot(), customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+    const cloud = expectedCode === "baseline_bootstrap_local_only_records" ? { ...emptySnapshot() } : local;
+    setup();
+    expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local, cloud, cloudSnapshot: bootstrapSnapshot(cloud) })).toEqual(expect.objectContaining({ ok: false, code: expectedCode }));
+  });
 });
 
 test("baseline permits non-overlapping customer metadata changes but never relationship changes", () => {
@@ -657,6 +728,36 @@ test("Gate 16B raw-cloud round trip: the tenth invoice survives snapshot mapping
   const second = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
   expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
   expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10);
+});
+
+test("Gate 16E verified clean replica: real raw snapshot replaces stale shared records and reaches strict Cloud OK", async () => {
+  const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+  const raw = buildRawCloudTables();
+  getSupabaseClient.mockReturnValue(rawCloudClient(rawTablesWithoutTenth(raw)));
+  const nine = await readSupabaseCloudConvergenceSnapshot(ctx);
+  const staleLocal = {
+    ...nine.mapped,
+    projects: nine.mapped.projects.map((project) => project.id === "proj-1" ? { ...project, notes: "legacy local note" } : project),
+    estimates: nine.mapped.estimates.map((estimateRow) => ({ ...estimateRow, notes: "legacy local estimate note" })),
+    invoices: nine.mapped.invoices.map((invoiceRow) => ({ ...invoiceRow, lineItems: invoiceRow.lineItems.map((line) => ({ ...line, legacyChildMarker: true })) })),
+  };
+  setLocalSnapshot(staleLocal);
+  setVerifiedCleanQueue("company-1", 0);
+  getSupabaseClient.mockReturnValue(rawCloudClient(raw));
+  const snapshot = await readSupabaseCloudConvergenceSnapshot(ctx);
+  const beforeIds = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES)).map((row) => row.id);
+
+  const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, deviceAccess: { ok: true }, completionDeviceAccess: { ok: true }, cloudSnapshot: snapshot, verifyCloud: runSupabaseCloudVerification });
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica", noCloudWritesPerformed: true }));
+  const invoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+  expect(invoices).toHaveLength(10);
+  expect(invoices.slice(0, 9).map((row) => row.id)).toEqual(beforeIds);
+  expect(invoices.find((row) => row.id === "inv-10").lineItems).toHaveLength(6);
+  expect(invoices.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings.invoice["inv-10"].cloudUuid).toBe(U.inv(10));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
 });
 
 test("Gate 16B raw-cloud round trip: a real semantic child mismatch rolls back to nine invoices", async () => {

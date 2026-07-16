@@ -915,6 +915,9 @@ export default function AdvancedSettingsScreen({
         stage: String(convergenceResult.stage || "").trim(),
         retryable: Boolean(convergenceResult.retryable),
         ok: Boolean(convergenceResult.ok),
+        conflictSummary: Array.isArray(convergenceResult.conflictSummary)
+          ? convergenceResult.conflictSummary.map((entry) => ({ family: String(entry?.family || "").trim(), code: String(entry?.code || "").trim(), count: Number(entry?.count || 0) })).filter((entry) => entry.family && entry.code && entry.count > 0)
+          : [],
       }
     : null;
   const cloudBackupDetail = String(
@@ -2100,6 +2103,7 @@ export default function AdvancedSettingsScreen({
                         {automaticSyncState.code ? `, code: ${automaticSyncState.code}` : ""}
                         {automaticSyncState.stage ? `, stage: ${automaticSyncState.stage}` : ""}
                         {`, retryable: ${automaticSyncState.retryable ? "yes" : "no"}`}
+                        {automaticSyncState.conflictSummary.length ? `, conflicts: ${automaticSyncState.conflictSummary.map((entry) => `${entry.family}/${entry.code} (${entry.count})`).join(", ")}` : ""}
                       </div>
                     ) : null}
                     {restoreResult ? (

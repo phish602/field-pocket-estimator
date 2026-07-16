@@ -149,7 +149,7 @@ test("dispatches a safe convergence-result event for a FAILED outcome (not only 
   const detail = seen.mock.calls[0][0];
   expect(detail).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
   // Only safe fields -- no names, numbers, descriptions, totals, or ids.
-  expect(Object.keys(detail).sort()).toEqual(["at", "attempt", "blockerCount", "changedFamilies", "code", "conflictCount", "noCloudWritesPerformed", "noWritesPerformed", "ok", "retryable", "stage", "status"]);
+  expect(Object.keys(detail).sort()).toEqual(["at", "attempt", "blockerCount", "bootstrapCode", "changedFamilies", "code", "conflictCount", "conflictSummary", "noCloudWritesPerformed", "noWritesPerformed", "ok", "retryable", "stage", "status"]);
 });
 
 test("dispatches the result event for a converged outcome with only changed-family booleans", async () => {

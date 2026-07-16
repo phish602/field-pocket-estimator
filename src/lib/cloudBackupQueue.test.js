@@ -13,6 +13,7 @@ import {
   CLOUD_BACKUP_PRIORITY,
   CLOUD_BACKUP_STATUS,
   applyCloudBackupResultToQueue,
+  readPersistedCloudBackupQueueState,
 } from "./cloudBackupQueue";
 
 beforeEach(() => {
@@ -211,6 +212,25 @@ describe("readCloudBackupQueueState", () => {
     const state = readCloudBackupQueueState();
     expect(state.pending).toBe(false);
     expect(state.status).toBe(CLOUD_BACKUP_STATUS.CURRENT);
+  });
+});
+
+describe("readPersistedCloudBackupQueueState", () => {
+  test("distinguishes an absent queue from a persisted schema-v2 clean queue", () => {
+    expect(readPersistedCloudBackupQueueState(localStorage)).toEqual(expect.objectContaining({ ok: false, exists: false, code: "queue_missing" }));
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+      schemaVersion: "2.0.0", pending: false, status: "clean", companyId: "company-1",
+      lastSuccessfulBackupAt: Date.now(), lastVerifiedAt: Date.now(), localMutationRevision: 4, syncingRevision: null,
+      reasons: [], domains: [],
+    }));
+    expect(readPersistedCloudBackupQueueState(localStorage)).toEqual(expect.objectContaining({ ok: true, exists: true, state: expect.objectContaining({ companyId: "company-1", localMutationRevision: 4 }) }));
+  });
+
+  test("fails closed for corrupt or wrong-schema persisted values", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, "{bad");
+    expect(readPersistedCloudBackupQueueState(localStorage)).toEqual(expect.objectContaining({ ok: false, exists: true, code: "queue_unverified" }));
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ schemaVersion: "1.0.0" }));
+    expect(readPersistedCloudBackupQueueState(localStorage)).toEqual(expect.objectContaining({ ok: false, exists: true, code: "queue_unverified" }));
   });
 });
 
