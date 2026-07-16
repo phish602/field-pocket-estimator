@@ -35,9 +35,9 @@ import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
-import { getSupabaseClient } from "./lib/supabaseClient";
 import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
-import { loadResolvedSubscriptionPlanState } from "./lib/subscriptionPlanStateRemote";
+import { resolveCompanyEntitlements } from "./lib/companyEntitlementsApi";
+import { allowLocalEntitlementFallback } from "./lib/useCompanyEntitlements";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
 import "./AppShell.css";
@@ -2677,25 +2677,38 @@ const [spinTick, setSpinTick] = useState(0);
     });
   }, [invoiceHistory, recentProjects, businessPulseCounts]);
 
+  // Gate 17A: the effective plan is resolved by the server. Local plan state is
+  // never authority here -- it is only consulted on a genuine local dev host,
+  // where no real billing exists. Any failure, and the loading window itself,
+  // presents as Free.
   useEffect(() => {
     let active = true;
     const loadSnapshotSubscriptionState = async () => {
-      if (!auth?.configured || !snapshotCompanyId) {
-        if (active) setSnapshotSubscriptionPlanState(loadLocalSubscriptionPlanState());
+      const accessToken = String(auth?.session?.access_token || "").trim();
+      if (!auth?.configured || !snapshotCompanyId || !accessToken) {
+        if (active) {
+          setSnapshotSubscriptionPlanState(
+            allowLocalEntitlementFallback()
+              ? loadLocalSubscriptionPlanState()
+              : getDefaultSubscriptionPlanState()
+          );
+        }
         return;
       }
 
       if (active) setSnapshotSubscriptionPlanState(getDefaultSubscriptionPlanState());
-      const resolved = await loadResolvedSubscriptionPlanState({
-        supabase: getSupabaseClient(),
-        companyId: snapshotCompanyId,
-        allowLocalFallback: process.env.NODE_ENV !== "production",
+      const resolved = await resolveCompanyEntitlements({ accessToken, companyId: snapshotCompanyId });
+      if (!active) return;
+      setSnapshotSubscriptionPlanState({
+        plan: resolved.plan,
+        status: resolved.status,
+        source: resolved.source,
+        updatedAt: resolved.resolvedAt || "",
       });
-      if (active) setSnapshotSubscriptionPlanState(resolved.state);
     };
     loadSnapshotSubscriptionState();
     return () => { active = false; };
-  }, [activeTab, auth?.configured, snapshotCompanyId]);
+  }, [activeTab, auth?.configured, auth?.session?.access_token, snapshotCompanyId]);
 
   const shellT = useCallback((key) => {
     const en = {

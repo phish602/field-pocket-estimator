@@ -20,8 +20,8 @@ import {
   loadLocalSubscriptionPlanState,
   resolvePlanFromSubscriptionState,
 } from "../lib/subscriptionPlanState";
-import { getSupabaseClient } from "../lib/supabaseClient";
-import { loadResolvedSubscriptionPlanState } from "../lib/subscriptionPlanStateRemote";
+import { resolveCompanyEntitlements } from "../lib/companyEntitlementsApi";
+import { allowLocalEntitlementFallback } from "../lib/useCompanyEntitlements";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
@@ -286,7 +286,12 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const brandingFocusTimerRef = useRef(null);
   const saveFlashTimerRef = useRef(null);
 
+  // Gate 17A: the subscription label follows the SERVER-resolved plan only.
+  // The former storage listener re-read local plan state, which let a
+  // localStorage write move the displayed plan. On a genuine local dev host
+  // (no real billing) the local value may still drive presentation.
   useEffect(() => {
+    if (!allowLocalEntitlementFallback()) return undefined;
     const refreshSubscriptionPlanState = () => setSubscriptionPlanState(loadLocalSubscriptionPlanState());
     const onStorage = (event) => {
       if (event?.key === STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE) refreshSubscriptionPlanState();
@@ -305,22 +310,32 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   useEffect(() => {
     let active = true;
     const loadSubscriptionState = async () => {
-      if (!supabaseConfigured || !companyId) {
-        if (active) setSubscriptionPlanState(loadLocalSubscriptionPlanState());
+      const token = String(accessToken || "").trim();
+      if (!supabaseConfigured || !companyId || !token) {
+        if (active) {
+          setSubscriptionPlanState(
+            allowLocalEntitlementFallback()
+              ? loadLocalSubscriptionPlanState()
+              : getDefaultSubscriptionPlanState()
+          );
+        }
         return;
       }
 
+      // Present as Free while resolving; never show a stale paid plan.
       if (active) setSubscriptionPlanState(getDefaultSubscriptionPlanState());
-      const resolved = await loadResolvedSubscriptionPlanState({
-        supabase: getSupabaseClient(),
-        companyId,
-        allowLocalFallback: process.env.NODE_ENV !== "production",
+      const resolved = await resolveCompanyEntitlements({ accessToken: token, companyId });
+      if (!active) return;
+      setSubscriptionPlanState({
+        plan: resolved.plan,
+        status: resolved.status,
+        source: resolved.source,
+        updatedAt: resolved.resolvedAt || "",
       });
-      if (active) setSubscriptionPlanState(resolved.state);
     };
     loadSubscriptionState();
     return () => { active = false; };
-  }, [companyId, supabaseConfigured]);
+  }, [companyId, supabaseConfigured, accessToken]);
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
   const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
   const missingRequiredSet = useMemo(
