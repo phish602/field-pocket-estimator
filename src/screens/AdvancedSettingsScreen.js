@@ -917,6 +917,12 @@ export default function AdvancedSettingsScreen({
         // baseline_bootstrap_evidence_invalid). A fixed code, never a record
         // detail.
         bootstrapCode: String(convergenceResult.bootstrapCode || "").trim(),
+        // Gate 16G: WHICH metadata refused the bootstrap (a legacy queue, a
+        // stale takeover pause, a real safety lock...) and how far recovery
+        // got. Fixed codes and schema versions only -- never a record detail.
+        bootstrapDetailCode: String(convergenceResult.bootstrapDetailCode || "").trim(),
+        metadataRecoveryStage: String(convergenceResult.metadataRecoveryStage || "").trim(),
+        pauseReason: String(convergenceResult.pauseReason || "").trim(),
         retryable: Boolean(convergenceResult.retryable),
         ok: Boolean(convergenceResult.ok),
         conflictSummary: Array.isArray(convergenceResult.conflictSummary)
@@ -2107,6 +2113,9 @@ export default function AdvancedSettingsScreen({
                         {automaticSyncState.code ? `, code: ${automaticSyncState.code}` : ""}
                         {automaticSyncState.stage ? `, stage: ${automaticSyncState.stage}` : ""}
                         {automaticSyncState.bootstrapCode ? `, bootstrap: ${automaticSyncState.bootstrapCode}` : ""}
+                        {automaticSyncState.bootstrapDetailCode && automaticSyncState.bootstrapDetailCode !== automaticSyncState.bootstrapCode ? `, detail: ${automaticSyncState.bootstrapDetailCode}` : ""}
+                        {automaticSyncState.metadataRecoveryStage ? `, metadata: ${automaticSyncState.metadataRecoveryStage}` : ""}
+                        {automaticSyncState.pauseReason ? `, pause: ${automaticSyncState.pauseReason}` : ""}
                         {`, retryable: ${automaticSyncState.retryable ? "yes" : "no"}`}
                         {automaticSyncState.conflictSummary.length ? `, conflicts: ${automaticSyncState.conflictSummary.map((entry) => `${entry.family}/${entry.code} (${entry.count})`).join(", ")}` : ""}
                       </div>

@@ -14,7 +14,8 @@ const {
   DEVICE_LOCK_LOST_CODE,
   DEVICE_LOCK_CHANGED_EVENT,
 } = require("./supabaseDeviceLock");
-const { isCloudAutoBackupPaused } = require("./cloudBackupQueue");
+const { isCloudAutoBackupPaused, readCloudAutoBackupPauseState } = require("./cloudBackupQueue");
+const { STORAGE_KEYS } = require("../constants/storageKeys");
 
 function createStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -205,7 +206,11 @@ describe("supabaseDeviceLock", () => {
     expect(deviceAResult.activeDeviceState.activeDeviceId).toBe(deviceBStorage.getItem(LOCAL_DEVICE_ID_KEY));
   });
 
-  test("takeover pauses automatic backup on the newly active device", async () => {
+  // Gate 16G: the winning device must NOT pause itself. localStorage is
+  // browser-local, so this pause could never reach the browser being taken
+  // over; it only ever deadlocked the new active device, because the pause
+  // blocks the very backup that would clear it.
+  test("a successful forced takeover no longer pauses the winning device", async () => {
     const client = createMockClient();
     mockGetSupabaseClient.mockReturnValue(client);
     const deviceAStorage = createStorage();
@@ -228,8 +233,80 @@ describe("supabaseDeviceLock", () => {
       force: true,
     });
 
+    // The claim still succeeds and is still reported as a takeover...
     expect(takeover.ok).toBe(true);
-    expect(isCloudAutoBackupPaused()).toBe(true);
+    expect(takeover.claimed).toBe(true);
+    expect(takeover.takeover).toBe(true);
+    // ...but the winner is left able to back up.
+    expect(isCloudAutoBackupPaused()).toBe(false);
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE)).toBeNull();
+  });
+
+  test("the takeover event still fires and the new device stays active while the old device is locked out", async () => {
+    const client = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(client);
+    const deviceAStorage = createStorage();
+    const deviceBStorage = createStorage();
+
+    await checkCurrentDeviceAccess({ configured, user, company, storage: deviceAStorage });
+
+    const events = [];
+    const onChange = (event) => events.push(event.detail);
+    window.addEventListener(DEVICE_LOCK_CHANGED_EVENT, onChange);
+    try {
+      const takeover = await claimActiveDevice({ configured, user, company, storage: deviceBStorage, force: true });
+      expect(takeover.ok).toBe(true);
+
+      // 2. The takeover event still fires.
+      expect(events.some((detail) => detail?.action === "takeover")).toBe(true);
+
+      // 3. The new device is the active device.
+      const deviceB = await checkCurrentDeviceAccess({ configured, user, company, storage: deviceBStorage });
+      expect(deviceB.isActive).toBe(true);
+      expect(deviceB.isLocked).toBe(false);
+
+      // 4. The stale previous device still fails its active-device check.
+      const deviceA = await checkCurrentDeviceAccess({ configured, user, company, storage: deviceAStorage });
+      expect(deviceA.isActive).toBe(false);
+      expect(deviceA.isLocked).toBe(true);
+    } finally {
+      window.removeEventListener(DEVICE_LOCK_CHANGED_EVENT, onChange);
+    }
+  });
+
+  // 5/6: the losing device still pauses itself locally when a real guard
+  // observes the lock loss -- those protections are untouched.
+  test("the losing device still pauses locally when the restore guard sees the lock loss", async () => {
+    const client = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(client);
+    const deviceAStorage = createStorage();
+    const deviceBStorage = createStorage();
+
+    await checkCurrentDeviceAccess({ configured, user, company, storage: deviceAStorage });
+    await claimActiveDevice({ configured, user, company, storage: deviceBStorage, force: true });
+    expect(isCloudAutoBackupPaused()).toBe(false);
+
+    const blocked = await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage: deviceAStorage, reason: "restore" });
+
+    expect(blocked.ok).toBe(false);
+    expect(blocked.deviceLockLost).toBe(true);
+    expect(readCloudAutoBackupPauseState()).toEqual(expect.objectContaining({ paused: true, reason: "device_lock_lost_during_restore" }));
+  });
+
+  test("the losing device still pauses locally when the mutation guard sees the lock loss", async () => {
+    const client = createMockClient();
+    mockGetSupabaseClient.mockReturnValue(client);
+    const deviceAStorage = createStorage();
+    const deviceBStorage = createStorage();
+
+    await checkCurrentDeviceAccess({ configured, user, company, storage: deviceAStorage });
+    await claimActiveDevice({ configured, user, company, storage: deviceBStorage, force: true });
+    expect(isCloudAutoBackupPaused()).toBe(false);
+
+    const blocked = await ensureCurrentDeviceCanMutateBusinessData({ configured, user, company, storage: deviceAStorage, reason: "local_save" });
+
+    expect(blocked.ok).toBe(false);
+    expect(readCloudAutoBackupPauseState()).toEqual(expect.objectContaining({ paused: true, reason: "device_lock_lost_during_mutation" }));
   });
 
   test("locked devices are blocked from cloud writes", async () => {

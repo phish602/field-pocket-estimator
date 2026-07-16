@@ -148,8 +148,14 @@ test("dispatches a safe convergence-result event for a FAILED outcome (not only 
   await waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
   const detail = seen.mock.calls[0][0];
   expect(detail).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
-  // Only safe fields -- no names, numbers, descriptions, totals, or ids.
-  expect(Object.keys(detail).sort()).toEqual(["at", "attempt", "blockerCount", "bootstrapCode", "changedFamilies", "code", "conflictCount", "conflictSummary", "noCloudWritesPerformed", "noWritesPerformed", "ok", "retryable", "stage", "status"]);
+  // Only safe fields -- no names, numbers, descriptions, totals, or ids. The
+  // Gate 16G sync-metadata fields are fixed codes, schema version strings and
+  // booleans, so they belong to this closed allowlist too.
+  expect(Object.keys(detail).sort()).toEqual([
+    "at", "attempt", "blockerCount", "bootstrapCode", "bootstrapDetailCode", "changedFamilies", "code",
+    "conflictCount", "conflictSummary", "metadataRecoveryStage", "noCloudWritesPerformed", "noWritesPerformed",
+    "ok", "pauseReason", "pauseRecovered", "queueSchemaAfter", "queueSchemaBefore", "retryable", "stage", "status",
+  ]);
 });
 
 test("dispatches the result event for a converged outcome with only changed-family booleans", async () => {

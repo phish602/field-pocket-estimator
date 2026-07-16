@@ -3192,6 +3192,51 @@ describe("AdvancedSettingsScreen automatic sync bootstrap diagnostic", () => {
     });
   });
 
+  // Gate 16G: the live Mac's blocker was metadata, and the old line could not
+  // say which metadata. These subcodes make a stuck device diagnosable.
+  test("names the legacy queue and the stale takeover pause without exposing any record detail", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult({
+      bootstrapCode: "baseline_bootstrap_queue_unverified",
+      bootstrapDetailCode: "baseline_bootstrap_queue_legacy_migration_required",
+      metadataRecoveryStage: "queue_migration",
+      pauseReason: "device_takeover",
+    }));
+
+    const state = screen.getByTestId("automatic-sync-state");
+    expect(state).toHaveTextContent("bootstrap: baseline_bootstrap_queue_unverified");
+    expect(state).toHaveTextContent("detail: baseline_bootstrap_queue_legacy_migration_required");
+    expect(state).toHaveTextContent("metadata: queue_migration");
+    expect(state).toHaveTextContent("pause: device_takeover");
+
+    const text = state.textContent;
+    ["est-1", "inv-", "Jane", "4500", "0ccc675b"].forEach((secret) => expect(text).not.toContain(secret));
+  });
+
+  test("distinguishes a real safety pause from a stale takeover pause", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult({
+      bootstrapCode: "baseline_bootstrap_queue_unverified",
+      bootstrapDetailCode: "baseline_bootstrap_pause_active_safety_lock",
+      metadataRecoveryStage: "not_required",
+      pauseReason: "manual_pause",
+    }));
+
+    const state = screen.getByTestId("automatic-sync-state");
+    expect(state).toHaveTextContent("detail: baseline_bootstrap_pause_active_safety_lock");
+    expect(state).toHaveTextContent("pause: manual_pause");
+  });
+
+  test("omits the metadata labels entirely when there is nothing to report", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult());
+
+    const state = screen.getByTestId("automatic-sync-state");
+    expect(state).not.toHaveTextContent("detail:");
+    expect(state).not.toHaveTextContent("metadata:");
+    expect(state).not.toHaveTextContent("pause:");
+  });
+
   test("shows nothing once a later successful result arrives", async () => {
     await renderMismatchScreen();
     publishConvergenceResult(conflictResult({ bootstrapCode: "baseline_bootstrap_evidence_invalid" }));

@@ -425,10 +425,13 @@ export async function claimActiveDevice({
     action: force && activeDeviceId && activeDeviceId !== deviceId ? "takeover" : "claim",
   });
 
-  if (force && activeDeviceId && activeDeviceId !== deviceId) {
-    pauseCloudAutoBackup("device_takeover");
-  }
-
+  // The device that WINS a forced claim must not pause itself. localStorage is
+  // browser-local, so this call could never reach the browser being taken over
+  // -- it only ever paused the new active device, which then had no way to
+  // resume: the pause blocks the backup that would have cleared it, and no new
+  // local edit is guaranteed. The losing browser is already protected by the
+  // shared active-device record via its heartbeat, mutation, restore and backup
+  // guards, which pause it locally when they observe the lock loss.
   return {
     ok: true,
     claimed: true,

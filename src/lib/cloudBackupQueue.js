@@ -565,3 +565,227 @@ export function pauseCloudAutoBackup(reason = "manual_pause") {
     pausedAt: nowTs(),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Gate 16G: legacy queue migration and stale takeover-pause recovery.
+//
+// readPersistedCloudBackupQueueState deliberately refuses to invent proof: it
+// rejects anything that is not a current schema-v2 record. That is correct for
+// an unknown shape, but it also rejects a queue this app itself wrote and that
+// provably represents a verified-clean backup. Released schema v1 (commit
+// 1190910) wrote exactly:
+//
+//   schemaVersion, pending, status, reasons, domains, severity, priority,
+//   createdAt, updatedAt, attempts, lastAttemptAt, lastError,
+//   lastSuccessfulBackupAt, source, documentId, localFingerprint
+//
+// and nothing else -- no companyId, no lastVerifiedAt, no localMutationRevision,
+// no syncingRevision, no retryCount/nextRetryAt/lastErrorCode, no
+// activeDeviceId. Those absences are proven by history, not assumed.
+// ---------------------------------------------------------------------------
+
+export const LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "1.0.0";
+// v1's only clean status. v2 renamed it to "clean"; the raw string "current" is
+// not a valid v2 status, which is why the persisted reader rejects it before
+// normalizeQueueState would have converted it.
+const LEGACY_CLEAN_STATUS = "current";
+const TAKEOVER_PAUSE_REASON = "device_takeover";
+
+function readRawFrom(storage, key) {
+  try {
+    const target = storage || (canUseStorage() ? localStorage : null);
+    return target?.getItem?.(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRawTo(storage, key, value) {
+  try {
+    const target = storage || (canUseStorage() ? localStorage : null);
+    if (!target) return false;
+    if (value === null) target.removeItem(key);
+    else target.setItem(key, value);
+    try {
+      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key, value } }));
+    } catch {}
+    return readRawFrom(storage, key) === value;
+  } catch {
+    return false;
+  }
+}
+
+function validHistoricalTimestamp(value) {
+  const numeric = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(numeric) && numeric > 0;
+}
+
+// A real, resolved, active-device verification for THIS browser. Never a
+// caller-asserted boolean: the local device id must equal the active cloud
+// device id, and the lock must be resolved and unheld.
+function verifiedActiveDevice(deviceAccess, companyId, activeDeviceId) {
+  if (!deviceAccess?.ok || deviceAccess.deviceLockLost) return false;
+  const access = deviceAccess.access;
+  if (!access || access.ready !== true || access.isLocked === true || access.isActive !== true) return false;
+  const localDeviceId = String(access.localDeviceId || "").trim();
+  const cloudActiveDeviceId = String(access.activeDeviceState?.activeDeviceId || "").trim();
+  if (!localDeviceId || !cloudActiveDeviceId || localDeviceId !== cloudActiveDeviceId) return false;
+  if (String(activeDeviceId || "").trim() && String(activeDeviceId).trim() !== cloudActiveDeviceId) return false;
+  return Boolean(String(companyId || "").trim());
+}
+
+function journalPresent(storage) {
+  return Boolean(readRawFrom(storage, STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL));
+}
+
+function parseRaw(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Upgrades a provably-clean released schema-v1 queue to the current schema.
+ * Runs only for a verified active device, never invents a backup or
+ * verification event, and is idempotent: an already-valid schema-v2 queue is
+ * left byte-for-byte untouched.
+ */
+export function migrateLegacyPersistedCloudBackupQueue({ storage = localStorage, companyId = "", activeDeviceId = "", deviceAccess = null } = {}) {
+  const raw = readRawFrom(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  if (raw === null || raw === "") return { ok: false, migrated: false, code: "queue_missing", schemaBefore: "", schemaAfter: "", previousRaw: raw };
+
+  const parsed = parseRaw(raw);
+  if (!parsed) return { ok: false, migrated: false, code: "queue_legacy_invalid", schemaBefore: "", schemaAfter: "", previousRaw: raw };
+  const schemaBefore = String(parsed.schemaVersion || "").trim();
+
+  // Idempotent: a queue already valid under the current schema is never rewritten.
+  if (schemaBefore === CLOUD_BACKUP_QUEUE_SCHEMA_VERSION) {
+    const current = readPersistedCloudBackupQueueState(storage);
+    return current.ok
+      ? { ok: true, migrated: false, code: "queue_already_current", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw }
+      : { ok: false, migrated: false, code: "queue_legacy_invalid", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw };
+  }
+  if (schemaBefore !== LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION) {
+    return { ok: false, migrated: false, code: "queue_legacy_unsupported", schemaBefore, schemaAfter: schemaBefore, previousRaw: raw };
+  }
+
+  const fail = (code) => ({ ok: false, migrated: false, code, schemaBefore, schemaAfter: schemaBefore, previousRaw: raw });
+
+  // Only a queue that already claims a settled, successful, error-free state
+  // may be upgraded. Anything else keeps its legacy shape and stays blocked.
+  if (typeof parsed.pending !== "boolean" || parsed.pending === true) return fail("queue_legacy_pending");
+  if (parsed.status !== LEGACY_CLEAN_STATUS) return fail("queue_legacy_not_clean");
+  if (!validHistoricalTimestamp(parsed.lastSuccessfulBackupAt)) return fail("queue_legacy_invalid");
+  // v1 never wrote these; a v1 record carrying them is not a shape we released.
+  if (parsed.syncingRevision !== null && parsed.syncingRevision !== undefined && parsed.syncingRevision !== "") return fail("queue_legacy_syncing");
+  if (parsed.nextRetryAt !== null && parsed.nextRetryAt !== undefined) return fail("queue_legacy_retry_scheduled");
+  if (Number(parsed.retryCount || 0) !== 0) return fail("queue_legacy_retry_scheduled");
+  if (String(parsed.lastError || "").trim() || String(parsed.lastErrorCode || "").trim()) return fail("queue_legacy_error");
+  // v1 had no revision field; any value it does carry must be a real revision,
+  // and a nonzero revision means unprotected local work.
+  const revisionRaw = parsed.localMutationRevision;
+  const revision = revisionRaw === undefined || revisionRaw === null ? 0 : Number(revisionRaw);
+  if (!Number.isFinite(revision) || revision < 0) return fail("queue_legacy_invalid");
+  // Git history proves v1 did not store companyId, so an absent workspace is
+  // expected and is scoped to the verified current company below. A workspace
+  // that contradicts the current company is never adopted.
+  const legacyCompanyId = String(parsed.companyId || "").trim();
+  if (legacyCompanyId && legacyCompanyId !== String(companyId || "").trim()) return fail("queue_legacy_company_mismatch");
+  if (journalPresent(storage)) return fail("queue_legacy_journal_present");
+  if (!verifiedActiveDevice(deviceAccess, companyId, activeDeviceId)) return fail("queue_legacy_device_unverified");
+
+  const legacySuccessAt = typeof parsed.lastSuccessfulBackupAt === "number"
+    ? parsed.lastSuccessfulBackupAt
+    : Date.parse(parsed.lastSuccessfulBackupAt);
+
+  const migrated = {
+    ...defaultQueueState(),
+    schemaVersion: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
+    pending: false,
+    status: CLOUD_BACKUP_STATUS.CLEAN,
+    reasons: [],
+    domains: [],
+    severity: CLOUD_BACKUP_SEVERITY.LOW,
+    priority: CLOUD_BACKUP_PRIORITY.DEFERRED,
+    createdAt: parsed.createdAt ?? null,
+    updatedAt: parsed.updatedAt ?? null,
+    attempts: Number.isFinite(Number(parsed.attempts)) && Number(parsed.attempts) >= 0 ? Number(parsed.attempts) : 0,
+    lastAttemptAt: parsed.lastAttemptAt ?? null,
+    // Preserved exactly: the migration must never claim a NEW backup happened.
+    lastSuccessfulBackupAt: legacySuccessAt,
+    // Not invented. In v1 the ONLY writer of status "current" +
+    // lastSuccessfulBackupAt was clearCloudBackupDirty, and its only callers
+    // were supabaseCloudOnboarding (which called it strictly after
+    // runSupabaseCloudVerification returned ok && allMatched) and
+    // supabaseCloudRestore (after a restore made local equal to cloud). So this
+    // timestamp already IS the moment strict verification passed -- the same
+    // verifier used today. Reusing it records when that proof happened rather
+    // than back-dating or fabricating a fresh one.
+    lastVerifiedAt: legacySuccessAt,
+    lastQueuedAt: null,
+    nextRetryAt: null,
+    retryCount: 0,
+    localMutationRevision: revision,
+    syncingRevision: null,
+    companyId: String(companyId || "").trim(),
+    activeDeviceId: String(activeDeviceId || "").trim(),
+    lastError: "",
+    lastErrorCode: "",
+    source: String(parsed.source || "").trim(),
+    documentId: String(parsed.documentId || "").trim(),
+    localFingerprint: parsed.localFingerprint ?? null,
+  };
+
+  if (!writeRawTo(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(migrated))) {
+    return fail("queue_legacy_write_failed");
+  }
+  // Never report success on a record the real reader still refuses.
+  const verify = readPersistedCloudBackupQueueState(storage);
+  if (!verify.ok) {
+    writeRawTo(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE, raw);
+    return fail("queue_legacy_write_failed");
+  }
+  return { ok: true, migrated: true, code: "", schemaBefore, schemaAfter: CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, previousRaw: raw, state: verify.state };
+}
+
+/**
+ * Clears a device_takeover pause that this browser wrote onto ITSELF when its
+ * own forced claim succeeded. Only ever clears that exact reason, and only for
+ * a verified active device with a clean, settled queue. Every genuine safety
+ * pause (manual or device-lock-loss) is left untouched.
+ */
+export function recoverVerifiedActiveDeviceTakeoverPause({ storage = localStorage, companyId = "", activeDeviceId = "", deviceAccess = null } = {}) {
+  const raw = readRawFrom(storage, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+  if (raw === null || raw === "") return { ok: true, recovered: false, code: "pause_absent", pauseReason: "", previousRaw: raw };
+
+  const parsed = parseRaw(raw);
+  if (!parsed) return { ok: false, recovered: false, code: "pause_invalid", pauseReason: "", previousRaw: raw };
+  const pauseReason = String(parsed.reason || "").trim();
+  if (!parsed.paused) return { ok: true, recovered: false, code: "pause_inactive", pauseReason, previousRaw: raw };
+
+  const refuse = (code) => ({ ok: false, recovered: false, code, pauseReason, previousRaw: raw });
+  // Exact-match only. A manual pause, any device-lock-loss safety pause, or an
+  // unrecognized reason is never auto-cleared.
+  if (pauseReason !== TAKEOVER_PAUSE_REASON) {
+    return refuse(pauseReason ? "pause_active_safety_lock" : "pause_unknown");
+  }
+  if (!verifiedActiveDevice(deviceAccess, companyId, activeDeviceId)) return refuse("pause_device_unverified");
+  if (journalPresent(storage)) return refuse("pause_journal_present");
+
+  // The queue must already be settled and clean (after any legacy migration):
+  // a takeover pause must never mask real pending local work.
+  const queue = readPersistedCloudBackupQueueState(storage);
+  if (!queue.ok) return refuse("pause_queue_unverified");
+  const state = queue.state;
+  if (state.pending || state.status !== CLOUD_BACKUP_STATUS.CLEAN) return refuse("pause_queue_pending");
+  if (state.syncingRevision !== null) return refuse("pause_queue_syncing");
+  if (Number(state.retryCount || 0) !== 0 || state.nextRetryAt != null) return refuse("pause_queue_retry_scheduled");
+  if (String(state.lastError || "").trim() || String(state.lastErrorCode || "").trim()) return refuse("pause_queue_error");
+  if (String(state.companyId || "").trim() !== String(companyId || "").trim()) return refuse("pause_queue_company_mismatch");
+
+  if (!writeRawTo(storage, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, null)) return refuse("pause_clear_failed");
+  return { ok: true, recovered: true, code: "", pauseReason, previousRaw: raw };
+}

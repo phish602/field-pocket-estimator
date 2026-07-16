@@ -6,7 +6,7 @@ import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { readCloudAssetBindings, setCloudAssetBindingsBatch } from "./cloudAssetBindings";
 import { readCloudSyncBaseline, cloudSyncEqual, captureVerifiedCloudSyncBaseline, stableCloudSyncHash } from "./cloudSyncBaseline";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
-import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty, CLOUD_BACKUP_STATUS } from "./cloudBackupQueue";
+import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty, CLOUD_BACKUP_STATUS, LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, migrateLegacyPersistedCloudBackupQueue, recoverVerifiedActiveDeviceTakeoverPause } from "./cloudBackupQueue";
 import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
@@ -98,8 +98,23 @@ function mapById(rows) {
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function localSnapshot(storage) { return buildLocalSnapshotFromStorage(storage).snapshot; }
 function snapshotValues(storage) {
-  return [...Object.values(FAMILY_KEYS), STORAGE_KEYS.CLOUD_ASSET_BINDINGS, STORAGE_KEYS.CLOUD_SYNC_BASELINE, STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, STORAGE_KEYS.CLOUD_BACKUP_QUEUE]
+  return [...Object.values(FAMILY_KEYS), STORAGE_KEYS.CLOUD_ASSET_BINDINGS, STORAGE_KEYS.CLOUD_SYNC_BASELINE, STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, STORAGE_KEYS.CLOUD_BACKUP_QUEUE, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE]
     .reduce((out, key) => ({ ...out, [key]: readRaw(storage, key) }), {});
+}
+// Gate 16G: the sync-metadata keys a recovery may touch. Captured before any
+// migration so a failed attempt restores the device exactly as it was found.
+const METADATA_KEYS = [STORAGE_KEYS.CLOUD_BACKUP_QUEUE, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE];
+function metadataValues(storage) {
+  return METADATA_KEYS.reduce((out, key) => ({ ...out, [key]: readRaw(storage, key) }), {});
+}
+function metadataChanged(storage, previous) {
+  return METADATA_KEYS.some((key) => readRaw(storage, key) !== previous[key]);
+}
+function restoreMetadata(storage, previous) {
+  METADATA_KEYS.forEach((key) => {
+    const value = previous[key];
+    try { if (value === null) storage.removeItem(key); else storage.setItem(key, value); } catch {}
+  });
 }
 function queueRevision(storage) {
   const persisted = readPersistedCloudBackupQueueState(storage);
@@ -172,6 +187,14 @@ export function buildSafeConvergenceResult(result) {
       ? result.conflictSummary.map((entry) => ({ family: asText(entry?.family), code: asText(entry?.code), count: Number(entry?.count || 0) })).filter((entry) => entry.family && entry.code && entry.count > 0)
       : [],
     bootstrapCode: asText(result?.bootstrapCode),
+    // Gate 16G sync-metadata diagnostics. Every value is a fixed code, a schema
+    // version string, or a boolean -- never a name, id, number, or payload.
+    bootstrapDetailCode: asText(result?.bootstrapDetailCode),
+    metadataRecoveryStage: asText(result?.metadataRecoveryStage),
+    queueSchemaBefore: asText(result?.queueSchemaBefore),
+    queueSchemaAfter: asText(result?.queueSchemaAfter),
+    pauseReason: asText(result?.pauseReason),
+    pauseRecovered: Boolean(result?.pauseRecovered),
     blockerCount: Number(result?.mismatch?.blockerCount || 0),
   };
 }
@@ -299,6 +322,38 @@ function identitySetsAgree(local, cloud) {
   return { ok: true };
 }
 
+// Gate 16G safe diagnostics. These classify METADATA only: every value is a
+// fixed code from a closed set, never a name, id, number, total or payload.
+const TAKEOVER_PAUSE_REASON = "device_takeover";
+function legacyQueueDetailCode(storage) {
+  const raw = readRaw(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  if (!raw) return "baseline_bootstrap_queue_missing";
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "baseline_bootstrap_queue_legacy_invalid";
+    if (asText(parsed.schemaVersion) !== LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION) return "baseline_bootstrap_queue_legacy_invalid";
+    // A released v1 record that still looks settled and clean is exactly what
+    // migrateLegacyPersistedCloudBackupQueue can upgrade.
+    if (parsed.pending === true) return "baseline_bootstrap_queue_pending";
+    return "baseline_bootstrap_queue_legacy_migration_required";
+  } catch {
+    return "baseline_bootstrap_queue_legacy_invalid";
+  }
+}
+function pauseDetailCode(pauseRaw) {
+  try {
+    const parsed = JSON.parse(pauseRaw);
+    if (!parsed || typeof parsed !== "object") return "baseline_bootstrap_pause_unknown";
+    const reason = asText(parsed.reason);
+    if (!reason) return "baseline_bootstrap_pause_unknown";
+    // Only a self-inflicted takeover pause is recoverable; every genuine
+    // safety pause reports as an active lock and is left alone.
+    return reason === TAKEOVER_PAUSE_REASON ? "baseline_bootstrap_pause_stale_takeover" : "baseline_bootstrap_pause_active_safety_lock";
+  } catch {
+    return "baseline_bootstrap_pause_unknown";
+  }
+}
+
 // A deliberately narrow proof for one-time clean-replica repair. It accepts a
 // storage object explicitly, never reads unrelated global storage, and is not a
 // conflict resolver: any uncertainty fails closed before a planner can write.
@@ -306,14 +361,19 @@ export function buildCleanReplicaBootstrapProof({ storage, companyId = "", local
   if (baseline) return { ok: false, code: "baseline_bootstrap_baseline_present" };
   const queueRead = readPersistedCloudBackupQueueState(storage);
   if (!queueRead.exists) return { ok: false, code: "baseline_bootstrap_queue_missing" };
-  if (!queueRead.ok) return { ok: false, code: "baseline_bootstrap_queue_unverified" };
+  // Gate 16G: keep the top-level code stable for existing callers, but say WHY
+  // the queue was refused. A legacy record this app itself wrote is a migration
+  // opportunity; an unknown shape is not. Codes only -- never record detail.
+  if (!queueRead.ok) return { ok: false, code: "baseline_bootstrap_queue_unverified", detailCode: legacyQueueDetailCode(storage) };
   const queue = queueRead.state;
-  if (queue.pending || queue.status !== CLOUD_BACKUP_STATUS.CLEAN || queue.syncingRevision !== null) return { ok: false, code: "baseline_bootstrap_local_pending" };
-  if (!validQueueTimestamp(queue.lastSuccessfulBackupAt) || !validQueueTimestamp(queue.lastVerifiedAt) || queue.companyId !== asText(companyId)
-    || Number(queue.retryCount || 0) !== 0 || queue.nextRetryAt != null || asText(queue.lastError) || asText(queue.lastErrorCode)) return { ok: false, code: "baseline_bootstrap_queue_unverified" };
+  if (queue.pending || queue.status !== CLOUD_BACKUP_STATUS.CLEAN || queue.syncingRevision !== null) return { ok: false, code: "baseline_bootstrap_local_pending", detailCode: "baseline_bootstrap_queue_pending" };
+  if (queue.companyId !== asText(companyId)) return { ok: false, code: "baseline_bootstrap_queue_unverified", detailCode: "baseline_bootstrap_queue_company_mismatch" };
+  if (!validQueueTimestamp(queue.lastSuccessfulBackupAt) || !validQueueTimestamp(queue.lastVerifiedAt)
+    || Number(queue.retryCount || 0) !== 0 || queue.nextRetryAt != null || asText(queue.lastError) || asText(queue.lastErrorCode)) return { ok: false, code: "baseline_bootstrap_queue_unverified", detailCode: "baseline_bootstrap_queue_unverified" };
   const pauseRaw = readRaw(storage, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
   const journalRaw = readRaw(storage, JOURNAL_KEY);
-  if (pauseRaw || journalRaw) return { ok: false, code: "baseline_bootstrap_queue_unverified" };
+  if (journalRaw) return { ok: false, code: "baseline_bootstrap_queue_unverified", detailCode: "baseline_bootstrap_journal_present" };
+  if (pauseRaw) return { ok: false, code: "baseline_bootstrap_queue_unverified", detailCode: pauseDetailCode(pauseRaw) };
   const identities = identitySetsAgree(local, cloud);
   if (!identities.ok) return identities;
   if (relationshipCodes(local).length || relationshipCodes(cloud).length) return { ok: false, code: "baseline_bootstrap_relationship_conflict" };
@@ -711,14 +771,78 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
   } catch { return false; }
 }
 
-export async function runSupabaseCloudConvergence({ storage = localStorage, configured = false, user = null, company = null, cloudSnapshot = null, deviceAccess = null, completionDeviceAccess = null, verifyCloud = runSupabaseCloudVerification } = {}) {
+// Gate 16G: a device carrying a released legacy queue and/or the self-inflicted
+// takeover pause can never reach a verified state on its own. Recover that
+// metadata -- and ONLY that metadata -- after proving this browser really is the
+// active device. Scoped to the bootstrap situation (no baseline yet) so an
+// ordinary three-way run never touches the device lock or the queue.
+async function recoverCloudSyncMetadata({ storage, configured, user, company, companyId, deviceAccess }) {
+  const stage = { attempted: false, queueSchemaBefore: "", queueSchemaAfter: "", queueMigrated: false, pauseReason: "", pauseRecovered: false, code: "", stageName: "not_required" };
+  if (readCloudSyncBaseline(companyId, storage)) return stage;
+  const queueRaw = readRaw(storage, STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  const pauseRaw = readRaw(storage, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+  const queueRead = readPersistedCloudBackupQueueState(storage);
+  const legacyQueuePresent = Boolean(queueRaw) && !queueRead.ok;
+  const takeoverPausePresent = Boolean(pauseRaw) && pauseDetailCode(pauseRaw) === "baseline_bootstrap_pause_stale_takeover";
+  if (!legacyQueuePresent && !takeoverPausePresent) return stage;
+
+  stage.attempted = true;
+  stage.stageName = "device_verification";
+  // Real ownership proof first: nothing below may run on a device that is not
+  // demonstrably the active one.
+  const access = deviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "cloud_sync_metadata_recovery" });
+  if (!access?.ok) { stage.code = "metadata_device_unverified"; return stage; }
+  const activeDeviceId = asText(access.access?.activeDeviceState?.activeDeviceId) || getOrCreateLocalDeviceId(storage);
+
+  if (legacyQueuePresent) {
+    stage.stageName = "queue_migration";
+    const migration = migrateLegacyPersistedCloudBackupQueue({ storage, companyId, activeDeviceId, deviceAccess: access });
+    stage.queueSchemaBefore = asText(migration.schemaBefore);
+    stage.queueSchemaAfter = asText(migration.schemaAfter);
+    stage.queueMigrated = Boolean(migration.migrated);
+    if (!migration.ok) { stage.code = asText(migration.code); return stage; }
+  }
+  if (takeoverPausePresent) {
+    stage.stageName = "pause_recovery";
+    const recovery = recoverVerifiedActiveDeviceTakeoverPause({ storage, companyId, activeDeviceId, deviceAccess: access });
+    stage.pauseReason = asText(recovery.pauseReason);
+    stage.pauseRecovered = Boolean(recovery.recovered);
+    if (!recovery.ok) { stage.code = asText(recovery.code); return stage; }
+  }
+  stage.stageName = "completed";
+  return stage;
+}
+
+export async function runSupabaseCloudConvergence(options = {}) {
+  const storage = options.storage || localStorage;
+  // Metadata recovery participates in the convergence attempt's rollback: any
+  // outcome short of verified success puts the queue and pause back byte-for-
+  // byte, so a device is never left half-migrated or prematurely resumed.
+  const preMetadata = metadataValues(storage);
+  const result = await runCloudConvergenceAttempt({ ...options, storage });
+  if (!result?.ok && metadataChanged(storage, preMetadata)) restoreMetadata(storage, preMetadata);
+  return result;
+}
+
+async function runCloudConvergenceAttempt({ storage = localStorage, configured = false, user = null, company = null, cloudSnapshot = null, deviceAccess = null, completionDeviceAccess = null, verifyCloud = runSupabaseCloudVerification } = {}) {
   const companyId = asText(company?.id); const userId = asText(user?.id);
   if (!configured || !companyId || !userId) return { ok: false, status: "unavailable", code: "prerequisites_missing", noWritesPerformed: true };
   const recovered = recoverInterruptedCloudConvergence({ storage });
   if (!recovered.ok) return { ok: false, status: "critical", code: recovered.code, noWritesPerformed: true };
-  const beforeValues = snapshotValues(storage); const beforeQueueRevision = queueRevision(storage); const local = localSnapshot(storage);
+  const local = localSnapshot(storage);
   const snapshot = cloudSnapshot || await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
   if (!snapshot?.ok) return { ok: false, status: "unavailable", code: snapshot?.code || "cloud_snapshot_failed", noWritesPerformed: true };
+  const metadataStage = await recoverCloudSyncMetadata({ storage, configured, user, company, companyId, deviceAccess });
+  const metadataReport = {
+    metadataRecoveryStage: metadataStage.stageName,
+    queueSchemaBefore: metadataStage.queueSchemaBefore,
+    queueSchemaAfter: metadataStage.queueSchemaAfter,
+    pauseReason: metadataStage.pauseReason,
+    pauseRecovered: metadataStage.pauseRecovered,
+  };
+  // Re-read every metadata-derived value AFTER recovery so the proof, the plan
+  // and the change-detection guard all agree on one post-recovery view.
+  const beforeValues = snapshotValues(storage); const beforeQueueRevision = queueRevision(storage);
   const baseline = readCloudSyncBaseline(companyId, storage);
   const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId, storage });
   const attemptId = stableCloudSyncHash({ companyId, userId, queueRevision: beforeQueueRevision, local, cloud: snapshot.mapped, baseline: baseline?.version || 0 });
@@ -734,6 +858,8 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
     return {
       ok: false, status: "conflict", code: "data_mismatch", conflictCount: plan.conflicts.length,
       conflictSummary: safeConflictSummary(plan.conflicts), bootstrapCode: !baseline ? asText(plan.bootstrapProof?.code) : "",
+      bootstrapDetailCode: !baseline ? asText(plan.bootstrapProof?.detailCode) : "",
+      ...metadataReport,
       noWritesPerformed: true,
     };
   }
@@ -813,7 +939,7 @@ export async function runSupabaseCloudConvergence({ storage = localStorage, conf
     // Only after the journal is removed (success is final) do we report which
     // local families actually changed, so the caller can refresh exactly those
     // screens without a full reload. Never returned on a rolled-back path.
-    return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, bootstrap: plan.bootstrap, bootstrapReason: plan.bootstrapReason || "", noCloudWritesPerformed: true, changedFamilies: convergenceChangedFamilies(writes, plan) };
+    return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, bootstrap: plan.bootstrap, bootstrapReason: plan.bootstrapReason || "", noCloudWritesPerformed: true, changedFamilies: convergenceChangedFamilies(writes, plan), ...metadataReport };
   } catch (error) {
     const rollback = recoverInterruptedCloudConvergence({ storage });
     if (!rollback.ok) return { ok: false, status: "critical_local_recovery_required", code: rollback.code, noCloudWritesPerformed: true };

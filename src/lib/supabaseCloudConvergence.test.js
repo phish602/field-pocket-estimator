@@ -1031,7 +1031,7 @@ describe("Gate 16D customerless project relationship", () => {
 // the writer never persists -- so every estimate written with a real total was
 // reported as estimate_restore_payload_persisted_mismatch.
 // ---------------------------------------------------------------------------
-describe("Gate 16F estimate persistence contract", () => {
+describe("Gate 16F/16G live-shaped device replay", () => {
   const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
   const L = { cust: (i) => uuid(1100 + i), proj: (i) => uuid(1200 + i), est: (i) => uuid(1300 + i), inv: (i) => uuid(1400 + i), pay: (i) => uuid(1500 + i) };
   // The live device's last successful backup / verification. Deliberately old:
@@ -1069,6 +1069,55 @@ describe("Gate 16F estimate persistence contract", () => {
     });
     return { from };
   }
+
+  // The exact live Mac metadata. The released schema-v1 queue (commit 1190910)
+  // wrote schemaVersion/pending/status/reasons/domains/severity/priority/
+  // createdAt/updatedAt/attempts/lastAttemptAt/lastError/lastSuccessfulBackupAt/
+  // source/documentId/localFingerprint -- and NOTHING else. It had no
+  // companyId, no lastVerifiedAt, no localMutationRevision, no syncingRevision,
+  // no retryCount/nextRetryAt/lastErrorCode, no activeDeviceId.
+  function setLegacyV1CurrentQueue(overrides = {}) {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+      schemaVersion: "1.0.0",
+      pending: false,
+      status: "current",
+      reasons: [],
+      domains: [],
+      severity: "low",
+      priority: "deferred",
+      createdAt: JULY_10 - 60000,
+      updatedAt: JULY_10,
+      attempts: 0,
+      lastAttemptAt: JULY_10,
+      lastError: "",
+      // v1 wrote this ONLY from clearCloudBackupDirty, which ran only after
+      // runSupabaseCloudVerification returned ok && allMatched.
+      lastSuccessfulBackupAt: JULY_10,
+      source: "manual_backup_success",
+      documentId: "",
+      localFingerprint: null,
+      ...overrides,
+    }));
+  }
+
+  const STALE_TAKEOVER_PAUSED_AT = 1784172727618;
+  function setStaleTakeoverPause(overrides = {}) {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, JSON.stringify({
+      paused: true, reason: "device_takeover", pausedAt: STALE_TAKEOVER_PAUSED_AT, ...overrides,
+    }));
+  }
+
+  // The live conflict vault: 22 safe diagnostic entries. It must never block
+  // eligibility, and must never be cleared before verified success.
+  function setConflictVault(entryCount = 22, companyId = "company-1") {
+    const entries = Array.from({ length: entryCount }, (_, i) => ({
+      family: "invoices", id: `vault-${i + 1}`, code: "both_added_different", at: JULY_10,
+    }));
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId, entries }));
+  }
+
+  const readQueueRaw = () => localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  const readPauseRaw = () => localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
 
   function setJuly10CleanQueue(companyId = "company-1", revision = 0) {
     localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
@@ -1463,4 +1512,480 @@ describe("Gate 16F estimate persistence contract", () => {
         .toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_baseline_present" }));
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Gate 16G: the live Mac's metadata, not its business data, is the blocker.
+  // A released schema-v1 queue ("current"/pending:false) is rejected by
+  // readPersistedCloudBackupQueueState before normalizeQueueState can convert
+  // it, and a stale device_takeover pause -- written onto the WINNING browser
+  // by its own successful forced claim -- can never clear without a new local
+  // edit or a successful backup, which the pause itself prevents.
+  // -------------------------------------------------------------------------
+  describe("Gate 16G legacy queue migration and stale takeover pause recovery", () => {
+    const {
+      readPersistedCloudBackupQueueState,
+      migrateLegacyPersistedCloudBackupQueue,
+      recoverVerifiedActiveDeviceTakeoverPause,
+    } = require("./cloudBackupQueue");
+    const ACTIVE_DEVICE_ID = "device-live-mac";
+    const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
+
+    // The exact shape ensureCurrentDeviceCanApplyLocalRestore returns for a
+    // resolved, unlocked, active device. Recovery must never accept a bare
+    // { ok: true } assertion.
+    const verifiedAccess = (overrides = {}) => ({
+      ok: true,
+      code: "",
+      deviceLockLost: false,
+      access: {
+        ready: true, status: "active", isLocked: false, isActive: true,
+        localDeviceId: ACTIVE_DEVICE_ID,
+        activeDeviceState: { activeDeviceId: ACTIVE_DEVICE_ID, activeDeviceName: "Live Device", userId: "u" },
+        ...(overrides.access || {}),
+      },
+      ...(() => { const { access, ...rest } = overrides; return rest; })(),
+    });
+
+    // The exact live metadata state, business data included.
+    async function seedLiveMetadataState(raw) {
+      const seeded = await seedStaleLive(raw);
+      localStorage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify([SCOPE_TEMPLATE]));
+      setLegacyV1CurrentQueue();
+      setStaleTakeoverPause();
+      setConflictVault(22);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS);
+      return seeded;
+    }
+
+    test("PRE-FIX live metadata: the v1 queue is unverified and clean-replica bootstrap is blocked", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedLiveMetadataState(raw);
+      const snapshot = await liveSnapshot(raw);
+      expect(snapshot.ok).toBe(true);
+
+      // 1. The persisted reader rejects the released v1 shape outright.
+      const queueRead = readPersistedCloudBackupQueueState(localStorage);
+      expect(queueRead).toEqual(expect.objectContaining({ ok: false, exists: true, code: "queue_unverified", state: null }));
+
+      // 2. That surfaces as the live bootstrap code.
+      const proof = buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: staleLocal, cloud: snapshot.mapped, cloudSnapshot: snapshot });
+      expect(proof).toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_queue_unverified" }));
+
+      // 3. The live metadata is exactly what the browser reported.
+      const queue = JSON.parse(readQueueRaw());
+      expect(queue).toEqual(expect.objectContaining({ schemaVersion: "1.0.0", pending: false, status: "current" }));
+      expect(JSON.parse(readPauseRaw())).toEqual(expect.objectContaining({ paused: true, reason: "device_takeover", pausedAt: STALE_TAKEOVER_PAUSED_AT }));
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
+
+      // 4. Zero business-data movement: still nine invoices.
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+    });
+
+    test("the migration upgrades the released v1 queue without inventing a backup or a verification", () => {
+      setLegacyV1CurrentQueue();
+      const deviceAccess = verifiedAccess();
+      const before = readQueueRaw();
+
+      const result = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess });
+
+      expect(result).toEqual(expect.objectContaining({ ok: true, migrated: true, schemaBefore: "1.0.0", schemaAfter: "2.0.0" }));
+      expect(result.previousRaw).toBe(before);
+
+      // 3/4: a real, readable schema-v2 clean queue.
+      const read = readPersistedCloudBackupQueueState(localStorage);
+      expect(read.ok).toBe(true);
+      expect(read.state).toEqual(expect.objectContaining({
+        schemaVersion: "2.0.0", status: "clean", pending: false,
+        syncingRevision: null, retryCount: 0, nextRetryAt: null,
+        lastError: "", lastErrorCode: "", localMutationRevision: 0,
+        companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID,
+      }));
+      expect(Array.isArray(read.state.reasons)).toBe(true);
+      expect(Array.isArray(read.state.domains)).toBe(true);
+
+      // 5/6: the historical proof is preserved verbatim -- the migration never
+      // claims a NEW backup happened, and never back-dates a fresh one.
+      expect(read.state.lastSuccessfulBackupAt).toBe(JULY_10);
+      // v1 had no lastVerifiedAt. It is derived from the successful-backup
+      // timestamp because v1 only ever wrote that field after
+      // runSupabaseCloudVerification returned ok && allMatched.
+      expect(read.state.lastVerifiedAt).toBe(JULY_10);
+      expect(read.state.lastSuccessfulBackupAt).toBeLessThan(Date.now());
+    });
+
+    test("complete live-state replay: v1 queue + stale takeover pause recover, then 9->10 invoices reach strict Cloud OK", async () => {
+      const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
+      const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
+      const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+      const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
+      const { renderHook, waitFor } = require("@testing-library/react");
+
+      const raw = buildLiveRawCloudTables();
+      const deviceId = getOrCreateLocalDeviceId(localStorage);
+      await seedLiveMetadataState(raw);
+
+      // 1. The starting state is exactly the live Mac's, metadata included.
+      expect(JSON.parse(readQueueRaw())).toEqual(expect.objectContaining({ schemaVersion: "1.0.0", status: "current", pending: false }));
+      expect(JSON.parse(readPauseRaw())).toEqual(expect.objectContaining({ paused: true, reason: "device_takeover" }));
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).toBeNull();
+      const vaultBefore = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT);
+      expect(JSON.parse(vaultBefore).entries).toHaveLength(22);
+      const invoicesBefore = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(invoicesBefore).toHaveLength(9);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toHaveLength(7);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toHaveLength(11);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toHaveLength(12);
+      expect(invoicesBefore.flatMap((row) => row.payments || [])).toHaveLength(4);
+
+      const client = liveCloudClient(raw, { activeDeviceId: deviceId, bundle: liveBundle() });
+      getSupabaseClient.mockReturnValue(client);
+
+      const results = [];
+      const onResult = (event) => results.push(event.detail);
+      window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+      try {
+        const { rerender } = renderHook((lock) => useCloudAutoConvergence({ ...ctx, deviceLock: lock }), {
+          initialProps: { ready: false, loading: true, isActive: false, isLocked: false },
+        });
+        rerender({ ready: true, loading: false, isActive: true, isLocked: false });
+
+        await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10), { timeout: 10000 });
+        const converged = await waitFor(() => {
+          const hit = results.find((result) => result.ok && result.status === "converged");
+          expect(hit).toBeTruthy();
+          return hit;
+        }, { timeout: 10000 });
+
+        // 2/7/10/11: the metadata recovered, then bootstrap carried the run.
+        expect(converged).toEqual(expect.objectContaining({
+          ok: true, status: "converged", stage: "completed", code: "", bootstrapCode: "", conflictCount: 0,
+          metadataRecoveryStage: "completed", queueSchemaBefore: "1.0.0", queueSchemaAfter: "2.0.0",
+          pauseReason: "device_takeover", pauseRecovered: true, noCloudWritesPerformed: true,
+        }));
+        expect(converged.conflictSummary).toEqual([]);
+
+        // 3/4/20: schema-v2 clean queue at the expected revision.
+        const queueAfter = readPersistedCloudBackupQueueState(localStorage);
+        expect(queueAfter.ok).toBe(true);
+        expect(queueAfter.state).toEqual(expect.objectContaining({
+          schemaVersion: "2.0.0", status: "clean", pending: false, syncingRevision: null,
+          retryCount: 0, localMutationRevision: 0, companyId: "company-1",
+        }));
+
+        // 21. The stale takeover pause is gone.
+        expect(readPauseRaw()).toBeNull();
+
+        // 15. Final counts 7 / 11 / 12 / 10 / 4 / 1.
+        const invoicesAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toHaveLength(7);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toHaveLength(11);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toHaveLength(12);
+        expect(invoicesAfter).toHaveLength(10);
+        expect(invoicesAfter.flatMap((row) => row.payments || [])).toHaveLength(4);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.SCOPE_TEMPLATES))).toHaveLength(1);
+
+        // 13/14: invoice 10 imported with all six children.
+        expect(invoicesAfter.find((row) => row.id === "inv-10").lineItems).toHaveLength(6);
+        // 16. No local identity deleted; existing order preserved.
+        expect(invoicesAfter.slice(0, 9).map((row) => row.id)).toEqual(invoicesBefore.map((row) => row.id));
+        // 12. Stale shared records became complete cloud replacements.
+        expect(invoicesAfter.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+
+        // 17/18: bindings captured and baseline captured + read back.
+        const bindings = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings;
+        expect(bindings.invoice["inv-10"].cloudUuid).toBe(L.inv(10));
+        await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10));
+
+        // 22. Journal cleared only after success.
+        expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+        // 8/9: the 22-entry conflict vault never blocked eligibility and was
+        // never cleared to get there.
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
+
+        // 19/23: strict verification (the REAL verifier the hook used) reaches Cloud OK.
+        const verification = await runSupabaseCloudVerification({ storageSnapshot: localStorage, ...ctx });
+        expect(verification).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+
+        // 25. No cloud mutation anywhere in the run.
+        expect(client.from.mock.results.some((r) => r.value && (r.value.insert || r.value.update || r.value.delete || r.value.upsert || r.value.rpc))).toBe(false);
+
+        // 24. A second run is idempotent.
+        const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
+        window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request"));
+        await waitFor(() => expect(results.some((result) => result.ok && result.status === "matched")).toBe(true), { timeout: 10000 });
+        expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
+        expect(readPauseRaw()).toBeNull();
+      } finally {
+        window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+        releaseCloudBackupRunLock();
+      }
+    }, 30000);
+
+    // -----------------------------------------------------------------------
+    // Fail-closed: an ineligible legacy queue, or any pause that is not a
+    // self-inflicted takeover, must leave the device exactly as found.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Metadata recovery participates in the convergence attempt's rollback:
+    // anything short of verified success leaves the device exactly as found.
+    // -----------------------------------------------------------------------
+    describe("a failed convergence restores the exact prior metadata", () => {
+      async function runLiveConvergence(raw, overrides = {}) {
+        getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: getOrCreateLocalDeviceId(localStorage), bundle: liveBundle() }));
+        return runSupabaseCloudConvergence({ storage: localStorage, ...ctx, verifyCloud: runSupabaseCloudVerification, ...overrides });
+      }
+
+      test("strict verification failing after local application rolls back business data AND metadata", async () => {
+        const raw = buildLiveRawCloudTables();
+        await seedLiveMetadataState(raw);
+        const queueBefore = readQueueRaw();
+        const pauseBefore = readPauseRaw();
+        const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+        const vaultBefore = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT);
+
+        const result = await runLiveConvergence(raw, { verifyCloud: async () => ({ ok: true, allMatched: false, notices: [], blockers: [], repairs: [] }) });
+
+        expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
+        // 19. Zero business-data writes and byte-exact metadata preservation.
+        expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+        expect(readQueueRaw()).toBe(queueBefore);
+        expect(readPauseRaw()).toBe(pauseBefore);
+        expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe(vaultBefore);
+        expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).toBeNull();
+        expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+        // The queue is still the untouched legacy record -- not half-migrated.
+        expect(JSON.parse(readQueueRaw())).toEqual(expect.objectContaining({ schemaVersion: "1.0.0", status: "current" }));
+        expect(JSON.parse(readPauseRaw())).toEqual(expect.objectContaining({ paused: true, reason: "device_takeover" }));
+      });
+
+      test("device ownership lost before completion rolls back metadata too", async () => {
+        const raw = buildLiveRawCloudTables();
+        await seedLiveMetadataState(raw);
+        const queueBefore = readQueueRaw();
+        const pauseBefore = readPauseRaw();
+
+        const result = await runLiveConvergence(raw, { completionDeviceAccess: { ok: false, code: "device_lock_lost" } });
+
+        expect(result.ok).toBe(false);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+        expect(readQueueRaw()).toBe(queueBefore);
+        expect(readPauseRaw()).toBe(pauseBefore);
+      });
+
+      test("a local-only business identity blocks bootstrap and preserves the legacy metadata", async () => {
+        const raw = buildLiveRawCloudTables();
+        await seedLiveMetadataState(raw);
+        // A customer that exists only on this device.
+        const customers = JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS));
+        localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([...customers, { id: "cust-local-only" }]));
+        const queueBefore = readQueueRaw();
+        const pauseBefore = readPauseRaw();
+
+        const result = await runLiveConvergence(raw);
+
+        expect(result).toEqual(expect.objectContaining({ ok: false, status: "conflict", code: "data_mismatch" }));
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+        expect(readQueueRaw()).toBe(queueBefore);
+        expect(readPauseRaw()).toBe(pauseBefore);
+      });
+
+      test("cloud missing a local identity blocks bootstrap and preserves the legacy metadata", async () => {
+        const raw = buildLiveRawCloudTables();
+        await seedLiveMetadataState(raw);
+        const queueBefore = readQueueRaw();
+        const pauseBefore = readPauseRaw();
+        // The cloud no longer carries one of this device's invoices.
+        const missing = { ...raw, invoices: raw.invoices.filter((row) => row.legacy_local_id !== "inv-4"), invoice_line_items: raw.invoice_line_items.filter((row) => row.invoice_id !== L.inv(4)), invoice_payments: raw.invoice_payments.filter((row) => row.invoice_id !== L.inv(4)) };
+
+        const result = await runLiveConvergence(missing);
+
+        expect(result.ok).toBe(false);
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+        expect(readQueueRaw()).toBe(queueBefore);
+        expect(readPauseRaw()).toBe(pauseBefore);
+      });
+    });
+
+    describe("unsafe legacy queues are never upgraded", () => {
+      test.each([
+        ["pending local work", { pending: true }, "queue_legacy_pending"],
+        ["status is not the v1 clean status", { status: "pending" }, "queue_legacy_not_clean"],
+        ["failed status", { status: "failed" }, "queue_legacy_not_clean"],
+        ["unresolved error", { lastError: "upload failed" }, "queue_legacy_error"],
+        ["retry scheduled", { nextRetryAt: JULY_10 + 5000 }, "queue_legacy_retry_scheduled"],
+        ["retry count", { retryCount: 2 }, "queue_legacy_retry_scheduled"],
+        ["active syncing revision", { syncingRevision: 4 }, "queue_legacy_syncing"],
+        ["invalid historical timestamp", { lastSuccessfulBackupAt: 0 }, "queue_legacy_invalid"],
+        ["missing historical timestamp", { lastSuccessfulBackupAt: null }, "queue_legacy_invalid"],
+        ["contradicting workspace identity", { companyId: "other-company" }, "queue_legacy_company_mismatch"],
+        ["unsupported schema", { schemaVersion: "0.9.0" }, "queue_legacy_unsupported"],
+      ])("%s", (_label, overrides, expectedCode) => {
+        setLegacyV1CurrentQueue(overrides);
+        const before = readQueueRaw();
+        const result = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+        expect(result).toEqual(expect.objectContaining({ ok: false, migrated: false, code: expectedCode }));
+        expect(readQueueRaw()).toBe(before);
+      });
+
+      // A settled clean queue carrying a revision means that work was already
+      // backed up, not that it is unprotected -- so the revision is preserved,
+      // never reset (which would silently re-arm the change counter).
+      test("a valid mutation revision is preserved, not reset", () => {
+        setLegacyV1CurrentQueue({ localMutationRevision: 3 });
+        const result = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+        expect(result).toEqual(expect.objectContaining({ ok: true, migrated: true }));
+        expect(readPersistedCloudBackupQueueState(localStorage).state.localMutationRevision).toBe(3);
+      });
+
+      test("a revision the writer never wrote is rejected rather than guessed", () => {
+        setLegacyV1CurrentQueue({ localMutationRevision: "not-a-number" });
+        const before = readQueueRaw();
+        expect(migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, code: "queue_legacy_invalid" }));
+        expect(readQueueRaw()).toBe(before);
+      });
+
+      test("invalid legacy JSON is never upgraded", () => {
+        localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, "{not json");
+        expect(migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, code: "queue_legacy_invalid" }));
+        expect(readQueueRaw()).toBe("{not json");
+      });
+
+      test("a convergence journal blocks migration", () => {
+        setLegacyV1CurrentQueue();
+        localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify({ version: 1 }));
+        const before = readQueueRaw();
+        expect(migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, code: "queue_legacy_journal_present" }));
+        expect(readQueueRaw()).toBe(before);
+      });
+
+      test.each([
+        ["device access is unresolved", null],
+        ["a bare ok assertion without a real device check", { ok: true }],
+        ["device access failed", { ok: false, access: { ready: true, isActive: false, isLocked: true } }],
+        ["the lock is still loading", { access: { ready: false } }],
+        ["the device is locked", { access: { isLocked: true } }],
+        ["this browser is not the active device", { access: { localDeviceId: "some-other-device" } }],
+        ["device lock was lost", { deviceLockLost: true }],
+      ])("%s blocks migration", (_label, access) => {
+        setLegacyV1CurrentQueue();
+        const before = readQueueRaw();
+        const deviceAccess = access === null ? null : (access.ok === false || access.access || access.deviceLockLost ? verifiedAccess(access) : access);
+        expect(migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess }))
+          .toEqual(expect.objectContaining({ ok: false, code: "queue_legacy_device_unverified" }));
+        expect(readQueueRaw()).toBe(before);
+      });
+    });
+
+    describe("only a self-inflicted takeover pause is ever recovered", () => {
+      beforeEach(() => setJuly10CleanQueue("company-1", 0));
+
+      test.each([
+        ["manual_pause", "manual_pause", "pause_active_safety_lock"],
+        ["device_lock_lost_during_mutation", "device_lock_lost_during_mutation", "pause_active_safety_lock"],
+        ["device_lock_lost_during_restore", "device_lock_lost_during_restore", "pause_active_safety_lock"],
+        ["device_lock_lost_during_backup", "device_lock_lost_during_backup", "pause_active_safety_lock"],
+        ["an unknown reason", "something_new", "pause_active_safety_lock"],
+        ["an empty reason", "", "pause_unknown"],
+      ])("%s is never auto-cleared", (_label, reason, expectedCode) => {
+        setStaleTakeoverPause({ reason });
+        const before = readPauseRaw();
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: expectedCode }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("invalid pause JSON is never cleared", () => {
+        localStorage.setItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, "{not json");
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: "pause_invalid" }));
+        expect(readPauseRaw()).toBe("{not json");
+      });
+
+      test.each([
+        ["device access is unresolved", null, "pause_device_unverified"],
+        ["a bare ok assertion", { ok: true }, "pause_device_unverified"],
+        ["this browser is not the active device", "not-active", "pause_device_unverified"],
+      ])("%s blocks pause recovery", (_label, access, expectedCode) => {
+        setStaleTakeoverPause();
+        const before = readPauseRaw();
+        const deviceAccess = access === null ? null : access === "not-active" ? verifiedAccess({ access: { localDeviceId: "another-device" } }) : access;
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: expectedCode }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("a pending queue blocks pause recovery", () => {
+        setStaleTakeoverPause();
+        const queue = JSON.parse(readQueueRaw());
+        localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...queue, pending: true, status: "pending" }));
+        const before = readPauseRaw();
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: "pause_queue_pending" }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("an unmigrated legacy queue blocks pause recovery", () => {
+        setLegacyV1CurrentQueue();
+        setStaleTakeoverPause();
+        const before = readPauseRaw();
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: "pause_queue_unverified" }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("a convergence journal blocks pause recovery", () => {
+        setStaleTakeoverPause();
+        localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify({ version: 1 }));
+        const before = readPauseRaw();
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false, code: "pause_journal_present" }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("a contradicting workspace blocks pause recovery", () => {
+        setStaleTakeoverPause();
+        const before = readPauseRaw();
+        expect(recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "other-company", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() }))
+          .toEqual(expect.objectContaining({ ok: false, recovered: false }));
+        expect(readPauseRaw()).toBe(before);
+      });
+
+      test("a verified active device with a clean queue recovers the stale takeover pause", () => {
+        setStaleTakeoverPause();
+        const result = recoverVerifiedActiveDeviceTakeoverPause({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+        expect(result).toEqual(expect.objectContaining({ ok: true, recovered: true, pauseReason: "device_takeover" }));
+        expect(readPauseRaw()).toBeNull();
+        // The exact prior pause string is preserved for rollback.
+        expect(JSON.parse(result.previousRaw)).toEqual(expect.objectContaining({ paused: true, reason: "device_takeover", pausedAt: STALE_TAKEOVER_PAUSED_AT }));
+      });
+    });
+
+    test("the migration is idempotent: an already-valid schema-v2 queue is byte-for-byte unchanged", () => {
+      setJuly10CleanQueue("company-1", 3);
+      const before = readQueueRaw();
+
+      const first = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+      expect(first).toEqual(expect.objectContaining({ ok: true, migrated: false, code: "queue_already_current" }));
+      expect(readQueueRaw()).toBe(before);
+
+      // And migrating the freshly migrated legacy queue twice is a no-op too.
+      setLegacyV1CurrentQueue();
+      migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+      const migratedRaw = readQueueRaw();
+      const second = migrateLegacyPersistedCloudBackupQueue({ storage: localStorage, companyId: "company-1", activeDeviceId: ACTIVE_DEVICE_ID, deviceAccess: verifiedAccess() });
+      expect(second).toEqual(expect.objectContaining({ ok: true, migrated: false, code: "queue_already_current" }));
+      expect(readQueueRaw()).toBe(migratedRaw);
+    });
+  });
+
 });
