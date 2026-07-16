@@ -913,6 +913,10 @@ export default function AdvancedSettingsScreen({
         status: String(convergenceResult.status || "").trim(),
         code: String(convergenceResult.code || "").trim(),
         stage: String(convergenceResult.stage || "").trim(),
+        // Why a clean-replica bootstrap was refused (e.g.
+        // baseline_bootstrap_evidence_invalid). A fixed code, never a record
+        // detail.
+        bootstrapCode: String(convergenceResult.bootstrapCode || "").trim(),
         retryable: Boolean(convergenceResult.retryable),
         ok: Boolean(convergenceResult.ok),
         conflictSummary: Array.isArray(convergenceResult.conflictSummary)
@@ -2102,6 +2106,7 @@ export default function AdvancedSettingsScreen({
                         {`Automatic sync — status: ${automaticSyncState.status || "unknown"}`}
                         {automaticSyncState.code ? `, code: ${automaticSyncState.code}` : ""}
                         {automaticSyncState.stage ? `, stage: ${automaticSyncState.stage}` : ""}
+                        {automaticSyncState.bootstrapCode ? `, bootstrap: ${automaticSyncState.bootstrapCode}` : ""}
                         {`, retryable: ${automaticSyncState.retryable ? "yes" : "no"}`}
                         {automaticSyncState.conflictSummary.length ? `, conflicts: ${automaticSyncState.conflictSummary.map((entry) => `${entry.family}/${entry.code} (${entry.count})`).join(", ")}` : ""}
                       </div>

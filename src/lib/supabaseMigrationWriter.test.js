@@ -2237,3 +2237,85 @@ describe("supabaseMigrationWriter customerless project (Gate 16D)", () => {
     expect(projectPayloads.find((p) => p.legacy_local_id === "proj_1").customer_id).toBe("db_cust");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate 16F: mapEstimatePayloads now projects its table columns through the
+// shared estimate persistence contract (the same projection convergence
+// evidence verifies against). The serialized payload must be byte-identical to
+// the pre-refactor writer output -- this is a pure refactor, not a schema or
+// behavior change.
+// ---------------------------------------------------------------------------
+describe("Gate 16F estimate write payload is unchanged by the shared contract refactor", () => {
+  function estimateUpsertPayload(mockClient) {
+    const [rows] = mockClient.writeChains.estimates.upsert.mock.calls[0];
+    return rows;
+  }
+
+  async function writeEstimate(localEstimate) {
+    const mockClient = createMockClient({
+      counts: { customers: 1, projects: 1, estimates: 1, estimateLineItems: 1, invoices: 0, invoiceLineItems: 0, invoicePayments: 0 },
+      existingInvoiceRows: [], existingPaymentRows: [],
+    });
+    mockGetSupabaseClient.mockReturnValue(mockClient);
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true });
+    const result = await runSupabaseMigrationWrite({
+      storageSnapshot: buildStorageSnapshot({ estimates: [localEstimate], invoices: [] }),
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1", name: "AAS Property Care" },
+      role: "owner",
+      backupDownloadAvailable: true,
+      preview: buildPreview({ localCounts: { customers: 1, projects: 1, estimates: 1, invoices: 0, invoicePayments: 0 } }),
+    });
+    expect(result.ok).toBe(true);
+    return estimateUpsertPayload(mockClient);
+  }
+
+  test("writes the exact pre-refactor table row, collapsing totals into total_amount", async () => {
+    const rows = await writeEstimate({
+      id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1",
+      status: "approved", approvedTotal: 4500, grandTotal: 4400, total: 4300,
+      labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
+    });
+    expect(rows).toHaveLength(1);
+    const { restore_payload: restorePayload, restore_payload_captured_at: capturedAt, ...row } = rows[0];
+    // The full serialized column set, stated literally.
+    expect(row).toEqual({
+      company_id: "company_1",
+      customer_id: "db_cust_1",
+      project_id: "db_proj_1",
+      legacy_local_id: "est_1",
+      estimate_number: "EST-1",
+      status: "approved",
+      document_type: "estimate",
+      total_amount: 4500,
+      notes: null,
+      terms: null,
+      converted_invoice_legacy_id: null,
+      restore_payload_version: "1",
+      created_by: "user_1",
+      updated_by: "user_1",
+    });
+    // Preserved around the refactor: the payload, its version and capture stamp.
+    expect(restorePayload).toEqual(expect.objectContaining({ legacyLocalId: "est_1" }));
+    expect(Date.parse(capturedAt)).toBeGreaterThan(0);
+    // The writer still does not persist an approved_total column.
+    expect(row).not.toHaveProperty("approved_total");
+  });
+
+  test.each([
+    ["approved_total wins", { approvedTotal: 4500, grandTotal: 4400, total: 4300 }, 4500],
+    ["grand_total is next", { grandTotal: 3200, total: 3100 }, 3200],
+    ["total is the last resort", { total: 900 }, 900],
+    ["an approved zero total is kept", { approvedTotal: 0, total: 1200 }, 0],
+    ["no total persists null", {}, null],
+  ])("total_amount: %s", async (_label, totals, expected) => {
+    const rows = await writeEstimate({ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", ...totals });
+    expect(rows[0].total_amount).toBe(expected);
+  });
+
+  test("carries a converted invoice legacy id into its own column", async () => {
+    const rows = await writeEstimate({ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100, invoiceId: "inv_9" });
+    expect(rows[0].converted_invoice_legacy_id).toBe("inv_9");
+  });
+});

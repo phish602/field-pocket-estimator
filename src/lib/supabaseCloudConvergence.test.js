@@ -624,6 +624,42 @@ function inv10BackendLines() {
   ];
 }
 
+// A raw cloud `estimates` row exactly as the PRODUCTION writer persists it.
+// mapEstimatePayloads collapses approved_total/grand_total/total into the single
+// total_amount column and never writes an approved_total column at all. The
+// expected total is passed in literally (never derived from the contract under
+// test) so this fixture stays an independent statement of the table shape.
+function writerEstimateRow({ local, id, customerUuid, projectUuid, totalAmount, convertedInvoiceLegacyId = null }) {
+  const mapped = mapLocalEstimateToBackendEstimate(local, {});
+  return {
+    id, legacy_local_id: local.id, customer_id: customerUuid, project_id: projectUuid,
+    estimate_number: mapped.estimate_number || null, status: mapped.status || "pending", document_type: "estimate",
+    total_amount: totalAmount,
+    notes: mapped.notes || null, terms: mapped.terms || null,
+    converted_invoice_legacy_id: convertedInvoiceLegacyId,
+    restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: local.id, estimate: local },
+    restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
+  };
+}
+
+// The pre-Gate-16F fixture shape: built from the pre-writer BACKEND DRAFT rather
+// than the writer's table projection. mapLocalEstimateToBackendEstimate produces
+// no total_amount (so the column lands null) and does produce approved_total (a
+// column the writer never writes). For an estimate carrying no totals at all the
+// two shapes coincide, which is why exactly one of the twelve live estimates
+// passed the old check.
+function mapperShapedEstimateRow({ local, id, customerUuid, projectUuid }) {
+  const mapped = mapLocalEstimateToBackendEstimate(local, {});
+  return {
+    id, legacy_local_id: local.id, customer_id: customerUuid, project_id: projectUuid,
+    estimate_number: mapped.estimate_number, status: mapped.status, total_amount: mapped.total_amount,
+    approved_total: mapped.approved_total ?? null, notes: mapped.notes, terms: mapped.terms,
+    converted_invoice_legacy_id: mapped.converted_invoice_legacy_local_id ?? null,
+    restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: local.id, estimate: local },
+    restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
+  };
+}
+
 // Raw cloud invoice_line_item rows produced through the shared writer contract.
 function writerInvoiceChildRows(parentLegacyId, parentCloudId, backendLines, idPrefix) {
   return buildParentLineItemContract({ entityType: "invoice", parentLegacyId, parentCloudId, parentColumn: "invoice_id", items: backendLines })
@@ -647,15 +683,9 @@ function buildRawCloudTables() {
     { id: U.projCl, legacy_local_id: "proj-cl", customer_id: null, project_number: "P-CL", project_name: "Unassigned" },
   ];
   const est1Local = estimate("est-1", { customerId: "cust-1", projectId: "proj-1", estimateNumber: "EST-1" });
-  const mappedEst1 = mapLocalEstimateToBackendEstimate(est1Local, {});
-  const estimates = [{
-    id: U.est1, legacy_local_id: "est-1", customer_id: U.cust1, project_id: U.proj1,
-    estimate_number: mappedEst1.estimate_number, status: mappedEst1.status, total_amount: mappedEst1.total_amount,
-    approved_total: mappedEst1.approved_total ?? null, notes: mappedEst1.notes, terms: mappedEst1.terms,
-    converted_invoice_legacy_id: mappedEst1.converted_invoice_legacy_local_id ?? null,
-    restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: "est-1", estimate: est1Local },
-    restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
-  }];
+  // est-1 carries total 100 and no approved/grand total, so the writer persists
+  // total_amount 100 (see writerEstimateRow).
+  const estimates = [writerEstimateRow({ local: est1Local, id: U.est1, customerUuid: U.cust1, projectUuid: U.proj1, totalAmount: 100 })];
   // 9 existing invoices, one simple line each (no explicit kind/unit_cost).
   const invoiceRows = [];
   const invoiceLineRows = [];
@@ -990,5 +1020,447 @@ describe("Gate 16D customerless project relationship", () => {
     // No invoice imported; no local business-data write; no relationship guessed.
     expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
     expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBe(projectsBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 16F: the estimate evidence verifier and the cloud writer must agree on
+// exactly which columns the `estimates` table holds. The verifier used to
+// compare raw persisted rows against the PRE-WRITER backend draft, which
+// asserted a total_amount the draft never carries and demanded an approved_total
+// the writer never persists -- so every estimate written with a real total was
+// reported as estimate_restore_payload_persisted_mismatch.
+// ---------------------------------------------------------------------------
+describe("Gate 16F estimate persistence contract", () => {
+  const ctx = { configured: true, user: { id: "u" }, company: { id: "company-1" } };
+  const L = { cust: (i) => uuid(1100 + i), proj: (i) => uuid(1200 + i), est: (i) => uuid(1300 + i), inv: (i) => uuid(1400 + i), pay: (i) => uuid(1500 + i) };
+  // The live device's last successful backup / verification. Deliberately old:
+  // clean-replica proof requires VALID timestamps, never recent ones.
+  const JULY_10 = Date.parse("2026-07-10T22:05:23.000Z");
+
+  const { DEVICE_LOCK_ROW_KEY } = require("./supabaseDeviceLock");
+  const { SUPABASE_APP_RESTORE_BUNDLE_SCHEMA, SUPABASE_APP_RESTORE_BUNDLE_VERSION, SUPABASE_APP_RESTORE_BUNDLE_ROW_KEY } = require("./supabaseAppRestoreBundle");
+
+  const SCOPE_TEMPLATE = { id: "tpl-1", name: "Standard Scope", body: "Scope of work" };
+  const liveBundle = () => ({
+    schema: SUPABASE_APP_RESTORE_BUNDLE_SCHEMA, version: SUPABASE_APP_RESTORE_BUNDLE_VERSION, capturedFrom: "localStorage",
+    companyProfile: { companyName: "Test Co" }, settings: { taxRate: 0 }, scopeTemplates: [SCOPE_TEMPLATE],
+  });
+
+  // Serves the business tables plus BOTH app_settings rows, keyed by the same
+  // setting_key filter production uses: the device-lock row and the restore
+  // bundle row. Lets the real device-lock path and the real supplemental path
+  // both run against one client.
+  function liveCloudClient(rowsByTable, { activeDeviceId = "", bundle = null } = {}) {
+    const from = jest.fn((table) => {
+      const filters = {};
+      const resolveData = () => {
+        if (table !== "app_settings") return { data: rowsByTable[table] || [], error: null };
+        if (filters.setting_key === DEVICE_LOCK_ROW_KEY) {
+          return { data: activeDeviceId ? [{ id: "dl-row", setting_value: { activeDeviceId, activeDeviceName: "Live Device", userId: "u" } }] : [], error: null };
+        }
+        if (filters.setting_key === SUPABASE_APP_RESTORE_BUNDLE_ROW_KEY) {
+          return { data: bundle ? [{ id: "bundle-row", setting_value: bundle }] : [], error: null };
+        }
+        return { data: [], error: null };
+      };
+      const chain = { select: jest.fn(() => chain), eq: jest.fn((column, value) => { filters[column] = value; return chain; }), then: (resolve) => resolve(resolveData()) };
+      return chain;
+    });
+    return { from };
+  }
+
+  function setJuly10CleanQueue(companyId = "company-1", revision = 0) {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+      schemaVersion: "2.0.0", pending: false, status: "clean", companyId,
+      lastSuccessfulBackupAt: JULY_10, lastVerifiedAt: JULY_10,
+      localMutationRevision: revision, syncingRevision: null, retryCount: 0,
+      nextRetryAt: null, lastError: "", lastErrorCode: "", reasons: [], domains: [],
+    }));
+  }
+
+  // Twelve estimates written through the real production writer: each carries a
+  // real total, so each row holds a total_amount and NO approved_total column.
+  // est-1 is the document that differs from the stale device, which is why the
+  // live Mac reported estimates/both_added_different: 1 alongside eleven
+  // estimate_restore_payload_persisted_mismatch results across twelve estimates
+  // -- a conflicted estimate is never double-reported by the evidence loop.
+  const LIVE_ESTIMATE_SPECS = [
+    { n: 1, spec: { approvedTotal: 4500, grandTotal: 4400, total: 4300 }, totalAmount: 4500, differs: true },
+    { n: 2, spec: { grandTotal: 3200, total: 3100 }, totalAmount: 3200 },
+    { n: 3, spec: { total: 900 }, totalAmount: 900 },
+    // approvedTotal 0 is a real approved total: the writer uses ?? (not ||).
+    { n: 4, spec: { approvedTotal: 0, grandTotal: 1300, total: 1200 }, totalAmount: 0 },
+    { n: 5, spec: { approvedTotal: 15250.75, status: "approved" }, totalAmount: 15250.75 },
+    { n: 6, spec: { grandTotal: 780.5, total: null }, totalAmount: 780.5 },
+    { n: 7, spec: { total: 2400, status: "approved" }, totalAmount: 2400 },
+    { n: 8, spec: { approvedTotal: 6100, status: "sent", terms: "Net 30" }, totalAmount: 6100 },
+    { n: 9, spec: { total: 310, status: "lost" }, totalAmount: 310 },
+    { n: 10, spec: { approvedTotal: 8800, notes: "Scope A", terms: "Net 15" }, totalAmount: 8800 },
+    { n: 11, spec: { grandTotal: 1990, total: 1980, status: "sent" }, totalAmount: 1990 },
+    { n: 12, spec: { approvedTotal: 2750, total: 2700 }, totalAmount: 2750 },
+  ];
+
+  const liveEstimateLocal = (n, spec) => estimate(`est-${n}`, {
+    customerId: `cust-${((n - 1) % 7) + 1}`, projectId: `proj-${((n - 1) % 11) + 1}`,
+    estimateNumber: `EST-${1000 + n}`, ...spec,
+  });
+
+  // Estimate children flattened through the SHARED line-item contract, exactly
+  // as the writer persists them.
+  function writerEstimateChildRows(local, parentCloudId, idPrefix) {
+    const mapped = mapLocalEstimateToBackendEstimate(local, {});
+    return buildParentLineItemContract({ entityType: "estimate", parentLegacyId: local.id, parentCloudId, parentColumn: "estimate_id", items: mapped.line_items })
+      .rows.map((row, idx) => ({ id: `${idPrefix}-${idx}`, ...row }));
+  }
+
+  const estimateChildSource = {
+    labor: { lines: [{ id: "lab-a", description: "Framing", quantity: 8, rate: 65, total: 520, internalCost: 40 }] },
+    materials: { items: [{ id: "mat-a", description: "Lumber", quantity: 20, price: 12.5, total: 250, cost: 8 }] },
+  };
+
+  function buildLiveRawCloudTables() {
+    const customers = Array.from({ length: 7 }, (_, i) => ({ id: L.cust(i + 1), legacy_local_id: `cust-${i + 1}`, display_name: `Customer ${i + 1}`, customer_type: "residential" }));
+    const projects = Array.from({ length: 11 }, (_, i) => ({ id: L.proj(i + 1), legacy_local_id: `proj-${i + 1}`, customer_id: L.cust(((i) % 7) + 1), project_number: `P-${i + 1}`, project_name: `Project ${i + 1}` }));
+
+    const estimateRows = []; const estimateLineRows = [];
+    LIVE_ESTIMATE_SPECS.forEach(({ n, spec, totalAmount }) => {
+      // Two estimates carry real children; the rest are header-only.
+      const local = liveEstimateLocal(n, (n === 1 || n === 5) ? { ...spec, ...estimateChildSource } : spec);
+      const args = { local, id: L.est(n), customerUuid: L.cust(((n - 1) % 7) + 1), projectUuid: L.proj(((n - 1) % 11) + 1) };
+      estimateRows.push(writerEstimateRow({ ...args, totalAmount }));
+      writerEstimateChildRows(local, L.est(n), `db-el-${n}`).forEach((row) => estimateLineRows.push(row));
+    });
+
+    const invoiceRows = []; const invoiceLineRows = []; const paymentRows = [];
+    for (let i = 1; i <= 9; i++) {
+      const cloudId = L.inv(i);
+      invoiceRows.push({ id: cloudId, legacy_local_id: `inv-${i}`, customer_id: L.cust(((i - 1) % 7) + 1), project_id: L.proj(((i - 1) % 11) + 1), source_estimate_legacy_id: "", invoice_number: `INV-${2000 + i}`, status: "sent", payment_status: "unpaid", total_amount: 100 * i, amount_paid: 0, balance_remaining: 100 * i, invoice_date: "2026-07-01", due_date: "2026-08-01", notes: "" });
+      writerInvoiceChildRows(`inv-${i}`, cloudId, [{ kind: "invoice", sort_order: 0, description: "Service", quantity: 1, unit_price: 100 * i, total: 100 * i }], `db-live-il-${i}`).forEach((row) => invoiceLineRows.push(row));
+    }
+    // Four payments, all on shared invoices, so local and cloud both hold four.
+    for (let i = 1; i <= 4; i++) {
+      paymentRows.push({ id: L.pay(i), legacy_local_id: `pay-${i}`, invoice_id: L.inv(i), amount: 25 * i, method: "check", status: "paid", paid_at: "2026-07-05T00:00:00.000Z" });
+    }
+    // The tenth, cloud-only invoice: six children, sourced from est-1.
+    invoiceRows.push({ id: L.inv(10), legacy_local_id: "inv-10", customer_id: L.cust(1), project_id: L.proj(1), source_estimate_legacy_id: "est-1", invoice_number: "INV-2010", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
+    writerInvoiceChildRows("inv-10", L.inv(10), inv10BackendLines(), "db-live-il-10").forEach((row) => invoiceLineRows.push(row));
+
+    return { customers, projects, estimates: estimateRows, invoices: invoiceRows, invoice_payments: paymentRows, estimate_line_items: estimateLineRows, invoice_line_items: invoiceLineRows };
+  }
+
+  const liveWithoutTenth = (raw) => ({
+    ...raw,
+    invoices: raw.invoices.filter((row) => row.legacy_local_id !== "inv-10"),
+    invoice_line_items: raw.invoice_line_items.filter((row) => row.invoice_id !== L.inv(10)),
+  });
+
+  const persistedMismatches = (plan) => plan.conflicts.filter((conflict) => conflict.code === "estimate_restore_payload_persisted_mismatch");
+
+  async function liveSnapshot(raw, deviceId = "") {
+    getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: deviceId, bundle: liveBundle() }));
+    return readSupabaseCloudConvergenceSnapshot(ctx);
+  }
+
+  // Seeds localStorage from a real cloud read of the nine-invoice cloud, then
+  // applies the live stale-device differences.
+  async function seedStaleLive(raw) {
+    const nine = await liveSnapshot(liveWithoutTenth(raw));
+    expect(nine.ok).toBe(true);
+    const staleLocal = {
+      ...nine.mapped,
+      // One project differs in ordinary cloud business fields.
+      projects: nine.mapped.projects.map((project) => project.id === "proj-1" ? { ...project, notes: "legacy local note" } : project),
+      // One estimate differs as a complete cloud document.
+      estimates: nine.mapped.estimates.map((row) => row.id === "est-1" ? { ...row, notes: "legacy local estimate note" } : row),
+      // Nine shared invoices carry the legacy local child representation.
+      invoices: nine.mapped.invoices.map((row) => ({ ...row, lineItems: row.lineItems.map((line) => ({ ...line, legacyChildMarker: true })) })),
+    };
+    setLocalSnapshot(staleLocal);
+    return { nine, staleLocal };
+  }
+
+  // The historical twelve-estimate regression. Against the pre-Gate-16F verifier
+  // this exact fixture reproduced the live Mac's estimate conflict signature --
+  // estimates/both_added_different: 1 plus eleven
+  // estimate_restore_payload_persisted_mismatch results, because every writer row
+  // carrying a real total_amount was compared against a backend draft that has
+  // no such column. With the writer and the verifier sharing one persistence
+  // contract, none of the twelve is a contradiction and the differing document
+  // becomes an ordinary safe cloud replacement.
+  test("twelve production writer rows produce zero persisted mismatches and the differing document becomes a safe replacement", async () => {
+    const raw = buildLiveRawCloudTables();
+    const { staleLocal } = await seedStaleLive(raw);
+    setJuly10CleanQueue("company-1", 0);
+    const snapshot = await liveSnapshot(raw);
+    expect(snapshot.ok).toBe(true);
+    expect(snapshot.mapped.estimates).toHaveLength(12);
+
+    const plan = buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: snapshot });
+    expect(persistedMismatches(plan)).toHaveLength(0);
+    expect(plan.conflicts).toEqual([]);
+    expect(plan).toEqual(expect.objectContaining({ safe: true, bootstrap: true, bootstrapReason: "verified_clean_replica" }));
+    // The one differing estimate document is replaced wholesale from the cloud.
+    expect(plan.replacements.estimates.map((row) => row.id)).toEqual(["est-1"]);
+  });
+
+  test("the formerly synthetic mapper-shaped fixture row is not what the writer persists and is now rejected", async () => {
+    const raw = buildLiveRawCloudTables();
+    const { staleLocal } = await seedStaleLive(raw);
+    setJuly10CleanQueue("company-1", 0);
+    // Rebuild est-12 (approvedTotal 2750) the way the old fixture did: from the
+    // pre-writer backend draft. That leaves total_amount unset and invents an
+    // approved_total column -- a row the real writer would never produce.
+    const local12 = liveEstimateLocal(12, LIVE_ESTIMATE_SPECS[11].spec);
+    const synthetic = mapperShapedEstimateRow({ local: local12, id: L.est(12), customerUuid: L.cust(5), projectUuid: L.proj(1) });
+    expect(synthetic.total_amount).toBeUndefined();
+    expect(synthetic.approved_total).toBe(2750);
+    const rawWithSynthetic = { ...raw, estimates: raw.estimates.map((row) => row.legacy_local_id === "est-12" ? synthetic : row) };
+    const snapshot = await liveSnapshot(rawWithSynthetic);
+    const plan = buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: snapshot });
+    expect(persistedMismatches(plan).map((conflict) => conflict.id)).toContain("est-12");
+  });
+
+  test("the July 10 backup timestamp is valid proof: clean-replica bootstrap passes on age alone", async () => {
+    const raw = buildLiveRawCloudTables();
+    const { staleLocal } = await seedStaleLive(raw);
+    setJuly10CleanQueue("company-1", 0);
+    const snapshot = await liveSnapshot(raw);
+    const proof = buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: staleLocal, cloud: snapshot.mapped, cloudSnapshot: snapshot });
+    expect(proof).toEqual(expect.objectContaining({ ok: true, bootstrap: true, bootstrapReason: "verified_clean_replica" }));
+    // The proof accepted a five-day-old timestamp; it is validity, not recency.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).lastSuccessfulBackupAt).toBe(JULY_10);
+  });
+
+  test("complete live-shaped replay: 7/11/12 and 9->10 invoices reach strict Cloud OK through the real hook", async () => {
+    const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
+    const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
+    const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+    const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
+    const { renderHook, waitFor } = require("@testing-library/react");
+
+    const raw = buildLiveRawCloudTables();
+    const deviceId = getOrCreateLocalDeviceId(localStorage);
+    await seedStaleLive(raw);
+    localStorage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify([SCOPE_TEMPLATE]));
+    setJuly10CleanQueue("company-1", 0);
+
+    // Local starts at the live shape: 7 / 11 / 12 / 9, 4 payments, 1 template.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toHaveLength(7);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toHaveLength(11);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toHaveLength(12);
+    const invoicesBefore = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+    expect(invoicesBefore).toHaveLength(9);
+    expect(invoicesBefore.flatMap((row) => row.payments || [])).toHaveLength(4);
+    // No baseline, no bindings.
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).toBeNull();
+
+    const client = liveCloudClient(raw, { activeDeviceId: deviceId, bundle: liveBundle() });
+    getSupabaseClient.mockReturnValue(client);
+
+    const results = [];
+    const onResult = (event) => results.push(event.detail);
+    window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+    try {
+      const { rerender } = renderHook((lock) => useCloudAutoConvergence({ ...ctx, deviceLock: lock }), {
+        initialProps: { ready: false, loading: true, isActive: false, isLocked: false },
+      });
+      rerender({ ready: true, loading: false, isActive: true, isLocked: false });
+
+      // The tenth invoice imports through the real ownership + planner + strict
+      // verification path.
+      await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(10), { timeout: 10000 });
+      const converged = await waitFor(() => {
+        const hit = results.find((result) => result.ok && result.status === "converged");
+        expect(hit).toBeTruthy();
+        return hit;
+      }, { timeout: 10000 });
+
+      // The published result: converged with no conflict and no bootstrap
+      // blocker, and every family the cloud actually owned marked changed.
+      expect(converged).toEqual(expect.objectContaining({
+        ok: true, status: "converged", stage: "completed", code: "", bootstrapCode: "",
+        conflictCount: 0, retryable: false, noCloudWritesPerformed: true,
+      }));
+      expect(converged.conflictSummary).toEqual([]);
+      expect(converged.changedFamilies).toEqual(expect.objectContaining({ estimates: true, invoices: true, projects: true, customers: false }));
+
+      // Final counts: 7 / 11 / 12 / 10 / 4 payments / 1 template.
+      const invoicesAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CUSTOMERS))).toHaveLength(7);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toHaveLength(11);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toHaveLength(12);
+      expect(invoicesAfter).toHaveLength(10);
+      expect(invoicesAfter.flatMap((row) => row.payments || [])).toHaveLength(4);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.SCOPE_TEMPLATES))).toHaveLength(1);
+
+      // The tenth invoice arrived with all six children.
+      expect(invoicesAfter.find((row) => row.id === "inv-10").lineItems).toHaveLength(6);
+      // Existing identity order preserved; no local identity deleted.
+      expect(invoicesAfter.slice(0, 9).map((row) => row.id)).toEqual(invoicesBefore.map((row) => row.id));
+      // The stale shared records became complete cloud replacements.
+      expect(invoicesAfter.every((row) => row.lineItems.every((line) => !line.legacyChildMarker))).toBe(true);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS)).find((row) => row.id === "proj-1").notes || "").not.toBe("legacy local note");
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).find((row) => row.id === "est-1").notes || "").not.toBe("legacy local estimate note");
+
+      // Baseline captured and readable back; bindings created from exact identities.
+      await waitFor(() => expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).snapshots.invoices).toHaveLength(10));
+      const bindings = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings;
+      expect(bindings.invoice["inv-10"].cloudUuid).toBe(L.inv(10));
+      expect(bindings.estimate["est-1"].cloudUuid).toBe(L.est(1));
+      // Journal cleared only after verified success; queue still clean.
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+      const queue = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+      expect(queue.status).toBe("clean");
+      expect(queue.pending).toBe(false);
+      expect(queue.localMutationRevision).toBe(0);
+
+      // Strict verification -- the same REAL verifier the hook ran (the hook
+      // injects no verifyCloud, and convergence refuses to report "converged"
+      // unless ok && allMatched) -- confirms the header can reach Cloud OK.
+      const verification = await runSupabaseCloudVerification({ storageSnapshot: localStorage, ...ctx });
+      expect(verification).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+      expect(verification.blockers || []).toEqual([]);
+
+      // No cloud mutation anywhere in the run.
+      expect(client.from.mock.results.some((r) => r.value && (r.value.insert || r.value.update || r.value.delete || r.value.upsert || r.value.rpc))).toBe(false);
+
+      // A second run is idempotent under ordinary baseline behavior.
+      const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
+      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request"));
+      await waitFor(() => expect(results.some((result) => result.ok && result.status === "matched")).toBe(true), { timeout: 10000 });
+      expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
+    } finally {
+      window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
+      releaseCloudBackupRunLock();
+    }
+  }, 30000);
+
+  // -------------------------------------------------------------------------
+  // Fail-closed: every writer-owned field must still block on a real difference.
+  // -------------------------------------------------------------------------
+  describe("true persisted contradictions still block", () => {
+    async function planWithCorruptedEstimate(mutate) {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      const corrupted = { ...raw, estimates: raw.estimates.map((row) => row.legacy_local_id === "est-3" ? mutate({ ...row }) : row) };
+      const snapshot = await liveSnapshot(corrupted);
+      expect(snapshot.ok).toBe(true);
+      return buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: snapshot });
+    }
+
+    test.each([
+      ["total_amount differs from the writer projection", (row) => ({ ...row, total_amount: 901 })],
+      ["status differs", (row) => ({ ...row, status: "approved" })],
+      ["estimate_number differs", (row) => ({ ...row, estimate_number: "EST-9999" })],
+      ["notes differ", (row) => ({ ...row, notes: "cloud-side tamper" })],
+      ["terms differ", (row) => ({ ...row, terms: "Net 90" })],
+      ["converted invoice relationship differs", (row) => ({ ...row, converted_invoice_legacy_id: "inv-9" })],
+    ])("%s", async (_label, mutate) => {
+      const plan = await planWithCorruptedEstimate(mutate);
+      expect(plan.safe).toBe(false);
+      expect(persistedMismatches(plan).map((conflict) => conflict.id)).toContain("est-3");
+    });
+
+    test("customer relationship differs", async () => {
+      const plan = await planWithCorruptedEstimate((row) => ({ ...row, customer_id: L.cust(6) }));
+      expect(plan.safe).toBe(false);
+      expect(persistedMismatches(plan).map((conflict) => conflict.id)).toContain("est-3");
+    });
+
+    test("project relationship differs", async () => {
+      const plan = await planWithCorruptedEstimate((row) => ({ ...row, project_id: L.proj(9) }));
+      expect(plan.safe).toBe(false);
+      expect(persistedMismatches(plan).map((conflict) => conflict.id)).toContain("est-3");
+    });
+
+    test("a historical approved_total column is ignored and never overrides total_amount", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      // A legacy row that still carries a stale, non-owned approved_total column.
+      // The writer does not own it, so it must neither block nor replace the
+      // total_amount comparison.
+      const legacy = { ...raw, estimates: raw.estimates.map((row) => row.legacy_local_id === "est-3" ? { ...row, approved_total: 777 } : row) };
+      const snapshot = await liveSnapshot(legacy);
+      const plan = buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: snapshot });
+      expect(persistedMismatches(plan)).toHaveLength(0);
+
+      // ...but the owned total_amount on that same row still blocks when wrong.
+      const legacyAndWrong = { ...raw, estimates: raw.estimates.map((row) => row.legacy_local_id === "est-3" ? { ...row, approved_total: 900, total_amount: 42 } : row) };
+      const wrongSnapshot = await liveSnapshot(legacyAndWrong);
+      const wrongPlan = buildCloudConvergencePlan({ local: staleLocal, cloud: wrongSnapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: wrongSnapshot });
+      expect(persistedMismatches(wrongPlan).map((conflict) => conflict.id)).toContain("est-3");
+    });
+
+    test("restore payload estimate differing from the mapped estimate still blocks", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      const snapshot = await liveSnapshot(raw);
+      // Tamper the evidence payload only, leaving the mapped estimate intact.
+      const evidence = snapshot.estimateEvidence["est-3"];
+      const tampered = {
+        ...snapshot,
+        estimateEvidence: { ...snapshot.estimateEvidence, "est-3": { ...evidence, restorePayload: { ...evidence.restorePayload, estimate: { ...evidence.restorePayload.estimate, estimateNumber: "EST-OTHER" } } } },
+      };
+      const plan = buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: tampered });
+      expect(plan.safe).toBe(false);
+      expect(plan.conflicts.map((conflict) => conflict.code)).toContain("estimate_restore_payload_identity_mismatch");
+    });
+
+    test("estimate child evidence differing still blocks", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      // est-5 carries children and is NOT the differing document, so the child
+      // contradiction is reported on its own terms.
+      const corrupted = { ...raw, estimate_line_items: raw.estimate_line_items.map((row) => row.id === "db-el-5-0" ? { ...row, quantity: 99 } : row) };
+      const snapshot = await liveSnapshot(corrupted);
+      const plan = buildCloudConvergencePlan({ local: staleLocal, cloud: snapshot.mapped, companyId: "company-1", storage: localStorage, cloudSnapshot: snapshot });
+      expect(plan.safe).toBe(false);
+      expect(plan.conflicts.map((conflict) => conflict.code)).toContain("estimate_line_item_mismatch");
+    });
+
+    test.each([
+      ["queue missing", () => localStorage.removeItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE), "baseline_bootstrap_queue_missing"],
+      ["queue pending", () => {
+        const state = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+        localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...state, pending: true, status: "pending" }));
+      }, "baseline_bootstrap_local_pending"],
+      ["queue unverified", () => {
+        const state = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+        localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...state, lastVerifiedAt: null }));
+      }, "baseline_bootstrap_queue_unverified"],
+    ])("%s still blocks bootstrap", async (_label, corruptQueue, expectedCode) => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      corruptQueue();
+      const snapshot = await liveSnapshot(raw);
+      expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: staleLocal, cloud: snapshot.mapped, cloudSnapshot: snapshot }))
+        .toEqual(expect.objectContaining({ ok: false, code: expectedCode }));
+    });
+
+    test("a local-only record still blocks bootstrap", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      const snapshot = await liveSnapshot(raw);
+      const withLocalOnly = { ...staleLocal, customers: [...staleLocal.customers, { id: "cust-local-only" }] };
+      expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: withLocalOnly, cloud: snapshot.mapped, cloudSnapshot: snapshot }))
+        .toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_local_only_records" }));
+    });
+
+    test("an existing verified baseline keeps ordinary three-way behavior", async () => {
+      const raw = buildLiveRawCloudTables();
+      const { staleLocal } = await seedStaleLive(raw);
+      setJuly10CleanQueue("company-1", 0);
+      const snapshot = await liveSnapshot(raw);
+      expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: staleLocal, cloud: snapshot.mapped, cloudSnapshot: snapshot, baseline: { customers: [] } }))
+        .toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_baseline_present" }));
+    });
   });
 });

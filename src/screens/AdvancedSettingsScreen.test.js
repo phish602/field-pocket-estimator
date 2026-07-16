@@ -3084,3 +3084,120 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate 16F: the convergence result already carries bootstrapCode (why a
+// clean-replica bootstrap was refused). Surfacing it makes a stuck automatic
+// sync diagnosable without exposing any record detail.
+// ---------------------------------------------------------------------------
+describe("AdvancedSettingsScreen automatic sync bootstrap diagnostic", () => {
+  const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("../lib/supabaseCloudConvergence");
+
+  // The live Mac's state: signed in, workspace present, and cloud reporting a
+  // data mismatch -- the only screen state that shows the automatic-sync panel.
+  beforeEach(() => {
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_1", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    // Clean local integrity plus a cloud verification mismatch: the resolution
+    // card state, which is where the automatic-sync line lives.
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION,
+      preview: {
+        integrity: scanLocalDataIntegrity({
+          customers: [{ id: "cust_1", name: "Acme Co" }],
+          projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
+          estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }],
+          invoices: [{ id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-1", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+        }),
+      },
+      verification: {
+        ok: true,
+        allMatched: false,
+        notices: [{ level: "warning", code: "cloud_verification_mismatch", message: "Cloud verification found mismatches between local and Supabase data." }],
+      },
+      writeResult: { ok: true },
+      noWritesPerformed: false,
+    });
+  });
+
+  async function renderMismatchScreen() {
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+    expect(screen.getByText("Cloud changed elsewhere.")).toBeInTheDocument();
+  }
+
+  function publishConvergenceResult(detail) {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CLOUD_CONVERGENCE_RESULT_EVENT, { detail }));
+    });
+  }
+
+  const conflictResult = (overrides = {}) => ({
+    ok: false, status: "conflict", code: "data_mismatch", stage: "planning", retryable: false,
+    conflictSummary: [{ family: "estimates", code: "both_added_different", count: 1 }],
+    ...overrides,
+  });
+
+  test("renders the bootstrap code alongside the existing safe conflict summary", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult({ bootstrapCode: "baseline_bootstrap_evidence_invalid" }));
+
+    const state = screen.getByTestId("automatic-sync-state");
+    expect(state).toHaveTextContent("bootstrap: baseline_bootstrap_evidence_invalid");
+    expect(state).toHaveTextContent("status: conflict");
+    expect(state).toHaveTextContent("code: data_mismatch");
+    expect(state).toHaveTextContent("stage: planning");
+    expect(state).toHaveTextContent("retryable: no");
+    expect(state).toHaveTextContent("conflicts: estimates/both_added_different (1)");
+  });
+
+  test("omits the bootstrap label entirely when no bootstrap code is present", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult());
+
+    const state = screen.getByTestId("automatic-sync-state");
+    expect(state).toHaveTextContent("status: conflict");
+    expect(state).not.toHaveTextContent("bootstrap:");
+  });
+
+  test("never exposes record identity, names, numbers, totals or payloads", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult({
+      bootstrapCode: "baseline_bootstrap_evidence_invalid",
+      // A result carrying sensitive detail must not leak any of it.
+      conflicts: [{ family: "estimates", id: "est-1", code: "estimate_restore_payload_persisted_mismatch" }],
+      cloudSnapshot: { estimateEvidence: { "est-1": { restorePayload: { estimate: { customerName: "Jane Homeowner" } } } } },
+    }));
+
+    const text = screen.getByTestId("automatic-sync-state").textContent;
+    expect(text).toContain("bootstrap: baseline_bootstrap_evidence_invalid");
+    ["est-1", "Jane Homeowner", "EST-", "INV-", "restorePayload", "4500"].forEach((secret) => {
+      expect(text).not.toContain(secret);
+    });
+  });
+
+  test("shows nothing once a later successful result arrives", async () => {
+    await renderMismatchScreen();
+    publishConvergenceResult(conflictResult({ bootstrapCode: "baseline_bootstrap_evidence_invalid" }));
+    expect(screen.getByTestId("automatic-sync-state")).toBeInTheDocument();
+
+    publishConvergenceResult({ ok: true, status: "converged", code: "", stage: "completed", bootstrapCode: "", retryable: false, conflictSummary: [] });
+    expect(screen.queryByTestId("automatic-sync-state")).not.toBeInTheDocument();
+  });
+});

@@ -11,6 +11,7 @@ import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } fro
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
 import { buildParentLineItemContract } from "./cloudLineItemContract";
+import { buildPersistedEstimateContract, PERSISTED_ESTIMATE_CONTRACT_FIELDS } from "./supabaseEstimatePersistenceContract";
 import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 
 export const CLOUD_CONVERGENCE_VERSION = 1;
@@ -352,8 +353,16 @@ function estimateEvidenceCode(estimate, evidence) {
   if (asText(payload.legacyLocalId) !== id || entityId(payload.estimate) !== id || !cloudSyncEqual(payload.estimate, estimate)) return "estimate_restore_payload_identity_mismatch";
   const persisted = evidence.persisted || {};
   const mapped = mapLocalEstimateToBackendEstimate(payload.estimate, {});
-  const persistedFields = ["legacy_local_id", "customer_legacy_local_id", "project_legacy_local_id", "estimate_number", "status", "total_amount", "approved_total", "notes", "terms", "converted_invoice_legacy_local_id"];
-  if (persistedFields.some((field) => persisted[field] !== undefined && !cloudSyncEqual(persisted[field], mapped[field]))) return "estimate_restore_payload_persisted_mismatch";
+  // The raw row is the writer's TABLE projection, not the backend draft: it
+  // collapses approved_total/grand_total/total into total_amount and carries no
+  // approved_total column. Comparing it against the draft asserted a
+  // total_amount the draft never has and demanded an approved_total the writer
+  // never writes, so every estimate with a real total was falsely flagged.
+  // Both sides now project through the one shared persistence contract. A
+  // historical approved_total column is not writer-owned, so it is ignored --
+  // it can never override or stand in for total_amount.
+  const contract = buildPersistedEstimateContract(mapped);
+  if (PERSISTED_ESTIMATE_CONTRACT_FIELDS.some((field) => persisted[field] !== undefined && !cloudSyncEqual(persisted[field], contract[field]))) return "estimate_restore_payload_persisted_mismatch";
   // Expected child rows use the SHARED line-item contract, so convergence
   // evidence, the verifier, and the writer all agree on identity, sort_order,
   // and metadata (metadata.unit_cost for estimates; kind lives in line_role).

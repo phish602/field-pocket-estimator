@@ -2,6 +2,7 @@ import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { collectBackendMappingWarnings, mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
+import { buildPersistedEstimateContract } from "./supabaseEstimatePersistenceContract";
 import {
   buildIntegrityNotices,
   buildLocalSnapshotFromArtifact,
@@ -423,24 +424,30 @@ function mapProjectPayloads(draft, customerIdByLegacyId, userId, localSnapshot) 
 }
 
 function mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, userId) {
-  return (Array.isArray(draft?.estimates) ? draft.estimates : []).map((estimate) => ({
-    company_id: asText(estimate?.company_id),
-    customer_id: customerIdByLegacyId.get(asText(estimate?.customer_legacy_local_id)) || null,
-    project_id: projectIdByLegacyId.get(asText(estimate?.project_legacy_local_id)) || null,
-    legacy_local_id: asText(estimate?.legacy_local_id),
-    estimate_number: estimate?.estimate_number || null,
-    status: estimate?.status || "pending",
-    document_type: "estimate",
-    total_amount: estimate?.approved_total ?? estimate?.grand_total ?? estimate?.total ?? null,
-    notes: estimate?.notes || null,
-    terms: estimate?.terms || null,
-    converted_invoice_legacy_id: estimate?.converted_invoice_legacy_local_id || null,
-    restore_payload: estimate?.restore_payload || null,
-    restore_payload_version: estimate?.restore_payload ? ESTIMATE_RESTORE_PAYLOAD_VERSION : null,
-    restore_payload_captured_at: estimate?.restore_payload ? new Date().toISOString() : null,
-    created_by: userId,
-    updated_by: userId,
-  }));
+  return (Array.isArray(draft?.estimates) ? draft.estimates : []).map((estimate) => {
+    // The table columns this writer owns come from the shared persistence
+    // contract, so convergence evidence verifies against the same projection
+    // instead of against the pre-writer backend draft.
+    const contract = buildPersistedEstimateContract(estimate);
+    return {
+      company_id: asText(estimate?.company_id),
+      customer_id: customerIdByLegacyId.get(contract.customer_legacy_local_id) || null,
+      project_id: projectIdByLegacyId.get(contract.project_legacy_local_id) || null,
+      legacy_local_id: contract.legacy_local_id,
+      estimate_number: contract.estimate_number,
+      status: contract.status,
+      document_type: "estimate",
+      total_amount: contract.total_amount,
+      notes: contract.notes,
+      terms: contract.terms,
+      converted_invoice_legacy_id: contract.converted_invoice_legacy_local_id,
+      restore_payload: estimate?.restore_payload || null,
+      restore_payload_version: estimate?.restore_payload ? ESTIMATE_RESTORE_PAYLOAD_VERSION : null,
+      restore_payload_captured_at: estimate?.restore_payload ? new Date().toISOString() : null,
+      created_by: userId,
+      updated_by: userId,
+    };
+  });
 }
 
 function attachEstimateRestorePayloads(draft, localSnapshot) {
