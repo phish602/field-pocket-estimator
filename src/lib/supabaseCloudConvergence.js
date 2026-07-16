@@ -4,7 +4,7 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { readCloudAssetBindings, setCloudAssetBindingsBatch } from "./cloudAssetBindings";
-import { readCloudSyncBaseline, cloudSyncEqual, captureVerifiedCloudSyncBaseline, stableCloudSyncHash } from "./cloudSyncBaseline";
+import { readCloudSyncBaseline, cloudSyncEqual, captureVerifiedCloudSyncBaseline, stableCloudSyncHash, compactStoredCloudSyncBaseline } from "./cloudSyncBaseline";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty, CLOUD_BACKUP_STATUS, LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, migrateLegacyPersistedCloudBackupQueue, recoverVerifiedActiveDeviceTakeoverPause } from "./cloudBackupQueue";
 import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
@@ -101,6 +101,25 @@ function snapshotValues(storage) {
   return [...Object.values(FAMILY_KEYS), STORAGE_KEYS.CLOUD_ASSET_BINDINGS, STORAGE_KEYS.CLOUD_SYNC_BASELINE, STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, STORAGE_KEYS.CLOUD_BACKUP_QUEUE, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE]
     .reduce((out, key) => ({ ...out, [key]: readRaw(storage, key) }), {});
 }
+// Gate 16H: exactly the keys one convergence transaction can mutate -- nothing
+// else belongs in the persisted rollback journal. Unrelated families (company
+// profile, settings, scope templates, customers, the conflict vault) are only
+// listed when this plan actually writes them, which for an ordinary cloud
+// import it does not.
+export function buildConvergenceRollbackKeySet({ writes = {}, bindingEntries = [], willCaptureBaseline = false, willClearQueue = false, metadataRecovery = false } = {}) {
+  const keys = new Set(Object.keys(writes || {}));
+  if (asArray(bindingEntries).length) keys.add(STORAGE_KEYS.CLOUD_ASSET_BINDINGS);
+  if (willCaptureBaseline) keys.add(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+  // A verified completion clears the queue, and clearCloudBackupDirty also
+  // clears the pause; a legacy migration rewrote both. Either way both keys are
+  // in play and must be restorable.
+  if (willClearQueue || metadataRecovery) {
+    keys.add(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+    keys.add(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+  }
+  return [...keys];
+}
+
 // Gate 16G: the sync-metadata keys a recovery may touch. Captured before any
 // migration so a failed attempt restores the device exactly as it was found.
 const METADATA_KEYS = [STORAGE_KEYS.CLOUD_BACKUP_QUEUE, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE];
@@ -155,7 +174,8 @@ function inferConvergenceStage(result) {
   if (status === "aborted") return "local_apply";
   if (code === "cloud_verification_failed") return "verification";
   if (code === "convergence_completion_guard_failed") return "completion_access";
-  if (code === "baseline_write_failed") return "baseline";
+  if (code === "baseline_write_failed" || code === "baseline_quota_exceeded" || code === "baseline_readback_mismatch"
+    || code === "baseline_serialization_failed" || code === "baseline_storage_unavailable") return "baseline";
   if (code === "binding_write_failed") return "bindings";
   if (code === "local_write_failed" || code === "local_write_mismatch" || code === "local_changed_during_read") return "local_apply";
   if (code === "cloud_snapshot_failed" || /_read_failed$/.test(code)) return "cloud_snapshot";
@@ -190,6 +210,7 @@ export function buildSafeConvergenceResult(result) {
     // Gate 16G sync-metadata diagnostics. Every value is a fixed code, a schema
     // version string, or a boolean -- never a name, id, number, or payload.
     bootstrapDetailCode: asText(result?.bootstrapDetailCode),
+    baselineCompacted: Boolean(result?.baselineCompacted),
     metadataRecoveryStage: asText(result?.metadataRecoveryStage),
     queueSchemaBefore: asText(result?.queueSchemaBefore),
     queueSchemaAfter: asText(result?.queueSchemaAfter),
@@ -832,8 +853,14 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   const local = localSnapshot(storage);
   const snapshot = cloudSnapshot || await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
   if (!snapshot?.ok) return { ok: false, status: "unavailable", code: snapshot?.code || "cloud_snapshot_failed", noWritesPerformed: true };
+  // Gate 16H: compact a legacy full baseline BEFORE anything captures storage
+  // values. Left alone it lands in the rollback journal as a multi-megabyte
+  // `previous` value, so the transaction would have to hold two copies of it
+  // and could not fit. The rewrite is information-preserving and idempotent.
+  const baselineCompaction = compactStoredCloudSyncBaseline({ storage, companyId });
   const metadataStage = await recoverCloudSyncMetadata({ storage, configured, user, company, companyId, deviceAccess });
   const metadataReport = {
+    baselineCompacted: Boolean(baselineCompaction.migrated),
     metadataRecoveryStage: metadataStage.stageName,
     queueSchemaBefore: metadataStage.queueSchemaBefore,
     queueSchemaAfter: metadataStage.queueSchemaAfter,
@@ -907,7 +934,20 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     if (!recheckedProof.ok || Number(recheckedProof.queueRevision) !== Number(beforeQueueRevision)) return { ok: false, status: "aborted", code: recheckedProof.code || "baseline_bootstrap_local_pending", noWritesPerformed: true };
   }
   if (queueRevision(storage) !== beforeQueueRevision || Object.entries(beforeValues).some(([key, value]) => readRaw(storage, key) !== value)) return { ok: false, status: "aborted", code: "local_changed_during_read", noWritesPerformed: true };
-  const previous = beforeValues;
+  // Gate 16H: the journal is a ROLLBACK record, so it only needs the keys this
+  // transaction can actually mutate. Serializing every family duplicated the
+  // 1.6M-character logo and the scope images into localStorage for the whole
+  // write window -- on top of the baseline copy -- which is what exhausted the
+  // per-origin quota. beforeValues stays broad IN MEMORY for planning and the
+  // change-detection guard; only the mutable subset is persisted.
+  const rollbackKeys = buildConvergenceRollbackKeySet({
+    writes,
+    bindingEntries,
+    willCaptureBaseline: !plan.localOnly,
+    willClearQueue: !plan.localOnly,
+    metadataRecovery: metadataStage.attempted,
+  });
+  const previous = rollbackKeys.reduce((out, key) => ({ ...out, [key]: beforeValues[key] ?? readRaw(storage, key) }), {});
   const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId: getOrCreateLocalDeviceId(storage), attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
   if (!writeJournal(storage, journal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
   try {
@@ -928,9 +968,11 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
       const completionAccess = completionDeviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "before_convergence_complete" });
       if (!completionAccess?.ok || queueRevision(storage) !== beforeQueueRevision) throw new Error("convergence_completion_guard_failed");
       const captured = captureVerifiedCloudSyncBaseline({ storage, companyId, queueRevision: beforeQueueRevision, cloudSnapshot: snapshot, verified: true, deviceAccess: access });
-      if (!captured.ok) throw new Error("baseline_write_failed");
+      // Preserve the precise reason (e.g. baseline_quota_exceeded) instead of
+      // collapsing every baseline failure into one opaque code.
+      if (!captured.ok) throw new Error(asText(captured.code) || "baseline_write_failed");
       const readBackBaseline = readCloudSyncBaseline(companyId, storage);
-      if (!readBackBaseline || !cloudSyncEqual(readBackBaseline.snapshots, captured.baseline?.snapshots)) throw new Error("baseline_write_failed");
+      if (!readBackBaseline || !cloudSyncEqual(readBackBaseline.snapshots, captured.baseline?.snapshots)) throw new Error("baseline_readback_mismatch");
       clearCloudBackupDirty("cloud_convergence_verified", { expectedRevision: beforeQueueRevision });
       const clearedQueue = readPersistedCloudBackupQueueState(storage)?.state;
       if (!clearedQueue || clearedQueue.pending || clearedQueue.status !== CLOUD_BACKUP_STATUS.CLEAN || Number(clearedQueue.localMutationRevision || 0) !== Number(beforeQueueRevision)) throw new Error("queue_clear_failed");

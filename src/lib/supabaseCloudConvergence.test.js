@@ -1206,8 +1206,8 @@ describe("Gate 16F/16G live-shaped device replay", () => {
 
   const persistedMismatches = (plan) => plan.conflicts.filter((conflict) => conflict.code === "estimate_restore_payload_persisted_mismatch");
 
-  async function liveSnapshot(raw, deviceId = "") {
-    getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: deviceId, bundle: liveBundle() }));
+  async function liveSnapshot(raw, deviceId = "", bundle = liveBundle()) {
+    getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: deviceId, bundle }));
     return readSupabaseCloudConvergenceSnapshot(ctx);
   }
 
@@ -1511,6 +1511,372 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       expect(buildCleanReplicaBootstrapProof({ storage: localStorage, companyId: "company-1", local: staleLocal, cloud: snapshot.mapped, cloudSnapshot: snapshot, baseline: { customers: [] } }))
         .toEqual(expect.objectContaining({ ok: false, code: "baseline_bootstrap_baseline_present" }));
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Gate 16H: the live Mac reaches the baseline stage and fails there. The
+  // captured browser evidence (www.estipaid.com, BVW Contracting Solutions):
+  //
+  //   estipaid-cloud-convergence-journal-v1   2,363,329 chars   ok
+  //   estipaid-invoices-v1                       16,534 chars   ok  (10 invoices)
+  //   estipaid-cloud-sync-baseline-v1         2,153,366 chars   QuotaExceededError (DOMException 22)
+  //
+  // The journal duplicates business families the transaction never mutates
+  // (the 1,640,898-char logo, the 440,758 chars of scope images, the vault),
+  // and it is still resident when the full baseline -- which embeds those same
+  // data URLs a second time -- is written. Peak demand ~6.8M UTF-16 chars
+  // (~13.7MB) against Chrome's ~10MB per-origin localStorage limit.
+  // -------------------------------------------------------------------------
+  describe("Gate 16H quota-safe baseline completion", () => {
+    const { readPersistedCloudBackupQueueState } = require("./cloudBackupQueue");
+    const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
+    const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+    const { buildCloudSyncBaseline, readCloudSyncBaseline } = require("./cloudSyncBaseline");
+    const { buildConvergenceRollbackKeySet, buildSafeConvergenceResult } = require("./supabaseCloudConvergence");
+
+    // Production-sized sanitized data URLs. Deterministic and content-varying,
+    // never a real image and never a repeated constant.
+    function dataUrl(totalLength, seed) {
+      const head = "data:image/png;base64,";
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      const body = new Array(totalLength - head.length);
+      let x = seed >>> 0;
+      for (let i = 0; i < body.length; i += 1) {
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+        body[i] = alphabet[x % 64];
+      }
+      return head + body.join("");
+    }
+
+    // The exact live lengths measured in Adrian's browser.
+    const LIVE_LOGO_LENGTH = 1640898;
+    const LIVE_SCOPE_IMAGE_LENGTHS = [111187, 116211, 104767, 102827];
+    let LOGO; let SCOPE_IMAGES;
+    beforeAll(() => {
+      LOGO = dataUrl(LIVE_LOGO_LENGTH, 12345);
+      SCOPE_IMAGES = LIVE_SCOPE_IMAGE_LENGTHS.map((len, i) => dataUrl(len, 900 + i));
+    });
+
+    const imageBundle = () => ({
+      schema: SUPABASE_APP_RESTORE_BUNDLE_SCHEMA, version: SUPABASE_APP_RESTORE_BUNDLE_VERSION, capturedFrom: "localStorage",
+      companyProfile: { companyName: "BVW Contracting Solutions", logoDataUrl: LOGO },
+      settings: { taxRate: 0 },
+      scopeTemplates: [{
+        id: "tpl-1", name: "Standard Scope", body: "Scope of work",
+        images: SCOPE_IMAGES.map((src, i) => ({ id: `img-${i + 1}`, name: `Scope ${i + 1}`, dataUrl: src, sortOrder: i })),
+      }],
+    });
+
+    // A deterministic quota-limited Storage. Usage is the sum of key+value
+    // UTF-16 lengths; exceeding capacity throws a DOMException-shaped
+    // QuotaExceededError and leaves every prior value untouched.
+    function createQuotaStorage(capacity, initial = {}) {
+      const values = new Map(Object.entries(initial));
+      const usage = () => [...values.entries()].reduce((n, [k, v]) => n + k.length + v.length, 0);
+      return {
+        get length() { return values.size; },
+        key(i) { return [...values.keys()][i] ?? null; },
+        getItem(k) { return values.has(k) ? values.get(k) : null; },
+        removeItem(k) { values.delete(k); },
+        clear() { values.clear(); },
+        setItem(k, v) {
+          const next = String(v);
+          const prev = values.get(k);
+          const projected = usage() - (prev === undefined ? 0 : k.length + prev.length) + k.length + next.length;
+          if (projected > capacity) {
+            const err = new Error(`Failed to execute 'setItem' on 'Storage': Setting the value of '${k}' exceeded the quota.`);
+            err.name = "QuotaExceededError";
+            err.code = 22;
+            throw err; // prior values preserved -- nothing was mutated
+          }
+          values.set(k, next);
+        },
+        __usage: usage,
+        __capacity: capacity,
+      };
+    }
+
+    let realLocalStorageDescriptor = null;
+    function installQuotaStorage(capacity) {
+      const initial = {};
+      for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); initial[k] = localStorage.getItem(k); }
+      const quota = createQuotaStorage(capacity, initial);
+      if (!realLocalStorageDescriptor) realLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+      // The queue/pause writers bind to the GLOBAL localStorage, exactly as they
+      // do in the browser, so the quota must be installed globally to exercise
+      // the same code paths Chrome does.
+      Object.defineProperty(window, "localStorage", { value: quota, configurable: true, writable: true });
+      return quota;
+    }
+    afterEach(() => {
+      if (realLocalStorageDescriptor) { Object.defineProperty(window, "localStorage", realLocalStorageDescriptor); realLocalStorageDescriptor = null; }
+      releaseCloudBackupRunLock();
+    });
+
+    // Records every write attempt (key + length only), mirroring the browser probe.
+    function instrument(storage) {
+      const log = [];
+      const origSet = storage.setItem.bind(storage);
+      storage.setItem = (k, v) => {
+        const len = String(v).length;
+        try { origSet(k, v); log.push({ key: k, len, ok: true }); }
+        catch (e) { log.push({ key: k, len, ok: false, errorName: e.name, errorCode: e.code }); throw e; }
+      };
+      return log;
+    }
+
+    async function seedLiveImageState() {
+      const raw = buildLiveRawCloudTables();
+      const bundle = imageBundle();
+      const nine = await liveSnapshot(liveWithoutTenth(raw), "", bundle);
+      expect(nine.ok).toBe(true);
+      const staleLocal = {
+        ...nine.mapped,
+        projects: nine.mapped.projects.map((p) => p.id === "proj-1" ? { ...p, notes: "legacy local note" } : p),
+        estimates: nine.mapped.estimates.map((r) => r.id === "est-1" ? { ...r, notes: "legacy local estimate note" } : r),
+        invoices: nine.mapped.invoices.map((r) => ({ ...r, lineItems: r.lineItems.map((l) => ({ ...l, legacyChildMarker: true })) })),
+      };
+      setLocalSnapshot(staleLocal);
+      // The real, untouched images live in company profile + scope templates.
+      localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(bundle.companyProfile));
+      localStorage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify(bundle.scopeTemplates));
+      setLegacyV1CurrentQueue();
+      setStaleTakeoverPause();
+      setConflictVault(22);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS);
+      return { raw, bundle };
+    }
+
+    // The pre-Gate-16H design, measured against this exact production-sized
+    // fixture, reproduced the live Chrome sequence: journal 2,091,623 chars ->
+    // invoices applied -> full baseline 2,095,525 chars -> QuotaExceededError
+    // -> rolled back to nine invoices. Peak demand 6,275,859 chars.
+    test("the full-baseline design is oversized and the compact baseline is not", async () => {
+      const { bundle } = await seedLiveImageState();
+      const local = require("./localDataIntegrity").buildLocalSnapshotFromStorage(localStorage).snapshot;
+
+      // What the OLD design embedded: complete raw copies of every family.
+      const fullSnapshots = {
+        companyProfile: local.companyProfile, settings: local.settings, scopeTemplates: local.scopeTemplates,
+        customers: local.customers, projects: local.projects, estimates: local.estimates, invoices: local.invoices,
+      };
+      expect(JSON.stringify(fullSnapshots).length).toBeGreaterThan(2000000);
+
+      // What the compact design stores.
+      const baseline = buildCloudSyncBaseline({ companyId: "company-1", queueRevision: 0, localSnapshot: local, cloudSnapshot: local, bindings: null });
+      const serialized = JSON.stringify(baseline);
+      expect(serialized.length).toBeLessThan(100000);
+      expect(baseline.snapshotEncoding).toBe("opaque-digest-v1");
+      // 14. No raw image payload survives into the baseline.
+      expect(serialized).not.toContain("data:image/");
+      expect(serialized).toContain("__estipaidCloudSyncOpaque");
+
+      // 15. The real stored images are untouched.
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE)).logoDataUrl).toBe(LOGO);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.SCOPE_TEMPLATES))[0].images.map((i) => i.dataUrl)).toEqual(SCOPE_IMAGES);
+      expect(bundle.companyProfile.logoDataUrl.length).toBe(LIVE_LOGO_LENGTH);
+    }, 60000);
+
+    test("the rollback journal lists only the keys this transaction mutates", () => {
+      const writes = { [STORAGE_KEYS.PROJECTS]: "[]", [STORAGE_KEYS.ESTIMATES]: "[]", [STORAGE_KEYS.INVOICES]: "[]" };
+      const keys = buildConvergenceRollbackKeySet({ writes, bindingEntries: [{ entityType: "invoice" }], willCaptureBaseline: true, willClearQueue: true, metadataRecovery: true });
+      expect(keys.sort()).toEqual([
+        STORAGE_KEYS.CLOUD_ASSET_BINDINGS, STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE, STORAGE_KEYS.CLOUD_BACKUP_QUEUE,
+        STORAGE_KEYS.CLOUD_SYNC_BASELINE, STORAGE_KEYS.ESTIMATES, STORAGE_KEYS.INVOICES, STORAGE_KEYS.PROJECTS,
+      ].sort());
+      // Families this plan never writes are absent -- that is the whole point.
+      [STORAGE_KEYS.COMPANY_PROFILE, STORAGE_KEYS.SETTINGS, STORAGE_KEYS.SCOPE_TEMPLATES, STORAGE_KEYS.CUSTOMERS, STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT]
+        .forEach((key) => expect(keys).not.toContain(key));
+
+      // A local-only plan captures no baseline and clears no queue.
+      expect(buildConvergenceRollbackKeySet({ writes: { [STORAGE_KEYS.INVOICES]: "[]" }, bindingEntries: [], willCaptureBaseline: false, willClearQueue: false, metadataRecovery: false }))
+        .toEqual([STORAGE_KEYS.INVOICES]);
+      // A supplemental plan that really does write the company profile keeps it.
+      expect(buildConvergenceRollbackKeySet({ writes: { [STORAGE_KEYS.COMPANY_PROFILE]: "{}" } })).toEqual([STORAGE_KEYS.COMPANY_PROFILE]);
+    });
+
+    test("complete quota replay: the same quota that failed the old design now reaches 10 invoices and Cloud OK", async () => {
+      const { raw, bundle } = await seedLiveImageState();
+      const baseUsage = (() => { let n = 0; for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); n += k.length + localStorage.getItem(k).length; } return n; })();
+      // Exactly the capacity under which the old design threw.
+      const capacity = baseUsage + 2600000;
+
+      const quota = installQuotaStorage(capacity);
+      const log = instrument(quota);
+      const invoicesBefore = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(invoicesBefore).toHaveLength(9);
+
+      getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: getOrCreateLocalDeviceId(localStorage), bundle }));
+      const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, verifyCloud: runSupabaseCloudVerification });
+
+      expect(result).toEqual(expect.objectContaining({
+        ok: true, status: "converged", bootstrap: true, bootstrapReason: "verified_clean_replica",
+        queueSchemaBefore: "1.0.0", queueSchemaAfter: "2.0.0", pauseRecovered: true, noCloudWritesPerformed: true,
+      }));
+
+      // 10 invoices with all six children.
+      const invoicesAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(invoicesAfter).toHaveLength(10);
+      expect(invoicesAfter.find((r) => r.id === "inv-10").lineItems).toHaveLength(6);
+      expect(invoicesAfter.slice(0, 9).map((r) => r.id)).toEqual(invoicesBefore.map((r) => r.id));
+
+      // Compact baseline exists, reads back, and holds no raw image payload.
+      const baselineRaw = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+      expect(baselineRaw).toBeTruthy();
+      expect(baselineRaw.length).toBeLessThan(100000);
+      expect(baselineRaw).not.toContain("data:image/");
+      expect(JSON.parse(baselineRaw).snapshotEncoding).toBe("opaque-digest-v1");
+      expect(readCloudSyncBaseline("company-1", localStorage).snapshots.invoices).toHaveLength(10);
+
+      // The persisted journal stayed small while it existed.
+      const journalWrite = log.find((e) => e.key === STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL && e.ok);
+      expect(journalWrite.len).toBeLessThan(100000);
+      // eslint-disable-next-line no-console
+      console.log("GATE16H_SIZES", JSON.stringify({ journalLen: journalWrite.len, compactBaselineLen: baselineRaw.length, bindingsLen: (log.find((e)=>e.key===STORAGE_KEYS.CLOUD_ASSET_BINDINGS&&e.ok)||{}).len }));
+
+      // Queue v2 clean, pause gone, journal gone, vault intact.
+      const queue = readPersistedCloudBackupQueueState(localStorage);
+      expect(queue.ok).toBe(true);
+      expect(queue.state).toEqual(expect.objectContaining({ schemaVersion: "2.0.0", status: "clean", pending: false }));
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
+
+      // The real images are byte-for-byte unchanged.
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE)).logoDataUrl).toBe(LOGO);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.SCOPE_TEMPLATES))[0].images.map((i) => i.dataUrl)).toEqual(SCOPE_IMAGES);
+
+      // Strict verification reaches Cloud OK.
+      const verification = await runSupabaseCloudVerification({ storageSnapshot: localStorage, ...ctx });
+      expect(verification).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+
+      // Second run is idempotent.
+      const before = localStorage.getItem(STORAGE_KEYS.INVOICES);
+      const second = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, verifyCloud: runSupabaseCloudVerification });
+      expect(second).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
+      expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
+    }, 60000);
+
+    // The live Mac reached this state after Gate 16G shipped: an EXISTING full
+    // baseline (2,136,696 chars of raw data URLs) already sits in localStorage,
+    // so convergence runs ordinary three-way -- and the journal, which
+    // duplicated every family INCLUDING that baseline, ballooned to 4,506,183
+    // chars and failed before any business write:
+    //   status=critical code=journal_write_failed stage=journal_recovery
+    test("an existing full baseline no longer blocks convergence: the minimal journal fits and the compact baseline replaces it", async () => {
+      const { raw, bundle } = await seedLiveImageState();
+      const local = require("./localDataIntegrity").buildLocalSnapshotFromStorage(localStorage).snapshot;
+
+      // Seed the exact legacy artifact: a full, old-format baseline holding raw
+      // data URLs and no snapshotEncoding marker, capturing the nine invoices.
+      const legacyBaseline = {
+        version: 1, companyId: "company-1", verifiedAt: new Date(JULY_10).toISOString(), queueRevision: 0,
+        snapshots: {
+          companyProfile: local.companyProfile, settings: local.settings, scopeTemplates: local.scopeTemplates,
+          customers: local.customers, projects: local.projects, estimates: local.estimates, invoices: local.invoices,
+          estimateLineItems: [], invoiceLineItems: [], invoicePayments: [], bindings: null,
+        },
+        hashes: { local: "fnv1a:0", cloud: "fnv1a:0", bindings: "fnv1a:0" },
+      };
+      const legacyRaw = JSON.stringify(legacyBaseline);
+      expect(legacyRaw.length).toBeGreaterThan(2000000);
+      expect(legacyRaw).toContain("data:image/");
+      localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE, legacyRaw);
+      // With a baseline present this is ordinary three-way, not bootstrap, so
+      // the legacy queue/pause are already settled.
+      setJuly10CleanQueue("company-1", 0);
+      localStorage.removeItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+
+      const baseUsage = (() => { let n = 0; for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); n += k.length + localStorage.getItem(k).length; } return n; })();
+      // Headroom that the OLD 4.5M journal could never fit into.
+      const capacity = baseUsage + 400000;
+
+      const quota = installQuotaStorage(capacity);
+      const log = instrument(quota);
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+
+      getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: getOrCreateLocalDeviceId(localStorage), bundle }));
+      const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, verifyCloud: runSupabaseCloudVerification });
+
+      // It converges through ordinary three-way: the tenth invoice is a plain
+      // cloud-only addition once a baseline exists.
+      expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged", noCloudWritesPerformed: true }));
+      expect(result.bootstrap).toBeFalsy();
+
+      const journalWrite = log.find((e) => e.key === STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL && e.ok);
+      expect(journalWrite).toBeTruthy();
+      expect(journalWrite.len).toBeLessThan(100000);
+      // The journal never carries the baseline, the logo or the scope images.
+      expect(log.some((e) => !e.ok)).toBe(false);
+
+      const invoicesAfter = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES));
+      expect(invoicesAfter).toHaveLength(10);
+      expect(invoicesAfter.find((r) => r.id === "inv-10").lineItems).toHaveLength(6);
+
+      // The oversized legacy baseline is replaced by the compact one, RECLAIMING
+      // the space it was occupying.
+      const newBaselineRaw = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+      expect(newBaselineRaw.length).toBeLessThan(100000);
+      expect(newBaselineRaw).not.toContain("data:image/");
+      expect(JSON.parse(newBaselineRaw).snapshotEncoding).toBe("opaque-digest-v1");
+      expect(newBaselineRaw.length).toBeLessThan(legacyRaw.length / 20);
+
+      // Real images untouched; strict verification reaches Cloud OK.
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE)).logoDataUrl).toBe(LOGO);
+      const verification = await runSupabaseCloudVerification({ storageSnapshot: localStorage, ...ctx });
+      expect(verification).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+
+      // Queue stays schema v2 / clean, bindings exist, and the 22-entry vault
+      // is preserved -- eligibility is never bought by erasing diagnostics.
+      const queueAfter = readPersistedCloudBackupQueueState(localStorage);
+      expect(queueAfter.ok).toBe(true);
+      expect(queueAfter.state).toEqual(expect.objectContaining({ schemaVersion: "2.0.0", status: "clean", pending: false }));
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).bindings.invoice["inv-10"].cloudUuid).toBe(L.inv(10));
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).entries).toHaveLength(22);
+      // The compaction is reported, not silent.
+      expect(result.baselineCompacted).toBe(true);
+    }, 60000);
+
+    test("forced rollback: a quota that rejects even the compact baseline reports baseline_quota_exceeded and restores everything", async () => {
+      const { raw, bundle } = await seedLiveImageState();
+      const baseUsage = (() => { let n = 0; for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); n += k.length + localStorage.getItem(k).length; } return n; })();
+      // Room for the minimal journal (~11.7K), the bindings (~9.8K) and the
+      // business write growth (~4K) -- but not for the compact baseline
+      // (~20.1K) on top of them.
+      const capacity = baseUsage + 35000;
+
+      installQuotaStorage(capacity);
+      const beforeInvoices = localStorage.getItem(STORAGE_KEYS.INVOICES);
+      const beforeQueue = localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+      const beforePause = localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE);
+      const beforeProjects = localStorage.getItem(STORAGE_KEYS.PROJECTS);
+      const beforeEstimates = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+      const beforeVault = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT);
+      const beforeLogo = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
+
+      getSupabaseClient.mockReturnValue(liveCloudClient(raw, { activeDeviceId: getOrCreateLocalDeviceId(localStorage), bundle }));
+      const result = await runSupabaseCloudConvergence({ storage: localStorage, ...ctx, verifyCloud: runSupabaseCloudVerification });
+
+      // The precise reason survives instead of collapsing to baseline_write_failed.
+      expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "baseline_quota_exceeded" }));
+      expect(buildSafeConvergenceResult(result).stage).toBe("baseline");
+
+      // Every changed key restored exactly.
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES))).toHaveLength(9);
+      expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(beforeInvoices);
+      expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBe(beforeProjects);
+      expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(beforeEstimates);
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBe(beforeQueue);
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_AUTO_BACKUP_PAUSE)).toBe(beforePause);
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe(beforeVault);
+      expect(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE)).toBe(beforeLogo);
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_BASELINE)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+      expect(localStorage.getItem(STORAGE_KEYS.CLOUD_ASSET_BINDINGS)).toBeNull();
+    }, 60000);
   });
 
   // -------------------------------------------------------------------------

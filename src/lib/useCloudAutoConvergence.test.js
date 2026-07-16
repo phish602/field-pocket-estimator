@@ -152,8 +152,8 @@ test("dispatches a safe convergence-result event for a FAILED outcome (not only 
   // Gate 16G sync-metadata fields are fixed codes, schema version strings and
   // booleans, so they belong to this closed allowlist too.
   expect(Object.keys(detail).sort()).toEqual([
-    "at", "attempt", "blockerCount", "bootstrapCode", "bootstrapDetailCode", "changedFamilies", "code",
-    "conflictCount", "conflictSummary", "metadataRecoveryStage", "noCloudWritesPerformed", "noWritesPerformed",
+    "at", "attempt", "baselineCompacted", "blockerCount", "bootstrapCode", "bootstrapDetailCode", "changedFamilies",
+    "code", "conflictCount", "conflictSummary", "metadataRecoveryStage", "noCloudWritesPerformed", "noWritesPerformed",
     "ok", "pauseReason", "pauseRecovered", "queueSchemaAfter", "queueSchemaBefore", "retryable", "stage", "status",
   ]);
 });
