@@ -19,7 +19,10 @@ export const SUBSCRIPTION_STATUSES = Object.freeze({
 });
 
 const KNOWN_STATUSES = new Set(Object.values(SUBSCRIPTION_STATUSES));
-const TRUSTED_LOCAL_SOURCES = new Set(["local_dev", "stripe", "supabase", "admin"]);
+// Gate 17A-R: there is deliberately NO list of "trusted" local sources.
+// A plan value sitting in this browser is never authority, whatever its
+// source claims to be. Subscription authority is resolved server-side by
+// /api/entitlements/resolve; see src/lib/companyEntitlementsApi.js.
 
 export function normalizeSubscriptionStatus(status) {
   const value = String(status == null ? "" : status).trim().toLowerCase();
@@ -103,26 +106,5 @@ export function loadLocalSubscriptionPlanState(storage) {
     return normalizeSubscriptionPlanState(raw ? JSON.parse(raw) : null);
   } catch {
     return getDefaultSubscriptionPlanState();
-  }
-}
-
-// This is intentionally not exposed through normal product UI. It provides a
-// stable local seam for tests, development, and a future trusted server sync.
-export function saveLocalSubscriptionPlanStateForTrustedSourceOnly(raw, storage) {
-  const state = normalizeSubscriptionPlanState(raw);
-  if (!TRUSTED_LOCAL_SOURCES.has(state.source)) return false;
-  const targetStorage = getBrowserStorage(storage);
-  if (!targetStorage?.setItem) return false;
-  const next = { ...state, updatedAt: state.updatedAt || new Date().toISOString() };
-  try {
-    targetStorage.setItem(STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE, JSON.stringify(next));
-    try {
-      window.dispatchEvent(new CustomEvent("pe-localstorage", {
-        detail: { key: STORAGE_KEYS.SUBSCRIPTION_PLAN_STATE, value: JSON.stringify(next) },
-      }));
-    } catch {}
-    return true;
-  } catch {
-    return false;
   }
 }

@@ -138,8 +138,19 @@ async function validateAuthenticatedCompanyMember({ accessToken, companyId, env 
   }
 }
 
-// Stripe billing authority from the webhook-written app_settings row.
-// Returns { plan, code }. A non-paid outcome always yields plan free.
+// Every status the browser may safely be told about a Stripe record. Anything
+// outside this set is reported as "unknown" rather than echoed back.
+const REPORTABLE_BILLING_STATUSES = new Set(["free", "trialing", "active", "past_due", "canceled", "unknown"]);
+
+// A billing record is a FACT about the subscription; it is not a grant of
+// access. `plan` below is the *entitling* plan and is free unless Stripe is
+// genuinely active/trialing. `billing` describes what Stripe says, so a
+// canceled Pro subscriber can still be shown "Pro / Canceled" while receiving
+// only Free features. Stripe customer/subscription IDs never leave the server.
+function noBilling() {
+  return { plan: PLAN_FREE, billingPlan: PLAN_FREE, billingStatus: "free", billingSource: "none" };
+}
+
 async function resolveStripePlanAuthority({ client, companyId } = {}) {
   try {
     const response = await client
@@ -148,27 +159,33 @@ async function resolveStripePlanAuthority({ client, companyId } = {}) {
       .eq("company_id", text(companyId))
       .eq("setting_scope", "company")
       .eq("setting_key", SUBSCRIPTION_PLAN_STATE_KEY);
-    if (response?.error) return { plan: PLAN_FREE, code: "stripe_invalid" };
+    if (response?.error) return { ...noBilling(), code: "stripe_invalid" };
 
     const rows = Array.isArray(response?.data) ? response.data : [];
-    if (rows.length === 0) return { plan: PLAN_FREE, code: "stripe_missing" };
-    // Ambiguous authority is no authority.
-    if (rows.length > 1) return { plan: PLAN_FREE, code: "stripe_duplicate" };
+    if (rows.length === 0) return { ...noBilling(), code: "stripe_missing" };
+    // Ambiguous authority is no authority -- and we report no billing facts
+    // from a contradictory pair of rows either.
+    if (rows.length > 1) return { ...noBilling(), code: "stripe_duplicate" };
 
     const value = rows[0]?.setting_value;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return { plan: PLAN_FREE, code: "stripe_invalid" };
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ...noBilling(), code: "stripe_invalid" };
 
     // Only a genuinely Stripe-sourced row is billing authority.
-    if (text(value.source).toLowerCase() !== STRIPE_SOURCE) return { plan: PLAN_FREE, code: "stripe_invalid" };
+    if (text(value.source).toLowerCase() !== STRIPE_SOURCE) return { ...noBilling(), code: "stripe_invalid" };
 
-    const plan = normalizeEntitlementPlan(value.plan);
-    const status = text(value.status).toLowerCase();
-    if (!PAID_PLANS.has(plan)) return { plan: PLAN_FREE, code: "stripe_invalid" };
-    if (!PAID_STRIPE_STATUSES.has(status)) return { plan: PLAN_FREE, code: "stripe_inactive" };
+    const billingPlan = normalizeEntitlementPlan(value.plan);
+    const rawStatus = text(value.status).toLowerCase();
+    const billingStatus = REPORTABLE_BILLING_STATUSES.has(rawStatus) ? rawStatus : "unknown";
+    if (!PAID_PLANS.has(billingPlan)) return { ...noBilling(), code: "stripe_invalid" };
 
-    return { plan, status, code: "stripe_active" };
+    // The record is real, so report it -- even when it entitles nothing.
+    const billing = { billingPlan, billingStatus, billingSource: STRIPE_SOURCE };
+    if (!PAID_STRIPE_STATUSES.has(billingStatus)) {
+      return { plan: PLAN_FREE, ...billing, code: "stripe_inactive" };
+    }
+    return { plan: billingPlan, ...billing, code: "stripe_active" };
   } catch {
-    return { plan: PLAN_FREE, code: "stripe_invalid" };
+    return { ...noBilling(), code: "stripe_invalid" };
   }
 }
 
@@ -216,17 +233,30 @@ async function resolveInternalGrantAuthority({ client, companyId, now = new Date
   }
 }
 
-function buildFreeResult({ companyId, membershipRole, resolvedAt, diagnostics }) {
+function buildBilling(stripe) {
+  return {
+    plan: stripe.billingPlan ?? PLAN_FREE,
+    status: stripe.billingStatus ?? "free",
+    source: stripe.billingSource ?? "none",
+  };
+}
+
+function buildFreeResult({ companyId, membershipRole, resolvedAt, diagnostics, billing }) {
   return {
     version: 1,
     companyId: text(companyId),
     membershipRole: text(membershipRole),
+    // Effective access.
     plan: PLAN_FREE,
     status: PLAN_FREE,
     source: "none",
     resolvedAt,
     expiresAt: null,
     entitlements: entitlementsForPlan(PLAN_FREE),
+    // Safe billing FACTS. A canceled Pro subscriber reports plan free /
+    // billing.plan pro / billing.status canceled -- visible, but entitling
+    // nothing.
+    billing,
     diagnostics,
   };
 }
@@ -245,12 +275,15 @@ async function resolveEffectiveCompanyEntitlements({ accessToken, companyId, env
   const stripe = await resolveStripePlanAuthority({ client, companyId });
   const grant = await resolveInternalGrantAuthority({ client, companyId, now });
   const diagnostics = { stripeAuthority: stripe.code, internalGrantAuthority: grant.code };
+  const billing = buildBilling(stripe);
 
   const stripeRank = rankEntitlementPlan(stripe.plan);
   const grantRank = rankEntitlementPlan(grant.plan);
 
   if (stripeRank === 0 && grantRank === 0) {
-    return { ok: true, status: 200, result: buildFreeResult({ companyId, membershipRole, resolvedAt, diagnostics }) };
+    // No entitling authority -- but the billing record (e.g. Pro/canceled) is
+    // still reported so the UI can explain why.
+    return { ok: true, status: 200, result: buildFreeResult({ companyId, membershipRole, resolvedAt, diagnostics, billing }) };
   }
 
   const useGrant = grantRank > stripeRank;
@@ -262,14 +295,19 @@ async function resolveEffectiveCompanyEntitlements({ accessToken, companyId, env
       version: 1,
       companyId: text(companyId),
       membershipRole: text(membershipRole),
+      // Effective access.
       plan,
-      status: useGrant ? "active" : text(stripe.status || "active"),
+      // An internal grant never claims Stripe billing is active: the effective
+      // status is "active" only in the sense that the grant itself is live.
+      status: useGrant ? "active" : text(stripe.billingStatus || "active"),
       source: useGrant ? INTERNAL_GRANT_SOURCE : STRIPE_SOURCE,
       resolvedAt,
       // Only an internal grant carries an expiry the browser may see; Stripe
       // period ends are billing details and stay server-side.
       expiresAt: useGrant ? (grant.expiresAt ?? null) : null,
       entitlements: entitlementsForPlan(plan),
+      // Unchanged by the grant: billing still reports what Stripe actually says.
+      billing,
       diagnostics,
     },
   };

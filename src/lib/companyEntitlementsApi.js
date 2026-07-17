@@ -18,8 +18,30 @@ const DEFAULT_TIMEOUT_MS = 10000;
 const KNOWN_PLANS = new Set([PLAN_FREE, PLAN_SOLO, PLAN_PRO, PLAN_BUSINESS]);
 const KNOWN_SOURCES = new Set(["stripe", "internal_comp", "none"]);
 const KNOWN_STATUSES = new Set(["free", "active", "trialing"]);
+// Billing FACTS the server may safely report. Wider than the effective-status
+// set because a real subscription can be canceled or past_due -- states the UI
+// should show even though they entitle nothing.
+const KNOWN_BILLING_STATUSES = new Set(["free", "trialing", "active", "past_due", "canceled", "unknown"]);
+const KNOWN_BILLING_SOURCES = new Set(["stripe", "none"]);
+
+const FREE_BILLING = Object.freeze({ plan: PLAN_FREE, status: "free", source: "none" });
 
 const text = (value) => String(value == null ? "" : value).trim();
+
+// A billing block we do not fully understand is reported as "no billing" -- it
+// must never widen access, and it is only ever display detail.
+function normalizeBilling(billing) {
+  if (!billing || typeof billing !== "object" || Array.isArray(billing)) return { ...FREE_BILLING };
+  const plan = text(billing.plan).toLowerCase();
+  const status = text(billing.status).toLowerCase();
+  const source = text(billing.source).toLowerCase();
+  if (!KNOWN_PLANS.has(plan) || !KNOWN_BILLING_STATUSES.has(status) || !KNOWN_BILLING_SOURCES.has(source)) {
+    return { ...FREE_BILLING };
+  }
+  return { plan, status, source };
+}
+
+
 
 // The single fail-closed answer. Every error path returns exactly this.
 export function getFreeEntitlementState(extra = {}) {
@@ -31,6 +53,8 @@ export function getFreeEntitlementState(extra = {}) {
     resolvedAt: "",
     expiresAt: null,
     entitlements: getEntitlementsForPlan(PLAN_FREE),
+    // No server answer means no billing facts to show either.
+    billing: { ...FREE_BILLING },
     loading: false,
     ok: false,
     ...extra,
@@ -56,14 +80,19 @@ export function normalizeServerEntitlementState(payload) {
 
   return {
     version: 1,
+    // Effective access.
     plan,
     status,
     source,
     resolvedAt: text(payload.resolvedAt),
     expiresAt: payload.expiresAt ? text(payload.expiresAt) : null,
     // Derived locally from the server-resolved PLAN rather than trusting the
-    // server's capability booleans verbatim; the plan is the authority.
+    // server's capability booleans verbatim; the plan is the authority. Note
+    // billing is deliberately NOT an input here -- a canceled Pro record
+    // entitles nothing.
     entitlements: getEntitlementsForPlan(plan),
+    // Display-only billing facts.
+    billing: normalizeBilling(payload.billing),
     membershipRole: text(payload.membershipRole),
     loading: false,
     ok: true,

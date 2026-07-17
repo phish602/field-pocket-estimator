@@ -86,7 +86,14 @@ revoke all on table public.company_entitlement_grants from anon;
 revoke all on table public.company_entitlement_grants from authenticated;
 
 -- service_role reads grants (resolver), inserts them (grant) and updates them
--- (revoke). Delete is intentionally withheld: grant history is immutable.
+-- (revoke). Everything else is withheld: grant history is immutable.
+--
+-- The REVOKE below is essential, not decorative. Supabase ships a default
+-- privilege rule granting broad access on new public tables to service_role, so
+-- without this a fresh table arrives holding TRUNCATE/REFERENCES/TRIGGER and the
+-- additive grant beneath it would be redundant. TRUNCATE in particular would
+-- erase the entire audit history in one statement.
+revoke all on table public.company_entitlement_grants from service_role;
 grant select, insert, update on table public.company_entitlement_grants to service_role;
 
 commit;

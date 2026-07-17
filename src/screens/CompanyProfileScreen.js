@@ -266,6 +266,8 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const [subscriptionPlanState, setSubscriptionPlanState] = useState(() => (
     supabaseConfigured && companyId ? getDefaultSubscriptionPlanState() : loadLocalSubscriptionPlanState()
   ));
+  // Safe Stripe billing facts for display only; never an access input.
+  const [billingState, setBillingState] = useState(null);
   const [lastSaveOk, setLastSaveOk] = useState(true);
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -332,10 +334,32 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
         source: resolved.source,
         updatedAt: resolved.resolvedAt || "",
       });
+      // Gate 17A-R: billing is a separate FACT from effective access. A
+      // canceled Pro subscriber shows Plan Free + Billing status Canceled.
+      setBillingState(resolved.billing || null);
     };
     loadSubscriptionState();
     return () => { active = false; };
   }, [companyId, supabaseConfigured, accessToken]);
+  // Gate 17A-R: Plan (effective access) and Billing status (what Stripe says)
+  // are separate concepts. A canceled Pro subscriber sees Plan Free and Billing
+  // status Canceled -- never "Free / Canceled" as if Free itself were canceled.
+  const BILLING_STATUS_LABELS = {
+    free: "Free", trialing: "Trialing", active: "Active",
+    past_due: "Past due", canceled: "Canceled", unknown: "Unknown",
+  };
+  const subscriptionAccessLabel = (() => {
+    // Internal complimentary access never claims Stripe billing is active.
+    if (subscriptionPlanState.source === "internal_comp") {
+      return `Complimentary ${getSubscriptionPlanLabel(subscriptionPlanState)} access`;
+    }
+    // A real Stripe record exists: report its status as billing, not access.
+    if (billingState && billingState.source === "stripe") {
+      return `Billing status: ${BILLING_STATUS_LABELS[billingState.status] || "Unknown"}`;
+    }
+    return `Status: ${getSubscriptionStatusLabel(subscriptionPlanState)}`;
+  })();
+
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
   const missingRequiredFields = useMemo(() => getMissingRequiredFields(profile), [profile]);
   const missingRequiredSet = useMemo(
@@ -978,7 +1002,7 @@ const stripeActionGroupStyle = {
             {getSubscriptionPlanLabel(subscriptionPlanState)}
           </span>
           <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>
-            {`Status: ${getSubscriptionStatusLabel(subscriptionPlanState)} · ${getEntitlementsFromSubscriptionState(subscriptionPlanState).showPdfWatermark
+            {`${subscriptionAccessLabel} · ${getEntitlementsFromSubscriptionState(subscriptionPlanState).showPdfWatermark
               ? "PDF exports include EstiPaid branding."
               : "No EstiPaid watermark."}`}
           </span>

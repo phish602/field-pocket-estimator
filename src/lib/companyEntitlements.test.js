@@ -388,9 +388,11 @@ describe("25. the response never exposes protected fields", () => {
     ].forEach((secret) => expect(serialized).not.toContain(secret));
 
     expect(Object.keys(r.result).sort()).toEqual([
-      "companyId", "diagnostics", "entitlements", "expiresAt", "membershipRole",
+      "billing", "companyId", "diagnostics", "entitlements", "expiresAt", "membershipRole",
       "plan", "resolvedAt", "source", "status", "version",
     ]);
+    // billing carries only safe facts -- never Stripe identifiers.
+    expect(Object.keys(r.result.billing).sort()).toEqual(["plan", "source", "status"]);
     expect(Object.keys(r.result.diagnostics).sort()).toEqual(["internalGrantAuthority", "stripeAuthority"]);
   });
 });
@@ -400,5 +402,87 @@ describe("unit-level authority helpers", () => {
     const stub = createClientStub({ subscriptionRows: [stripeRow("solo", "active")], grantRows: [grantRow("pro")] });
     expect(await resolveStripePlanAuthority({ client: stub, companyId: COMPANY_ID })).toEqual(expect.objectContaining({ plan: "solo", code: "stripe_active" }));
     expect(await resolveInternalGrantAuthority({ client: stub, companyId: COMPANY_ID })).toEqual(expect.objectContaining({ plan: "pro", code: "grant_active" }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 17A-R: billing truth vs effective entitlement.
+//
+// The prior build collapsed a canceled Pro subscription to "Free" and threw the
+// billing fact away, so the UI could not explain WHY access was Free. Billing is
+// now reported separately -- visible, but entitling nothing on its own.
+// ---------------------------------------------------------------------------
+describe("Gate 17A-R billing is reported without granting access", () => {
+  test("canceled Stripe Pro, no grant: effective free/none, billing pro/canceled/stripe", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("pro", "canceled")] }));
+    expect(r.result).toEqual(expect.objectContaining({ plan: "free", status: "free", source: "none" }));
+    expect(r.result.billing).toEqual({ plan: "pro", status: "canceled", source: "stripe" });
+    // Canceled billing must not entitle anything.
+    expect(r.result.entitlements.canRemovePdfWatermark).toBe(false);
+    expect(r.result.entitlements.showPdfWatermark).toBe(true);
+  });
+
+  test("past_due Stripe Business, no grant: effective free, billing business/past_due", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("business", "past_due")] }));
+    expect(r.result.plan).toBe("free");
+    expect(r.result.billing).toEqual({ plan: "business", status: "past_due", source: "stripe" });
+    expect(r.result.entitlements.canUseBusinessFeatures).toBe(false);
+  });
+
+  test("active Stripe Pro: effective pro/stripe, billing pro/active/stripe", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("pro", "active")] }));
+    expect(r.result).toEqual(expect.objectContaining({ plan: "pro", status: "active", source: "stripe" }));
+    expect(r.result.billing).toEqual({ plan: "pro", status: "active", source: "stripe" });
+  });
+
+  test("trialing Stripe Business: effective business, billing business/trialing", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("business", "trialing")] }));
+    expect(r.result.plan).toBe("business");
+    expect(r.result.billing).toEqual({ plan: "business", status: "trialing", source: "stripe" });
+  });
+
+  test("canceled Stripe Pro + internal Business grant: effective business/internal_comp, billing still pro/canceled", async () => {
+    const r = await resolve(createClientStub({
+      subscriptionRows: [stripeRow("pro", "canceled")],
+      grantRows: [grantRow("business")],
+    }));
+    expect(r.result).toEqual(expect.objectContaining({ plan: "business", source: "internal_comp" }));
+    // The grant must NOT pretend Stripe billing is active.
+    expect(r.result.billing).toEqual({ plan: "pro", status: "canceled", source: "stripe" });
+    expect(r.result.entitlements.canUseBusinessFeatures).toBe(true);
+  });
+
+  test("no Stripe record at all: billing reports free/none", async () => {
+    const r = await resolve(createClientStub());
+    expect(r.result.billing).toEqual({ plan: "free", status: "free", source: "none" });
+  });
+
+  test("grant only, no Stripe: effective business/internal_comp, billing free/none", async () => {
+    const r = await resolve(createClientStub({ grantRows: [grantRow("business")] }));
+    expect(r.result).toEqual(expect.objectContaining({ plan: "business", source: "internal_comp" }));
+    expect(r.result.billing).toEqual({ plan: "free", status: "free", source: "none" });
+  });
+
+  test.each([
+    ["duplicate rows", { subscriptionRows: [stripeRow("pro", "active"), stripeRow("business", "active")] }],
+    ["malformed plan", { subscriptionRows: [stripeRow("enterprise", "active")] }],
+    ["non-stripe source", { subscriptionRows: [stripeRow("business", "active", "admin")] }],
+    ["query error", { subscriptionError: { message: "boom" } }],
+  ])("%s reports no billing facts and no access", async (_label, stub) => {
+    const r = await resolve(createClientStub(stub));
+    expect(r.result.plan).toBe("free");
+    expect(r.result.billing).toEqual({ plan: "free", status: "free", source: "none" });
+  });
+
+  test("an unrecognized Stripe status is reported as unknown, not echoed", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("pro", "incomplete_expired")] }));
+    expect(r.result.plan).toBe("free");
+    expect(r.result.billing).toEqual({ plan: "pro", status: "unknown", source: "stripe" });
+  });
+
+  test("billing never leaks Stripe identifiers", async () => {
+    const r = await resolve(createClientStub({ subscriptionRows: [stripeRow("pro", "canceled")] }));
+    const serialized = JSON.stringify(r.result.billing);
+    ["cus_secret", "sub_secret", "stripeCustomerId", "stripeSubscriptionId"].forEach((s) => expect(serialized).not.toContain(s));
   });
 });

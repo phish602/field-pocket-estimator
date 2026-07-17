@@ -23,9 +23,10 @@ jest.mock("../lib/companyEntitlementsApi", () => {
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const TOKEN = "session-token";
 
-const serverState = (plan, status = "active", source = "stripe") => ({
+const serverState = (plan, status = "active", source = "stripe", billing = null) => ({
   version: 1, plan, status, source, resolvedAt: "2026-07-16T00:00:00.000Z", expiresAt: null,
-  entitlements: {}, loading: false, ok: plan !== "free" || status === "free",
+  entitlements: {}, billing: billing || { plan: "free", status: "free", source: "none" },
+  loading: false, ok: plan !== "free" || status === "free",
 });
 
 // jsdom defaults to localhost, which legitimately permits dev fallback. These
@@ -109,4 +110,79 @@ test("without an access token the production host does not fall back to local st
   });
   expect(screen.getByText("Free")).toBeInTheDocument();
   expect(resolveCompanyEntitlements).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// Gate 17A-R: Plan and Billing status are separate concepts on the card.
+// The prior build showed "Free / Canceled", implying the Free plan itself was
+// canceled, and dropped the billing fact entirely once Free was resolved.
+// ---------------------------------------------------------------------------
+describe("Gate 17A-R: effective plan and billing status are distinct", () => {
+  test("BVW's real shape: Plan Free with Billing status Canceled", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(
+      serverState("free", "free", "none", { plan: "pro", status: "canceled", source: "stripe" })
+    );
+    await renderProfile();
+
+    expect(screen.getByText("Free")).toBeInTheDocument();
+    const card = document.querySelector("[data-status]");
+    expect(card.textContent).toContain("Billing status: Canceled");
+    // Free access is still Free: the watermark copy proves entitlement is unchanged.
+    expect(card.textContent).toContain("PDF exports include EstiPaid branding.");
+    // The plan itself is never described as canceled.
+    expect(card.textContent).not.toContain("Status: Canceled");
+  });
+
+  test("past_due Business billing shows Plan Free with Billing status Past due", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(
+      serverState("free", "free", "none", { plan: "business", status: "past_due", source: "stripe" })
+    );
+    await renderProfile();
+    expect(screen.getByText("Free")).toBeInTheDocument();
+    expect(document.querySelector("[data-status]").textContent).toContain("Billing status: Past due");
+  });
+
+  test("active Pro shows Plan Pro with Billing status Active", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(
+      serverState("pro", "active", "stripe", { plan: "pro", status: "active", source: "stripe" })
+    );
+    await renderProfile();
+    expect(screen.getByText("Pro")).toBeInTheDocument();
+    const card = document.querySelector("[data-status]");
+    expect(card.textContent).toContain("Billing status: Active");
+    expect(card.textContent).toContain("No EstiPaid watermark.");
+  });
+
+  test("an internal grant reads as complimentary access, never as Stripe billing", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(
+      serverState("business", "active", "internal_comp", { plan: "pro", status: "canceled", source: "stripe" })
+    );
+    await renderProfile();
+
+    expect(screen.getByText("Business")).toBeInTheDocument();
+    const card = document.querySelector("[data-status]");
+    // It must NOT claim the Stripe subscription is active.
+    expect(card.textContent).toContain("Complimentary Business access");
+    expect(card.textContent).not.toContain("Billing status: Active");
+    expect(card.textContent).toContain("No EstiPaid watermark.");
+  });
+
+  test("no Stripe record at all falls back to the plain status line", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(serverState("free", "free", "none"));
+    await renderProfile();
+    const card = document.querySelector("[data-status]");
+    expect(card.textContent).toContain("Status: Free");
+    expect(card.textContent).not.toContain("Billing status:");
+  });
+
+  test("no grant reason, granter, or Stripe identifier is ever displayed", async () => {
+    resolveCompanyEntitlements.mockResolvedValue(
+      serverState("business", "active", "internal_comp", { plan: "pro", status: "canceled", source: "stripe" })
+    );
+    await renderProfile();
+    const text = document.body.textContent;
+    ["Founder demonstration", "cus_", "sub_", "granted_by", "internal_comp", "revoke"].forEach((secret) => {
+      expect(text).not.toContain(secret);
+    });
+  });
 });
