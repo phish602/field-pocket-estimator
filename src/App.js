@@ -37,6 +37,7 @@ import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
 import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
 import { resolveCompanyEntitlements } from "./lib/companyEntitlementsApi";
+import { sanitizeLegacySubscriptionCaches } from "./lib/subscriptionCacheSanitation";
 import { allowLocalEntitlementFallback } from "./lib/useCompanyEntitlements";
 import "./EstimateForm.css";
 import "./FieldSystem.css";
@@ -2676,6 +2677,14 @@ const [spinTick, setSpinTick] = useState(0);
       companyProfile,
     });
   }, [invoiceHistory, recentProjects, businessPulseCounts]);
+
+  // Gate 17A.1a: one-time removal of Stripe identifiers left in legacy
+  // subscription caches by pre-Gate-17A builds. Idempotent, touches only those
+  // two cache keys, and never changes plan/status (entitlements are server-
+  // resolved regardless).
+  useEffect(() => {
+    try { sanitizeLegacySubscriptionCaches(); } catch {}
+  }, []);
 
   // Gate 17A: the effective plan is resolved by the server. Local plan state is
   // never authority here -- it is only consulted on a genuine local dev host,

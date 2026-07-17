@@ -49,8 +49,11 @@ export function normalizeSubscriptionPlanState(raw) {
     plan,
     status,
     source: String(raw.source || "default").trim().toLowerCase() || "default",
-    ...(raw.stripeCustomerId ? { stripeCustomerId: String(raw.stripeCustomerId) } : {}),
-    ...(raw.stripeSubscriptionId ? { stripeSubscriptionId: String(raw.stripeSubscriptionId) } : {}),
+    // Gate 17A.1a: Stripe customer/subscription identifiers are deliberately
+    // NOT carried through. They live server-side only
+    // (company_stripe_billing_refs) and have no browser purpose; passing them
+    // through here is what let them reach localStorage caches. Any legacy value
+    // arriving from an old cache is dropped on normalization.
     ...(raw.currentPeriodEnd ? { currentPeriodEnd: String(raw.currentPeriodEnd) } : {}),
     updatedAt: raw.updatedAt ? String(raw.updatedAt) : "",
   };

@@ -57,12 +57,15 @@ async function upsertCompanySubscriptionPlanState(input = {}) {
   if (!client?.from) return { ok: false, error: "Server Supabase service-role credentials are unavailable." };
 
   const updatedAt = new Date().toISOString();
+  // Gate 17A.1a: this row is browser-READABLE under RLS, so it carries safe
+  // billing facts only. Stripe customer/subscription identifiers are written
+  // separately to company_stripe_billing_refs (service_role only) by the
+  // caller. Any identifier reaching this function is deliberately dropped
+  // rather than persisted.
   const payload = {
     plan: validated.plan,
     status: validated.status,
     source: validated.source,
-    ...(text(input.stripeCustomerId) ? { stripeCustomerId: text(input.stripeCustomerId) } : {}),
-    ...(text(input.stripeSubscriptionId) ? { stripeSubscriptionId: text(input.stripeSubscriptionId) } : {}),
     ...(text(input.currentPeriodEnd) ? { currentPeriodEnd: text(input.currentPeriodEnd) } : {}),
     updatedAt,
   };

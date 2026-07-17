@@ -23,12 +23,39 @@ describe("server subscription plan writer scaffold", () => {
   test("inserts a normalized company-scoped payload with a server timestamp", async () => {
     const adminClient = createAdminClient();
     const result = await upsertCompanySubscriptionPlanState({
-      adminClient, companyId: "company_1", plan: "pro", status: "active", source: "stripe", stripeCustomerId: "cus_1",
+      adminClient, companyId: "company_1", plan: "pro", status: "active", source: "stripe",
     });
     expect(result).toMatchObject({ ok: true, action: "inserted", state: { plan: "pro", status: "active", source: "stripe" } });
     expect(adminClient.insert).toHaveBeenCalledWith(expect.objectContaining({
       company_id: "company_1", setting_scope: "company", setting_key: "subscription_plan_state",
-      setting_value: expect.objectContaining({ updatedAt: expect.any(String), stripeCustomerId: "cus_1" }),
+      setting_value: expect.objectContaining({ updatedAt: expect.any(String), plan: "pro" }),
+    }));
+  });
+
+  // Gate 17A.1a: this row is browser-READABLE under RLS, so it must carry safe
+  // billing facts only. Identifiers live in company_stripe_billing_refs.
+  test("Stripe identifiers passed in are DROPPED, never written to browser-readable state", async () => {
+    const adminClient = createAdminClient();
+    await upsertCompanySubscriptionPlanState({
+      adminClient, companyId: "company_1", plan: "pro", status: "active", source: "stripe",
+      stripeCustomerId: "cus_FAKE000000000", stripeSubscriptionId: "sub_FAKE000000000",
+      stripe_customer_id: "cus_FAKE000000000", stripe_subscription_id: "sub_FAKE000000000",
+    });
+    const written = adminClient.insert.mock.calls[0][0].setting_value;
+    expect(Object.keys(written).sort()).toEqual(["plan", "source", "status", "updatedAt"]);
+    const serialized = JSON.stringify(written);
+    expect(serialized).not.toContain("cus_");
+    expect(serialized).not.toContain("sub_");
+  });
+
+  test("safe billing facts survive: canceled Solo stays exactly that", async () => {
+    const adminClient = createAdminClient();
+    await upsertCompanySubscriptionPlanState({
+      adminClient, companyId: "company_1", plan: "solo", status: "canceled", source: "stripe",
+      stripeCustomerId: "cus_FAKE000000000",
+    });
+    expect(adminClient.insert.mock.calls[0][0].setting_value).toEqual(expect.objectContaining({
+      plan: "solo", status: "canceled", source: "stripe",
     }));
   });
 

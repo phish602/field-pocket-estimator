@@ -33,6 +33,8 @@ function stripeFor(event, { throwOnVerify = false, retrievedSubscription = null 
 
 async function process(event, options = {}) {
   const upsertPlanState = options.upsertPlanState || jest.fn(async () => ({ ok: true }));
+  // Gate 17A.1a: identifiers are written to private service-role-only storage.
+  const upsertBillingRef = options.upsertBillingRef || jest.fn(async () => ({ ok: true, code: "stored", written: true }));
   const result = await processStripeSubscriptionWebhook({
     rawBody: Buffer.from("signed payload"),
     signature: "sig_test",
@@ -40,9 +42,10 @@ async function process(event, options = {}) {
     webhookSecret: "whsec_test",
     env: ENV,
     upsertPlanState,
+    upsertBillingRef,
     logger: { warn: jest.fn(), error: jest.fn() },
   });
-  return { result, upsertPlanState };
+  return { result, upsertPlanState, upsertBillingRef };
 }
 
 describe("Stripe subscription webhook", () => {
@@ -111,5 +114,67 @@ describe("Stripe subscription webhook", () => {
     const { result, upsertPlanState } = await process(null, { stripe });
     expect(result.status).toBe(200);
     expect(upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company_from_checkout" }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 17A.1a: Stripe identifiers are written ONLY to private service-role
+// storage. The browser-readable app_settings row keeps safe facts alone.
+// Identifiers in these fixtures are fake.
+// ---------------------------------------------------------------------------
+describe("Gate 17A.1a private identifier storage", () => {
+  const event = (sub) => ({ type: "customer.subscription.updated", data: { object: sub } });
+
+  test("identifiers go to private storage, keyed by the mapped company", async () => {
+    const sub = subscription({ companyId: "company_1", customer: { id: "cus_FAKE1" }, id: "sub_FAKE1" });
+    const { result, upsertBillingRef } = await process(event(sub));
+
+    expect(result.status).toBe(200);
+    expect(upsertBillingRef).toHaveBeenCalledTimes(1);
+    expect(upsertBillingRef).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company_1", stripeCustomerId: "cus_FAKE1", stripeSubscriptionId: "sub_FAKE1",
+    }));
+  });
+
+  test("the private write happens BEFORE the plan-state write", async () => {
+    const order = [];
+    const upsertBillingRef = jest.fn(async () => { order.push("ref"); return { ok: true }; });
+    const upsertPlanState = jest.fn(async () => { order.push("plan"); return { ok: true }; });
+    await process(event(subscription()), { upsertBillingRef, upsertPlanState });
+    // Ordering matters: a later failure must never drop the customer id.
+    expect(order).toEqual(["ref", "plan"]);
+  });
+
+  test("a failed private write aborts before the plan row is touched", async () => {
+    const upsertPlanState = jest.fn();
+    const { result } = await process(event(subscription()), {
+      upsertBillingRef: jest.fn(async () => ({ ok: false, code: "write_failed" })),
+      upsertPlanState,
+    });
+    expect(result.status).toBe(500);
+    expect(upsertPlanState).not.toHaveBeenCalled();
+  });
+
+  test("a subscription with no identifiers skips the private write entirely", async () => {
+    const sub = subscription({ customer: null, id: "" });
+    const { upsertBillingRef } = await process(event(sub));
+    expect(upsertBillingRef).not.toHaveBeenCalled();
+  });
+
+  test("the private write failure is logged without the identifier values", async () => {
+    const logger = { warn: jest.fn(), error: jest.fn() };
+    await processStripeSubscriptionWebhook({
+      rawBody: Buffer.from("signed payload"),
+      signature: "sig_test",
+      stripe: stripeFor(event(subscription({ customer: { id: "cus_FAKE_SECRET" }, id: "sub_FAKE_SECRET" }))),
+      webhookSecret: "whsec_test",
+      env: ENV,
+      upsertBillingRef: jest.fn(async () => ({ ok: false, code: "write_failed" })),
+      upsertPlanState: jest.fn(async () => ({ ok: true })),
+      logger,
+    });
+    const logged = JSON.stringify(logger.error.mock.calls);
+    expect(logged).not.toContain("cus_FAKE_SECRET");
+    expect(logged).not.toContain("sub_FAKE_SECRET");
   });
 });

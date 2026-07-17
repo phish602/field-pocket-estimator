@@ -1,6 +1,7 @@
 // Server-only subscription Checkout creation. The webhook remains the sole plan-state writer.
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
+const { getPrivateStripeCustomerId } = require("./companyStripeBillingRefs");
 
 const ALLOWED_PLANS = new Set(["solo", "pro", "business"]);
 const MANAGEABLE_ROLES = new Set(["owner", "admin"]);
@@ -115,6 +116,7 @@ async function createSubscriptionCheckoutSession({
   stripeClient,
   StripeConstructor = Stripe,
   validateCompanyUser = validateAuthenticatedCompanyUser,
+  lookupPrivateCustomerId = getPrivateStripeCustomerId,
   logger,
 } = {}) {
   const normalizedPlan = normalizePlan(plan);
@@ -139,13 +141,26 @@ async function createSubscriptionCheckoutSession({
     ...(text(access.user?.id) ? { userId: text(access.user.id) } : {}),
   };
   const stripe = stripeClient || new StripeConstructor(stripeSecretKey);
+
+  // Gate 17A.1a: reuse this company's existing Stripe customer when one is on
+  // record, so a re-subscribe does not create a SECOND customer for the same
+  // company. The id comes only from service-role-only private storage -- never
+  // from the request body, and never from the browser-readable settings row. A
+  // missing/unreadable ref falls back to customer_email, which is exactly the
+  // prior behavior, so this fails safe rather than blocking checkout.
+  const privateCustomer = await lookupPrivateCustomerId({ companyId: normalizedCompanyId, env });
+  const existingCustomerId = text(privateCustomer?.customerId);
+
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: returnUrls.successUrl,
       cancel_url: returnUrls.cancelUrl,
-      ...(text(access.user?.email) ? { customer_email: text(access.user.email) } : {}),
+      // Stripe rejects customer + customer_email together.
+      ...(existingCustomerId
+        ? { customer: existingCustomerId }
+        : (text(access.user?.email) ? { customer_email: text(access.user.email) } : {})),
       metadata,
       subscription_data: { metadata },
     });

@@ -151,3 +151,80 @@ describe("Stripe subscription Checkout creation", () => {
     }));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate 17A.1a: checkout reads the Stripe customer id ONLY from private,
+// service-role-only storage -- never from the browser, never from the
+// browser-readable settings row. All identifiers below are fake.
+// ---------------------------------------------------------------------------
+describe("Gate 17A.1a private customer reuse", () => {
+  const FAKE_CUS = "cus_FAKE000000000";
+
+  function stripeStub() {
+    const create = jest.fn(async () => ({ url: "https://checkout.test/session", id: "cs_test_1" }));
+    return { checkout: { sessions: { create } } };
+  }
+
+  test("an existing private customer id is reused, preventing a duplicate Stripe customer", async () => {
+    const stripe = stripeStub();
+    const result = await createSubscriptionCheckoutSession({
+      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV,
+      stripeClient: stripe, validateCompanyUser: validatedUser(),
+      lookupPrivateCustomerId: async () => ({ ok: true, customerId: FAKE_CUS, code: "found" }),
+    });
+    expect(result.ok).toBe(true);
+    const args = stripe.checkout.sessions.create.mock.calls[0][0];
+    expect(args.customer).toBe(FAKE_CUS);
+    // Stripe rejects customer + customer_email together.
+    expect(args.customer_email).toBeUndefined();
+  });
+
+  test("no private customer falls back to customer_email (prior behavior)", async () => {
+    const stripe = stripeStub();
+    await createSubscriptionCheckoutSession({
+      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV,
+      stripeClient: stripe, validateCompanyUser: validatedUser(),
+      lookupPrivateCustomerId: async () => ({ ok: true, customerId: "", code: "no_ref" }),
+    });
+    const args = stripe.checkout.sessions.create.mock.calls[0][0];
+    expect(args.customer).toBeUndefined();
+    expect(args.customer_email).toBe("owner@example.test");
+  });
+
+  test("a failed private lookup fails SAFE: checkout still works via email", async () => {
+    const stripe = stripeStub();
+    const result = await createSubscriptionCheckoutSession({
+      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV,
+      stripeClient: stripe, validateCompanyUser: validatedUser(),
+      // e.g. the private table does not exist yet during a staged rollout.
+      lookupPrivateCustomerId: async () => ({ ok: false, customerId: "", code: "lookup_failed" }),
+    });
+    expect(result.ok).toBe(true);
+    expect(stripe.checkout.sessions.create.mock.calls[0][0].customer).toBeUndefined();
+  });
+
+  test("a browser-supplied customer/subscription id is ignored entirely", async () => {
+    const stripe = stripeStub();
+    const lookup = jest.fn(async () => ({ ok: true, customerId: "", code: "no_ref" }));
+    await createSubscriptionCheckoutSession({
+      // Attacker-controlled fields that must never be honored.
+      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV,
+      stripeCustomerId: "cus_ATTACKER", stripeSubscriptionId: "sub_ATTACKER",
+      customer: "cus_ATTACKER", customer_email: "attacker@example.test",
+      stripeClient: stripe, validateCompanyUser: validatedUser(), lookupPrivateCustomerId: lookup,
+    });
+    const args = stripe.checkout.sessions.create.mock.calls[0][0];
+    expect(JSON.stringify(args)).not.toContain("ATTACKER");
+    // The id can only come from the private lookup, keyed by the validated company.
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company_1" }));
+  });
+
+  test("the private lookup is keyed by the server-validated company, not the request", async () => {
+    const lookup = jest.fn(async () => ({ ok: true, customerId: "", code: "no_ref" }));
+    await createSubscriptionCheckoutSession({
+      plan: "pro", companyId: "company_1", accessToken: "access_1", env: ENV,
+      stripeClient: stripeStub(), validateCompanyUser: validatedUser(), lookupPrivateCustomerId: lookup,
+    });
+    expect(lookup.mock.calls[0][0].companyId).toBe("company_1");
+  });
+});
