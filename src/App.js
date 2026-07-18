@@ -4565,20 +4565,31 @@ function AuthLoadingScreen() {
 // wired up for this build.
 export default function App() {
   const auth = useSupabaseAuth();
-  const account = useSupabaseAccount({ configured: auth.configured, user: auth.user });
+
+  // A password-recovery callback establishes a real session, but that session
+  // exists only to change the password. Until recovery ends, every account and
+  // cloud worker is fed a disabled/unconfigured state, so no account lookup,
+  // device-lock operation, convergence read, or automatic backup can start.
+  // Every hook is still called unconditionally (Rules of Hooks).
+  const recoveryGateActive = Boolean(auth.passwordRecoveryPending);
+  const operationalConfigured = Boolean(auth.configured) && !recoveryGateActive;
+  const operationalUser = recoveryGateActive ? null : auth.user;
+  const operationalSession = recoveryGateActive ? null : auth.session;
+
+  const account = useSupabaseAccount({ configured: operationalConfigured, user: operationalUser });
   const deviceLock = useDeviceLockStatus({
-    configured: auth.configured,
-    user: auth.user,
+    configured: operationalConfigured,
+    user: operationalUser,
     company: account.company,
-    enabled: Boolean(auth.configured && auth.session),
+    enabled: Boolean(operationalConfigured && operationalSession),
   });
 
   // Gate 13B: background automatic cloud backup worker. Called unconditionally
   // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
   // Supabase is configured, and a workspace exists.
   useCloudAutoConvergence({
-    configured: auth.configured,
-    user: auth.user,
+    configured: operationalConfigured,
+    user: operationalUser,
     company: account.company,
     deviceLock,
   });
@@ -4588,14 +4599,14 @@ export default function App() {
   // backup (cloud writes stay disabled until ownership is confirmed active).
   useCloudAutoBackup({
     enabled: Boolean(
-      auth.configured && auth.session
+      operationalConfigured && operationalSession
       && deviceLock.ready === true
       && deviceLock.loading === false
       && deviceLock.isActive === true
       && deviceLock.isLocked === false
     ),
-    configured: auth.configured,
-    user: auth.user,
+    configured: operationalConfigured,
+    user: operationalUser,
     company: account.company,
     role: account.role,
     deviceLocked: Boolean(deviceLock.isLocked),
@@ -4609,7 +4620,10 @@ export default function App() {
     return <AuthLoadingScreen />;
   }
 
-  if (!auth.session) {
+  // A password-recovery callback establishes a real session, so it must be
+  // checked alongside the signed-out case: recovery finishes on the auth screen
+  // before the dashboard is reachable.
+  if (!auth.session || auth.passwordRecoveryPending) {
     return <AuthScreen auth={auth} />;
   }
 

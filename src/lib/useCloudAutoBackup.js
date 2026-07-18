@@ -32,8 +32,15 @@ import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
 // Test-friendly, overridable debounce constants. Immediate covers
 // money-critical queue entries (invoices/payments); normal covers
 // everything else. A "deferred" priority queue entry never auto-runs.
+//
+// Gate E2: the NORMAL window is widened to 5s so a burst of ordinary local
+// edits (typing, field-by-field saves) collapses into a single backup + verify
+// scan instead of one per mutation -- the main non-money-critical egress source.
+// Because each pe-localstorage event re-arms the timer (trailing-edge debounce),
+// the backup fires once, five seconds after the LAST mutation. The money-critical
+// window is deliberately left short so invoice/payment safety is never delayed.
 export const CLOUD_AUTO_BACKUP_IMMEDIATE_DELAY_MS = 900;
-export const CLOUD_AUTO_BACKUP_NORMAL_DELAY_MS = 1200;
+export const CLOUD_AUTO_BACKUP_NORMAL_DELAY_MS = 5000;
 export const CLOUD_AUTO_BACKUP_MAX_RETRY_DELAY_MS = 60000;
 
 export const CLOUD_AUTO_BACKUP_RUNNING_EVENT = "estipaid:cloud-auto-backup-running";
@@ -227,8 +234,8 @@ export default function useCloudAutoBackup({
       timer = setTimeout(attemptBackup, delay);
     };
 
-    // Skips the debounce window -- used for reconnect/foreground/pagehide,
-    // where waiting the full debounce would miss the opportunity.
+    // Skips the debounce window -- used for reconnect (online) and foreground
+    // (visibility), where waiting the full debounce would miss the opportunity.
     const attemptNowIfSafe = () => {
       const params = paramsRef.current;
       if (!canRunAutomatically(params) || runningNow) return;
@@ -258,7 +265,15 @@ export default function useCloudAutoBackup({
       attemptNowIfSafe();
     };
 
-    const onPageHide = () => attemptNowIfSafe();
+    // Gate E2 / E2.2: pagehide must NOT start a new full-table cloud read -- its
+    // ONLY action is to cancel an already-scheduled backup timer so no
+    // backup+verify scan fires during unload (a request the browser routinely
+    // kills mid-flight, wasting egress). It never calls attemptBackup /
+    // attemptNowIfSafe / runSupabaseCloudOnboardingBackup /
+    // readSupabaseCloudConvergenceSnapshot, and it never clears, completes, or
+    // mutates the dirty queue -- the pending queue stays in localStorage and a
+    // later safe remount / visible foreground / online recovery resumes it once.
+    const onPageHide = () => { clearTimer(); };
 
     // Requirement: on mount (app launch / hook remount), a pending queue is
     // eligible to run again.

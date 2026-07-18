@@ -16,6 +16,16 @@ import {
 const RETRY_DELAYS_MS = [1000, 3000, 7000];
 const MAX_RETRIES = RETRY_DELAYS_MS.length;
 
+// Gate E2 -- passive lifecycle-burst coalescing window. A single foreground
+// action (alt-tab, unminimize) can fire focus + pageshow + visibilitychange in
+// quick succession; each previously triggered its own full cloud scan. This
+// window coalesces that PASSIVE burst into ONE fresh convergence read. It is a
+// leading-edge suppressor, not a cache: the first passive signal reads fresh
+// immediately, and any passive signal after the window still reads fresh. It
+// must stay <= 1s so real cross-device foreground checks are never withheld.
+// Explicit convergence requests and online-recovery always bypass it.
+export const CLOUD_CONVERGENCE_FOREGROUND_BURST_MS = 1000;
+
 function online() { try { return typeof navigator === "undefined" || navigator.onLine !== false; } catch { return true; } }
 
 // After a verified local convergence (and only after the journal is cleared),
@@ -35,7 +45,7 @@ function dispatchConvergenceChangeEvents(result) {
   } catch {}
 }
 
-export default function useCloudAutoConvergence({ configured = false, user = null, company = null, deviceLock = null } = {}) {
+export default function useCloudAutoConvergence({ configured = false, user = null, company = null, deviceLock = null, foregroundBurstMs = CLOUD_CONVERGENCE_FOREGROUND_BURST_MS } = {}) {
   // One in-flight promise prevents simultaneous duplicate runs (incl. StrictMode
   // double-mount and coincident lifecycle events) WITHOUT permanently suppressing
   // future attempts -- there is no persistent "attempted" set.
@@ -140,20 +150,74 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         }
       } finally {
         inFlightRef.current = false;
+        // At most ONE trailing fresh run: an explicit/online request that arrived
+        // while this scan was already in flight may have needed newer data than
+        // this run started with. Passive lifecycle signals never set this (they
+        // are already represented by the run that was in flight).
+        if (!disposed && trailingFreshScheduled) {
+          trailingFreshScheduled = false;
+          Promise.resolve().then(() => { if (!disposed) runOnce({ fresh: true }); });
+        }
       }
     };
 
-    const scheduleFresh = () => { Promise.resolve().then(() => { if (!disposed) runOnce({ fresh: true }); }); };
-    const onVisibility = () => { if (typeof document === "undefined" || document.visibilityState === "visible") scheduleFresh(); };
+    // Gate E2 coalescing state. `passiveBurstUntil` is a timestamp: passive
+    // lifecycle signals before it are folded into the burst that already ran a
+    // fresh read. `trailingFreshScheduled` caps deferred bypass work at one run.
+    let passiveBurstUntil = 0;
+    let trailingFreshScheduled = false;
+
+    // Initial convergence (mount / device-lock becomes ready+active). Runs fresh
+    // immediately and does NOT open a passive-suppression window, so a genuine
+    // foreground action right after mount still reads fresh.
+    const scheduleInitialFresh = () => {
+      if (disposed || inFlightRef.current) return;
+      Promise.resolve().then(() => { if (!disposed) runOnce({ fresh: true }); });
+    };
+
+    // PASSIVE foreground signals: focus / pageshow / visibilitychange. Leading
+    // edge -- the first opens a short window; identical signals inside that
+    // window (the same alt-tab burst) are coalesced away.
+    //
+    // Gate E2.2 freshness fix: the burst window is checked BEFORE the in-flight
+    // guard. If the window has already expired while an older convergence is
+    // still running, a genuine later foreground is NOT discarded -- it opens a
+    // new window and schedules exactly ONE trailing fresh run for when the older
+    // run settles (never a concurrent run). Additional passive signals inside
+    // the new window are coalesced. This is not a cache and reuses no snapshot.
+    const schedulePassiveFresh = () => {
+      if (disposed) return;
+      if (Date.now() < passiveBurstUntil) return; // coalesced into the current burst window
+      passiveBurstUntil = Date.now() + foregroundBurstMs; // genuine new foreground -> new window
+      if (inFlightRef.current) { trailingFreshScheduled = true; return; } // one trailing after the in-flight run
+      Promise.resolve().then(() => { if (!disposed) runOnce({ fresh: true }); });
+    };
+
+    // BYPASS signals: explicit convergence request / online recovery. Never
+    // suppressed by the passive window. If a run is already in flight, schedule
+    // exactly one trailing fresh run; otherwise run immediately. Either way the
+    // window is (re)opened so a passive signal in its wake is coalesced.
+    const scheduleBypassFresh = () => {
+      if (disposed) return;
+      passiveBurstUntil = Date.now() + foregroundBurstMs;
+      if (inFlightRef.current) { trailingFreshScheduled = true; return; }
+      Promise.resolve().then(() => { if (!disposed) runOnce({ fresh: true }); });
+    };
+
+    const onFocus = () => schedulePassiveFresh();
+    const onPageShow = () => schedulePassiveFresh();
+    const onOnline = () => scheduleBypassFresh();
+    const onExplicitRequest = () => scheduleBypassFresh();
+    const onVisibility = () => { if (typeof document === "undefined" || document.visibilityState === "visible") schedulePassiveFresh(); };
 
     // Run on mount / whenever the device lock becomes ready + active.
-    scheduleFresh();
+    scheduleInitialFresh();
 
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-      window.addEventListener("focus", scheduleFresh);
-      window.addEventListener("pageshow", scheduleFresh);
-      window.addEventListener("online", scheduleFresh);
-      window.addEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, scheduleFresh);
+      window.addEventListener("focus", onFocus);
+      window.addEventListener("pageshow", onPageShow);
+      window.addEventListener("online", onOnline);
+      window.addEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
       if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
         document.addEventListener("visibilitychange", onVisibility);
       }
@@ -163,14 +227,14 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
       disposed = true;
       clearRetry();
       if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
-        window.removeEventListener("focus", scheduleFresh);
-        window.removeEventListener("pageshow", scheduleFresh);
-        window.removeEventListener("online", scheduleFresh);
-        window.removeEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, scheduleFresh);
+        window.removeEventListener("focus", onFocus);
+        window.removeEventListener("pageshow", onPageShow);
+        window.removeEventListener("online", onOnline);
+        window.removeEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
         if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
           document.removeEventListener("visibilitychange", onVisibility);
         }
       }
     };
-  }, [configured, user?.id, company?.id, deviceLock?.ready, deviceLock?.loading, deviceLock?.isActive, deviceLock?.isLocked]);
+  }, [configured, user?.id, company?.id, deviceLock?.ready, deviceLock?.loading, deviceLock?.isActive, deviceLock?.isLocked, foregroundBurstMs]);
 }

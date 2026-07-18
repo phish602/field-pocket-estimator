@@ -1369,3 +1369,127 @@ describe("mapCloudProjectToLocal customerless projects (Gate 16D)", () => {
     expect(mapCloudProjectToLocal({ id: "db-p2", legacy_local_id: "proj-1", customer_id: "db-cust-1", project_name: "Assigned" }, byCloudId).customerId).toBe("cust-1");
   });
 });
+
+// Gate E2 / E2.2 -- in-flight convergence-snapshot coordinator. Proves that
+// overlapping direct reads for the same client+company share ONE complete scan
+// without ever caching a completed snapshot or crossing client/company bounds.
+//
+// A COMPLETE snapshot performs EIGHT PostgREST requests: one GET for each of the
+// seven business tables PLUS one GET for app_settings (the restore-bundle read
+// via readExistingBundleRows). The coordinator here is a defensive guarantee for
+// concurrent DIRECT reader calls sharing one Supabase client identity + company
+// id; the real backup and convergence workers are serialized by
+// cloudBackupRunLock and lifecycle bursts are coalesced in useCloudAutoConvergence.
+describe("readSupabaseCloudConvergenceSnapshot in-flight coordinator (Gate E2.2)", () => {
+  const { readSupabaseCloudConvergenceSnapshot } = require("./supabaseCloudRestore");
+
+  // The seven business tables a single snapshot scan reads (one GET each).
+  const BUSINESS_TABLES = ["customers", "projects", "estimates", "invoices", "invoice_payments", "estimate_line_items", "invoice_line_items"];
+  // The eighth request of a complete snapshot: the app_settings restore-bundle read.
+  const APP_SETTINGS_TABLE = "app_settings";
+  // One complete snapshot = 7 business-table GETs + 1 app_settings GET = 8.
+  const COMPLETE_SNAPSHOT_REQUESTS = BUSINESS_TABLES.length + 1;
+
+  const READ_ARGS = (client, companyId = "company_1") => ({
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: companyId },
+    client,
+  });
+
+  // Every `.from(table)` call === one PostgREST GET.
+  const getsFor = (client, table) => client.from.mock.calls.filter((c) => c[0] === table).length;
+  const totalGets = (client) => client.from.mock.calls.length;
+
+  test("two simultaneous same-client/same-company reads share one 8-request scan (16 -> 8)", async () => {
+    const client = createMockClient({ rowsByTable: {} });
+    const p1 = readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+    const p2 = readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    // Same resolved snapshot object -> the second caller joined the in-flight read.
+    expect(r1).toBe(r2);
+    // Two independent callers would issue 16 requests (8 each); shared -> 8.
+    BUSINESS_TABLES.forEach((table) => expect(getsFor(client, table)).toBe(1));
+    expect(getsFor(client, APP_SETTINGS_TABLE)).toBe(1);
+    expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS); // 8, not 16
+  });
+
+  test("a single complete scan issues exactly eight requests (7 business tables + app_settings)", async () => {
+    const client = createMockClient({ rowsByTable: {} });
+    await readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+    BUSINESS_TABLES.forEach((table) => expect(getsFor(client, table)).toBe(1));
+    expect(getsFor(client, APP_SETTINGS_TABLE)).toBe(1);
+    expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS); // exactly 8
+  });
+
+  test("a second read after completion performs a brand-new 8-request scan (no completed-result cache)", async () => {
+    const client = createMockClient({ rowsByTable: {} });
+    await readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+    expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS);
+
+    // A later logical operation must re-read the cloud, not reuse the old snapshot.
+    await readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+    BUSINESS_TABLES.forEach((table) => expect(getsFor(client, table)).toBe(2));
+    expect(getsFor(client, APP_SETTINGS_TABLE)).toBe(2);
+    expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS * 2); // 16 across two fresh scans
+  });
+
+  test("a business-table read that fails before completion does NOT require eight requests and clears the coordinator", async () => {
+    const badClient = createMockClient({ rowErrorsByTable: { customers: { message: "boom" } } });
+    // Overlapping failing reads still share the single in-flight attempt.
+    const [e1, e2] = await Promise.all([
+      readSupabaseCloudConvergenceSnapshot(READ_ARGS(badClient)),
+      readSupabaseCloudConvergenceSnapshot(READ_ARGS(badClient)),
+    ]);
+    expect(e1.ok).toBe(false);
+    expect(e1).toBe(e2);
+    // Early-exit: the loop returns on the first failing business table, so it
+    // never reaches the remaining tables or the app_settings read.
+    expect(getsFor(badClient, "customers")).toBe(1);
+    expect(getsFor(badClient, APP_SETTINGS_TABLE)).toBe(0);
+    expect(totalGets(badClient)).toBeLessThan(COMPLETE_SNAPSHOT_REQUESTS);
+
+    // The failure must NOT poison the coordinator -- a subsequent read tries again.
+    await readSupabaseCloudConvergenceSnapshot(READ_ARGS(badClient));
+    expect(getsFor(badClient, "customers")).toBe(2);
+  });
+
+  test("different companies never share a Promise or a result (two independent 8-request scans)", async () => {
+    const client = createMockClient({ rowsByTable: {} });
+    const p1 = readSupabaseCloudConvergenceSnapshot(READ_ARGS(client, "company_A"));
+    const p2 = readSupabaseCloudConvergenceSnapshot(READ_ARGS(client, "company_B"));
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).not.toBe(r2);
+    // Each company triggered its own complete 8-request scan.
+    BUSINESS_TABLES.forEach((table) => expect(getsFor(client, table)).toBe(2));
+    expect(getsFor(client, APP_SETTINGS_TABLE)).toBe(2);
+    expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS * 2);
+  });
+
+  test("different clients never share a Promise or a result", async () => {
+    const clientA = createMockClient({ rowsByTable: {} });
+    const clientB = createMockClient({ rowsByTable: {} });
+    const [rA, rB] = await Promise.all([
+      readSupabaseCloudConvergenceSnapshot(READ_ARGS(clientA)),
+      readSupabaseCloudConvergenceSnapshot(READ_ARGS(clientB)),
+    ]);
+
+    expect(rA).not.toBe(rB);
+    expect(totalGets(clientA)).toBe(COMPLETE_SNAPSHOT_REQUESTS);
+    expect(totalGets(clientB)).toBe(COMPLETE_SNAPSHOT_REQUESTS);
+  });
+
+  test("a fresh convergence read after an earlier completed scan sees newly-changed remote rows", async () => {
+    // First scan: empty cloud.
+    const clientEmpty = createMockClient({ rowsByTable: {} });
+    const first = await readSupabaseCloudConvergenceSnapshot(READ_ARGS(clientEmpty));
+    expect(first.counts.customers).toBe(0);
+
+    // A later accepted convergence must reflect remote changes made in the interim.
+    const clientChanged = createMockClient({ rowsByTable: { customers: [cloudCustomerRow()] } });
+    const second = await readSupabaseCloudConvergenceSnapshot(READ_ARGS(clientChanged));
+    expect(second.counts.customers).toBe(1);
+  });
+});

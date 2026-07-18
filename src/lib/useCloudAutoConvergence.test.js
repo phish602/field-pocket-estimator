@@ -78,19 +78,72 @@ test("window focus re-evaluates even when the local mutation revision has not ch
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
 });
 
-test("pageshow, visibilitychange, and online each re-trigger a run", async () => {
-  renderHook(() => useCloudAutoConvergence(props()));
-  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+// Gate E2: one foreground action fires focus + pageshow + visibilitychange in
+// quick succession. These PASSIVE signals must coalesce into ONE fresh scan.
+test("a passive foreground burst (focus + pageshow + visibilitychange) within the window coalesces to one fresh run", async () => {
+  renderHook(() => useCloudAutoConvergence(props({ foregroundBurstMs: 500 })));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1)); // mount
+
+  act(() => {
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("pageshow"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
+  // The burst produced exactly one additional fresh scan, not three.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2);
+});
+
+// Freshness preserved: a genuinely separate foreground action after the window
+// still performs a brand-new fresh read (this is NOT a stale cache).
+test("a passive foreground after the burst window performs a new fresh run", async () => {
+  renderHook(() => useCloudAutoConvergence(props({ foregroundBurstMs: 30 })));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1)); // mount
 
   act(() => { window.dispatchEvent(new Event("pageshow")); });
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
 
-  act(() => { window.dispatchEvent(new Event("online")); });
+  await new Promise((resolve) => setTimeout(resolve, 50)); // let the burst window elapse
+  act(() => { window.dispatchEvent(new Event("pageshow")); });
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(3));
+});
 
-  // visibilitychange only re-triggers when the document is visible.
-  act(() => { document.dispatchEvent(new Event("visibilitychange")); });
-  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(4));
+// Online recovery must never be swallowed by the passive burst window.
+test("online recovery bypasses passive burst suppression and runs fresh", async () => {
+  renderHook(() => useCloudAutoConvergence(props({ foregroundBurstMs: 1000 })));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1)); // mount
+
+  act(() => { window.dispatchEvent(new Event("focus")); }); // opens a 1s passive window
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
+
+  act(() => { window.dispatchEvent(new Event("online")); }); // bypass -> fresh even inside the window
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(3));
+});
+
+// Multiple bypass signals during an active run collapse to at most ONE trailing run.
+test("explicit/online requests during an active run schedule at most one fresh trailing run", async () => {
+  let resolveFirst;
+  runSupabaseCloudConvergence
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = () => resolve({ ok: true, status: "matched" }); }))
+    .mockResolvedValue({ ok: true, status: "matched" });
+
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1); // mount run in flight
+
+  // Three bypass signals arrive while the first scan is still running.
+  act(() => {
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("online"));
+  });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1); // none started yet -- one scan in flight
+
+  await act(async () => { resolveFirst(); await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2); // exactly one trailing run
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2);
 });
 
 test("StrictMode double-mount does not create simultaneous runs", async () => {
@@ -230,4 +283,57 @@ test("an explicit convergence request starts a fresh attempt cycle", async () =>
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
   act(() => { requestCloudConvergence(); });
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
+});
+
+// Gate E2.2 freshness fix: a genuine foreground that arrives AFTER the burst
+// window has expired, while an older convergence is still running, must not be
+// discarded -- it schedules exactly one trailing fresh run (never concurrent).
+test("a genuine passive foreground after the expired burst window schedules exactly one trailing run while an older convergence is still in flight", async () => {
+  let n = 0;
+  let resolveInFlight;
+  runSupabaseCloudConvergence.mockImplementation(() => {
+    n += 1;
+    // The SECOND run (the focus-started one) stays unresolved to model a long
+    // in-flight convergence; all others resolve immediately.
+    if (n === 2) return new Promise((resolve) => { resolveInFlight = () => resolve({ ok: true, status: "matched" }); });
+    return Promise.resolve({ ok: true, status: "matched" });
+  });
+
+  renderHook(() => useCloudAutoConvergence(props({ foregroundBurstMs: 30 })));
+  // (mount) run 1 resolves immediately.
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+
+  // Start a long in-flight convergence via a passive foreground (opens the burst
+  // window), and (2) fire same-burst signals that must be suppressed (no trailing).
+  act(() => {
+    window.dispatchEvent(new Event("focus"));               // opens window + starts run 2 (deferred)
+    window.dispatchEvent(new Event("pageshow"));             // same burst -> suppressed
+    document.dispatchEvent(new Event("visibilitychange"));   // same burst -> suppressed
+  });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
+  // (1) run 2 remains unresolved; (2) same-burst signals scheduled no trailing.
+  await act(async () => { await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2);
+
+  // (3) Let the burst window elapse while run 2 is STILL unresolved.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // (4) A genuine later foreground schedules exactly one trailing run, and
+  // (5) additional passive events inside the new window are coalesced.
+  act(() => {
+    window.dispatchEvent(new Event("focus"));               // window expired + in flight -> one trailing
+    window.dispatchEvent(new Event("pageshow"));             // new-burst -> coalesced
+    document.dispatchEvent(new Event("visibilitychange"));   // new-burst -> coalesced
+  });
+  await act(async () => { await Promise.resolve(); });
+  // Trailing is deferred until run 2 settles -> still 2 (no concurrent run).
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2);
+
+  // (6) The old convergence resolves -> (7) exactly one trailing fresh run starts.
+  await act(async () => { resolveInFlight(); await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(3);
+
+  // (8) No concurrency and no further runs afterward.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(3);
 });

@@ -2,9 +2,14 @@ import React, { useState } from "react";
 
 const MODES = {
   SIGN_IN: "signin",
+  MAGIC_LINK: "magiclink",
   SIGN_UP: "signup",
   RESET: "reset",
 };
+
+// Mirrors MIN_PASSWORD_LENGTH in lib/useSupabaseAuth.js. Kept local so this
+// screen stays renderable from an injected `auth` prop in tests.
+const MIN_PASSWORD_LENGTH = 6;
 
 const wrapStyle = {
   minHeight: "100dvh",
@@ -145,6 +150,50 @@ const successBoxStyle = {
   borderLeftColor: "rgba(52,211,153,0.75)",
 };
 
+// Phase 2.2 -- social provider buttons. Text-only by design: no external icon,
+// script, font, or asset is loaded, and no provider credential reaches the DOM.
+const socialBlockStyle = {
+  display: "grid",
+  gap: 10,
+};
+
+const socialButtonStyle = {
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 14,
+  padding: "13px 16px",
+  minHeight: 48,
+  fontSize: 14,
+  fontWeight: 700,
+  letterSpacing: "0.2px",
+  color: "rgba(233,240,247,0.94)",
+  background: "rgba(255,255,255,0.045)",
+  cursor: "pointer",
+  transition: "background 140ms ease, opacity 140ms ease",
+};
+
+const socialButtonDisabledStyle = {
+  ...socialButtonStyle,
+  opacity: 0.55,
+  cursor: "not-allowed",
+};
+
+const socialDividerStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  color: "rgba(220,229,238,0.5)",
+  fontSize: 11.5,
+  fontWeight: 700,
+  letterSpacing: "0.8px",
+  textTransform: "uppercase",
+};
+
+const socialDividerRuleStyle = {
+  flex: 1,
+  height: 1,
+  background: "rgba(255,255,255,0.12)",
+};
+
 const linksRowStyle = {
   display: "flex",
   justifyContent: "space-between",
@@ -166,6 +215,13 @@ const linkButtonStyle = {
 };
 
 function modeCopy(mode) {
+  if (mode === MODES.MAGIC_LINK) {
+    return {
+      heading: "Email Sign-In Link",
+      primaryLabel: "Send Sign-In Link",
+      busyLabel: "Sending...",
+    };
+  }
   if (mode === MODES.SIGN_UP) {
     return {
       heading: "Create Your Account",
@@ -194,18 +250,62 @@ export default function AuthScreen({ auth }) {
     infoMessage = "",
     rememberedEmail = "",
     clearRememberedAccount,
+    signInWithEmailOtp,
     signInWithPassword,
     signUpWithPassword,
     resetPasswordForEmail,
+    enabledSocialProviders = [],
+    signInWithSocialProvider,
+    passwordRecoveryPending = false,
+    passwordRecoveryReady = false,
+    passwordRecoveryComplete = false,
+    updatePassword,
+    completePasswordRecovery,
+    abandonPasswordRecovery,
   } = auth || {};
 
   const supportsSignUp = typeof signUpWithPassword === "function";
   const supportsReset = typeof resetPasswordForEmail === "function";
+  const supportsMagicLink = typeof signInWithEmailOtp === "function";
 
   const [mode, setMode] = useState(MODES.SIGN_IN);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [recoveryValidationError, setRecoveryValidationError] = useState("");
   const showRememberedAccount = !errorMessage && !infoMessage && !!rememberedEmail;
+
+  // Social providers belong to the normal SIGN-IN view only. The recovery views
+  // return earlier, so no recovery screen can ever render a provider button.
+  const socialProviders = Array.isArray(enabledSocialProviders) ? enabledSocialProviders : [];
+  const showSocialProviders = mode === MODES.SIGN_IN && socialProviders.length > 0;
+
+  // Every check runs before `updatePassword`, so an invalid submission never
+  // reaches the Supabase client.
+  const handleRecoverySubmit = async (event) => {
+    if (event?.preventDefault) event.preventDefault();
+    if (authBusy) return;
+
+    const nextPassword = String(newPassword || "");
+    const nextConfirm = String(confirmPassword || "");
+
+    if (!nextPassword || !nextConfirm) {
+      setRecoveryValidationError("Enter and confirm your new password.");
+      return;
+    }
+    if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+      setRecoveryValidationError(`Use at least ${MIN_PASSWORD_LENGTH} characters for your new password.`);
+      return;
+    }
+    if (nextPassword !== nextConfirm) {
+      setRecoveryValidationError("Both passwords must match.");
+      return;
+    }
+
+    setRecoveryValidationError("");
+    await updatePassword?.(nextPassword);
+  };
 
   const copy = modeCopy(mode);
 
@@ -228,6 +328,10 @@ export default function AuthScreen({ auth }) {
       await signInWithPassword?.(email, password);
       return;
     }
+    if (mode === MODES.MAGIC_LINK && supportsMagicLink) {
+      await signInWithEmailOtp(email);
+      return;
+    }
     if (mode === MODES.SIGN_UP && supportsSignUp) {
       await signUpWithPassword(email, password);
       return;
@@ -236,6 +340,132 @@ export default function AuthScreen({ auth }) {
       await resetPasswordForEmail(email);
     }
   };
+
+  // A password-recovery session must finish recovery before anything else. The
+  // app routes here even though a session already exists.
+  if (passwordRecoveryPending) {
+    return (
+      <div style={wrapStyle}>
+        <form style={cardStyle} onSubmit={handleRecoverySubmit} noValidate>
+          <div style={brandBlockStyle}>
+            <div style={logoWrapStyle}>
+              <img
+                src="/logo/estipaid.svg"
+                alt="EstiPaid"
+                style={{ height: 60, width: "auto", display: "block" }}
+                draggable={false}
+              />
+            </div>
+            <div style={titleStyle}>
+              {passwordRecoveryComplete
+                ? "Password Updated"
+                : passwordRecoveryReady
+                  ? "Set A New Password"
+                  : "Reset Link Not Valid"}
+            </div>
+            <div style={explainerStyle}>
+              {passwordRecoveryComplete
+                ? "Your password has been updated. Continue to pick up where you left off."
+                : passwordRecoveryReady
+                  ? "Choose a new password to finish resetting your account."
+                  : "This password reset link is invalid or has expired. Request a new reset email from the sign-in screen."}
+            </div>
+          </div>
+
+          {/* Recovery intent without a VERIFIED recovery session must never show
+              an actionable update form -- only a way back to sign in. */}
+          {!passwordRecoveryComplete && !passwordRecoveryReady ? (
+            <>
+              {/* The explainer above already states the invalid/expired case,
+                  so only surface a distinct provider error here. */}
+              {errorMessage ? (
+                <div role="status" aria-live="polite" style={errorBoxStyle}>
+                  {errorMessage}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                style={primaryButtonStyle}
+                onClick={() => abandonPasswordRecovery?.()}
+                disabled={authBusy}
+              >
+                Back to Sign In
+              </button>
+            </>
+          ) : passwordRecoveryComplete ? (
+            <>
+              <div role="status" aria-live="polite" style={successBoxStyle}>
+                Password updated.
+              </div>
+              <button
+                type="button"
+                style={primaryButtonStyle}
+                onClick={() => completePasswordRecovery?.()}
+              >
+                Continue to EstiPaid
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={fieldsBlockStyle}>
+                <div style={fieldGroupStyle}>
+                  <label style={fieldLabelStyle} htmlFor="auth-new-password">
+                    New Password
+                  </label>
+                  <input
+                    id="auth-new-password"
+                    type="password"
+                    className="pe-input"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                    name="new-password"
+                    autoComplete="new-password"
+                    enterKeyHint="next"
+                    aria-label="New Password"
+                    disabled={authBusy}
+                  />
+                </div>
+
+                <div style={fieldGroupStyle}>
+                  <label style={fieldLabelStyle} htmlFor="auth-confirm-password">
+                    Confirm New Password
+                  </label>
+                  <input
+                    id="auth-confirm-password"
+                    type="password"
+                    className="pe-input"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter your new password"
+                    name="confirm-password"
+                    autoComplete="new-password"
+                    enterKeyHint="go"
+                    aria-label="Confirm New Password"
+                    disabled={authBusy}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                style={authBusy ? primaryButtonDisabledStyle : primaryButtonStyle}
+                disabled={authBusy}
+              >
+                {authBusy ? "Updating Password..." : "Update Password"}
+              </button>
+
+              {recoveryValidationError || errorMessage ? (
+                <div role="status" aria-live="polite" style={errorBoxStyle}>
+                  {recoveryValidationError || errorMessage}
+                </div>
+              ) : null}
+            </>
+          )}
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={wrapStyle}>
@@ -251,7 +481,9 @@ export default function AuthScreen({ auth }) {
           </div>
           <div style={titleStyle}>{copy.heading}</div>
           <div style={explainerStyle}>
-            Sign in to back up and restore your company, customers, estimates, invoices, templates, and settings.
+            {mode === MODES.MAGIC_LINK
+              ? "We’ll email a secure sign-in link to this address."
+              : "Sign in to back up and restore your company, customers, estimates, invoices, templates, and settings."}
           </div>
         </div>
 
@@ -274,6 +506,32 @@ export default function AuthScreen({ auth }) {
           </div>
         ) : null}
 
+        {/* Rendered dynamically from the registry -- no hardcoded provider
+            branch, so a new registry entry surfaces here automatically. */}
+        {showSocialProviders ? (
+          <>
+            <div style={socialBlockStyle}>
+              {socialProviders.map((provider) => (
+                <button
+                  key={provider.id}
+                  type="button"
+                  style={authBusy ? socialButtonDisabledStyle : socialButtonStyle}
+                  onClick={() => signInWithSocialProvider?.(provider.id)}
+                  disabled={authBusy}
+                  aria-label={provider.label}
+                >
+                  {provider.label}
+                </button>
+              ))}
+            </div>
+            <div style={socialDividerStyle} aria-hidden="true">
+              <span style={socialDividerRuleStyle} />
+              <span>or</span>
+              <span style={socialDividerRuleStyle} />
+            </div>
+          </>
+        ) : null}
+
         <div style={fieldsBlockStyle}>
           <div style={fieldGroupStyle}>
             <label style={fieldLabelStyle} htmlFor="auth-email">
@@ -292,13 +550,13 @@ export default function AuthScreen({ auth }) {
               autoCorrect="off"
               inputMode="email"
               spellCheck={false}
-              enterKeyHint={mode === MODES.RESET ? "send" : "next"}
+              enterKeyHint={mode === MODES.RESET || mode === MODES.MAGIC_LINK ? "send" : "next"}
               aria-label="Email"
               disabled={authBusy}
             />
           </div>
 
-          {mode !== MODES.RESET ? (
+          {mode !== MODES.RESET && mode !== MODES.MAGIC_LINK ? (
             <div style={fieldGroupStyle}>
               <label style={fieldLabelStyle} htmlFor="auth-password">
                 Password
@@ -342,6 +600,16 @@ export default function AuthScreen({ auth }) {
         <div style={linksRowStyle}>
           {mode === MODES.SIGN_IN ? (
             <>
+              {supportsMagicLink ? (
+                <button
+                  type="button"
+                  style={linkButtonStyle}
+                  onClick={() => switchMode(MODES.MAGIC_LINK)}
+                  disabled={authBusy}
+                >
+                  Email Me a Sign-In Link
+                </button>
+              ) : null}
               {supportsReset ? (
                 <button
                   type="button"

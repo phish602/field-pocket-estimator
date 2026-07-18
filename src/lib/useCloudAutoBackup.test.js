@@ -342,3 +342,62 @@ test("a permanent identity conflict stops automatic retries and remains review-r
   expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
   unmount();
 });
+
+// Gate E2: a burst of ordinary local edits (one pe-localstorage event each) must
+// debounce into a SINGLE backup + verify scan, not one scan per mutation.
+test("a burst of 100 dirty events inside the debounce window produces exactly one backup (Gate E2)", async () => {
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps({ normalDelayMs: 30 })));
+
+  act(() => {
+    for (let i = 0; i < 100; i += 1) {
+      markCloudBackupDirty({ reason: "field_edit", severity: "normal" });
+    }
+  });
+
+  await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+  // The whole burst collapsed to one operation; no per-mutation scans followed.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
+// Gate E2.2: pagehide's ONLY job is to cancel an already-scheduled backup timer
+// before it fires. Proven deterministically with fake timers by advancing PAST
+// the configured deadline (not merely waiting less than the delay) and showing:
+// zero backups fired, the pending queue is preserved, and a later safe remount
+// resumes the pending backup exactly once.
+test("pagehide cancels an already-scheduled backup and a later remount resumes it exactly once (Gate E2.2)", async () => {
+  jest.useFakeTimers();
+  try {
+    const DELAY = 5000;
+    markCloudBackupDirty({ reason: "project_saved", severity: "normal" }); // eligible pending queue
+
+    const first = renderHook(() => useCloudAutoBackup(baseProps({ normalDelayMs: DELAY, immediateDelayMs: DELAY })));
+
+    // (2) A backup timer is scheduled, but its deadline has not arrived.
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+
+    // (3) pagehide BEFORE the deadline cancels the scheduled backup.
+    act(() => { window.dispatchEvent(new Event("pagehide")); });
+
+    // (4) Advance well PAST the original deadline: the cancelled timer must not fire.
+    await act(async () => { jest.advanceTimersByTime(DELAY + 3000); await Promise.resolve(); });
+
+    // (5) Zero backup calls.
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    // (6) The dirty queue is untouched by pagehide -- still pending/persisted.
+    expect(readCloudBackupQueueState().pending).toBe(true);
+
+    first.unmount();
+
+    // (7) A safe remount and (8) the still-pending backup resumes exactly once.
+    const second = renderHook(() => useCloudAutoBackup(baseProps({ normalDelayMs: DELAY, immediateDelayMs: DELAY })));
+    await act(async () => { jest.advanceTimersByTime(DELAY); await Promise.resolve(); await Promise.resolve(); });
+    expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1);
+
+    second.unmount();
+  } finally {
+    jest.useRealTimers();
+  }
+});

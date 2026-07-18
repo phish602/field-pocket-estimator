@@ -113,8 +113,12 @@ test("worker is disabled when Supabase is not configured, regardless of session"
 
   render(<App />);
 
+  // Gate P1: the denied `configured` flag (which propagates from
+  // isSupabaseConfigured=false) must reach the worker, not just `enabled`.
+  // The auto-backup/convergence workers self-gate on `configured`, so a denied
+  // runtime policy disables them even if a session object is present.
   expect(useCloudAutoBackup).toHaveBeenCalledWith(
-    expect.objectContaining({ enabled: false })
+    expect.objectContaining({ enabled: false, configured: false })
   );
 });
 
