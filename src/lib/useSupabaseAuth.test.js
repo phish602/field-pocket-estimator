@@ -257,7 +257,7 @@ describe("useSupabaseAuth", () => {
     expect(result.current.errorMessage).toBe("Invalid login credentials");
   });
 
-  test("sends magic-link sign-in requests and signs out through Supabase auth only", async () => {
+  test("sends magic-link sign-in requests without silently creating accounts and signs out through Supabase auth only", async () => {
     const initialSession = { user: { email: "owner@example.com" } };
     const mock = createMockClient({ session: initialSession });
     mockGetSupabaseClient.mockReturnValue(mock.client);
@@ -274,9 +274,13 @@ describe("useSupabaseAuth", () => {
 
     expect(mock.client.auth.signInWithOtp).toHaveBeenCalledWith({
       email: "signin@example.com",
-      options: { emailRedirectTo: window.location.origin },
+      options: {
+        shouldCreateUser: false,
+        emailRedirectTo: window.location.origin,
+      },
     });
     expect(result.current.infoMessage).toContain("signin@example.com");
+    expect(result.current.rememberedEmail).toBe("signin@example.com");
 
     await act(async () => {
       await result.current.signOut();
@@ -286,6 +290,46 @@ describe("useSupabaseAuth", () => {
     expect(result.current.session).toBeNull();
     expect(result.current.infoMessage).toBe("");
     expect(result.current.rememberedEmail).toBe("owner@example.com");
+  });
+
+  test("magic-link sign-in validates locally before calling Supabase", async () => {
+    const mock = createMockClient({ session: null });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    const { result } = renderHook(() => useSupabaseAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.signInWithEmailOtp("   ");
+    });
+
+    expect(mock.client.auth.signInWithOtp).not.toHaveBeenCalled();
+    expect(result.current.errorMessage).toBe("Enter an email address to sign in.");
+    expect(result.current.authBusy).toBe(false);
+  });
+
+  test.each([
+    ["a returned error", async () => ({ data: {}, error: { message: "Unknown email address" } })],
+    ["a thrown error", async () => { throw new Error("Network request failed"); }],
+  ])("magic-link sign-in keeps %s readable and resets busy state", async (_label, implementation) => {
+    const mock = createMockClient({ session: null });
+    mock.client.auth.signInWithOtp = jest.fn(implementation);
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    const { result } = renderHook(() => useSupabaseAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithEmailOtp(" owner@example.com ");
+    });
+
+    const message = _label === "a returned error" ? "Unknown email address" : "Network request failed";
+    expect(mock.client.auth.signInWithOtp).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      options: { shouldCreateUser: false, emailRedirectTo: window.location.origin },
+    });
+    expect(outcome).toEqual({ ok: false, error: message });
+    expect(result.current.errorMessage).toBe(message);
+    expect(result.current.authBusy).toBe(false);
   });
 
   test("clears stale signed-in copy after auth state changes to signed out", async () => {

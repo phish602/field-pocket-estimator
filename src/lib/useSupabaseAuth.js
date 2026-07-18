@@ -299,7 +299,13 @@ export default function useSupabaseAuth() {
       const redirectTo = getRedirectUrl();
       const { error } = await client.auth.signInWithOtp({
         email: normalizedEmail,
-        options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+        // Passwordless sign-in must never create an account as a side effect.
+        // The redirect is retained when the current application origin is safe
+        // to use, while the explicit false remains present in every request.
+        options: {
+          shouldCreateUser: false,
+          ...(redirectTo ? { emailRedirectTo: redirectTo } : {}),
+        },
       });
 
       if (error) {

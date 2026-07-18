@@ -14,6 +14,7 @@ function mockSetSharedSession(next) {
 let mockSignInImpl = async (email) => ({ ok: true, session: { user: { email } } });
 let mockSignUpImpl = async (email) => ({ ok: true, session: { user: { email } } });
 let mockResetImpl = async () => ({ ok: true });
+let mockMagicLinkImpl = async () => ({ ok: true });
 
 jest.mock("../lib/useSupabaseAuth", () => {
   const ReactLib = require("react");
@@ -76,6 +77,20 @@ jest.mock("../lib/useSupabaseAuth", () => {
         return result;
       };
 
+      const signInWithEmailOtp = async (email) => {
+        setAuthBusy(true);
+        setErrorMessage("");
+        setInfoMessage("");
+        const result = await mockMagicLinkImpl(email);
+        if (result.ok) {
+          setInfoMessage(result.infoMessage || `Check ${email} for your sign-in link.`);
+        } else {
+          setErrorMessage(result.error || "Unable to send sign-in link.");
+        }
+        setAuthBusy(false);
+        return result;
+      };
+
       const signOut = async () => {
         setAuthBusy(true);
         mockSetSharedSession(null);
@@ -95,6 +110,7 @@ jest.mock("../lib/useSupabaseAuth", () => {
         errorMessage,
         infoMessage,
         signInWithPassword,
+        signInWithEmailOtp,
         signUpWithPassword,
         resetPasswordForEmail,
         signOut,
@@ -135,6 +151,7 @@ function buildAuthProp(overrides = {}) {
     rememberedEmail: "",
     clearRememberedAccount: jest.fn(),
     signInWithPassword: jest.fn(async () => ({ ok: true })),
+    signInWithEmailOtp: jest.fn(async () => ({ ok: true })),
     signUpWithPassword: jest.fn(async () => ({ ok: true })),
     resetPasswordForEmail: jest.fn(async () => ({ ok: true })),
     ...overrides,
@@ -149,6 +166,7 @@ beforeEach(() => {
   mockSignInImpl = async (email) => ({ ok: true, session: { user: { email } } });
   mockSignUpImpl = async (email) => ({ ok: true, session: { user: { email } } });
   mockResetImpl = async () => ({ ok: true });
+  mockMagicLinkImpl = async () => ({ ok: true });
 });
 
 describe("App-level auth gating", () => {
@@ -423,6 +441,152 @@ describe("AuthScreen standalone", () => {
     fireEvent.submit(container.querySelector("form"));
 
     expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "correct-password");
+  });
+});
+
+// Phase 2.3 -- dedicated passwordless magic-link sign-in.
+describe("AuthScreen magic-link sign-in", () => {
+  const GOOGLE = { id: "google", name: "Google", label: "Continue with Google" };
+
+  test("normal sign-in exposes Email Me a Sign-In Link and opens an email-only view", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+
+    expect(screen.getByText("Email Sign-In Link")).toBeInTheDocument();
+    expect(screen.getByText(/email a secure sign-in link/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send Sign-In Link" })).toHaveAttribute("type", "submit");
+    expect(screen.getByRole("button", { name: "Back to Sign In" })).toBeInTheDocument();
+  });
+
+  test("preserves email across sign-in and magic-link mode switches", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "owner@example.com" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+    expect(screen.getByLabelText("Email")).toHaveValue("owner@example.com");
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Sign In" }));
+    expect(screen.getByLabelText("Email")).toHaveValue("owner@example.com");
+  });
+
+  test("magic-link submit calls only signInWithEmailOtp exactly once, including Enter submission", async () => {
+    const signInWithEmailOtp = jest.fn(async () => ({ ok: true }));
+    const signInWithPassword = jest.fn(async () => ({ ok: true }));
+    const signUpWithPassword = jest.fn(async () => ({ ok: true }));
+    const resetPasswordForEmail = jest.fn(async () => ({ ok: true }));
+    const signInWithSocialProvider = jest.fn(async () => ({ ok: true }));
+    const updatePassword = jest.fn(async () => ({ ok: true }));
+    const { container } = render(
+      <AuthScreen
+        auth={buildAuthProp({
+          signInWithEmailOtp,
+          signInWithPassword,
+          signUpWithPassword,
+          resetPasswordForEmail,
+          signInWithSocialProvider,
+          updatePassword,
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "owner@example.com" } });
+    fireEvent.submit(container.querySelector("form"));
+
+    await waitFor(() => expect(signInWithEmailOtp).toHaveBeenCalledTimes(1));
+    expect(signInWithEmailOtp).toHaveBeenCalledWith("owner@example.com");
+    expect(signInWithPassword).not.toHaveBeenCalled();
+    expect(signUpWithPassword).not.toHaveBeenCalled();
+    expect(resetPasswordForEmail).not.toHaveBeenCalled();
+    expect(signInWithSocialProvider).not.toHaveBeenCalled();
+    expect(updatePassword).not.toHaveBeenCalled();
+  });
+
+  test("busy magic-link submission disables both submit and mode switching", () => {
+    const { rerender } = render(<AuthScreen auth={buildAuthProp()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+
+    rerender(<AuthScreen auth={buildAuthProp({ authBusy: true })} />);
+
+    expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Back to Sign In" })).toBeDisabled();
+  });
+
+  test("magic-link success and failure messages leave the form available", () => {
+    const { rerender } = render(<AuthScreen auth={buildAuthProp()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+
+    rerender(
+      <AuthScreen auth={buildAuthProp({ infoMessage: "Check owner@example.com for your sign-in link." })} />
+    );
+    expect(screen.getByText("Check owner@example.com for your sign-in link.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+
+    rerender(<AuthScreen auth={buildAuthProp({ errorMessage: "Unknown email address" })} />);
+    expect(screen.getByText("Unknown email address")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send Sign-In Link" })).toBeInTheDocument();
+  });
+
+  test("magic-link mode isolates social buttons and is absent from account, reset, and recovery views", () => {
+    const auth = buildAuthProp({
+      enabledSocialProviders: [GOOGLE],
+      signInWithSocialProvider: jest.fn(async () => ({ ok: true })),
+    });
+    const { rerender } = render(<AuthScreen auth={auth} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+    expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Sign In" }));
+    expect(screen.getByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Account" }));
+    expect(screen.queryByRole("button", { name: "Email Me a Sign-In Link" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to Sign In" }));
+    fireEvent.click(screen.getByRole("button", { name: "Forgot Password?" }));
+    expect(screen.queryByRole("button", { name: "Email Me a Sign-In Link" })).not.toBeInTheDocument();
+
+    rerender(
+      <AuthScreen
+        auth={buildAuthProp({
+          passwordRecoveryPending: true,
+          passwordRecoveryReady: false,
+          abandonPasswordRecovery: jest.fn(),
+          enabledSocialProviders: [GOOGLE],
+          signInWithSocialProvider: jest.fn(async () => ({ ok: true })),
+        })}
+      />
+    );
+    expect(screen.queryByRole("button", { name: "Email Me a Sign-In Link" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument();
+  });
+
+  test.each([
+    ["verified recovery", { passwordRecoveryPending: true, passwordRecoveryReady: true }],
+    ["invalid recovery", { passwordRecoveryPending: true, passwordRecoveryReady: false }],
+    [
+      "completed recovery",
+      { passwordRecoveryPending: true, passwordRecoveryReady: true, passwordRecoveryComplete: true },
+    ],
+  ])("%s exposes no magic-link controls", (_label, recoveryState) => {
+    render(
+      <AuthScreen
+        auth={buildAuthProp({
+          ...recoveryState,
+          updatePassword: jest.fn(async () => ({ ok: true })),
+          completePasswordRecovery: jest.fn(),
+          abandonPasswordRecovery: jest.fn(),
+        })}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Email Me a Sign-In Link" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send Sign-In Link" })).not.toBeInTheDocument();
   });
 });
 

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 
 const MODES = {
   SIGN_IN: "signin",
+  MAGIC_LINK: "magiclink",
   SIGN_UP: "signup",
   RESET: "reset",
 };
@@ -214,6 +215,13 @@ const linkButtonStyle = {
 };
 
 function modeCopy(mode) {
+  if (mode === MODES.MAGIC_LINK) {
+    return {
+      heading: "Email Sign-In Link",
+      primaryLabel: "Send Sign-In Link",
+      busyLabel: "Sending...",
+    };
+  }
   if (mode === MODES.SIGN_UP) {
     return {
       heading: "Create Your Account",
@@ -242,6 +250,7 @@ export default function AuthScreen({ auth }) {
     infoMessage = "",
     rememberedEmail = "",
     clearRememberedAccount,
+    signInWithEmailOtp,
     signInWithPassword,
     signUpWithPassword,
     resetPasswordForEmail,
@@ -257,6 +266,7 @@ export default function AuthScreen({ auth }) {
 
   const supportsSignUp = typeof signUpWithPassword === "function";
   const supportsReset = typeof resetPasswordForEmail === "function";
+  const supportsMagicLink = typeof signInWithEmailOtp === "function";
 
   const [mode, setMode] = useState(MODES.SIGN_IN);
   const [email, setEmail] = useState("");
@@ -316,6 +326,10 @@ export default function AuthScreen({ auth }) {
 
     if (mode === MODES.SIGN_IN) {
       await signInWithPassword?.(email, password);
+      return;
+    }
+    if (mode === MODES.MAGIC_LINK && supportsMagicLink) {
+      await signInWithEmailOtp(email);
       return;
     }
     if (mode === MODES.SIGN_UP && supportsSignUp) {
@@ -467,7 +481,9 @@ export default function AuthScreen({ auth }) {
           </div>
           <div style={titleStyle}>{copy.heading}</div>
           <div style={explainerStyle}>
-            Sign in to back up and restore your company, customers, estimates, invoices, templates, and settings.
+            {mode === MODES.MAGIC_LINK
+              ? "We’ll email a secure sign-in link to this address."
+              : "Sign in to back up and restore your company, customers, estimates, invoices, templates, and settings."}
           </div>
         </div>
 
@@ -534,13 +550,13 @@ export default function AuthScreen({ auth }) {
               autoCorrect="off"
               inputMode="email"
               spellCheck={false}
-              enterKeyHint={mode === MODES.RESET ? "send" : "next"}
+              enterKeyHint={mode === MODES.RESET || mode === MODES.MAGIC_LINK ? "send" : "next"}
               aria-label="Email"
               disabled={authBusy}
             />
           </div>
 
-          {mode !== MODES.RESET ? (
+          {mode !== MODES.RESET && mode !== MODES.MAGIC_LINK ? (
             <div style={fieldGroupStyle}>
               <label style={fieldLabelStyle} htmlFor="auth-password">
                 Password
@@ -584,6 +600,16 @@ export default function AuthScreen({ auth }) {
         <div style={linksRowStyle}>
           {mode === MODES.SIGN_IN ? (
             <>
+              {supportsMagicLink ? (
+                <button
+                  type="button"
+                  style={linkButtonStyle}
+                  onClick={() => switchMode(MODES.MAGIC_LINK)}
+                  disabled={authBusy}
+                >
+                  Email Me a Sign-In Link
+                </button>
+              ) : null}
               {supportsReset ? (
                 <button
                   type="button"
