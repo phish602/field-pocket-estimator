@@ -731,7 +731,12 @@ describe("AuthScreen password recovery", () => {
 
 // Phase 2.2 -- dynamic social provider buttons.
 describe("AuthScreen social providers", () => {
-  const GOOGLE = { id: "google", name: "Google", label: "Continue with Google" };
+  const GOOGLE = {
+    id: "google",
+    name: "Google",
+    label: "Continue with Google",
+    iconPath: "/auth/google-g-logo.svg",
+  };
   const APPLE = { id: "apple", name: "Apple", label: "Continue with Apple" };
 
   const buildSocialProp = (providers, overrides = {}) =>
@@ -793,14 +798,31 @@ describe("AuthScreen social providers", () => {
     buttons.forEach((btn) => expect(btn).toBeDisabled());
   });
 
+  test("renders the local decorative Google logo without changing the button name", () => {
+    const { container } = render(<AuthScreen auth={buildSocialProp([GOOGLE])} />);
+    const button = screen.getByRole("button", { name: "Continue with Google" });
+    const icon = container.querySelector('img[src="/auth/google-g-logo.svg"]');
+
+    expect(button).toBeInTheDocument();
+    expect(icon).toHaveAttribute("alt", "");
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+    expect(icon).toHaveStyle({ width: "20px", height: "20px" });
+  });
+
+  test("a provider without icon metadata still renders its text label safely", () => {
+    render(<AuthScreen auth={buildSocialProp([APPLE])} />);
+
+    expect(screen.getByRole("button", { name: "Continue with Apple" })).toBeInTheDocument();
+  });
+
   test("provider buttons expose accessible labels and load no external assets", () => {
     const { container } = render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE])} />);
 
     expect(screen.getByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Continue with Apple" })).toBeInTheDocument();
 
-    // Only the bundled EstiPaid logo may be referenced -- no provider icons or
-    // third-party hosts, and no credential in the DOM.
+    // Only bundled local images may be referenced -- no third-party hosts or
+    // credentials in the DOM.
     container.querySelectorAll("img, script, link").forEach((node) => {
       const src = node.getAttribute("src") || node.getAttribute("href") || "";
       expect(src.startsWith("/")).toBe(true);
