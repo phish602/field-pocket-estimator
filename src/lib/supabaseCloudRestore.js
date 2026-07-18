@@ -698,6 +698,55 @@ function validateCloudConvergenceGraph(rowsByTable) {
   return [...new Set(codes)];
 }
 
+// Gate E2 / E2.2 -- in-flight convergence-snapshot coordinator.
+//
+// Scope of this coordinator (read carefully -- it is narrow by design):
+//   - The real automatic backup and convergence workers never contend here:
+//     useCloudAutoBackup and useCloudAutoConvergence both acquire the shared
+//     cloudBackupRunLock around their entire read, so they are SERIALIZED and
+//     one worker can never scan while the other is scanning. This coordinator
+//     does NOT combine or collapse a backup worker scan with a convergence
+//     worker scan -- the run lock already prevents them from overlapping.
+//   - Hook-level lifecycle bursts (focus/pageshow/visibilitychange arriving in
+//     quick succession) are coalesced inside useCloudAutoConvergence, not here.
+//   - What this coordinator DOES guarantee is defensive: if two DIRECT callers
+//     of readSupabaseCloudConvergenceSnapshot for the SAME Supabase client
+//     identity + company id are in flight at once (e.g. a StrictMode double
+//     invoke, re-entrancy, or any future direct reader), they share ONE
+//     in-flight Promise and issue ONE complete 8-request scan instead of two.
+//
+// It shares only the *in-flight* Promise and deletes the entry the instant the
+// read settles (success OR failure). It is deliberately NOT a cache: there is no
+// TTL, no completed-result retention, and no reuse of an earlier snapshot by a
+// later logical operation. Every non-overlapping call performs a fresh cloud
+// read, so cross-device convergence freshness is fully preserved. Keying is by
+// client identity (WeakMap) and company id, so different clients or companies
+// never share a Promise or a result.
+const inFlightConvergenceSnapshotReads = new WeakMap(); // client -> Map<companyId, Promise>
+
+function coordinateConvergenceSnapshotRead(client, companyId, run) {
+  let byCompany = inFlightConvergenceSnapshotReads.get(client);
+  if (!byCompany) {
+    byCompany = new Map();
+    inFlightConvergenceSnapshotReads.set(client, byCompany);
+  }
+  const existing = byCompany.get(companyId);
+  if (existing) return existing; // join the read already in flight for this exact client+company
+
+  const promise = run();
+  byCompany.set(companyId, promise);
+  // finally-style clear on BOTH resolve and reject so a failed read can never
+  // poison future legitimate reads, and no completed snapshot is ever retained.
+  const clear = () => {
+    const bucket = inFlightConvergenceSnapshotReads.get(client);
+    // Only clear if we are still the current entry -- never clobber a newer read
+    // that legitimately started after this one settled.
+    if (bucket && bucket.get(companyId) === promise) bucket.delete(companyId);
+  };
+  promise.then(clear, clear);
+  return promise;
+}
+
 // Read-only convergence snapshot. This intentionally reuses the restore
 // mapper but never invokes restore, writes localStorage, or mutates cloud.
 export async function readSupabaseCloudConvergenceSnapshot({ configured = false, user = null, company = null, client: injectedClient = null } = {}) {
@@ -706,6 +755,14 @@ export async function readSupabaseCloudConvergenceSnapshot({ configured = false,
   const client = injectedClient || getSupabaseClient();
   if (!client?.from) return { ok: false, status: "error", code: "supabase_not_configured", noWritesPerformed: true };
   const companyId = asText(company?.id);
+  // Gate the read behind the in-flight coordinator. Eligibility checks above are
+  // pure/synchronous and issue no GETs, so they intentionally stay outside it.
+  return coordinateConvergenceSnapshotRead(client, companyId, () =>
+    executeConvergenceSnapshotRead({ client, companyId })
+  );
+}
+
+async function executeConvergenceSnapshotRead({ client, companyId }) {
   const rowsByTable = {};
   for (const table of ALL_CLOUD_TABLES) {
     const read = await readCloudRows(client, table, companyId);
