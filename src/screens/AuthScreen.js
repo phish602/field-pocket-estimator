@@ -150,14 +150,18 @@ const successBoxStyle = {
   borderLeftColor: "rgba(52,211,153,0.75)",
 };
 
-// Phase 2.2 -- social provider buttons. Text-only by design: no external icon,
-// script, font, or asset is loaded, and no provider credential reaches the DOM.
+// Phase 2.2 -- social provider buttons. Provider artwork is local-only metadata:
+// no external icon, script, font, or provider credential reaches the DOM.
 const socialBlockStyle = {
   display: "grid",
   gap: 10,
 };
 
 const socialButtonStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 10,
   border: "1px solid rgba(255,255,255,0.14)",
   borderRadius: 14,
   padding: "13px 16px",
@@ -169,6 +173,13 @@ const socialButtonStyle = {
   background: "rgba(255,255,255,0.045)",
   cursor: "pointer",
   transition: "background 140ms ease, opacity 140ms ease",
+};
+
+const socialIconStyle = {
+  width: 20,
+  height: 20,
+  flex: "0 0 auto",
+  objectFit: "contain",
 };
 
 const socialButtonDisabledStyle = {
@@ -520,6 +531,9 @@ export default function AuthScreen({ auth }) {
                   disabled={authBusy}
                   aria-label={provider.label}
                 >
+                  {provider.iconPath ? (
+                    <img src={provider.iconPath} alt="" aria-hidden="true" style={socialIconStyle} />
+                  ) : null}
                   {provider.label}
                 </button>
               ))}

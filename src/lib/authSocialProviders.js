@@ -19,6 +19,7 @@ const SOCIAL_PROVIDER_REGISTRY = Object.freeze({
     id: "google",
     name: "Google",
     label: "Continue with Google",
+    iconPath: "/auth/google-g-logo.svg",
   }),
   apple: Object.freeze({
     id: "apple",

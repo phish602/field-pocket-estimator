@@ -62,7 +62,13 @@ describe("authSocialProviders registry (Phase 2.2)", () => {
   describe("display metadata", () => {
     test("exposes accessible labels for the UI", () => {
       const [google, apple] = getEnabledSocialProviders(env("google,apple"));
-      expect(google).toEqual(expect.objectContaining({ id: "google", label: "Continue with Google" }));
+      expect(google).toEqual(
+        expect.objectContaining({
+          id: "google",
+          label: "Continue with Google",
+          iconPath: "/auth/google-g-logo.svg",
+        })
+      );
       expect(apple).toEqual(expect.objectContaining({ id: "apple", label: "Continue with Apple" }));
     });
 
