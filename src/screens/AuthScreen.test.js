@@ -564,3 +564,130 @@ describe("AuthScreen password recovery", () => {
     expect(updatePassword).not.toHaveBeenCalled();
   });
 });
+
+// Phase 2.2 -- dynamic social provider buttons.
+describe("AuthScreen social providers", () => {
+  const GOOGLE = { id: "google", name: "Google", label: "Continue with Google" };
+  const APPLE = { id: "apple", name: "Apple", label: "Continue with Apple" };
+
+  const buildSocialProp = (providers, overrides = {}) =>
+    buildAuthProp({
+      enabledSocialProviders: providers,
+      signInWithSocialProvider: jest.fn(async () => ({ ok: true })),
+      ...overrides,
+    });
+
+  const providerButtons = () =>
+    screen.getAllByRole("button").filter((btn) => /^Continue with /i.test(btn.textContent || ""));
+
+  test("no enabled providers leaves the email/password screen unchanged", () => {
+    render(<AuthScreen auth={buildSocialProp([])} />);
+
+    expect(providerButtons()).toHaveLength(0);
+    expect(screen.queryByText("or")).not.toBeInTheDocument();
+    // Existing sign-in UX intact.
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Sign In$/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Create Account/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Forgot Password\?/i })).toBeInTheDocument();
+  });
+
+  test.each([
+    ["google only", [GOOGLE], ["Continue with Google"]],
+    ["apple only", [APPLE], ["Continue with Apple"]],
+    ["google then apple", [GOOGLE, APPLE], ["Continue with Google", "Continue with Apple"]],
+    ["apple then google (configured order preserved)", [APPLE, GOOGLE], ["Continue with Apple", "Continue with Google"]],
+  ])("%s renders dynamically in order", (_label, providers, expected) => {
+    render(<AuthScreen auth={buildSocialProp(providers)} />);
+
+    expect(providerButtons().map((btn) => btn.textContent)).toEqual(expected);
+    // Separator only appears when at least one provider is enabled.
+    expect(screen.getByText("or")).toBeInTheDocument();
+    // Email/password sign-in is still present alongside.
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  });
+
+  test.each([
+    ["Google", "google", "Continue with Google"],
+    ["Apple", "apple", "Continue with Apple"],
+  ])("clicking %s invokes the provider-driven method exactly once", (_label, id, label) => {
+    const signInWithSocialProvider = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE], { signInWithSocialProvider })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    expect(signInWithSocialProvider).toHaveBeenCalledTimes(1);
+    expect(signInWithSocialProvider).toHaveBeenCalledWith(id);
+  });
+
+  test("busy state disables every provider button", () => {
+    render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE], { authBusy: true })} />);
+
+    const buttons = providerButtons();
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((btn) => expect(btn).toBeDisabled());
+  });
+
+  test("provider buttons expose accessible labels and load no external assets", () => {
+    const { container } = render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE])} />);
+
+    expect(screen.getByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue with Apple" })).toBeInTheDocument();
+
+    // Only the bundled EstiPaid logo may be referenced -- no provider icons or
+    // third-party hosts, and no credential in the DOM.
+    container.querySelectorAll("img, script, link").forEach((node) => {
+      const src = node.getAttribute("src") || node.getAttribute("href") || "";
+      expect(src.startsWith("/")).toBe(true);
+    });
+    expect(container.innerHTML.toLowerCase()).not.toContain("client_secret");
+  });
+
+  test("provider buttons never submit the email/password form", () => {
+    render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE])} />);
+
+    providerButtons().forEach((btn) => expect(btn).toHaveAttribute("type", "button"));
+  });
+
+  // Recovery isolation -- no social affordance may appear on ANY recovery view.
+  test.each([
+    ["verified recovery", { passwordRecoveryPending: true, passwordRecoveryReady: true }],
+    ["invalid/expired recovery", { passwordRecoveryPending: true, passwordRecoveryReady: false }],
+    [
+      "completed recovery",
+      { passwordRecoveryPending: true, passwordRecoveryReady: true, passwordRecoveryComplete: true },
+    ],
+  ])("%s renders zero social provider buttons", (_label, recoveryState) => {
+    const signInWithSocialProvider = jest.fn(async () => ({ ok: true }));
+    render(
+      <AuthScreen
+        auth={buildSocialProp([GOOGLE, APPLE], {
+          signInWithSocialProvider,
+          updatePassword: jest.fn(async () => ({ ok: true })),
+          completePasswordRecovery: jest.fn(),
+          abandonPasswordRecovery: jest.fn(),
+          ...recoveryState,
+        })}
+      />
+    );
+
+    expect(providerButtons()).toHaveLength(0);
+    expect(screen.queryByText("or")).not.toBeInTheDocument();
+    expect(signInWithSocialProvider).not.toHaveBeenCalled();
+  });
+
+  test("social buttons stay on the sign-in view only (not create-account or reset)", () => {
+    render(<AuthScreen auth={buildSocialProp([GOOGLE, APPLE])} />);
+    expect(providerButtons()).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /Create Account/i }));
+    expect(providerButtons()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /Back to Sign In/i }));
+    expect(providerButtons()).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /Forgot Password\?/i }));
+    expect(providerButtons()).toHaveLength(0);
+  });
+});

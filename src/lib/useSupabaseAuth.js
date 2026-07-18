@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseClient, isSupabaseConfigured, supabaseEnv } from "./supabaseClient";
+import { getEnabledSocialProviders } from "./authSocialProviders";
 
 function asMessage(error, fallback) {
   const message = String(error?.message || "").trim();
@@ -212,6 +213,65 @@ export default function useSupabaseAuth() {
       subscription?.unsubscribe?.();
     };
   }, [normalizeEmail]);
+
+  // Build-time provider list. Empty unless REACT_APP_AUTH_SOCIAL_PROVIDERS names
+  // supported providers, so no social affordance appears by default.
+  const enabledSocialProviders = useMemo(() => getEnabledSocialProviders(), []);
+
+  // Phase 2.2 -- ONE provider-driven social OAuth entry point. Adding a provider
+  // means adding a registry entry, not another method or UI branch.
+  //
+  // This is social OAuth only: it never calls signInWithSSO, signInWithPassword,
+  // or updateUser, and it never touches password-recovery state.
+  const signInWithSocialProvider = async (providerId) => {
+    const requestedId = String(providerId ?? "").trim().toLowerCase();
+
+    // Validated against the ENABLED list before any Supabase call, so missing,
+    // unknown, and disabled-but-supported ids all short-circuit locally.
+    const provider = enabledSocialProviders.find((entry) => entry.id === requestedId);
+    if (!provider) {
+      const message = "That sign-in option is unavailable.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    const client = getSupabaseClient();
+    if (!isSupabaseConfigured || !client?.auth?.signInWithOAuth) {
+      const message = "Supabase not configured.";
+      setErrorMessage(message);
+      setInfoMessage("");
+      return { ok: false, error: message };
+    }
+
+    setAuthBusy(true);
+    setErrorMessage("");
+    setInfoMessage("");
+
+    try {
+      // Supabase performs the browser redirect itself -- we never build or
+      // navigate to a provider URL by hand.
+      const redirectTo = getRedirectUrl();
+      const { error } = (await client.auth.signInWithOAuth({
+        provider: provider.id,
+        options: redirectTo ? { redirectTo } : undefined,
+      })) || {};
+
+      if (error) {
+        const message = asMessage(error, `Unable to continue with ${provider.name}.`);
+        setErrorMessage(message);
+        return { ok: false, error: message };
+      }
+
+      return { ok: true, provider: provider.id };
+    } catch (error) {
+      const message = asMessage(error, `Unable to continue with ${provider.name}.`);
+      setErrorMessage(message);
+      return { ok: false, error: message };
+    } finally {
+      setAuthBusy(false);
+    }
+  };
 
   const signInWithEmailOtp = async (email) => {
     const client = getSupabaseClient();
@@ -612,6 +672,8 @@ export default function useSupabaseAuth() {
     rememberedEmail,
     errorMessage,
     infoMessage,
+    enabledSocialProviders,
+    signInWithSocialProvider,
     signInWithEmailOtp,
     signInWithPassword,
     signUpWithPassword,

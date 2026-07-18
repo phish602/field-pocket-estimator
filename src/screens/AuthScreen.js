@@ -149,6 +149,50 @@ const successBoxStyle = {
   borderLeftColor: "rgba(52,211,153,0.75)",
 };
 
+// Phase 2.2 -- social provider buttons. Text-only by design: no external icon,
+// script, font, or asset is loaded, and no provider credential reaches the DOM.
+const socialBlockStyle = {
+  display: "grid",
+  gap: 10,
+};
+
+const socialButtonStyle = {
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 14,
+  padding: "13px 16px",
+  minHeight: 48,
+  fontSize: 14,
+  fontWeight: 700,
+  letterSpacing: "0.2px",
+  color: "rgba(233,240,247,0.94)",
+  background: "rgba(255,255,255,0.045)",
+  cursor: "pointer",
+  transition: "background 140ms ease, opacity 140ms ease",
+};
+
+const socialButtonDisabledStyle = {
+  ...socialButtonStyle,
+  opacity: 0.55,
+  cursor: "not-allowed",
+};
+
+const socialDividerStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  color: "rgba(220,229,238,0.5)",
+  fontSize: 11.5,
+  fontWeight: 700,
+  letterSpacing: "0.8px",
+  textTransform: "uppercase",
+};
+
+const socialDividerRuleStyle = {
+  flex: 1,
+  height: 1,
+  background: "rgba(255,255,255,0.12)",
+};
+
 const linksRowStyle = {
   display: "flex",
   justifyContent: "space-between",
@@ -201,6 +245,8 @@ export default function AuthScreen({ auth }) {
     signInWithPassword,
     signUpWithPassword,
     resetPasswordForEmail,
+    enabledSocialProviders = [],
+    signInWithSocialProvider,
     passwordRecoveryPending = false,
     passwordRecoveryReady = false,
     passwordRecoveryComplete = false,
@@ -219,6 +265,11 @@ export default function AuthScreen({ auth }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [recoveryValidationError, setRecoveryValidationError] = useState("");
   const showRememberedAccount = !errorMessage && !infoMessage && !!rememberedEmail;
+
+  // Social providers belong to the normal SIGN-IN view only. The recovery views
+  // return earlier, so no recovery screen can ever render a provider button.
+  const socialProviders = Array.isArray(enabledSocialProviders) ? enabledSocialProviders : [];
+  const showSocialProviders = mode === MODES.SIGN_IN && socialProviders.length > 0;
 
   // Every check runs before `updatePassword`, so an invalid submission never
   // reaches the Supabase client.
@@ -437,6 +488,32 @@ export default function AuthScreen({ auth }) {
               </button>
             ) : null}
           </div>
+        ) : null}
+
+        {/* Rendered dynamically from the registry -- no hardcoded provider
+            branch, so a new registry entry surfaces here automatically. */}
+        {showSocialProviders ? (
+          <>
+            <div style={socialBlockStyle}>
+              {socialProviders.map((provider) => (
+                <button
+                  key={provider.id}
+                  type="button"
+                  style={authBusy ? socialButtonDisabledStyle : socialButtonStyle}
+                  onClick={() => signInWithSocialProvider?.(provider.id)}
+                  disabled={authBusy}
+                  aria-label={provider.label}
+                >
+                  {provider.label}
+                </button>
+              ))}
+            </div>
+            <div style={socialDividerStyle} aria-hidden="true">
+              <span style={socialDividerRuleStyle} />
+              <span>or</span>
+              <span style={socialDividerRuleStyle} />
+            </div>
+          </>
         ) : null}
 
         <div style={fieldsBlockStyle}>

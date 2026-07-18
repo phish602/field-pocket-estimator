@@ -36,6 +36,7 @@ function createMockClient({
   signUpUser = null,
   resetPasswordError = null,
   updateUserError = null,
+  oauthError = null,
 } = {}) {
   let authListener = null;
   const subscription = { unsubscribe: jest.fn() };
@@ -82,6 +83,10 @@ function createMockClient({
       updateUser: jest.fn(async () => ({
         data: { user: { id: "user_1" } },
         error: updateUserError,
+      })),
+      signInWithOAuth: jest.fn(async () => ({
+        data: { provider: "google", url: "https://provider.example/authorize" },
+        error: oauthError,
       })),
     },
   };
@@ -805,5 +810,184 @@ describe("useSupabaseAuth password recovery", () => {
     expect(result.current.passwordRecoveryPending).toBe(false);
     expect(result.current.passwordRecoveryReady).toBe(false);
     expect(result.current.passwordRecoveryComplete).toBe(false);
+  });
+});
+
+// Phase 2.2 -- provider-driven social OAuth sign-in.
+describe("useSupabaseAuth social provider sign-in", () => {
+  const ORIGIN = window.location.origin;
+
+  beforeEach(() => {
+    mockIsSupabaseConfigured = true;
+    mockSupabaseEnv = {
+      url: "https://example.supabase.co",
+      anonKey: "sb_publishable_fake_test_key",
+      isConfigured: true,
+      missingKeys: [],
+    };
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(null);
+    window.history.replaceState({}, "", "/");
+    delete process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
+    delete process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS;
+  });
+
+  // The provider list is read once per mount, so it must be set before render.
+  async function mountWithProviders(configured, clientOverrides = {}) {
+    if (configured === undefined) {
+      delete process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS;
+    } else {
+      process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS = configured;
+    }
+    const mock = createMockClient({ session: null, ...clientOverrides });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    return { mock, result };
+  }
+
+  test("no configuration exposes no providers", async () => {
+    const { result } = await mountWithProviders(undefined);
+    expect(result.current.enabledSocialProviders).toEqual([]);
+  });
+
+  test("configured providers are exposed in order", async () => {
+    const { result } = await mountWithProviders("apple,google");
+    expect(result.current.enabledSocialProviders.map((p) => p.id)).toEqual(["apple", "google"]);
+  });
+
+  test.each([
+    ["google", "google"],
+    ["apple", "apple"],
+  ])("%s calls signInWithOAuth exactly once with the provider and redirect", async (_label, id) => {
+    const { mock, result } = await mountWithProviders("google,apple");
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithSocialProvider(id);
+    });
+
+    expect(mock.client.auth.signInWithOAuth).toHaveBeenCalledTimes(1);
+    expect(mock.client.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: id,
+      options: { redirectTo: ORIGIN },
+    });
+    expect(outcome).toEqual({ ok: true, provider: id });
+    expect(result.current.authBusy).toBe(false);
+  });
+
+  test.each([
+    ["an unknown provider", "facebook"],
+    ["an enterprise SSO id", "saml"],
+    ["a missing provider", ""],
+    ["a null provider", null],
+  ])("%s makes zero Supabase calls", async (_label, value) => {
+    const { mock, result } = await mountWithProviders("google,apple");
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithSocialProvider(value);
+    });
+
+    expect(mock.client.auth.signInWithOAuth).not.toHaveBeenCalled();
+    expect(outcome.ok).toBe(false);
+    expect(result.current.errorMessage).toBeTruthy();
+  });
+
+  test("a SUPPORTED but disabled provider makes zero Supabase calls", async () => {
+    // Only Google is enabled, so Apple must be rejected locally.
+    const { mock, result } = await mountWithProviders("google");
+
+    await act(async () => {
+      await result.current.signInWithSocialProvider("apple");
+    });
+
+    expect(mock.client.auth.signInWithOAuth).not.toHaveBeenCalled();
+  });
+
+  test("a returned provider error stays readable and resets busy state", async () => {
+    const { mock, result } = await mountWithProviders("google", {
+      oauthError: { message: "Provider is not enabled" },
+    });
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithSocialProvider("google");
+    });
+
+    expect(mock.client.auth.signInWithOAuth).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ ok: false, error: "Provider is not enabled" });
+    expect(result.current.errorMessage).toBe("Provider is not enabled");
+    expect(result.current.authBusy).toBe(false);
+  });
+
+  test("a THROWN provider error stays readable and resets busy state", async () => {
+    const { mock, result } = await mountWithProviders("google");
+    mock.client.auth.signInWithOAuth = jest.fn(async () => {
+      throw new Error("popup blocked");
+    });
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithSocialProvider("google");
+    });
+
+    expect(outcome).toEqual({ ok: false, error: "popup blocked" });
+    expect(result.current.errorMessage).toBe("popup blocked");
+    expect(result.current.authBusy).toBe(false);
+  });
+
+  test("social sign-in never touches recovery state or other auth methods", async () => {
+    const { mock, result } = await mountWithProviders("google");
+
+    await act(async () => {
+      await result.current.signInWithSocialProvider("google");
+    });
+
+    expect(result.current.passwordRecoveryPending).toBe(false);
+    expect(result.current.passwordRecoveryReady).toBe(false);
+    expect(result.current.passwordRecoveryComplete).toBe(false);
+    expect(mock.client.auth.updateUser).not.toHaveBeenCalled();
+    expect(mock.client.auth.signInWithPassword).not.toHaveBeenCalled();
+    // Enterprise SSO is a separate lane and must never be invoked here.
+    expect(mock.client.auth.signInWithSSO).toBeUndefined();
+  });
+
+  test("fails safely when Supabase is unavailable", async () => {
+    process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS = "google";
+    mockGetSupabaseClient.mockReturnValue(null);
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome;
+    await act(async () => {
+      outcome = await result.current.signInWithSocialProvider("google");
+    });
+
+    expect(outcome).toEqual({ ok: false, error: "Supabase not configured." });
+    expect(result.current.errorMessage).toBe("Supabase not configured.");
+  });
+
+  test("a bare PKCE code callback does not activate password recovery", async () => {
+    const exchangedSession = { user: { id: "user_1", email: "owner@example.com" } };
+    process.env.REACT_APP_AUTH_SOCIAL_PROVIDERS = "google";
+    const mock = createMockClient({ session: exchangedSession, exchangeSession: exchangedSession });
+    mockGetSupabaseClient.mockReturnValue(mock.client);
+    window.history.pushState({}, "", "/?code=oauth-callback-code");
+
+    const { result } = renderHook(() => useSupabaseAuth());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.passwordRecoveryPending).toBe(false);
+    expect(result.current.passwordRecoveryReady).toBe(false);
+    expect(mock.client.auth.exchangeCodeForSession).toHaveBeenCalledWith("oauth-callback-code");
+    expect(window.location.search).toBe("");
   });
 });
