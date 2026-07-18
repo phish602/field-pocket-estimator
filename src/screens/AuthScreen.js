@@ -6,6 +6,10 @@ const MODES = {
   RESET: "reset",
 };
 
+// Mirrors MIN_PASSWORD_LENGTH in lib/useSupabaseAuth.js. Kept local so this
+// screen stays renderable from an injected `auth` prop in tests.
+const MIN_PASSWORD_LENGTH = 6;
+
 const wrapStyle = {
   minHeight: "100dvh",
   display: "flex",
@@ -197,6 +201,12 @@ export default function AuthScreen({ auth }) {
     signInWithPassword,
     signUpWithPassword,
     resetPasswordForEmail,
+    passwordRecoveryPending = false,
+    passwordRecoveryReady = false,
+    passwordRecoveryComplete = false,
+    updatePassword,
+    completePasswordRecovery,
+    abandonPasswordRecovery,
   } = auth || {};
 
   const supportsSignUp = typeof signUpWithPassword === "function";
@@ -205,7 +215,36 @@ export default function AuthScreen({ auth }) {
   const [mode, setMode] = useState(MODES.SIGN_IN);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [recoveryValidationError, setRecoveryValidationError] = useState("");
   const showRememberedAccount = !errorMessage && !infoMessage && !!rememberedEmail;
+
+  // Every check runs before `updatePassword`, so an invalid submission never
+  // reaches the Supabase client.
+  const handleRecoverySubmit = async (event) => {
+    if (event?.preventDefault) event.preventDefault();
+    if (authBusy) return;
+
+    const nextPassword = String(newPassword || "");
+    const nextConfirm = String(confirmPassword || "");
+
+    if (!nextPassword || !nextConfirm) {
+      setRecoveryValidationError("Enter and confirm your new password.");
+      return;
+    }
+    if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+      setRecoveryValidationError(`Use at least ${MIN_PASSWORD_LENGTH} characters for your new password.`);
+      return;
+    }
+    if (nextPassword !== nextConfirm) {
+      setRecoveryValidationError("Both passwords must match.");
+      return;
+    }
+
+    setRecoveryValidationError("");
+    await updatePassword?.(nextPassword);
+  };
 
   const copy = modeCopy(mode);
 
@@ -236,6 +275,132 @@ export default function AuthScreen({ auth }) {
       await resetPasswordForEmail(email);
     }
   };
+
+  // A password-recovery session must finish recovery before anything else. The
+  // app routes here even though a session already exists.
+  if (passwordRecoveryPending) {
+    return (
+      <div style={wrapStyle}>
+        <form style={cardStyle} onSubmit={handleRecoverySubmit} noValidate>
+          <div style={brandBlockStyle}>
+            <div style={logoWrapStyle}>
+              <img
+                src="/logo/estipaid.svg"
+                alt="EstiPaid"
+                style={{ height: 60, width: "auto", display: "block" }}
+                draggable={false}
+              />
+            </div>
+            <div style={titleStyle}>
+              {passwordRecoveryComplete
+                ? "Password Updated"
+                : passwordRecoveryReady
+                  ? "Set A New Password"
+                  : "Reset Link Not Valid"}
+            </div>
+            <div style={explainerStyle}>
+              {passwordRecoveryComplete
+                ? "Your password has been updated. Continue to pick up where you left off."
+                : passwordRecoveryReady
+                  ? "Choose a new password to finish resetting your account."
+                  : "This password reset link is invalid or has expired. Request a new reset email from the sign-in screen."}
+            </div>
+          </div>
+
+          {/* Recovery intent without a VERIFIED recovery session must never show
+              an actionable update form -- only a way back to sign in. */}
+          {!passwordRecoveryComplete && !passwordRecoveryReady ? (
+            <>
+              {/* The explainer above already states the invalid/expired case,
+                  so only surface a distinct provider error here. */}
+              {errorMessage ? (
+                <div role="status" aria-live="polite" style={errorBoxStyle}>
+                  {errorMessage}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                style={primaryButtonStyle}
+                onClick={() => abandonPasswordRecovery?.()}
+                disabled={authBusy}
+              >
+                Back to Sign In
+              </button>
+            </>
+          ) : passwordRecoveryComplete ? (
+            <>
+              <div role="status" aria-live="polite" style={successBoxStyle}>
+                Password updated.
+              </div>
+              <button
+                type="button"
+                style={primaryButtonStyle}
+                onClick={() => completePasswordRecovery?.()}
+              >
+                Continue to EstiPaid
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={fieldsBlockStyle}>
+                <div style={fieldGroupStyle}>
+                  <label style={fieldLabelStyle} htmlFor="auth-new-password">
+                    New Password
+                  </label>
+                  <input
+                    id="auth-new-password"
+                    type="password"
+                    className="pe-input"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                    name="new-password"
+                    autoComplete="new-password"
+                    enterKeyHint="next"
+                    aria-label="New Password"
+                    disabled={authBusy}
+                  />
+                </div>
+
+                <div style={fieldGroupStyle}>
+                  <label style={fieldLabelStyle} htmlFor="auth-confirm-password">
+                    Confirm New Password
+                  </label>
+                  <input
+                    id="auth-confirm-password"
+                    type="password"
+                    className="pe-input"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter your new password"
+                    name="confirm-password"
+                    autoComplete="new-password"
+                    enterKeyHint="go"
+                    aria-label="Confirm New Password"
+                    disabled={authBusy}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                style={authBusy ? primaryButtonDisabledStyle : primaryButtonStyle}
+                disabled={authBusy}
+              >
+                {authBusy ? "Updating Password..." : "Update Password"}
+              </button>
+
+              {recoveryValidationError || errorMessage ? (
+                <div role="status" aria-live="polite" style={errorBoxStyle}>
+                  {recoveryValidationError || errorMessage}
+                </div>
+              ) : null}
+            </>
+          )}
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={wrapStyle}>

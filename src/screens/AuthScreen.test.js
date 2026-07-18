@@ -425,3 +425,142 @@ describe("AuthScreen standalone", () => {
     expect(signInWithPassword).toHaveBeenCalledWith("owner@example.com", "correct-password");
   });
 });
+
+// Phase 2.1 -- password-recovery completion UI.
+describe("AuthScreen password recovery", () => {
+  // A VERIFIED recovery session (pending + ready) is what unlocks the form.
+  const buildRecoveryProp = (overrides = {}) =>
+    buildAuthProp({
+      passwordRecoveryPending: true,
+      passwordRecoveryReady: true,
+      passwordRecoveryComplete: false,
+      updatePassword: jest.fn(async () => ({ ok: true })),
+      completePasswordRecovery: jest.fn(),
+      abandonPasswordRecovery: jest.fn(),
+      ...overrides,
+    });
+
+  const fillRecoveryFields = (next, confirm) => {
+    fireEvent.change(screen.getByLabelText("New Password"), { target: { value: next } });
+    fireEvent.change(screen.getByLabelText("Confirm New Password"), { target: { value: confirm } });
+  };
+
+  test("renders the set-new-password form instead of the sign-in card", () => {
+    render(<AuthScreen auth={buildRecoveryProp()} />);
+
+    expect(screen.getByText("Set A New Password")).toBeInTheDocument();
+    expect(screen.getByLabelText("New Password")).toBeInTheDocument();
+    expect(screen.getByLabelText("Confirm New Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Update Password$/i })).toHaveAttribute("type", "submit");
+    // The normal sign-in fields are not present during recovery.
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+  });
+
+  test("a valid submission calls updatePassword exactly once", async () => {
+    const updatePassword = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildRecoveryProp({ updatePassword })} />);
+
+    fillRecoveryFields("brand-new-password", "brand-new-password");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Update Password$/i }));
+    });
+
+    expect(updatePassword).toHaveBeenCalledTimes(1);
+    expect(updatePassword).toHaveBeenCalledWith("brand-new-password");
+  });
+
+  test.each([
+    ["empty fields", "", "", /Enter and confirm your new password/i],
+    ["a too-short password", "abc12", "abc12", /at least 6 characters/i],
+    ["mismatched confirmation", "brand-new-password", "different-password", /Both passwords must match/i],
+  ])("%s makes zero updatePassword calls and shows a readable message", async (_label, next, confirm, pattern) => {
+    const updatePassword = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildRecoveryProp({ updatePassword })} />);
+
+    fillRecoveryFields(next, confirm);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Update Password$/i }));
+    });
+
+    expect(updatePassword).not.toHaveBeenCalled();
+    expect(screen.getByText(pattern)).toBeInTheDocument();
+  });
+
+  test("a provider failure keeps the form available for retry", () => {
+    render(
+      <AuthScreen
+        auth={buildRecoveryProp({ errorMessage: "New password should be different from the old password." })}
+      />
+    );
+
+    expect(
+      screen.getByText("New password should be different from the old password.")
+    ).toBeInTheDocument();
+    // Still on the recovery form, so the user can try again.
+    expect(screen.getByLabelText("New Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Update Password$/i })).toBeInTheDocument();
+  });
+
+  test("shows a busy label while the update is in flight", () => {
+    render(<AuthScreen auth={buildRecoveryProp({ authBusy: true })} />);
+
+    expect(screen.getByRole("button", { name: /Updating Password\.\.\./i })).toBeDisabled();
+  });
+
+  test("success shows the confirmation and only the explicit continuation finishes recovery", () => {
+    const completePasswordRecovery = jest.fn();
+    render(
+      <AuthScreen auth={buildRecoveryProp({ passwordRecoveryComplete: true, completePasswordRecovery })} />
+    );
+
+    expect(screen.getByText("Password Updated")).toBeInTheDocument();
+    expect(screen.getByText("Password updated.")).toBeInTheDocument();
+    // The form is replaced by the confirmation.
+    expect(screen.queryByLabelText("New Password")).not.toBeInTheDocument();
+
+    const continueButton = screen.getByRole("button", { name: /Continue to EstiPaid/i });
+    expect(completePasswordRecovery).not.toHaveBeenCalled();
+
+    fireEvent.click(continueButton);
+    expect(completePasswordRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  test("no recovery state renders the normal sign-in card unchanged", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByLabelText("New Password")).not.toBeInTheDocument();
+    expect(screen.queryByText("Set A New Password")).not.toBeInTheDocument();
+  });
+
+  // Recovery intent WITHOUT a verified recovery session.
+  test("an unverified/expired recovery shows Back to Sign In and no actionable form", () => {
+    const updatePassword = jest.fn(async () => ({ ok: true }));
+    render(
+      <AuthScreen auth={buildRecoveryProp({ passwordRecoveryReady: false, updatePassword })} />
+    );
+
+    expect(screen.getByText("Reset Link Not Valid")).toBeInTheDocument();
+    expect(screen.getByText(/invalid or has expired/i)).toBeInTheDocument();
+    // No way to attempt an update.
+    expect(screen.queryByLabelText("New Password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Update Password$/i })).not.toBeInTheDocument();
+    expect(updatePassword).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Back to Sign In/i })).toBeInTheDocument();
+  });
+
+  test("Back to Sign In abandons recovery without ever calling updatePassword", () => {
+    const abandonPasswordRecovery = jest.fn();
+    const updatePassword = jest.fn(async () => ({ ok: true }));
+    render(
+      <AuthScreen
+        auth={buildRecoveryProp({ passwordRecoveryReady: false, abandonPasswordRecovery, updatePassword })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Back to Sign In/i }));
+
+    expect(abandonPasswordRecovery).toHaveBeenCalledTimes(1);
+    expect(updatePassword).not.toHaveBeenCalled();
+  });
+});
