@@ -10,8 +10,19 @@ const SUPPORTED_EVENT_TYPES = new Set([
   "checkout.session.completed",
 ]);
 
+// Centralized raw-body ceiling for the webhook entrypoint. Stripe subscription
+// events are well under this; the bound exists so an unauthenticated caller
+// cannot force unbounded buffering before signature verification.
+const MAX_WEBHOOK_RAW_BODY_BYTES = 64 * 1024;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function text(value) {
   return String(value || "").trim();
+}
+
+function isUuid(value) {
+  return UUID_RE.test(text(value));
 }
 
 function metadataCompanyId(value) {
@@ -146,8 +157,12 @@ async function processStripeSubscriptionWebhook({
       input = buildPlanStateInput(subscription, eventType, env);
     }
 
-    if (!input?.companyId) {
-      logIgnored(logger, eventType, "missing_company_mapping");
+    // The mapped company id must be a real UUID before it can key any write. A
+    // non-UUID cannot address a company row, so it is ignored (200) rather than
+    // returned as 500 -- a 500 would put Stripe into a permanent retry loop for
+    // an event that can never succeed. The identifier value is never logged.
+    if (!input?.companyId || !isUuid(input.companyId)) {
+      logIgnored(logger, eventType, input?.companyId ? "invalid_company_mapping" : "missing_company_mapping");
       return response(200, { received: true, ignored: true });
     }
 
@@ -205,6 +220,7 @@ function createExpressStripeSubscriptionWebhookHandler(options = {}) {
 }
 
 module.exports = {
+  MAX_WEBHOOK_RAW_BODY_BYTES,
   buildPlanStateInput,
   createConfiguredWebhookProcessor,
   createExpressStripeSubscriptionWebhookHandler,

@@ -8,7 +8,13 @@ const ENV = {
   STRIPE_BUSINESS_PRICE_ID: "price_business",
 };
 
-function subscription({ companyId = "company_1", priceId = "price_pro", status = "active", customer = { id: "cus_1" }, id = "sub_1" } = {}) {
+// Company ids that reach a real write must be valid UUIDs (R2.3A identity
+// guard). These stand in for the mapped company across the fixtures.
+const COMPANY_1 = "11111111-1111-4111-8111-111111111111";
+const COMPANY_FROM_CUSTOMER = "22222222-2222-4222-8222-222222222222";
+const COMPANY_FROM_CHECKOUT = "33333333-3333-4333-8333-333333333333";
+
+function subscription({ companyId = COMPANY_1, priceId = "price_pro", status = "active", customer = { id: "cus_1" }, id = "sub_1" } = {}) {
   return {
     id,
     metadata: companyId ? { companyId } : {},
@@ -49,20 +55,25 @@ async function process(event, options = {}) {
 }
 
 describe("Stripe subscription webhook", () => {
-  test("rejects an invalid signature without writing plan state", async () => {
+  test("rejects an invalid signature without any Stripe retrieve or write", async () => {
     const upsertPlanState = jest.fn();
+    const upsertBillingRef = jest.fn();
+    const stripe = stripeFor({}, { throwOnVerify: true });
     const result = await processStripeSubscriptionWebhook({
-      rawBody: Buffer.from("tampered"), signature: "bad", stripe: stripeFor({}, { throwOnVerify: true }), webhookSecret: "whsec_test", env: ENV, upsertPlanState,
+      rawBody: Buffer.from("tampered"), signature: "bad", stripe, webhookSecret: "whsec_test", env: ENV, upsertPlanState, upsertBillingRef,
     });
     expect(result).toEqual({ status: 400, body: { error: "Invalid Stripe webhook signature." } });
+    // A failed signature must terminate before any privileged or provider work.
     expect(upsertPlanState).not.toHaveBeenCalled();
+    expect(upsertBillingRef).not.toHaveBeenCalled();
+    expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
   });
 
   test("writes a normalized active Pro state from a verified subscription", async () => {
     const { result, upsertPlanState } = await process({ type: "customer.subscription.updated", data: { object: subscription() } });
     expect(result.status).toBe(200);
     expect(upsertPlanState).toHaveBeenCalledWith({
-      companyId: "company_1", plan: "pro", status: "active", source: "stripe", stripeCustomerId: "cus_1", stripeSubscriptionId: "sub_1", currentPeriodEnd: "2030-01-01T00:00:00.000Z",
+      companyId: COMPANY_1, plan: "pro", status: "active", source: "stripe", stripeCustomerId: "cus_1", stripeSubscriptionId: "sub_1", currentPeriodEnd: "2030-01-01T00:00:00.000Z",
     });
   });
 
@@ -105,15 +116,73 @@ describe("Stripe subscription webhook", () => {
   test("uses Checkout metadata before customer metadata for a retrieved subscription", async () => {
     const checkoutSubscription = subscription({
       companyId: "",
-      customer: { id: "cus_1", metadata: { companyId: "company_from_customer" } },
+      customer: { id: "cus_1", metadata: { companyId: COMPANY_FROM_CUSTOMER } },
     });
     const stripe = stripeFor({
       type: "checkout.session.completed",
-      data: { object: { mode: "subscription", subscription: "sub_1", metadata: { companyId: "company_from_checkout" } } },
+      data: { object: { mode: "subscription", subscription: "sub_1", metadata: { companyId: COMPANY_FROM_CHECKOUT } } },
     }, { retrievedSubscription: checkoutSubscription });
     const { result, upsertPlanState } = await process(null, { stripe });
     expect(result.status).toBe(200);
-    expect(upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company_from_checkout" }));
+    expect(upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ companyId: COMPANY_FROM_CHECKOUT }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2.3A: a mapped company id must be a valid UUID before any write. A non-UUID
+// (or missing) mapping is ignored with 200 -- never 500, which Stripe would
+// retry forever -- and never produces a billing-ref or plan-state write. The
+// identifier value is never echoed back or logged.
+// ---------------------------------------------------------------------------
+describe("R2.3A webhook company identity guard", () => {
+  const event = (sub) => ({ type: "customer.subscription.updated", data: { object: sub } });
+
+  test.each([
+    ["a non-UUID metadata company id", "company_1"],
+    ["an almost-UUID company id", "11111111-1111-4111-8111-11111111111"],
+    ["an empty company id", ""],
+  ])("ignores %s with 200 and performs zero writes", async (_name, companyId) => {
+    const { result, upsertPlanState, upsertBillingRef } = await process(event(subscription({ companyId })));
+    expect(result).toEqual({ status: 200, body: { received: true, ignored: true } });
+    expect(upsertPlanState).not.toHaveBeenCalled();
+    expect(upsertBillingRef).not.toHaveBeenCalled();
+  });
+
+  test("ignores a non-UUID checkout mapping with zero writes", async () => {
+    const checkoutSubscription = subscription({ companyId: "" });
+    const stripe = stripeFor({
+      type: "checkout.session.completed",
+      data: { object: { mode: "subscription", subscription: "sub_1", metadata: { companyId: "not-a-uuid" } } },
+    }, { retrievedSubscription: checkoutSubscription });
+    const { result, upsertPlanState, upsertBillingRef } = await process(null, { stripe });
+    expect(result).toEqual({ status: 200, body: { received: true, ignored: true } });
+    expect(upsertPlanState).not.toHaveBeenCalled();
+    expect(upsertBillingRef).not.toHaveBeenCalled();
+  });
+
+  test("never logs or returns the rejected identifier", async () => {
+    const secret = "company-SECRET-not-a-uuid";
+    const logger = { warn: jest.fn(), error: jest.fn() };
+    const result = await processStripeSubscriptionWebhook({
+      rawBody: Buffer.from("signed payload"),
+      signature: "sig_test",
+      stripe: stripeFor(event(subscription({ companyId: secret }))),
+      webhookSecret: "whsec_test",
+      env: ENV,
+      upsertPlanState: jest.fn(),
+      upsertBillingRef: jest.fn(),
+      logger,
+    });
+    expect(result.status).toBe(200);
+    const surfaced = JSON.stringify([result.body, logger.warn.mock.calls, logger.error.mock.calls]);
+    expect(surfaced).not.toContain(secret);
+  });
+
+  test("a valid UUID mapping still writes normally", async () => {
+    const { result, upsertPlanState, upsertBillingRef } = await process(event(subscription({ companyId: COMPANY_1 })));
+    expect(result.status).toBe(200);
+    expect(upsertBillingRef).toHaveBeenCalledWith(expect.objectContaining({ companyId: COMPANY_1 }));
+    expect(upsertPlanState).toHaveBeenCalledWith(expect.objectContaining({ companyId: COMPANY_1 }));
   });
 });
 
@@ -126,13 +195,13 @@ describe("Gate 17A.1a private identifier storage", () => {
   const event = (sub) => ({ type: "customer.subscription.updated", data: { object: sub } });
 
   test("identifiers go to private storage, keyed by the mapped company", async () => {
-    const sub = subscription({ companyId: "company_1", customer: { id: "cus_FAKE1" }, id: "sub_FAKE1" });
+    const sub = subscription({ companyId: COMPANY_1, customer: { id: "cus_FAKE1" }, id: "sub_FAKE1" });
     const { result, upsertBillingRef } = await process(event(sub));
 
     expect(result.status).toBe(200);
     expect(upsertBillingRef).toHaveBeenCalledTimes(1);
     expect(upsertBillingRef).toHaveBeenCalledWith(expect.objectContaining({
-      companyId: "company_1", stripeCustomerId: "cus_FAKE1", stripeSubscriptionId: "sub_FAKE1",
+      companyId: COMPANY_1, stripeCustomerId: "cus_FAKE1", stripeSubscriptionId: "sub_FAKE1",
     }));
   });
 
