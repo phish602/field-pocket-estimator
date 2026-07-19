@@ -1,4 +1,8 @@
 const { createClient } = require("@supabase/supabase-js");
+const {
+  authorizeProductionAiQuota,
+  isQuotaEnforcedRoute,
+} = require("./productionAiQuota");
 
 const MAX_PRODUCTION_AI_BODY_BYTES = 128 * 1024;
 
@@ -41,11 +45,19 @@ function serializedBodySize(body) {
   }
 }
 
-function decision(ok, status = 200, error = "") {
-  return ok ? { ok: true, status } : { ok: false, status, body: { error } };
+function decision(ok, status = 200, error = "", headers = null) {
+  if (ok) return { ok: true, status };
+  const rejection = { ok: false, status, body: { error } };
+  if (headers) rejection.headers = headers;
+  return rejection;
 }
 
-function createProductionAiRequestGuard({ getAdminClient = getServerAuthClient, maxBodyBytes = MAX_PRODUCTION_AI_BODY_BYTES } = {}) {
+// `route` opts a route into the R2.2 durable quota. Both paid AI endpoints --
+// /api/ai-assist and /api/guided-build -- are enrolled, and both draw down the
+// same shared paid_ai budget rather than one allowance each. It defaults to
+// none, so an unlabelled guard keeps plain R2.1 behavior for any route we have
+// not deliberately enrolled.
+function createProductionAiRequestGuard({ route = "", getAdminClient = getServerAuthClient, maxBodyBytes = MAX_PRODUCTION_AI_BODY_BYTES, authorizeQuota = authorizeProductionAiQuota } = {}) {
   return async function guardProductionAiRequest(req = {}) {
     if (req.method !== "POST") return decision(false, 405, "Method not allowed.");
 
@@ -63,13 +75,26 @@ function createProductionAiRequestGuard({ getAdminClient = getServerAuthClient, 
     const client = getAdminClient({ env: process.env });
     if (!client?.auth?.getUser) return decision(false, 503, "AI service is unavailable.");
 
+    let userId = "";
     try {
       const result = await client.auth.getUser(token);
       if (result?.error || !text(result?.data?.user?.id)) {
         return decision(false, 401, "Authentication required.");
       }
+      // Identity comes from the verified auth result and nowhere else. Any
+      // user_id, company_id, role or usage count in the request body is ignored.
+      userId = text(result.data.user.id);
     } catch {
       return decision(false, 503, "AI service is unavailable.");
+    }
+
+    if (!isQuotaEnforcedRoute(route)) return decision(true);
+
+    const authorization = await authorizeQuota({ client, userId, route });
+    if (!authorization?.ok) {
+      const status = Number.isInteger(authorization?.status) ? authorization.status : 503;
+      const error = text(authorization?.error) || "AI service is unavailable.";
+      return decision(false, status, error, authorization?.headers || null);
     }
 
     return decision(true);

@@ -1,19 +1,29 @@
 /** @jest-environment node */
 
+const fs = require("fs");
 const http = require("http");
+const path = require("path");
 jest.mock("undici", () => ({
   fetch: jest.fn(async () => { throw new Error("provider fetch is disabled in this test"); }),
 }));
 
 const { createDevAiBridge } = require("../../api/_devAiBridge");
+const {
+  AI_ASSIST_QUOTA_ROUTE,
+  GUIDED_BUILD_QUOTA_ROUTE,
+  isQuotaEnforcedRoute,
+} = require("../../server/productionAiQuota");
+
+const PAID_AI_ROUTES = [AI_ASSIST_QUOTA_ROUTE, GUIDED_BUILD_QUOTA_ROUTE];
 const identityHandler = require("../../api/dev-ai-identity");
 const devAiApp = require("../../server/dev-ai");
 const { sanitizeLogPayload } = devAiApp;
 
 function response() {
-  const res = { statusCode: 0, body: null };
+  const res = { statusCode: 0, body: null, headers: {} };
   res.status = jest.fn((code) => { res.statusCode = code; return res; });
   res.json = jest.fn((body) => { res.body = body; return res; });
+  res.setHeader = jest.fn((name, value) => { res.headers[name] = value; return res; });
   return res;
 }
 
@@ -119,6 +129,89 @@ describe("Production dev-AI bridge", () => {
       expect(appHandler).toHaveBeenCalledTimes(1);
       expect(verifiedRequest.url).toBe(`${routePath}?check=1`);
     });
+  });
+
+  test("a quota rejection returns 429 with Retry-After and never dispatches", async () => {
+    const appHandler = jest.fn();
+    const guard = jest.fn(async () => ({
+      ok: false, status: 429,
+      body: { error: "AI assistance limit reached. Please try again later." },
+      headers: { "Retry-After": "37" },
+    }));
+    const handler = createDevAiBridge("/api/ai-assist", { appHandler, guard });
+    const res = response();
+    await handler({ method: "POST", url: "/", headers: {}, body: {} }, res);
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["Retry-After"]).toBe("37");
+    expect(Number(res.headers["Retry-After"])).toBeGreaterThan(0);
+    // Zero provider dispatch on a rejection.
+    expect(appHandler).not.toHaveBeenCalled();
+  });
+
+  test("a rejection without headers sets none and still fails closed", async () => {
+    const appHandler = jest.fn();
+    const guard = jest.fn(async () => ({ ok: false, status: 503, body: { error: "AI service is unavailable." } }));
+    const res = response();
+    await createDevAiBridge("/api/ai-assist", { appHandler, guard })({ method: "POST", url: "/", headers: {}, body: {} }, res);
+    expect(res.statusCode).toBe(503);
+    expect(res.setHeader).not.toHaveBeenCalled();
+    expect(appHandler).not.toHaveBeenCalled();
+  });
+
+  test("both paid entrypoints are labelled for the shared R2.2 quota", async () => {
+    const routes = {};
+    jest.isolateModules(() => {
+      jest.doMock("../../server/dev-ai", () => jest.fn());
+      jest.doMock("../../server/productionAiRequestGuard", () => ({
+        createProductionAiRequestGuard: jest.fn((options) => {
+          routes[options.route] = (routes[options.route] || 0) + 1;
+          return jest.fn(async () => ({ ok: true, status: 200 }));
+        }),
+      }));
+      require("../../api/ai-assist");
+      require("../../api/guided-build");
+    });
+    expect(routes).toEqual({ "/api/ai-assist": 1, "/api/guided-build": 1 });
+    PAID_AI_ROUTES.forEach((route) => expect(isQuotaEnforcedRoute(route)).toBe(true));
+  });
+
+  test("the Guided Build entrypoint is enrolled without editing its source", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "api/guided-build.js"), "utf8");
+    // Enrollment came entirely from the shared bridge, so the endpoint file --
+    // and every other Guided Build file -- stayed untouched.
+    expect(source.trim()).toBe(
+      'module.exports = require("./_devAiBridge").createGuardedDevAiBridge("/api/guided-build");'
+    );
+    expect(isQuotaEnforcedRoute("/api/guided-build")).toBe(true);
+  });
+
+  test.each(PAID_AI_ROUTES)("%s makes zero provider calls on every rejection status", async (route) => {
+    for (const [status, headers] of [
+      [401, null], [403, null], [413, null],
+      [429, { "Retry-After": "37" }], [503, null],
+    ]) {
+      const appHandler = jest.fn();
+      const guard = jest.fn(async () => ({
+        ok: false, status, body: { error: "denied" }, ...(headers ? { headers } : {}),
+      }));
+      const res = response();
+      await createDevAiBridge(route, { appHandler, guard })({ method: "POST", url: "/", headers: {}, body: {} }, res);
+
+      expect(res.statusCode).toBe(status);
+      expect(appHandler).not.toHaveBeenCalled();
+      if (headers) expect(Number(res.headers["Retry-After"])).toBeGreaterThan(0);
+      else expect(res.headers["Retry-After"]).toBeUndefined();
+    }
+  });
+
+  test.each(PAID_AI_ROUTES)("%s dispatches exactly once when admitted", async (route) => {
+    const appHandler = jest.fn();
+    const guard = jest.fn(async () => ({ ok: true, status: 200 }));
+    const req = { method: "POST", url: "/?trace=1", headers: {}, body: {} };
+    await createDevAiBridge(route, { appHandler, guard })(req, response());
+    expect(appHandler).toHaveBeenCalledTimes(1);
+    expect(req.url).toBe(`${route}?trace=1`);
   });
 
   test("the real translate entrypoint remains outside the Production guard", async () => {
