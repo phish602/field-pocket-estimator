@@ -8,6 +8,12 @@ function getQueryString(req) {
 }
 
 function reject(res, result) {
+  // Rejections may carry response headers (Retry-After on a quota denial).
+  // Never carries a body beyond the generic error the guard already built.
+  const headers = result?.headers;
+  if (headers && typeof res?.setHeader === "function") {
+    Object.entries(headers).forEach(([name, value]) => res.setHeader(name, value));
+  }
   return res.status(result.status).json(result.body);
 }
 
@@ -25,7 +31,11 @@ function createDevAiBridge(routePath, { appHandler = app, guard = null } = {}) {
 function createGuardedDevAiBridge(routePath, options = {}) {
   return createDevAiBridge(routePath, {
     ...options,
-    guard: options.guard || createProductionAiRequestGuard(),
+    // The route label lets the guard decide whether the R2.2 durable quota
+    // applies. Both paid AI endpoints -- /api/ai-assist and /api/guided-build --
+    // are enrolled and share one paid_ai budget, so splitting traffic between
+    // them cannot buy a caller a second allowance.
+    guard: options.guard || createProductionAiRequestGuard({ route: routePath }),
   });
 }
 
