@@ -1,1 +1,1 @@
-module.exports = require("./_devAiBridge")("/api/ai-assist");
+module.exports = require("./_devAiBridge").createGuardedDevAiBridge("/api/ai-assist");

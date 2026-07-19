@@ -12,8 +12,20 @@ import {
   MATERIALS_MODE_OPTIONS,
   TRADE_INSERT_OPTIONS,
 } from "./registry";
+import { getSupabaseClient } from "../../lib/supabaseClient";
 
 const REQUEST_TIMEOUT_MS = 150000;
+
+export async function getSessionAuthorizationHeader() {
+  try {
+    const client = getSupabaseClient();
+    const result = await client?.auth?.getSession?.();
+    const token = String(result?.data?.session?.access_token || "").trim();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
 const MAX_GUIDED_FIELD_SUBSET = 4;
 const MAX_PRIOR_GUIDED_ANSWERS = 3;
 const MAX_SUMMARY_TEXT = 160;
@@ -4625,7 +4637,7 @@ export async function requestGuidedBuildTurn(payload, preview = null) {
   try {
     const fetchPromise = fetch("/api/guided-build", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await getSessionAuthorizationHeader()) },
       body: JSON.stringify(prepared.requestBody),
     }).then(async (response) => {
       if (!response.ok) {
