@@ -40,9 +40,7 @@ const SCOPE_ASSIST_IN_FLIGHT_REQUESTS = new Map();
 const DASH_IMMUTABLE_ACCEPTED_PROSE_CACHE = new Map();
 let ROUTE_REQUEST_SEQ = 0;
 
-console.log("LOADED dev-ai.js v6 RULE_PARSER_FIRST + STRICT_SANITIZE + V1_LABOR_ENGINE");
-console.log(`SCOPE_RUNTIME_BUILD=${SCOPE_RUNTIME_BUILD}`);
-console.log(`LIVE_SCOPE_SERVER_FILE=${DEV_AI_SERVER_FILE} SCOPE_RUNTIME_BUILD=${SCOPE_RUNTIME_BUILD}`);
+console.log("dev-ai handlers loaded");
 
 function getDevAiBackendIdentity(route = "") {
   return {
@@ -6293,8 +6291,34 @@ function nextRouteRequestId() {
   return `r${String(ROUTE_REQUEST_SEQ).padStart(5, "0")}`;
 }
 
+const SAFE_LOG_STRING_FIELDS = new Set([
+  "route", "section", "mode", "provider", "model", "path", "phase", "outcome", "reason",
+  "reasonTag", "failureType", "failure_type", "code", "stage", "trace_label", "generation_mode",
+  "sourceKind", "sourceType", "sourcePriority", "responseSource", "fallbackSource", "route_function",
+  "loadedScopeRuntimeBuild", "finalScopeRuntimeBuild", "finalScopeRuntimePath", "_scopeRuntimeBuild",
+  "_scopeRuntimePath", "_scopeParseSource", "activeScopeRuntimeBuild", "providerName",
+]);
+
+function sanitizeLogPayload(payload = {}) {
+  return Object.entries(payload).reduce((safe, [key, value]) => {
+    if (value == null) return safe;
+    if (typeof value === "string") {
+      if (SAFE_LOG_STRING_FIELDS.has(key)) safe[key] = value;
+      else safe[`${key}_chars`] = value.length;
+      return safe;
+    }
+    if (Array.isArray(value)) {
+      safe[`${key}_count`] = value.length;
+      return safe;
+    }
+    if (typeof value === "object") return safe;
+    safe[key] = value;
+    return safe;
+  }, {});
+}
+
 function formatRouteLogFields(fields = {}) {
-  return Object.entries(fields)
+  return Object.entries(sanitizeLogPayload(fields))
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .map(([key, value]) => `${key}=${String(value).replace(/\s+/g, " ").trim()}`)
     .join(" ");
@@ -6323,8 +6347,10 @@ function startRouteTrace(route, fields = {}) {
 }
 
 function logGuidedBuildGroqFailure(message, detail = "") {
-  const compactDetail = String(detail || "").replace(/\s+/g, " ").trim().slice(0, 240);
-  console.warn(`[guided-build][groq] ${String(message || "").trim()}${compactDetail ? ` ${compactDetail}` : ""}`);
+  console.warn("[guided-build][groq] provider_failure", {
+    category: String(message || "").trim(),
+    detail_chars: String(detail || "").length,
+  });
 }
 
 function getGroqConfigProblem() {
@@ -6512,7 +6538,7 @@ function extractAssistFailureText(detail) {
 
 function logScopeAssistTerminal(traceId, event, payload = {}) {
   try {
-    console.log(`[ai-assist:${traceId || "?"}] ${event}`, payload);
+    console.log(`[ai-assist:${traceId || "?"}] ${event}`, sanitizeLogPayload(payload));
   } catch {}
 }
 
@@ -6618,7 +6644,7 @@ function buildScopeAssistErrorBody(reason, payload = {}) {
     retryable: failure.retryable,
     status: failure.status,
     provider: failure.provider,
-    ...(failure.detail ? { detail: failure.detail } : {}),
+    detail: "Provider request failed.",
     ...payload,
   };
 }
@@ -8435,7 +8461,7 @@ async function handleScopeAssistRequest({
         retryable: failure.retryable,
         status: failure.status || fallbackStatus,
         provider: failure.provider,
-        ...(failure.detail ? { detail: failure.detail } : {}),
+        detail: "Provider request failed.",
         reasonTag,
       },
       traceLabel: "error_fallback",
@@ -11510,7 +11536,7 @@ app.post("/api/ai-assist", async (req, res) => {
   const getScopeRuntimeTruth = () => ({
     _scopeOutcome: String(scopeRuntimeTruthState.outcome || ""),
     _scopeReasonTag: String(scopeRuntimeTruthState.reasonTag || ""),
-    _scopeExcerpt: String(scopeRuntimeTruthState.excerpt || "").trim().slice(0, 160),
+    _scopeExcerpt: "",
     _scopeResponseSource: String(scopeRuntimeTruthState.responseSource || ""),
     _scopeFallbackSource: String(scopeRuntimeTruthState.fallbackSource || ""),
     _scopeParseBranch: String(scopeRuntimeTruthState.parseBranch || ""),
@@ -11540,8 +11566,8 @@ app.post("/api/ai-assist", async (req, res) => {
     _scopeDashCompilerRejectedFailedDashSource: Boolean(scopeRuntimeTruthState.dashCompilerRejectedFailedDashAsCompilerSource),
     _scopeDashCompilerUsedOriginalProseSource: Boolean(scopeRuntimeTruthState.dashCompilerUsedOriginalProseSource),
     _scopeDashCompilerFallbackSourceTextBlocked: Boolean(scopeRuntimeTruthState.dashCompilerFallbackSourceTextBlocked),
-    _scopeDashCompilerSourceTextUsedForCompilation: String(scopeRuntimeTruthState.dashCompilerSourceTextUsedForCompilation || "").trim().slice(0, 160),
-    _scopeDashTransformSource: String(scopeRuntimeTruthState.dashTransformSource || "").trim().slice(0, 160),
+    _scopeDashCompilerSourceTextUsedForCompilation: "",
+    _scopeDashTransformSource: "",
     _scopeDashCanonicalProseSourceType: String(scopeRuntimeTruthState.dashCanonicalProseSourceType || ""),
     _scopeDashCanonicalProseChars: Math.max(0, Number(scopeRuntimeTruthState.dashCanonicalProseChars || 0)),
     _scopeDashUsedOriginalAcceptedProse: Boolean(scopeRuntimeTruthState.dashUsedOriginalAcceptedProse),
@@ -11619,8 +11645,8 @@ app.post("/api/ai-assist", async (req, res) => {
     _scopeShorterRejectedForParagraphCount: Boolean(scopeRuntimeTruthState.shorterRejectedForParagraphCount),
     _scopeShorterCompliancePass: typeof scopeRuntimeTruthState.shorterCompliancePass === "boolean" ? scopeRuntimeTruthState.shorterCompliancePass : null,
     _scopeShorterSemanticPass: typeof scopeRuntimeTruthState.shorterSemanticPass === "boolean" ? scopeRuntimeTruthState.shorterSemanticPass : null,
-    _scopePreservedAnchorTerms: Array.isArray(scopeRuntimeTruthState.preservedAnchorTerms) ? scopeRuntimeTruthState.preservedAnchorTerms : [],
-    _scopeMissingAnchorTerms: Array.isArray(scopeRuntimeTruthState.missingAnchorTerms) ? scopeRuntimeTruthState.missingAnchorTerms : [],
+    _scopePreservedAnchorTerms: [],
+    _scopeMissingAnchorTerms: [],
     _scopeInventedExclusionLikeLanguage: Boolean(scopeRuntimeTruthState.inventedExclusionLikeLanguage),
     _scopeInventedProcessDetailLikeLanguage: Boolean(scopeRuntimeTruthState.inventedProcessDetailLikeLanguage),
     _scopeShorterRejectedForSemanticDrift: Boolean(scopeRuntimeTruthState.shorterRejectedForSemanticDrift),
@@ -11635,13 +11661,13 @@ app.post("/api/ai-assist", async (req, res) => {
     scopeRuntimeTruthState.refineMode === "refine"
       ? {
         refineMode: String(scopeRuntimeTruthState.refineMode || ""),
-        refineInstruction: String(scopeRuntimeTruthState.refineInstruction || ""),
+        refineInstruction: "",
         dashDetectorMatched: Boolean(scopeRuntimeTruthState.dashDetectorMatched),
         dashBranchActive: Boolean(scopeRuntimeTruthState.dashBranchActive),
         shorterDetectorMatched: Boolean(scopeRuntimeTruthState.shorterDetectorMatched),
         shorterBranchActive: Boolean(scopeRuntimeTruthState.shorterBranchActive),
         refinePromptBranch: String(scopeRuntimeTruthState.refinePromptBranch || ""),
-        currentScopeDraftExcerpt: String(scopeRuntimeTruthState.currentScopeDraftExcerpt || ""),
+        currentScopeDraftExcerpt: "",
       }
       : {}
   );
@@ -11650,12 +11676,12 @@ app.post("/api/ai-assist", async (req, res) => {
       ? {
         _scopeRefineRuntimeMeta: {
           refineMode: String(scopeRuntimeTruthState.refineMode || ""),
-          refineInstruction: String(scopeRuntimeTruthState.refineInstruction || ""),
+          refineInstruction: "",
           dashDetectorMatched: Boolean(scopeRuntimeTruthState.dashDetectorMatched),
           dashBranchActive: Boolean(scopeRuntimeTruthState.dashBranchActive),
           shorterBranchActive: Boolean(scopeRuntimeTruthState.shorterBranchActive),
           refinePromptBranch: String(scopeRuntimeTruthState.refinePromptBranch || ""),
-          currentScopeDraftExcerpt: String(scopeRuntimeTruthState.currentScopeDraftExcerpt || ""),
+          currentScopeDraftExcerpt: "",
           activeScopeRuntimeBuild: SCOPE_RUNTIME_BUILD,
         },
       }
@@ -11663,14 +11689,13 @@ app.post("/api/ai-assist", async (req, res) => {
   );
   const getScopePromptBasisRuntimeMeta = () => ({
     _scopePromptBasisField: String(normalizedContext?.scopePromptBasisField || ""),
-    _scopePromptBasisExcerpt: String(normalizedContext?.scopePromptBasis || "").replace(/\s+/g, " ").trim().slice(0, 160),
+    _scopePromptBasisExcerpt: "",
   });
   const getScopeParseSource = () => String(scopeRuntimeTruthState.parseSource || "raw_only");
   const withScopeDebugMeta = (payload = {}) => {
     if (!isScopeSection) return payload;
     return {
       ...payload,
-      ...getDevAiBackendIdentity("/api/ai-assist"),
       _scopeRuntimeBuild: SCOPE_RUNTIME_BUILD,
       _scopeRuntimePath: getScopeRuntimePath(),
       ...getScopePromptBasisRuntimeMeta(),
@@ -11812,13 +11837,13 @@ app.post("/api/ai-assist", async (req, res) => {
           || resolveScopeAssistResponseSource(getScopeRuntimePath(), extra?.fallbackSource || responsePayload?._scopeFallbackSource || "")
         ),
         fallbackSource: String(responsePayload?._scopeFallbackSource || extra?.fallbackSource || ""),
-        visibleExcerpt: String(
+        visibleResponseChars: String(
           responsePayload?.scopeNotes
           || responsePayload?.clarificationQuestion
           || responsePayload?._message
           || responsePayload?._error
           || ""
-        ).trim().slice(0, 240),
+        ).trim().length,
       });
       logScopeAssistTerminal(_tid, "final_scope_response_payload", {
         status,
@@ -11829,8 +11854,7 @@ app.post("/api/ai-assist", async (req, res) => {
         ...getScopeRuntimeTruth(),
         ...getScopeRefineRuntimeLogMeta(),
         scope_notes_len: String(responsePayload?.scopeNotes || "").length,
-        scope_notes_excerpt: String(responsePayload?.scopeNotes || "").trim().slice(0, 300),
-        clarification_excerpt: String(responsePayload?.clarificationQuestion || "").trim().slice(0, 160),
+        clarification_chars: String(responsePayload?.clarificationQuestion || "").trim().length,
       });
       if (status >= 400 || payload?._assistFailed) {
         logScopeAssistTerminal(_tid, "normalized_error_return", {
@@ -11893,12 +11917,11 @@ app.post("/api/ai-assist", async (req, res) => {
       mode: normalizedScopeMode,
       ...(scopeRefineRuntimeMeta?.refineMode === "refine" ? scopeRefineRuntimeMeta : {}),
     });
-    const compact = (value = "") => String(value || "").replace(/\s+/g, " ").trim().slice(0, 120);
     logScopeEvent("active_route", {
       route_function: "scope_request_pipeline",
     });
     logScopeEvent("raw_prompt_received", {
-      raw_prompt_excerpt: compact(userInput),
+      input_chars: String(userInput || "").length,
     });
     if (dashBriefLocalRefine) {
       const dashBriefProviderResult = await handleDashBriefProviderTransform({
@@ -11931,9 +11954,6 @@ app.post("/api/ai-assist", async (req, res) => {
           retryable: Boolean(dashBriefProviderResult?.retryable),
           status: Number(dashBriefProviderResult?.status || 500),
           provider: "groq",
-          ...(String(dashBriefProviderResult?.meta?.finalExcerpt || "").trim()
-            ? { detail: String(dashBriefProviderResult?.meta?.finalExcerpt || "") }
-            : {}),
           reasonTag: String(dashBriefProviderResult?.reasonTag || "dash_brief_provider_transform_failure"),
         };
       return respondScopeAssist(
@@ -11948,7 +11968,7 @@ app.post("/api/ai-assist", async (req, res) => {
           sourceKind: String(dashBriefProviderResult?.meta?.sourceKind || ""),
           sourceChars: Math.max(0, Number(dashBriefProviderResult?.meta?.sourceChars || 0)),
           bulletCount: Math.max(0, Number(dashBriefProviderResult?.meta?.bulletCount || 0)),
-          finalExcerpt: String(dashBriefProviderResult?.meta?.finalExcerpt || ""),
+          finalExcerptChars: String(dashBriefProviderResult?.meta?.finalExcerpt || "").length,
         },
         dashBriefProviderResult?.ok ? "scope" : "failed"
       );
@@ -11956,19 +11976,9 @@ app.post("/api/ai-assist", async (req, res) => {
     logScopeEvent("scope_request_received", {
       incomingMode: String(mode || context?.scopeMode || "").trim(),
       normalizedMode: normalizedScopeMode,
-      inputText: compact(userInput),
-      sourceScopeText: compact(scopePromptResolution.text),
-      sourcePrompt: compact(sourcePrompt),
-      sourceScopePrompt: compact(sourceScopePrompt),
-      promptText: compact(promptText),
-      currentPrompt: compact(currentPrompt),
-      assistantMessage: compact(assistantMessage),
-      contextScopePromptBasis: compact(dashBriefLocalRefine ? normalizedContext?.scopePromptBasis : context?.scopePromptBasis),
-      contextSourcePrompt: compact(dashBriefLocalRefine ? normalizedContext?.sourcePrompt : context?.sourcePrompt),
-      contextSourceScopePrompt: compact(dashBriefLocalRefine ? normalizedContext?.sourceScopePrompt : context?.sourceScopePrompt),
-      contextCurrentPrompt: compact(dashBriefLocalRefine ? normalizedContext?.currentPrompt : context?.currentPrompt),
-      contextPromptText: compact(dashBriefLocalRefine ? normalizedContext?.promptText : context?.promptText),
-      contextAssistantMessage: compact(dashBriefLocalRefine ? normalizedContext?.assistantMessage : context?.assistantMessage),
+      input_chars: String(userInput || "").length,
+      source_scope_chars: String(scopePromptResolution.text || "").length,
+      context_scope_chars: String(dashBriefLocalRefine ? normalizedContext?.scopePromptBasis : context?.scopePromptBasis || "").length,
       bodyKeys: Object.keys(req.body || {}).sort().join(","),
     });
     if (scopeRefineRuntimeMeta?.refineMode === "refine") {
@@ -11978,15 +11988,8 @@ app.post("/api/ai-assist", async (req, res) => {
     }
     logScopeEvent("scope_prompt_basis_selected", {
       selectedField: scopePromptResolution.field || "",
-      selectedText: compact(scopePromptResolution.text),
-      rawSelectedText: compact(scopePromptResolution.raw),
-      inputText: compact(userInput),
-      sourceScopeText: compact(scopePromptResolution.text),
-      sourcePrompt: compact(sourcePrompt),
-      sourceScopePrompt: compact(sourceScopePrompt),
-      promptText: compact(promptText),
-      currentPrompt: compact(currentPrompt),
-      assistantMessage: compact(assistantMessage),
+      selected_chars: String(scopePromptResolution.text || "").length,
+      input_chars: String(userInput || "").length,
     });
   }
   req.once("aborted", () => {
@@ -12044,7 +12047,7 @@ app.post("/api/ai-assist", async (req, res) => {
       system_prompt_chars: systemPrompt.length,
       user_prompt_chars: userPrompt.length,
       prompt_basis_field: String(normalizedContext?.scopePromptBasisField || ""),
-      prompt_basis_excerpt: String(normalizedContext?.scopePromptBasis || "").replace(/\s+/g, " ").trim().slice(0, 120),
+      prompt_basis_chars: String(normalizedContext?.scopePromptBasis || "").length,
     });
     logScopeEvent("model_selected", {
       primary_model: GROQ_SCOPE_PRIMARY_MODEL,
@@ -12132,7 +12135,7 @@ app.post("/api/ai-assist", async (req, res) => {
     if (normalizedSectionKey === "scope") {
       const failure = normalizeScopeAssistFailure(e);
       if (_tid) {
-        console.log(`[ai-assist:${_tid}] scope_request branch=provider_error input="${String(userInput || "").slice(0, 60)}" error_status=${failure.status} error_type=${failure.failureType}`);
+        console.log(`[ai-assist:${_tid}] scope_request branch=provider_error error_status=${failure.status} error_type=${failure.failureType}`);
       }
       setScopeDebugState({
         path: "malformed_or_internal_failure",
@@ -12801,3 +12804,4 @@ if (require.main === module) {
 module.exports = app;
 module.exports.app = app;
 module.exports.bootstrapDevAiServer = bootstrapDevAiServer;
+module.exports.sanitizeLogPayload = sanitizeLogPayload;

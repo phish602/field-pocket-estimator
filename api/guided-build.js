@@ -1,1 +1,1 @@
-module.exports = require("./_devAiBridge")("/api/guided-build");
+module.exports = require("./_devAiBridge").createGuardedDevAiBridge("/api/guided-build");

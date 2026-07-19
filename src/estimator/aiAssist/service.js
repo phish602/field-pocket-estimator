@@ -2,6 +2,7 @@
 /* eslint-disable */
 
 import { getAssistConfig, normalizeAssistSectionKey } from "./registry";
+import { getSupabaseClient } from "../../lib/supabaseClient";
 
 const AI_ASSIST_TIMEOUT_MS = 30000;
 const AI_ASSIST_SCOPE_INITIAL_TIMEOUT_MS = 45000;
@@ -9,6 +10,17 @@ const AI_ASSIST_SCOPE_REFINE_TIMEOUT_MS = 65000;
 const AI_ASSIST_BUSY_MESSAGE = "AI assist is temporarily busy. Please wait a few seconds and try again.";
 const AI_ASSIST_GENERIC_MESSAGE = "AI assist couldn’t complete that request right now. Please try again.";
 const AI_ASSIST_REQUEST_PATH = "/api/ai-assist";
+
+export async function getSessionAuthorizationHeader() {
+  try {
+    const client = getSupabaseClient();
+    const result = await client?.auth?.getSession?.();
+    const token = String(result?.data?.session?.access_token || "").trim();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
 
 function normalizeScopeAssistMode(mode) {
   return String(mode || "").trim().toLowerCase() === "refine" ? "refine" : "initial";
@@ -451,7 +463,7 @@ export async function requestSectionAssist({
     if (!raw) {
       const response = await fetch(AI_ASSIST_REQUEST_PATH, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await getSessionAuthorizationHeader()) },
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
