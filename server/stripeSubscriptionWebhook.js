@@ -1,7 +1,6 @@
 // Server-only Stripe subscription webhook handling. Do not import from browser code.
 const Stripe = require("stripe");
-const { upsertCompanySubscriptionPlanState } = require("./subscriptionPlanStateAdmin");
-const { upsertPrivateStripeBillingRef } = require("./companyStripeBillingRefs");
+const { applyStripeSubscriptionWebhookEvent } = require("./stripeSubscriptionWebhookReplayOrdering");
 
 const SUPPORTED_EVENT_TYPES = new Set([
   "customer.subscription.created",
@@ -69,7 +68,22 @@ function statusFromSubscription(subscription, eventType) {
 function currentPeriodEndIso(subscription) {
   const seconds = Number(subscription?.current_period_end);
   if (!Number.isFinite(seconds) || seconds <= 0) return "";
-  return new Date(seconds * 1000).toISOString();
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function subscriptionCreatedAtIso(subscription) {
+  const seconds = subscription?.created;
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function eventCreatedAtIso(event) {
+  const seconds = event?.created;
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
 }
 
 function buildPlanStateInput(subscription, eventType, env, mappedCompanyId = "") {
@@ -77,7 +91,9 @@ function buildPlanStateInput(subscription, eventType, env, mappedCompanyId = "")
   if (!companyId) return null;
 
   const plan = planFromSubscriptionPrices(subscription, env);
-  const status = plan === "free" ? "unknown" : statusFromSubscription(subscription, eventType);
+  const status = eventType === "customer.subscription.deleted"
+    ? "canceled"
+    : (plan === "free" ? "unknown" : statusFromSubscription(subscription, eventType));
   return {
     companyId,
     plan,
@@ -97,11 +113,28 @@ function response(status, body) {
   return { status, body };
 }
 
-async function resolveCheckoutSubscription(session, stripe) {
-  if (session?.subscription && typeof session.subscription === "object") return session.subscription;
-  const subscriptionId = text(session?.subscription);
-  if (!subscriptionId || typeof stripe?.subscriptions?.retrieve !== "function") return null;
-  return stripe.subscriptions.retrieve(subscriptionId);
+function isConfirmedStripeSubscriptionNotFound(error) {
+  return error?.type === "StripeInvalidRequestError"
+    && error?.code === "resource_missing"
+    && error?.statusCode === 404;
+}
+
+function subscriptionIdFromReference(value) {
+  return value && typeof value === "object" ? text(value.id) : text(value);
+}
+
+async function retrieveCurrentSubscription(stripe, subscriptionId) {
+  if (!text(subscriptionId) || typeof stripe?.subscriptions?.retrieve !== "function") {
+    return { ok: false, notFound: false };
+  }
+  try {
+    const subscription = await stripe.subscriptions.retrieve(text(subscriptionId));
+    return subscription && typeof subscription === "object"
+      ? { ok: true, subscription }
+      : { ok: false, notFound: false };
+  } catch (error) {
+    return { ok: false, notFound: isConfirmedStripeSubscriptionNotFound(error) };
+  }
 }
 
 async function processStripeSubscriptionWebhook({
@@ -110,8 +143,7 @@ async function processStripeSubscriptionWebhook({
   stripe,
   webhookSecret,
   env = process.env,
-  upsertPlanState = upsertCompanySubscriptionPlanState,
-  upsertBillingRef = upsertPrivateStripeBillingRef,
+  applyReplayOrdering = applyStripeSubscriptionWebhookEvent,
   logger = console,
 } = {}) {
   if (!text(webhookSecret)) {
@@ -131,6 +163,13 @@ async function processStripeSubscriptionWebhook({
     return response(200, { received: true, ignored: true });
   }
 
+  const stripeEventId = text(event?.id);
+  const eventCreatedAt = eventCreatedAtIso(event);
+  if (!stripeEventId || !eventCreatedAt) {
+    logIgnored(logger, eventType, "invalid_event");
+    return response(400, { error: "Invalid Stripe webhook event." });
+  }
+
   try {
     let subscription = null;
     let input = null;
@@ -141,11 +180,21 @@ async function processStripeSubscriptionWebhook({
         logIgnored(logger, eventType, "not_subscription_mode");
         return response(200, { received: true, ignored: true });
       }
-      subscription = await resolveCheckoutSubscription(session, stripe);
-      if (!subscription) {
-        logIgnored(logger, eventType, "missing_subscription_source");
-        return response(200, { received: true, ignored: true });
+      const subscriptionId = subscriptionIdFromReference(session?.subscription);
+      if (!subscriptionId) {
+        logIgnored(logger, eventType, "invalid_event");
+        return response(400, { error: "Invalid Stripe webhook event." });
       }
+      const retrieval = await retrieveCurrentSubscription(stripe, subscriptionId);
+      if (!retrieval.ok) {
+        if (retrieval.notFound) {
+          logIgnored(logger, eventType, "subscription_not_found");
+          return response(200, { received: true, ignored: true });
+        }
+        logger?.error?.("[stripe_subscription_webhook] subscription retrieval failed", { eventType, reason: "subscription_retrieval_failed" });
+        return response(500, { error: "Unable to process Stripe webhook." });
+      }
+      subscription = retrieval.subscription;
       const checkoutCompanyId = companyIdFromSources(subscription, session, subscription?.customer, session?.customer);
       if (!checkoutCompanyId) {
         logIgnored(logger, eventType, "missing_company_mapping");
@@ -153,8 +202,33 @@ async function processStripeSubscriptionWebhook({
       }
       input = buildPlanStateInput(subscription, eventType, env, checkoutCompanyId);
     } else {
-      subscription = event?.data?.object;
-      input = buildPlanStateInput(subscription, eventType, env);
+      const signedSubscription = event?.data?.object;
+      const signedSubscriptionId = text(signedSubscription?.id);
+      if (!signedSubscriptionId) {
+        logIgnored(logger, eventType, "invalid_event");
+        return response(400, { error: "Invalid Stripe webhook event." });
+      }
+      const signedCompanyId = companyIdFromSources(signedSubscription, signedSubscription?.customer);
+      if (!signedCompanyId || !isUuid(signedCompanyId)) {
+        logIgnored(logger, eventType, signedCompanyId ? "invalid_company_mapping" : "missing_company_mapping");
+        return response(200, { received: true, ignored: true });
+      }
+      if (eventType === "customer.subscription.deleted") {
+        subscription = signedSubscription;
+        input = buildPlanStateInput(subscription, eventType, env, signedCompanyId);
+      } else {
+        const retrieval = await retrieveCurrentSubscription(stripe, signedSubscriptionId);
+        if (!retrieval.ok) {
+          if (retrieval.notFound) {
+            logIgnored(logger, eventType, "subscription_not_found");
+            return response(200, { received: true, ignored: true });
+          }
+          logger?.error?.("[stripe_subscription_webhook] subscription retrieval failed", { eventType, reason: "subscription_retrieval_failed" });
+          return response(500, { error: "Unable to process Stripe webhook." });
+        }
+        subscription = retrieval.subscription;
+        input = buildPlanStateInput(subscription, eventType, env, signedCompanyId);
+      }
     }
 
     // The mapped company id must be a real UUID before it can key any write. A
@@ -165,37 +239,43 @@ async function processStripeSubscriptionWebhook({
       logIgnored(logger, eventType, input?.companyId ? "invalid_company_mapping" : "missing_company_mapping");
       return response(200, { received: true, ignored: true });
     }
-
-    // Gate 17A.1a: identifiers go to service-role-only private storage FIRST,
-    // so a later failure can never leave a subscription whose customer id was
-    // dropped. The plan-state row itself carries safe facts only.
-    if (text(input.stripeCustomerId) || text(input.stripeSubscriptionId)) {
-      const refResult = await upsertBillingRef({
-        companyId: input.companyId,
-        stripeCustomerId: input.stripeCustomerId,
-        stripeSubscriptionId: input.stripeSubscriptionId,
-        env,
-      });
-      if (!refResult?.ok) {
-        // Never log the identifiers themselves -- only that the write failed.
-        logger?.error?.("[stripe_subscription_webhook] billing ref write failed", { eventType, code: refResult?.code });
-        return response(500, { error: "Unable to update subscription billing reference." });
-      }
+    const stripeSubscriptionCreatedAt = subscriptionCreatedAtIso(subscription);
+    if (!stripeSubscriptionCreatedAt) {
+      logIgnored(logger, eventType, "invalid_event");
+      return response(400, { error: "Invalid Stripe webhook event." });
     }
 
-    const result = await upsertPlanState(input);
+    const result = await applyReplayOrdering({
+      stripeEventId,
+      eventCreatedAt,
+      stripeSubscriptionCreatedAt,
+      eventType,
+      companyId: input.companyId,
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscriptionId: input.stripeSubscriptionId,
+      plan: input.plan,
+      status: input.status,
+      currentPeriodEnd: input.currentPeriodEnd || null,
+      env,
+    });
     if (!result?.ok) {
-      logger?.error?.("[stripe_subscription_webhook] plan write failed", { eventType });
-      return response(500, { error: "Unable to update subscription plan state." });
+      logger?.error?.("[stripe_subscription_webhook] replay authority failed", { eventType, reason: "replay_authority_failed" });
+      return response(500, { error: "Unable to process Stripe webhook." });
     }
-    return response(200, { received: true });
+    if (result.category === "applied") return response(200, { received: true });
+    if (result.category === "duplicate" || result.category === "stale") {
+      logger?.warn?.("[stripe_subscription_webhook] ignored", { eventType, reason: result.category });
+      return response(200, { received: true, ignored: true });
+    }
+    logger?.error?.("[stripe_subscription_webhook] replay authority failed", { eventType, reason: "replay_authority_failed" });
+    return response(500, { error: "Unable to process Stripe webhook." });
   } catch {
     logger?.error?.("[stripe_subscription_webhook] processing failed", { eventType });
     return response(500, { error: "Unable to process Stripe webhook." });
   }
 }
 
-function createConfiguredWebhookProcessor({ env = process.env, StripeConstructor = Stripe, upsertPlanState, upsertBillingRef, logger } = {}) {
+function createConfiguredWebhookProcessor({ env = process.env, StripeConstructor = Stripe, applyReplayOrdering, logger } = {}) {
   return async ({ rawBody, signature }) => {
     const webhookSecret = text(env.STRIPE_WEBHOOK_SECRET);
     const stripeSecretKey = text(env.STRIPE_SECRET_KEY);
@@ -204,7 +284,7 @@ function createConfiguredWebhookProcessor({ env = process.env, StripeConstructor
       return response(500, { error: "Webhook is not configured." });
     }
     const stripe = new StripeConstructor(stripeSecretKey);
-    return processStripeSubscriptionWebhook({ rawBody, signature, stripe, webhookSecret, env, upsertPlanState, upsertBillingRef, logger });
+    return processStripeSubscriptionWebhook({ rawBody, signature, stripe, webhookSecret, env, applyReplayOrdering, logger });
   };
 }
 
