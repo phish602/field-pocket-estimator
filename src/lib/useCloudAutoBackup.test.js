@@ -9,7 +9,9 @@ import {
 } from "./cloudBackupQueue";
 import { releaseCloudBackupRunLock, acquireCloudBackupRunLock } from "./cloudBackupRunLock";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
+import { updateSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import useCloudAutoBackup from "./useCloudAutoBackup";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("./supabaseCloudOnboarding", () => {
   const actual = jest.requireActual("./supabaseCloudOnboarding");
@@ -18,6 +20,11 @@ jest.mock("./supabaseCloudOnboarding", () => {
     runSupabaseCloudOnboardingBackup: jest.fn(),
   };
 });
+
+jest.mock("./supabaseAppRestoreBundle", () => ({
+  APP_RESTORE_BUNDLE_STATUS: { COMPLETED: "completed" },
+  updateSupabaseAppRestoreBundle: jest.fn(),
+}));
 
 const USER = { id: "user-1" };
 const COMPANY = { id: "company-1" };
@@ -40,6 +47,8 @@ beforeEach(() => {
   releaseCloudBackupRunLock();
   runSupabaseCloudOnboardingBackup.mockReset();
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
+  updateSupabaseAppRestoreBundle.mockReset();
+  updateSupabaseAppRestoreBundle.mockResolvedValue({ status: "completed", bundleUpdated: true });
 });
 
 afterEach(() => {
@@ -136,6 +145,56 @@ test("backup success clears the queue back to current", async () => {
   await waitFor(() => expect(readCloudBackupQueueState().pending).toBe(false));
   expect(readCloudBackupQueueState().status).toBe(CLOUD_BACKUP_STATUS.CURRENT);
 
+  unmount();
+});
+
+test("a verified automatic backup captures the latest saved Company Profile and logo in the app restore bundle", async () => {
+  localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({
+    companyName: "Desert Ridge Updated",
+    logoDataUrl: "data:image/png;base64,replacement-logo",
+  }));
+  markCloudBackupDirty({ reason: "company_profile_saved", domains: ["company_profile"], severity: "normal" });
+  runSupabaseCloudOnboardingBackup.mockResolvedValue({
+    status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED,
+    verification: { ok: true, allMatched: true, notices: [] },
+  });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+
+  await waitFor(() => expect(updateSupabaseAppRestoreBundle).toHaveBeenCalledWith(expect.objectContaining({
+    storageSnapshot: localStorage,
+    configured: true,
+    user: USER,
+    company: COMPANY,
+    role: "owner",
+  })));
+  expect(JSON.parse(updateSupabaseAppRestoreBundle.mock.calls[0][0].storageSnapshot.getItem(STORAGE_KEYS.COMPANY_PROFILE))).toEqual({
+    companyName: "Desert Ridge Updated",
+    logoDataUrl: "data:image/png;base64,replacement-logo",
+  });
+  unmount();
+});
+
+test("a failed app restore-bundle capture keeps the cloud queue pending", async () => {
+  markCloudBackupDirty({ reason: "company_profile_saved", domains: ["company_profile"], severity: "normal" });
+  runSupabaseCloudOnboardingBackup.mockImplementation(async () => {
+    clearCloudBackupDirty("business_backup_verified");
+    return {
+    status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED,
+    verification: { ok: true, allMatched: true, notices: [] },
+    };
+  });
+  updateSupabaseAppRestoreBundle.mockResolvedValue({
+    status: "error",
+    bundleUpdated: false,
+    error: "Unable to update the app restore bundle in Supabase.",
+  });
+
+  const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
+
+  await waitFor(() => expect(updateSupabaseAppRestoreBundle).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(readCloudBackupQueueState()).toEqual(expect.objectContaining({ pending: true })));
+  expect(readCloudBackupQueueState().status).not.toBe(CLOUD_BACKUP_STATUS.CURRENT);
   unmount();
 });
 

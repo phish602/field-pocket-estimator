@@ -17,17 +17,31 @@ export default function CloudBackupInlineStatus({ className, style } = {}) {
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
   if (displayState === "none" && !restoredRecently) return null;
 
+  // The persisted queue is the local source of truth for work that has not
+  // received verified cloud completion. Prefer it over a stale verification
+  // result so a just-saved profile never briefly reports "Cloud up to date".
+  const queueStatus = String(queueState?.status || "").trim();
+  const effectiveDisplayState = queueState?.pending
+    ? (displayState === "running" || queueStatus === "syncing"
+      ? "running"
+      : ["needs_attention", "remote_changed", "conflict"].includes(queueStatus)
+        ? "failed"
+        : "pending")
+    : displayState;
+
   const text = restoredRecently
     ? "Cloud backup restored"
-    : displayState === "running"
+    : effectiveDisplayState === "running"
       ? "Saved on this device · Syncing automatically"
-      : displayState === "failed"
+      : effectiveDisplayState === "failed"
         ? chipState === "local_cloud_mismatch"
           ? queueState?.status === "conflict"
             ? "Saved on this device · Cloud sync conflict"
             : "Saved on this device · Cloud changed elsewhere"
-          : "Saved on this device · Sync needs attention"
-        : displayState === "pending"
+          : queueState?.status === "conflict"
+            ? "Saved on this device · Cloud sync conflict"
+            : "Saved on this device · Sync needs attention"
+        : effectiveDisplayState === "pending"
           ? queueState?.status === "offline_pending"
             ? "Saved on this device · Waiting for connection"
             : queueState?.status === "retry_wait"
@@ -35,9 +49,9 @@ export default function CloudBackupInlineStatus({ className, style } = {}) {
               : "Saved on this device · Backup pending"
           : "Saved on this device · Cloud up to date";
 
-  const color = restoredRecently || displayState === "current"
+  const color = restoredRecently || effectiveDisplayState === "current"
     ? "rgba(187,247,208,0.88)"
-    : displayState === "failed"
+    : effectiveDisplayState === "failed"
       ? "rgba(253,224,71,0.92)"
       : "rgba(230,241,248,0.5)";
 

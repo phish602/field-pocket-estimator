@@ -28,6 +28,7 @@ import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 import { ensureCurrentDeviceCanApplyLocalRestore } from "./supabaseDeviceLock";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
+import { updateSupabaseAppRestoreBundle, APP_RESTORE_BUNDLE_STATUS } from "./supabaseAppRestoreBundle";
 
 // Test-friendly, overridable debounce constants. Immediate covers
 // money-critical queue entries (invoices/payments); normal covers
@@ -102,6 +103,26 @@ async function captureAutomaticBackupBaseline({ result, params, queueGeneration 
   const cloudSnapshot = await readSupabaseCloudConvergenceSnapshot({ configured: params.configured, user: params.user, company: params.company });
   const captured = captureVerifiedCloudSyncBaseline({ storage: localStorage, companyId: params.company?.id, queueRevision: queueGeneration, cloudSnapshot, verified: true, deviceAccess: access });
   return captured.ok ? { ok: true } : { ok: false, code: captured.code || "baseline_write_failed" };
+}
+
+async function captureAutomaticAppRestoreBundle({ result, params }) {
+  if (result?.status !== "backup_completed") return { ok: true, skipped: true };
+  const bundleResult = await updateSupabaseAppRestoreBundle({
+    storageSnapshot: localStorage,
+    configured: params.configured,
+    user: params.user,
+    company: params.company,
+    role: params.role,
+  });
+  if (bundleResult?.status === APP_RESTORE_BUNDLE_STATUS.COMPLETED && bundleResult?.bundleUpdated) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    code: "app_restore_bundle_incomplete",
+    error: bundleResult?.error || "The app restore bundle could not be updated.",
+    deviceLockLost: Boolean(bundleResult?.deviceLockLost),
+  };
 }
 
 export default function useCloudAutoBackup({
@@ -184,7 +205,40 @@ export default function useCloudAutoBackup({
           role: params.role,
           queueGeneration,
         });
-        const baseline = await captureAutomaticBackupBaseline({ result, params, queueGeneration });
+        let completionQueueGeneration = queueGeneration;
+        if (result?.status === "backup_completed") {
+          const latestQueue = readCloudBackupQueueState();
+          const newerMutationArrived = latestQueue.pending
+            && Number(latestQueue.localMutationRevision || 0) !== Number(queueGeneration || 0);
+          if (newerMutationArrived) {
+            // A newer local change arrived while the business backup was in
+            // flight. Leave that generation pending for its own full backup
+            // and bundle capture; never let this older completion clear it.
+            applyCloudBackupResultToQueue(result, { queueGeneration });
+            return;
+          }
+          // The business backup verified its own data before returning, but the
+          // app restore bundle is a second required cloud write. Re-queue this
+          // final capture so the UI cannot call the cloud current until both
+          // writes have completed successfully.
+          const appBundleQueue = markCloudBackupDirty({
+            reason: "app_restore_bundle_capture",
+            domains: ["company_profile"],
+            severity: "normal",
+            source: "useCloudAutoBackup",
+          });
+          completionQueueGeneration = Number(appBundleQueue?.localMutationRevision || queueGeneration || 0);
+          const appRestoreBundle = await captureAutomaticAppRestoreBundle({ result, params });
+          if (!appRestoreBundle.ok) {
+            result = {
+              ...result,
+              status: "needs_attention",
+              error: appRestoreBundle.error || "Cloud backup needs another verification before it can be marked complete.",
+              deviceLockLost: appRestoreBundle.deviceLockLost,
+            };
+          }
+        }
+        const baseline = await captureAutomaticBackupBaseline({ result, params, queueGeneration: completionQueueGeneration });
         if (!baseline.ok) {
           markCloudBackupDirty({ reason: "cloud_sync_baseline_incomplete", severity: "normal" });
           result = { ...result, status: "needs_attention", error: "Cloud backup needs another verification before it can be marked complete.", deviceLockLost: baseline.deviceLockLost };
@@ -194,7 +248,7 @@ export default function useCloudAutoBackup({
         // Both the automatic worker and the manual Retry Sync button classify a
         // backup result through the SAME shared queue transition, so the queue
         // status can never disagree with the result the user sees.
-        applyCloudBackupResultToQueue(result, { queueGeneration });
+        applyCloudBackupResultToQueue(result, { queueGeneration: completionQueueGeneration });
       } catch (error) {
         const current = readCloudBackupQueueState();
         recordCloudBackupAttemptFailure(

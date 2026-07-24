@@ -557,6 +557,11 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
   expect(backupQueueState.pending).toBe(true);
   expect(backupQueueState.domains).toContain("estimates");
 
+  // A successful save intentionally shows its completion state before routing
+  // to Estimates. Wait for that live post-save transition before navigating
+  // elsewhere so this test does not race the pending route event with Home.
+  expect(await screen.findByText(/Saved Estimates \(1\)/i)).toBeInTheDocument();
+
   fireEvent.click(screen.getByLabelText("Home"));
 
   expect(await screen.findByText(/Business Pulse/i)).toBeInTheDocument();

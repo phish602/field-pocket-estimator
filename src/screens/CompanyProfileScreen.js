@@ -154,9 +154,14 @@ function validHelperText() {
 }
 
 function serializeProfileState(profile) {
+  const normalized = normalizeProfileForSave(profile);
+  return JSON.stringify(normalized);
+}
+
+function normalizeProfileForSave(profile) {
   const normalized = stripNonCompanyFields(normalizeCompanyProfile(profile || {}));
   normalized.address = composeAddressFull(normalized);
-  return JSON.stringify(normalized);
+  return normalized;
 }
 
 function getMissingRequiredFields(profile) {
@@ -205,24 +210,41 @@ function buildStripeConnectUrls() {
 }
 
 function saveProfile(p) {
+  let normalized;
+  let serialized;
   try {
-    const normalized = stripNonCompanyFields(normalizeCompanyProfile(p || {}));
-    normalized.address = composeAddressFull(normalized);
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(normalized));
-    try {
-      // notify shell listeners
-      window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: JSON.stringify(normalized) } }));
-    } catch {}
-    markCloudBackupDirty({
+    normalized = normalizeProfileForSave(p);
+    serialized = JSON.stringify(normalized);
+  } catch {
+    return { ok: false, normalized: null, error: "EstiPaid could not prepare this Company Profile to save." };
+  }
+
+  try {
+    localStorage.setItem(PROFILE_KEY, serialized);
+  } catch {
+    return { ok: false, normalized, error: "Unable to save this Company Profile on this device." };
+  }
+
+  try {
+    // Notify shell listeners only after the exact payload has been stored.
+    window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: serialized } }));
+  } catch {}
+
+  try {
+    const queueState = markCloudBackupDirty({
       reason: "company_profile_saved",
       domains: ["company_profile"],
       severity: "normal",
       source: "saveProfile",
     });
-    return true;
+    if (!queueState?.pending || !Array.isArray(queueState?.domains) || !queueState.domains.includes("company_profile")) {
+      return { ok: false, normalized, error: "Saved on this device, but cloud backup could not be queued yet." };
+    }
   } catch {
-    return false;
+    return { ok: false, normalized, error: "Saved on this device, but cloud backup could not be queued yet." };
   }
+
+  return { ok: true, normalized, error: "" };
 }
 
 function dispatchLocalStorageUpdate(key, value) {
@@ -269,6 +291,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   // Safe Stripe billing facts for display only; never an access input.
   const [billingState, setBillingState] = useState(null);
   const [lastSaveOk, setLastSaveOk] = useState(true);
+  const [saveFailureMessage, setSaveFailureMessage] = useState("");
   const [savedAt, setSavedAt] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [saveFlash, setSaveFlash] = useState(false);
@@ -477,16 +500,20 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const fieldControlClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-input" : "");
   const fieldRequiredError = (fieldKey) => (isFieldMissing(fieldKey) ? "This field is required." : "");
   const persistProfileUpdate = useCallback((nextProfile, options = {}) => {
-    const normalized = stripNonCompanyFields(normalizeCompanyProfile(nextProfile || {}));
-    const ok = saveProfile(normalized);
-    setLastSaveOk(ok);
-    setProfile(normalized);
-    if (!ok) return false;
+    const result = saveProfile(nextProfile);
+    setLastSaveOk(result.ok);
+    if (!result.ok) {
+      setSaveFailureMessage(result.error || "Unable to save this Company Profile.");
+      return false;
+    }
+
+    setProfile(result.normalized);
+    setSaveFailureMessage("");
 
     try {
       setSavedAt(Date.now());
     } catch {}
-    setLastSavedSnapshot(serializeProfileState(normalized));
+    setLastSavedSnapshot(serializeProfileState(result.normalized));
     if (options.toastMessage) {
       setToastMessage(options.toastMessage);
       setShowToast(true);
@@ -720,17 +747,20 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
       setLastSaveOk(false);
-      setToastMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      setShowToast(true);
+      setSaveFlash(false);
+      setSaveFailureMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+      setShowToast(false);
       return;
     }
-    const ok = saveProfile(profile);
-    setLastSaveOk(ok);
-    try {
-      setSavedAt(Date.now());
-    } catch {}
-    if (ok) {
-      setLastSavedSnapshot(serializeProfileState(profile));
+    const result = saveProfile(profile);
+    setLastSaveOk(result.ok);
+    if (result.ok) {
+      setProfile(result.normalized);
+      setSaveFailureMessage("");
+      try {
+        setSavedAt(Date.now());
+      } catch {}
+      setLastSavedSnapshot(serializeProfileState(result.normalized));
       setSaveFlash(true);
       setToastMessage("Profile updated");
       setShowToast(true);
@@ -746,7 +776,12 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
           window.dispatchEvent(new CustomEvent("estipaid:profile-save-return"));
         } catch {}
       }
+      return;
     }
+
+    setSaveFlash(false);
+    setSaveFailureMessage(result.error || "Unable to save this Company Profile.");
+    setShowToast(false);
   };
 
   const doClearProfile = async () => {
@@ -769,6 +804,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     const cleared = stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });
     setProfile(cleared);
     setLastSaveOk(true);
+    setSaveFailureMessage("");
     setSavedAt(null);
     setSaveFlash(false);
     setShowMissingRequiredPrompt(false);
@@ -1443,7 +1479,7 @@ const stripeActionGroupStyle = {
             ) : null}
             {!lastSaveOk ? (
               <span className="pe-company-save-fail" style={{ display: "block", marginTop: 6 }}>
-                Save failed (storage unavailable)
+                {saveFailureMessage || "Save failed (storage unavailable)"}
               </span>
             ) : null}
           </div>

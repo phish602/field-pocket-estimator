@@ -39,6 +39,14 @@ function buildStorageSnapshot(overrides = {}) {
   };
 }
 
+function createEmptySessionStorage() {
+  const values = new Map();
+  return {
+    getItem: jest.fn((key) => (values.has(key) ? values.get(key) : null)),
+    setItem: jest.fn((key, value) => values.set(key, value)),
+  };
+}
+
 function createMockClient({ existingRows = [], selectError = null, updateError = null, insertError = null } = {}) {
   const selectEq3 = jest.fn(async () => (
     selectError ? { data: null, error: selectError } : { data: existingRows, error: null }
@@ -118,6 +126,54 @@ describe("supabaseAppRestoreBundle", () => {
 
     expect(result.bundle.companyProfile.logoDataUrl).toBe("data:image/png;base64,abc123");
     expect(result.captureSummary.logoDataUrlCaptured).toBe(true);
+  });
+
+  test("a mocked second session restores the latest saved profile and replacement logo from the captured bundle", async () => {
+    const firstSession = buildStorageSnapshot({
+      [STORAGE_KEYS.COMPANY_PROFILE]: JSON.stringify({
+        companyName: "Desert Ridge Updated",
+        phone: "6025550147",
+        logoDataUrl: "data:image/png;base64,replacement-logo",
+      }),
+    });
+    const captured = buildSupabaseAppRestoreBundle(firstSession).bundle;
+    const client = createMockClient({
+      existingRows: [{ id: "bundle_row_1", setting_value: captured }],
+    });
+    const secondSession = createEmptySessionStorage();
+
+    const restored = await readSupabaseAppRestoreBundle({ client, companyId: "company_1" });
+    secondSession.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(restored.bundle.companyProfile));
+
+    expect(restored.status).toBe("available");
+    expect(JSON.parse(secondSession.getItem(STORAGE_KEYS.COMPANY_PROFILE))).toEqual(expect.objectContaining({
+      companyName: "Desert Ridge Updated",
+      logoDataUrl: "data:image/png;base64,replacement-logo",
+    }));
+  });
+
+  test("a mocked second session does not resurrect a removed logo", async () => {
+    const firstSession = buildStorageSnapshot({
+      [STORAGE_KEYS.COMPANY_PROFILE]: JSON.stringify({
+        companyName: "Desert Ridge Updated",
+        phone: "6025550147",
+        logoDataUrl: "",
+      }),
+    });
+    const captured = buildSupabaseAppRestoreBundle(firstSession).bundle;
+    const client = createMockClient({
+      existingRows: [{ id: "bundle_row_1", setting_value: captured }],
+    });
+    const secondSession = createEmptySessionStorage();
+
+    const restored = await readSupabaseAppRestoreBundle({ client, companyId: "company_1" });
+    secondSession.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(restored.bundle.companyProfile));
+
+    expect(JSON.parse(secondSession.getItem(STORAGE_KEYS.COMPANY_PROFILE))).toEqual(expect.objectContaining({
+      companyName: "Desert Ridge Updated",
+      logoDataUrl: "",
+    }));
+    expect(restored.captureSummary.logoDataUrlCaptured).toBe(false);
   });
 
   test("bundle stores null for missing keys instead of inventing data", () => {
