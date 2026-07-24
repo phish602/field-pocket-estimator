@@ -47,6 +47,47 @@ function safeParseJson(raw) {
   }
 }
 
+function canonicalizeJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (isPlainObject(value)) {
+    return Object.keys(value).sort().reduce((normalized, key) => {
+      normalized[key] = canonicalizeJson(value[key]);
+      return normalized;
+    }, {});
+  }
+  return value;
+}
+
+function semanticallyMatchesBundle(returnedValue, expectedBundle) {
+  const parsed = typeof returnedValue === "string" ? safeParseJson(returnedValue) : { value: returnedValue, error: null };
+  if (parsed.error || !isPlainObject(parsed.value)) return false;
+  return JSON.stringify(canonicalizeJson(parsed.value)) === JSON.stringify(canonicalizeJson(expectedBundle));
+}
+
+function verifyRestoreBundleWrite(response, { expectedBundle, expectedRowId = "", action }) {
+  const returnedRows = response?.data;
+  if (!Array.isArray(returnedRows) || returnedRows.length !== 1) {
+    const count = Array.isArray(returnedRows) ? returnedRows.length : "no row array";
+    return `Supabase restore bundle ${action} was not verified: expected exactly one returned row, received ${count}.`;
+  }
+
+  const returnedRow = returnedRows[0];
+  const returnedRowId = asText(returnedRow?.id);
+  if (!returnedRowId) {
+    return `Supabase restore bundle ${action} was not verified: the returned row has no valid ID.`;
+  }
+  if (expectedRowId && returnedRowId !== asText(expectedRowId)) {
+    return `Supabase restore bundle ${action} was not verified: returned row ID did not match the row being updated.`;
+  }
+  if (!Object.prototype.hasOwnProperty.call(returnedRow || {}, "setting_value")) {
+    return `Supabase restore bundle ${action} was not verified: the returned row is missing setting_value.`;
+  }
+  if (!semanticallyMatchesBundle(returnedRow.setting_value, expectedBundle)) {
+    return `Supabase restore bundle ${action} was not verified: the returned setting_value did not match the newly captured bundle.`;
+  }
+  return "";
+}
+
 function createRowId() {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -473,6 +514,23 @@ export async function updateSupabaseAppRestoreBundle({
         };
       }
 
+      const verificationError = verifyRestoreBundleWrite(response, {
+        expectedBundle: bundle,
+        expectedRowId: rows[0].id,
+        action: "update",
+      });
+      if (verificationError) {
+        return {
+          status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+          bundleUpdated: false,
+          noLocalDataChanged: true,
+          captureSummary,
+          notices,
+          code: "app_restore_bundle_write_unverified",
+          error: verificationError,
+        };
+      }
+
       return {
         status: APP_RESTORE_BUNDLE_STATUS.COMPLETED,
         bundleUpdated: true,
@@ -506,6 +564,22 @@ export async function updateSupabaseAppRestoreBundle({
         captureSummary,
         notices,
         error: "Unable to create the app restore bundle in Supabase.",
+      };
+    }
+
+    const verificationError = verifyRestoreBundleWrite(response, {
+      expectedBundle: bundle,
+      action: "insert",
+    });
+    if (verificationError) {
+      return {
+        status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+        bundleUpdated: false,
+        noLocalDataChanged: true,
+        captureSummary,
+        notices,
+        code: "app_restore_bundle_write_unverified",
+        error: verificationError,
       };
     }
 
