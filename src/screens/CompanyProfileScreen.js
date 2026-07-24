@@ -164,6 +164,65 @@ function normalizeProfileForSave(profile) {
   return normalized;
 }
 
+// Durable read-back verification.
+//
+// A localStorage.setItem that returns without throwing does NOT guarantee the
+// bytes durably landed under the canonical key: quota pressure (common right
+// after a large recovery-JSON import), some WebKit/private-mode configurations
+// that no-op writes, or an intervening overwrite can all leave the stored
+// record stale while setItem stays silent. Confirmed in Production: a new logo
+// was selected, Save reported success, yet the freshly exported device backup
+// still held the old profile and logo. So after every write we re-read the
+// canonical key and prove it now holds exactly the payload we intended before
+// any success is claimed or any cloud backup is queued.
+function verifyPersistedProfile(intendedNormalized, intendedSerialized) {
+  let raw;
+  try {
+    raw = localStorage.getItem(PROFILE_KEY);
+  } catch {
+    return { ok: false, reason: "read_failed" };
+  }
+
+  if (raw === null || raw === "") {
+    return { ok: false, reason: "empty" };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "unparseable" };
+  }
+
+  let readBackNormalized;
+  let readBackSerialized;
+  try {
+    readBackNormalized = normalizeProfileForSave(parsed || {});
+    readBackSerialized = JSON.stringify(readBackNormalized);
+  } catch {
+    return { ok: false, reason: "unnormalizable" };
+  }
+
+  // Whole-record semantic equality. Both sides pass through the same
+  // normalize+serialize, so key order is deterministic and this is a true
+  // semantic comparison, not an incidental byte match.
+  if (readBackSerialized !== intendedSerialized) {
+    return { ok: false, reason: "mismatch" };
+  }
+
+  // Logo-specific guarantee: the field most prone to silent loss must match
+  // its full string exactly, and must never read back empty when we intended a
+  // non-empty logo.
+  const intendedLogo = String(intendedNormalized?.logoDataUrl || "");
+  const readBackLogo = String(readBackNormalized?.logoDataUrl || "");
+  if (intendedLogo) {
+    if (!readBackLogo) return { ok: false, reason: "logo_empty" };
+    if (readBackLogo !== intendedLogo) return { ok: false, reason: "logo_mismatch" };
+  }
+
+  return { ok: true, reason: "" };
+}
+
 function getMissingRequiredFields(profile) {
   const normalized = stripNonCompanyFields(normalizeCompanyProfile(profile || {}));
   const missing = [];
@@ -225,8 +284,22 @@ function saveProfile(p) {
     return { ok: false, normalized, error: "Unable to save this Company Profile on this device." };
   }
 
+  // Confirm the exact payload durably landed before claiming any success,
+  // notifying shell listeners, or queuing a cloud backup. If the read-back does
+  // not match, treat the save as failed: the form stays dirty, the new values
+  // stay visible, and no unverified payload is queued as "saved".
+  const verified = verifyPersistedProfile(normalized, serialized);
+  if (!verified.ok) {
+    return {
+      ok: false,
+      normalized,
+      error: "EstiPaid could not confirm this Company Profile saved on this device. Your changes are still here — please try saving again.",
+    };
+  }
+
   try {
-    // Notify shell listeners only after the exact payload has been stored.
+    // Notify shell listeners only after the exact payload has been stored and
+    // verified as the current canonical record.
     window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: serialized } }));
   } catch {}
 
@@ -709,10 +782,23 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     refreshStripeStatus(stripeAccountId);
   }, [refreshStripeStatus, stripeAccountId]);
 
+  // When a save attempt is blocked (missing required fields, canceled overwrite,
+  // device-lock denial, or a failed read-back), any success indicator left over
+  // from an EARLIER save must not linger and imply the current change persisted.
+  const suppressStaleSaveSuccess = () => {
+    if (saveFlashTimerRef.current) {
+      clearTimeout(saveFlashTimerRef.current);
+      saveFlashTimerRef.current = null;
+    }
+    setSaveFlash(false);
+    setSavedAt(null);
+    setShowToast(false);
+  };
+
   const doExplicitSave = async () => {
     const missing = getMissingRequiredFields(profile);
     if (missing.length) {
-      setSaveFlash(false);
+      suppressStaleSaveSuccess();
       setShowMissingRequiredPrompt(true);
       const firstMissing = REQUIRED_FIELD_ORDER.find((fieldKey) => missing.includes(fieldKey)) || missing[0];
       window.requestAnimationFrame(() => {
@@ -740,16 +826,18 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       }
       if (!same) {
         const ok = window.confirm("Overwrite saved Company Profile?");
-        if (!ok) return;
+        if (!ok) {
+          suppressStaleSaveSuccess();
+          return;
+        }
       }
     }
 
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
       setLastSaveOk(false);
-      setSaveFlash(false);
+      suppressStaleSaveSuccess();
       setSaveFailureMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      setShowToast(false);
       return;
     }
     const result = saveProfile(profile);
@@ -779,9 +867,8 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       return;
     }
 
-    setSaveFlash(false);
+    suppressStaleSaveSuccess();
     setSaveFailureMessage(result.error || "Unable to save this Company Profile.");
-    setShowToast(false);
   };
 
   const doClearProfile = async () => {
