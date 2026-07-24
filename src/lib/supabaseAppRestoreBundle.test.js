@@ -47,7 +47,25 @@ function createEmptySessionStorage() {
   };
 }
 
-function createMockClient({ existingRows = [], selectError = null, updateError = null, insertError = null } = {}) {
+function reorderJson(value) {
+  if (Array.isArray(value)) return value.map(reorderJson);
+  if (value && typeof value === "object") {
+    return Object.keys(value).reverse().reduce((result, key) => {
+      result[key] = reorderJson(value[key]);
+      return result;
+    }, {});
+  }
+  return value;
+}
+
+function createMockClient({
+  existingRows = [],
+  selectError = null,
+  updateError = null,
+  insertError = null,
+  updateResponse = null,
+  insertResponse = null,
+} = {}) {
   const selectEq3 = jest.fn(async () => (
     selectError ? { data: null, error: selectError } : { data: existingRows, error: null }
   ));
@@ -55,17 +73,31 @@ function createMockClient({ existingRows = [], selectError = null, updateError =
   const selectEq1 = jest.fn(() => ({ eq: selectEq2 }));
   const select = jest.fn(() => ({ eq: selectEq1 }));
 
-  const updateSelect = jest.fn(async () => (
-    updateError ? { data: null, error: updateError } : { data: [{ id: "bundle_row_1" }], error: null }
-  ));
+  let updatePayload = null;
+  const updateSelect = jest.fn(async () => {
+    if (updateError) return { data: null, error: updateError };
+    if (typeof updateResponse === "function") return updateResponse(updatePayload);
+    if (updateResponse) return updateResponse;
+    return { data: [{ id: "bundle_row_1", setting_value: updatePayload?.setting_value }], error: null };
+  });
   const updateEq2 = jest.fn(() => ({ select: updateSelect }));
   const updateEq1 = jest.fn(() => ({ eq: updateEq2 }));
-  const update = jest.fn(() => ({ eq: updateEq1 }));
+  const update = jest.fn((payload) => {
+    updatePayload = payload;
+    return { eq: updateEq1 };
+  });
 
-  const insertSelect = jest.fn(async () => (
-    insertError ? { data: null, error: insertError } : { data: [{ id: "bundle_row_new" }], error: null }
-  ));
-  const insert = jest.fn(() => ({ select: insertSelect }));
+  let insertPayload = null;
+  const insertSelect = jest.fn(async () => {
+    if (insertError) return { data: null, error: insertError };
+    if (typeof insertResponse === "function") return insertResponse(insertPayload);
+    if (insertResponse) return insertResponse;
+    return { data: [{ id: "bundle_row_new", setting_value: insertPayload?.setting_value }], error: null };
+  });
+  const insert = jest.fn((payload) => {
+    insertPayload = payload;
+    return { select: insertSelect };
+  });
 
   const from = jest.fn((table) => {
     if (table !== "app_settings") throw new Error(`Unexpected table: ${table}`);
@@ -303,6 +335,10 @@ describe("supabaseAppRestoreBundle", () => {
   test("bundle update reuses the existing app_settings row when one already exists", async () => {
     const client = createMockClient({
       existingRows: [{ id: "bundle_row_1", setting_value: { schema: "old" } }],
+      updateResponse: (payload) => ({
+        data: [{ id: "bundle_row_1", setting_value: reorderJson(payload.setting_value) }],
+        error: null,
+      }),
     });
     mockGetSupabaseClient.mockReturnValue(client);
 
@@ -319,6 +355,49 @@ describe("supabaseAppRestoreBundle", () => {
     expect(client.update.mock.calls[0][0]).toEqual(expect.objectContaining({
       setting_value: expect.objectContaining({ schema: "estipaid.app.restore_bundle" }),
     }));
+  });
+
+  test.each([
+    ["no rows", () => ({ data: [], error: null }), /exactly one returned row/i],
+    ["multiple rows", (payload) => ({ data: [{ id: "bundle_row_1", setting_value: payload.setting_value }, { id: "bundle_row_2", setting_value: payload.setting_value }], error: null }), /exactly one returned row/i],
+    ["the wrong row", (payload) => ({ data: [{ id: "bundle_row_2", setting_value: payload.setting_value }], error: null }), /ID did not match/i],
+    ["a missing bundle", () => ({ data: [{ id: "bundle_row_1" }], error: null }), /missing setting_value/i],
+    ["a stale or mismatched bundle", (payload) => ({ data: [{ id: "bundle_row_1", setting_value: { ...payload.setting_value, companyProfile: { ...payload.setting_value.companyProfile, companyName: "Stale company" } } }], error: null }), /did not match/i],
+  ])("bundle update rejects %s returned by Supabase", async (_label, updateResponse, error) => {
+    const client = createMockClient({
+      existingRows: [{ id: "bundle_row_1", setting_value: { schema: "old" } }],
+      updateResponse,
+    });
+    mockGetSupabaseClient.mockReturnValue(client);
+
+    const result = await updateSupabaseAppRestoreBundle({
+      storageSnapshot: buildStorageSnapshot(), configured: true, user: { id: "user_1" }, company: { id: "company_1" }, role: "owner",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      code: "app_restore_bundle_write_unverified",
+    }));
+    expect(result.error).toMatch(error);
+  });
+
+  test("bundle insert rejects a returned row without a valid ID", async () => {
+    const client = createMockClient({
+      insertResponse: (payload) => ({ data: [{ id: "", setting_value: payload.setting_value }], error: null }),
+    });
+    mockGetSupabaseClient.mockReturnValue(client);
+
+    const result = await updateSupabaseAppRestoreBundle({
+      storageSnapshot: buildStorageSnapshot(), configured: true, user: { id: "user_1" }, company: { id: "company_1" }, role: "owner",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      code: "app_restore_bundle_write_unverified",
+    }));
+    expect(result.error).toMatch(/no valid ID/i);
   });
 
   test("readSupabaseAppRestoreBundle returns a valid stored bundle summary", async () => {
