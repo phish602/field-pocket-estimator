@@ -11,6 +11,11 @@ import {
   normalizeCompanyProfile,
 } from "../utils/storage";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import {
+  optimizeCompanyLogo,
+  COMPANY_LOGO_TARGET_MAX_CHARS,
+  COMPANY_LOGO_ABSOLUTE_MAX_CHARS,
+} from "../lib/companyLogoCompression";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
   getEntitlementsFromSubscriptionState,
@@ -278,6 +283,17 @@ function saveProfile(p) {
     return { ok: false, normalized: null, error: "EstiPaid could not prepare this Company Profile to save." };
   }
 
+  // Final synchronous storage-safety guard: never write a logo that exceeds the
+  // absolute limit, even if upstream optimization was skipped or insufficient.
+  // Runs before any localStorage write, event dispatch, or cloud-queue capture.
+  if (String(normalized.logoDataUrl || "").length > COMPANY_LOGO_ABSOLUTE_MAX_CHARS) {
+    return {
+      ok: false,
+      normalized,
+      error: "This logo is too large to save. Choose a smaller PNG, JPEG, or WebP image.",
+    };
+  }
+
   try {
     localStorage.setItem(PROFILE_KEY, serialized);
   } catch {
@@ -337,19 +353,6 @@ function readProfileReturnTarget() {
   }
 }
 
-function fileToDataUrl(file) {
-  return new Promise((resolve) => {
-    try {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => resolve("");
-      reader.readAsDataURL(file);
-    } catch {
-      resolve("");
-    }
-  });
-}
-
 export default function CompanyProfileScreen({ supabaseConfigured = false, companyId = "", accessToken = "" } = {}) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
@@ -371,6 +374,9 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [logoFileName, setLogoFileName] = useState("");
+  const [logoOptimizing, setLogoOptimizing] = useState(false);
+  const [logoNotice, setLogoNotice] = useState("");
+  const [logoError, setLogoError] = useState("");
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
   const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
   const [stripeConnectBusy, setStripeConnectBusy] = useState(false);
@@ -572,8 +578,40 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const fieldLabelClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-label" : "");
   const fieldControlClassName = (fieldKey) => (isFieldMissing(fieldKey) ? "pe-company-field-missing-input" : "");
   const fieldRequiredError = (fieldKey) => (isFieldMissing(fieldKey) ? "This field is required." : "");
-  const persistProfileUpdate = useCallback((nextProfile, options = {}) => {
-    const result = saveProfile(nextProfile);
+  // Shared oversized-logo preparation applied before EVERY Company Profile write
+  // path. If the candidate profile carries a logo larger than the target, it is
+  // optimized first so a plain field edit (company name, address, phone) can be
+  // saved even when the currently stored logo is oversized. No write path that
+  // retains a logo may bypass this guard.
+  const prepareProfileForSave = useCallback(async (candidateProfile) => {
+    const logo = String(candidateProfile?.logoDataUrl || "");
+    if (!logo || logo.length <= COMPANY_LOGO_TARGET_MAX_CHARS) {
+      return { ok: true, profile: candidateProfile, optimized: false };
+    }
+    let result;
+    try {
+      result = await optimizeCompanyLogo(logo);
+    } catch {
+      result = null;
+    }
+    if (!result?.ok || !result.dataUrl) {
+      return {
+        ok: false,
+        error: result?.error || "EstiPaid could not optimize the saved logo. Choose a smaller PNG, JPEG, or WebP image.",
+      };
+    }
+    return { ok: true, profile: { ...candidateProfile, logoDataUrl: result.dataUrl }, optimized: true };
+  }, []);
+
+  const persistProfileUpdate = useCallback(async (nextProfile, options = {}) => {
+    const prep = await prepareProfileForSave(nextProfile);
+    if (!prep.ok) {
+      setLastSaveOk(false);
+      setSaveFailureMessage(prep.error);
+      return false;
+    }
+
+    const result = saveProfile(prep.profile);
     setLastSaveOk(result.ok);
     if (!result.ok) {
       setSaveFailureMessage(result.error || "Unable to save this Company Profile.");
@@ -582,6 +620,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
 
     setProfile(result.normalized);
     setSaveFailureMessage("");
+    if (prep.optimized) setLogoNotice("Logo optimized for storage.");
 
     try {
       setSavedAt(Date.now());
@@ -592,7 +631,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       setShowToast(true);
     }
     return true;
-  }, []);
+  }, [prepareProfileForSave]);
 
   const refreshStripeStatus = useCallback(async (accountIdOverride = "", options = {}) => {
     const accountId = String(accountIdOverride || "").trim() || stripeAccountId;
@@ -649,10 +688,10 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
         return;
       }
 
-      if (!persistProfileUpdate(
+      if (!(await persistProfileUpdate(
         { ...profile, stripeAccountId: String(payload.stripeAccountId || "").trim() },
         { toastMessage: stripeAccountId ? "Stripe setup link refreshed" : "Stripe account linked" },
-      )) {
+      ))) {
         window.alert("Unable to save Stripe account information.");
         return;
       }
@@ -724,17 +763,36 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   };
   const handleLogoInputChange = async (e) => {
     const f = e?.target?.files && e.target.files[0];
-    if (!f) return;
-    const dataUrl = await fileToDataUrl(f);
-    setProfile((p) => ({ ...p, logoDataUrl: dataUrl || "" }));
-    setLogoFileName(String(f.name || ""));
     try {
       e.target.value = "";
     } catch {}
+    if (!f) return;
+
+    setLogoError("");
+    setLogoNotice("");
+    setLogoOptimizing(true);
+    try {
+      const result = await optimizeCompanyLogo(f);
+      if (!result?.ok || !result.dataUrl) {
+        // Optimization failed: retain the existing logo and surface a clear
+        // error. The new file is not applied and nothing is claimed as saved.
+        setLogoError(result?.error || "EstiPaid could not optimize this logo. Choose a smaller PNG, JPEG, or WebP image.");
+        return;
+      }
+      setProfile((p) => ({ ...p, logoDataUrl: result.dataUrl }));
+      setLogoFileName(String(f.name || ""));
+      setLogoNotice(result.wasCompressed ? "Logo optimized for storage." : "");
+    } catch {
+      setLogoError("EstiPaid could not optimize this logo. Choose a smaller PNG, JPEG, or WebP image.");
+    } finally {
+      setLogoOptimizing(false);
+    }
   };
   const removeLogo = () => {
     setProfile((p) => ({ ...p, logoDataUrl: "" }));
     setLogoFileName("");
+    setLogoNotice("");
+    setLogoError("");
     try {
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch {}
@@ -808,6 +866,32 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     }
 
     setShowMissingRequiredPrompt(false);
+
+    // Optimize an oversized logo (existing or newly embedded) BEFORE comparison
+    // and persistence, so a plain field edit can be saved even when the stored
+    // logo is too large. The prepared profile drives every downstream step.
+    setLogoError("");
+    setLogoOptimizing(true);
+    let prep;
+    try {
+      prep = await prepareProfileForSave(profile);
+    } finally {
+      setLogoOptimizing(false);
+    }
+    if (!prep.ok) {
+      setLastSaveOk(false);
+      suppressStaleSaveSuccess();
+      setSaveFailureMessage(prep.error);
+      return;
+    }
+    const preparedProfile = prep.profile;
+    if (prep.optimized) {
+      // Reflect the optimized logo in the form immediately so the preview and
+      // dirty comparison use the smaller logo -- the user need not reselect it.
+      setProfile(preparedProfile);
+      setLogoNotice("Logo optimized for storage.");
+    }
+
     let existingRaw = null;
     try {
       existingRaw = localStorage.getItem(PROFILE_KEY);
@@ -819,7 +903,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       let same = false;
       try {
         const normalizedExisting = JSON.stringify(stripNonCompanyFields(normalizeCompanyProfile((JSON.parse(existingRaw || "{}") || {}))));
-        const normalizedCurrent = JSON.stringify(stripNonCompanyFields(normalizeCompanyProfile(profile || {})));
+        const normalizedCurrent = JSON.stringify(stripNonCompanyFields(normalizeCompanyProfile(preparedProfile || {})));
         same = normalizedExisting === normalizedCurrent;
       } catch {
         same = false;
@@ -840,7 +924,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
       setSaveFailureMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    const result = saveProfile(profile);
+    const result = saveProfile(preparedProfile);
     setLastSaveOk(result.ok);
     if (result.ok) {
       setProfile(result.normalized);
@@ -902,7 +986,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     dispatchLocalStorageUpdate(PROFILE_KEY, "");
   };
 
-  const handleStripeDisconnect = useCallback(() => {
+  const handleStripeDisconnect = useCallback(async () => {
     if (!isStripeAccountId(stripeAccountId)) return;
     const confirmed = window.confirm(
       "Disconnect Stripe from this Company Profile?\n\n"
@@ -912,7 +996,7 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
     if (!confirmed) return;
 
     const nextProfile = { ...profile, stripeAccountId: "" };
-    if (!persistProfileUpdate(nextProfile, { toastMessage: "Stripe connection reset" })) {
+    if (!(await persistProfileUpdate(nextProfile, { toastMessage: "Stripe connection reset" }))) {
       window.alert("Unable to clear the saved Stripe connection.");
       return;
     }
@@ -1279,11 +1363,12 @@ const stripeActionGroupStyle = {
                   type="button"
                   className="pe-btn pe-company-upload-btn"
                   onClick={openLogoPicker}
+                  disabled={logoOptimizing}
                 >
-                  Upload Logo
+                  {logoOptimizing ? "Optimizing logo..." : "Upload Logo"}
                 </button>
                 {profile.logoDataUrl ? (
-                  <button type="button" className="pe-btn pe-btn-ghost" onClick={removeLogo}>
+                  <button type="button" className="pe-btn pe-btn-ghost" onClick={removeLogo} disabled={logoOptimizing}>
                     Remove
                   </button>
                 ) : null}
@@ -1291,6 +1376,21 @@ const stripeActionGroupStyle = {
               <div className="pe-company-upload-name">
                 {logoFileName || (profile.logoDataUrl ? "Logo on file" : "No file selected")}
               </div>
+              {logoOptimizing ? (
+                <div className="pe-field-helper pe-company-branding-helper" role="status" aria-live="polite" style={{ marginTop: 4, color: "rgba(191,219,254,0.9)" }}>
+                  Optimizing logo...
+                </div>
+              ) : null}
+              {!logoOptimizing && logoNotice ? (
+                <div className="pe-field-helper pe-company-branding-helper" role="status" aria-live="polite" style={{ marginTop: 4, color: "rgba(134,239,172,0.9)" }}>
+                  {logoNotice}
+                </div>
+              ) : null}
+              {!logoOptimizing && logoError ? (
+                <div className="pe-field-helper pe-company-branding-helper" role="alert" style={{ marginTop: 4, color: "rgba(254,202,202,0.96)" }}>
+                  {logoError}
+                </div>
+              ) : null}
             </div>
           </div>
 
