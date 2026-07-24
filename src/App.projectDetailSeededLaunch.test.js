@@ -1090,8 +1090,13 @@ describe("App Continue Create draft handoff", () => {
     expect(storedState.parsed?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
     expect(storedState.raw).not.toContain("Cross Invoice Customer");
     expect(storedState.raw).not.toContain("Cross Invoice Project");
-    expect(storedState.raw).not.toContain("23");
-    expect(storedState.raw).not.toContain("144");
+    // Numeric stale fixtures can occur in the date serialized by the clean
+    // default state (for example, "23" in 2026-07-23), so assert the exact
+    // labor fields rather than searching the whole JSON string.
+    (storedState.parsed?.labor?.lines || []).forEach((line) => {
+      expect(line?.hours ?? "").not.toBe("23");
+      expect(line?.rate ?? "").not.toBe("144");
+    });
     expect(storedState.raw).not.toContain("Cross invoice blanket");
     expect(mountedState.state?.ui).toEqual(expect.objectContaining({ docType: "estimate", materialsMode: "itemized" }));
     expect(mountedState.raw).not.toContain("Cross Invoice Customer");

@@ -4,6 +4,8 @@ import {
   markCloudBackupDirty,
   markCloudBackupReviewRequired,
   clearCloudBackupDirty,
+  markCloudBackupSyncing,
+  recordCloudBackupAttemptFailure,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "../lib/supabaseCloudRestore";
@@ -35,6 +37,15 @@ const useSupabaseAccount = require("../lib/useSupabaseAccount").default;
 const { checkSupabaseCloudOnboardingStatus } = require("../lib/supabaseCloudOnboarding");
 const { previewSupabaseCloudRestore } = require("../lib/supabaseCloudRestore");
 
+function resolvedEffectThenable(value) {
+  return {
+    then(onFulfilled) {
+      onFulfilled(value);
+      return { catch: () => {} };
+    },
+  };
+}
+
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
     configured: true,
@@ -57,7 +68,7 @@ async function renderAndSettle() {
 beforeEach(() => {
   localStorage.clear();
   signInWithCompany();
-  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "already_backed_up" });
+  checkSupabaseCloudOnboardingStatus.mockImplementation(() => resolvedEffectThenable({ status: "already_backed_up" }));
   previewSupabaseCloudRestore.mockResolvedValue({ eligible: true, partial: false });
 });
 
@@ -87,6 +98,31 @@ test("renders pending copy", async () => {
   expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
     "Saved on this device · Backup pending"
   );
+});
+
+test("never reports cloud current while the persisted queue is syncing, retrying, or failed", async () => {
+  markCloudBackupDirty({ reason: "company_profile_saved", domains: ["company_profile"], severity: "normal" });
+  markCloudBackupSyncing({ companyId: "company_1" });
+  await renderAndSettle();
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Syncing automatically"
+  );
+
+  act(() => {
+    recordCloudBackupAttemptFailure("Cloud request timed out.", { retryDelayMs: 1000 });
+  });
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Retrying cloud sync"
+  );
+
+  act(() => {
+    recordCloudBackupAttemptFailure("Cloud request timed out.", { retryDelayMs: 1000 });
+    recordCloudBackupAttemptFailure("Cloud request timed out.", { retryDelayMs: 1000 });
+  });
+  expect(screen.getByTestId("cloud-backup-inline-status")).toHaveTextContent(
+    "Saved on this device · Sync needs attention"
+  );
+  expect(screen.getByTestId("cloud-backup-inline-status")).not.toHaveTextContent("Cloud up to date");
 });
 
 test("renders syncing copy only while the automatic worker is running", async () => {
@@ -132,7 +168,7 @@ test("renders current copy only once a successful backup is confirmed", async ()
 });
 
 test("renders a calm failed/retry copy", async () => {
-  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "needs_attention" });
+  checkSupabaseCloudOnboardingStatus.mockImplementation(() => resolvedEffectThenable({ status: "needs_attention" }));
 
   await renderAndSettle();
 
