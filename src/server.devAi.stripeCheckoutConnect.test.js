@@ -76,17 +76,19 @@ function requestText(port, method, routePath) {
   });
 }
 
-function reserveLoopbackPort() {
+function reserveDevAiPort() {
   return new Promise((resolve, reject) => {
     const reserver = net.createServer();
     reserver.once("error", reject);
-    reserver.listen(0, "127.0.0.1", () => {
+    // dev-ai uses server.listen(port) without a host, so reserve the same
+    // unspecified (normally dual-stack) address family before spawning it.
+    reserver.listen(0, () => {
       const address = reserver.address();
       const port = typeof address === "object" && address ? address.port : 0;
       reserver.close((error) => {
         if (error) reject(error);
         else if (port > 0) resolve(port);
-        else reject(new Error("Unable to reserve a loopback port for dev-ai test server"));
+        else reject(new Error("Unable to reserve an unspecified port for dev-ai test server"));
       });
     });
   });
@@ -114,23 +116,33 @@ function childDiagnostics(child) {
 
 async function waitForServer(port, child) {
   let lastProbe = "not attempted";
-  for (let index = 0; index < 80; index += 1) {
-    if (childExited(child)) {
-      throw new Error(`dev-ai server exited before readiness on port ${port}\n${childDiagnostics(child)}`);
+  let childError = null;
+  const onChildError = (error) => {
+    childError = error;
+  };
+  child.once("error", onChildError);
+  try {
+    for (let index = 0; index < 80; index += 1) {
+      if (childError) throw childError;
+      if (childExited(child)) {
+        throw new Error(`dev-ai server exited before readiness on port ${port}\n${childDiagnostics(child)}`);
+      }
+      try {
+        const result = await requestJson(port, "GET", "/api/dev-ai-identity");
+        if (result.status === 200 && result.json?.ok) return;
+        lastProbe = `HTTP ${result.status}`;
+      } catch (error) {
+        lastProbe = String(error?.message || error || "request failed");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    try {
-      const result = await requestJson(port, "GET", "/api/dev-ai-identity");
-      if (result.status === 200 && result.json?.ok) return;
-      lastProbe = `HTTP ${result.status}`;
-    } catch (error) {
-      lastProbe = String(error?.message || error || "request failed");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    throw new Error(`dev-ai server did not become ready on port ${port}; last probe: ${lastProbe}\n${childDiagnostics(child)}`);
+  } finally {
+    child.removeListener("error", onChildError);
   }
-  throw new Error(`dev-ai server did not become ready on port ${port}; last probe: ${lastProbe}\n${childDiagnostics(child)}`);
 }
 
-function startServer(envOverrides = {}) {
+function spawnServer(envOverrides = {}) {
   const port = String(envOverrides.DEV_AI_PORT);
   const command = `${process.execPath} server/dev-ai.js`;
   const child = spawn(process.execPath, ["server/dev-ai.js"], {
@@ -228,17 +240,101 @@ function stopServer(child) {
   });
 }
 
+function isAddressInUse(error) {
+  return error?.code === "EADDRINUSE" || /\bEADDRINUSE\b/.test(String(error?.message || error || ""));
+}
+
+function closeChildStreams(child) {
+  for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
+    if (stream && !stream.destroyed && typeof stream.destroy === "function") stream.destroy();
+  }
+}
+
+async function cleanupServerAttempt(child) {
+  await stopServer(child);
+  closeChildStreams(child);
+}
+
+async function startDevAiWithRetry({ reservePort, attempt, cleanup, maxAttempts = 5 }) {
+  let collisionCount = 0;
+  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber += 1) {
+    const port = await reservePort();
+    let started;
+    try {
+      started = await attempt(port);
+      await started.ready;
+      return { port, child: started.child };
+    } catch (error) {
+      if (started?.child) await cleanup(started.child);
+      if (!isAddressInUse(error)) throw error;
+      collisionCount += 1;
+    }
+  }
+  throw new Error(`dev-ai server failed to start after ${collisionCount} EADDRINUSE collision attempts`);
+}
+
+function startServer(envOverrides = {}) {
+  return startDevAiWithRetry({
+    reservePort: reserveDevAiPort,
+    attempt: async (port) => {
+      const child = spawnServer({ ...envOverrides, DEV_AI_PORT: String(port) });
+      return { child, ready: waitForServer(port, child) };
+    },
+    cleanup: cleanupServerAttempt,
+  });
+}
+
+test("dev-ai startup retries once after an EADDRINUSE collision", async () => {
+  const collision = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+  const failedChild = { id: "failed-child" };
+  const successfulChild = { id: "successful-child" };
+  const reservePort = jest.fn()
+    .mockResolvedValueOnce(41001)
+    .mockResolvedValueOnce(41002);
+  const attempt = jest.fn()
+    .mockReturnValueOnce({ child: failedChild, ready: Promise.reject(collision) })
+    .mockReturnValueOnce({ child: successfulChild, ready: Promise.resolve() });
+  const cleanup = jest.fn().mockResolvedValue();
+
+  const started = await startDevAiWithRetry({ reservePort, attempt, cleanup });
+
+  expect(attempt).toHaveBeenCalledTimes(2);
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(cleanup).toHaveBeenCalledWith(failedChild);
+  expect(started).toEqual({ port: 41002, child: successfulChild });
+});
+
+test("dev-ai startup does not retry a non-EADDRINUSE failure", async () => {
+  const failure = Object.assign(new Error("listen EACCES"), { code: "EACCES" });
+  const failedChild = { id: "failed-child" };
+  const reservePort = jest.fn().mockResolvedValue(41001);
+  const attempt = jest.fn().mockReturnValue({ child: failedChild, ready: Promise.reject(failure) });
+  const cleanup = jest.fn().mockResolvedValue();
+
+  await expect(startDevAiWithRetry({ reservePort, attempt, cleanup })).rejects.toBe(failure);
+  expect(attempt).toHaveBeenCalledTimes(1);
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(cleanup).toHaveBeenCalledWith(failedChild);
+});
+
 describe("dev-ai Stripe Connect checkout guards", () => {
   let child;
   let port;
   let tempDir = "";
 
-  beforeEach(async () => {
-    port = await reserveLoopbackPort();
+  async function startTestServer(envOverrides) {
+    const started = await startServer(envOverrides);
+    child = started.child;
+    port = started.port;
+  }
+
+  beforeEach(() => {
+    child = null;
+    port = 0;
   });
 
   afterEach(async () => {
-    await stopServer(child);
+    await cleanupServerAttempt(child);
     child = null;
     if (tempDir) {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -247,11 +343,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("rejects missing stripeAccountId with safe 400", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_connect_phase2",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
       invoiceId: "inv_1",
@@ -264,11 +359,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("rejects invalid stripeAccountId with safe 400", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_connect_phase2",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
       invoiceId: "inv_2",
@@ -282,11 +376,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("returns safe 500 when Stripe is not configured", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
       invoiceId: "inv_3",
@@ -308,13 +401,12 @@ describe("dev-ai Stripe Connect checkout guards", () => {
     }, {
       createCaptureFile: captureFile,
     });
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_mocked",
       STRIPE_APP_RETURN_URL: "http://127.0.0.1:3000",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require=${path.join(tempDir, "mock-stripe.js")}`,
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
       invoiceId: "inv_4",
@@ -341,11 +433,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("rejects unsafe idempotencyKey with safe 400", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_connect_phase2",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/create-checkout-session", {
       invoiceId: "inv_unsafe_idem",
@@ -399,12 +490,11 @@ describe("dev-ai Stripe Connect checkout guards", () => {
         },
       },
     });
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_mocked",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require=${path.join(tempDir, "mock-stripe.js")}`,
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
       sessionId: "cs_test_paid_123",
@@ -436,11 +526,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("retrieve-checkout-session rejects invalid sessionId with safe 400", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_connect_phase3a",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
       sessionId: "bad_session",
@@ -452,11 +541,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("retrieve-checkout-session rejects invalid stripeAccountId with safe 400", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_connect_phase3a",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
       sessionId: "cs_test_123",
@@ -468,11 +556,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("retrieve-checkout-session returns safe 500 when Stripe is not configured", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
     });
-    await waitForServer(port, child);
 
     const response = await requestJson(port, "POST", "/api/stripe/retrieve-checkout-session", {
       sessionId: "cs_test_456",
@@ -484,11 +571,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("stripe checkout success page is customer-facing and gracefully handles missing receipt details", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
     });
-    await waitForServer(port, child);
 
     const response = await requestText(
       port,
@@ -536,12 +622,11 @@ describe("dev-ai Stripe Connect checkout guards", () => {
         },
       },
     });
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "sk_test_mocked",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ""}--require=${path.join(tempDir, "mock-stripe.js")}`,
     });
-    await waitForServer(port, child);
 
     const response = await requestText(
       port,
@@ -567,11 +652,10 @@ describe("dev-ai Stripe Connect checkout guards", () => {
   });
 
   test("stripe checkout cancel page is customer-facing and does not direct customers to EstiPaid dashboard", async () => {
-    child = startServer({
+    await startTestServer({
       DEV_AI_PORT: String(port),
       STRIPE_SECRET_KEY: "",
     });
-    await waitForServer(port, child);
 
     const response = await requestText(
       port,
