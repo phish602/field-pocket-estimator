@@ -1,3 +1,31 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+
+// ISO-14K: inside a configured workspace, local business saves are routed
+// through the device-lock guard, which cannot confirm an active device without
+// a live Supabase client (it reports "no_workspace"). These suites exercise
+// builder/navigation/persistence behavior rather than device-lock policy, so
+// the guard is mocked to the verified-active-device answer. Device-lock policy
+// keeps its own dedicated suites.
+jest.mock("./lib/supabaseDeviceLock", () => ({
+  ...jest.requireActual("./lib/supabaseDeviceLock"),
+  ensureCurrentDeviceCanMutateBusinessData: jest.fn(),
+  ensureCurrentDeviceCanWriteCloud: jest.fn(),
+}));
+
+
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
@@ -181,9 +209,12 @@ function getScopeEditor() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  seedCompanyProfile();
+  // Restore first: a storage spy left by a previous test would otherwise block
+  // the workspace marker write and fail activation.
   jest.restoreAllMocks();
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
+  seedCompanyProfile();
 });
 
 test("1. Hamburger Templates opens a real Templates screen with a useful empty state", async () => {
@@ -461,7 +492,7 @@ test("10. Save as Template shows a friendly storage-full message when template s
 
   const actualSetItem = Storage.prototype.setItem;
   jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
-    if (key === STORAGE_KEYS.SCOPE_TEMPLATES) {
+    if (key === STORAGE_KEYS.SCOPE_TEMPLATES || String(key).endsWith(`:${STORAGE_KEYS.SCOPE_TEMPLATES}`)) {
       throw new DOMException("quota exceeded", "QuotaExceededError");
     }
     return actualSetItem.call(this, key, value);

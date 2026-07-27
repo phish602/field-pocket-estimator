@@ -91,13 +91,15 @@ function buildAuthState(overrides = {}) {
 
 beforeEach(() => {
   localStorage.clear();
+  // No workspace seeding: ISO-14D activates an account-scoped namespace
+  // automatically for any signed-in account that has a company.
   // Call history must be per-test so hook-input assertions are exact.
   jest.clearAllMocks();
   useSupabaseAccount.mockReturnValue({
     configured: true,
     user: USER,
-    companyUser: null,
-    membership: null,
+    companyUser: { user_id: USER.id, company_id: "company_1", role: "owner" },
+    membership: { user_id: USER.id, company_id: "company_1", role: "owner" },
     company: { id: "company_1" },
     role: "owner",
     loading: false,

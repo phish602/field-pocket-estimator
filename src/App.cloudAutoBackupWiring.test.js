@@ -86,6 +86,7 @@ function buildAccountState(overrides = {}) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   useSupabaseAccount.mockReturnValue(buildAccountState());
   useCloudAutoBackup.mockReturnValue({ running: false });
   useDeviceLockStatus.mockReturnValue({
@@ -134,6 +135,8 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
     configured: true,
     user,
     company: { id: "company_1" },
+    companyUser: { user_id: user.id, company_id: "company_1" },
+    membership: { user_id: user.id, company_id: "company_1" },
     role: "owner",
     hasCompany: true,
   }));
@@ -164,6 +167,8 @@ test("worker is disabled when the signed-in device is locked", () => {
     configured: true,
     user,
     company: { id: "company_1" },
+    companyUser: { user_id: user.id, company_id: "company_1" },
+    membership: { user_id: user.id, company_id: "company_1" },
     role: "owner",
     hasCompany: true,
   }));

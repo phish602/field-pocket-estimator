@@ -1,3 +1,18 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
@@ -90,7 +105,8 @@ function triggerCreateInvoiceFromLauncher() {
 
 describe("App readValidatedCreateEditTargets void invoice defense", () => {
   beforeEach(() => {
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
   });
 
   test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is void", () => {

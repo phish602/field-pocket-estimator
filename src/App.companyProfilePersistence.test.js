@@ -1,3 +1,31 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+
+// ISO-14K: inside a configured workspace, local business saves are routed
+// through the device-lock guard, which cannot confirm an active device without
+// a live Supabase client (it reports "no_workspace"). These suites exercise
+// builder/navigation/persistence behavior rather than device-lock policy, so
+// the guard is mocked to the verified-active-device answer. Device-lock policy
+// keeps its own dedicated suites.
+jest.mock("./lib/supabaseDeviceLock", () => ({
+  ...jest.requireActual("./lib/supabaseDeviceLock"),
+  ensureCurrentDeviceCanMutateBusinessData: jest.fn(),
+  ensureCurrentDeviceCanWriteCloud: jest.fn(),
+}));
+
+
 import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
@@ -24,7 +52,8 @@ describe("App Company Profile dirty-navigation integration", () => {
   let originalConfirm;
 
   beforeEach(() => {
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
     localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(PROFILE));
     originalConfirm = window.confirm;
     window.confirm = jest.fn(() => true);
@@ -32,7 +61,7 @@ describe("App Company Profile dirty-navigation integration", () => {
 
   afterEach(() => {
     window.confirm = originalConfirm;
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
   });
 
   test("a successful Company Profile save clears the shell dirty-navigation block", async () => {

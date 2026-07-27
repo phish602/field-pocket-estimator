@@ -1,3 +1,18 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
@@ -46,7 +61,8 @@ async function clickNewInvoice() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
   seedCompanyProfile();
 });
 

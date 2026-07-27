@@ -1,6 +1,10 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import App from "./App";
 import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -14,8 +18,12 @@ jest.mock("./lib/useSupabaseAccount", () => ({
 
 jest.mock("./lib/useCloudAutoBackup", () => ({
   __esModule: true,
-  default: jest.fn(() => ({ running: false })),
+  default: jest.fn(),
 }));
+
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 
 // The full Advanced Settings screen pulls in many independent Supabase
 // modules that are irrelevant to this navigation test; stub it so this test
@@ -25,34 +33,15 @@ jest.mock("./screens/AdvancedSettingsScreen", () => ({
   default: () => <div>Advanced Settings Stub</div>,
 }));
 
-const useSupabaseAuth = require("./lib/useSupabaseAuth").default;
-const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
-
+// ISO-14K: this suite exercises in-shell navigation, so it now signs in with an
+// explicit authenticated identity and opens that account's scoped workspace.
 beforeEach(() => {
-  useSupabaseAuth.mockReturnValue({
-    configured: false,
-    missingEnvKeys: [],
-    loading: false,
-    authBusy: false,
-    session: null,
-    user: null,
-    userEmail: "",
-    errorMessage: "",
-    infoMessage: "",
-    signOut: jest.fn(),
-  });
-  useSupabaseAccount.mockReturnValue({
-    configured: false,
-    user: null,
-    companyUser: null,
-    membership: null,
-    company: null,
-    role: "",
-    loading: false,
-    error: "",
-    hasCompany: false,
-    refresh: jest.fn(),
-  });
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
+});
+
+afterEach(() => {
+  resetConfiguredTestWorkspace();
 });
 
 test("a completed cloud restore navigates the user back to Home from another screen", () => {

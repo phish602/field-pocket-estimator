@@ -2,6 +2,9 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
+const AUTH_USER_ID = "auth-screen-user";
+const AUTH_COMPANY_ID = "auth-screen-company";
+
 let mockSharedSession = null;
 let mockSharedConfigured = true;
 const mockSessionListeners = new Set();
@@ -11,8 +14,8 @@ function mockSetSharedSession(next) {
   mockSessionListeners.forEach((fn) => fn(next));
 }
 
-let mockSignInImpl = async (email) => ({ ok: true, session: { user: { email } } });
-let mockSignUpImpl = async (email) => ({ ok: true, session: { user: { email } } });
+let mockSignInImpl = async (email) => ({ ok: true, session: { user: { id: AUTH_USER_ID, email } } });
+let mockSignUpImpl = async (email) => ({ ok: true, session: { user: { id: AUTH_USER_ID, email } } });
 let mockResetImpl = async () => ({ ok: true });
 let mockMagicLinkImpl = async () => ({ ok: true });
 
@@ -37,7 +40,7 @@ jest.mock("../lib/useSupabaseAuth", () => {
         setInfoMessage("");
         const result = await mockSignInImpl(email, password);
         if (result.ok) {
-          mockSetSharedSession(result.session || { user: { email } });
+          mockSetSharedSession(result.session || { user: { id: AUTH_USER_ID, email } });
         } else {
           setErrorMessage(result.error || "Unable to sign in with password.");
         }
@@ -119,6 +122,28 @@ jest.mock("../lib/useSupabaseAuth", () => {
   };
 });
 
+jest.mock("../lib/useSupabaseAccount", () => ({
+  __esModule: true,
+  default: () => ({
+    loading: false,
+    error: "",
+    company: { id: AUTH_COMPANY_ID },
+    membership: { user_id: AUTH_USER_ID, company_id: AUTH_COMPANY_ID, role: "owner" },
+    companyUser: { user_id: AUTH_USER_ID, company_id: AUTH_COMPANY_ID, role: "owner" },
+    hasCompany: true,
+    role: "owner",
+    refresh: jest.fn(),
+  }),
+}));
+
+jest.mock("../lib/useDeviceLockStatus", () => ({
+  __esModule: true,
+  default: () => ({ loading: false, ready: true, isLocked: false, isActive: true }),
+}));
+
+jest.mock("../lib/useCloudAutoBackup", () => ({ __esModule: true, default: () => null }));
+jest.mock("../lib/useCloudAutoConvergence", () => ({ __esModule: true, default: () => null }));
+
 import App from "../App";
 import AuthScreen from "./AuthScreen";
 
@@ -163,8 +188,8 @@ beforeEach(() => {
   mockSharedSession = null;
   mockSharedConfigured = true;
   mockSessionListeners.clear();
-  mockSignInImpl = async (email) => ({ ok: true, session: { user: { email } } });
-  mockSignUpImpl = async (email) => ({ ok: true, session: { user: { email } } });
+  mockSignInImpl = async (email) => ({ ok: true, session: { user: { id: AUTH_USER_ID, email } } });
+  mockSignUpImpl = async (email) => ({ ok: true, session: { user: { id: AUTH_USER_ID, email } } });
   mockResetImpl = async () => ({ ok: true });
   mockMagicLinkImpl = async () => ({ ok: true });
 });
@@ -180,7 +205,7 @@ describe("App-level auth gating", () => {
 
   test("existing session renders current app shell", async () => {
     seedBaselineLocalData();
-    mockSharedSession = { user: { email: "owner@example.com" } };
+    mockSharedSession = { user: { id: AUTH_USER_ID, email: "owner@example.com" } };
 
     render(<App />);
 
@@ -219,7 +244,7 @@ describe("App-level auth gating", () => {
 
   test("returning to AuthScreen when the session clears (sign-out path)", async () => {
     seedBaselineLocalData();
-    mockSharedSession = { user: { email: "owner@example.com" } };
+    mockSharedSession = { user: { id: AUTH_USER_ID, email: "owner@example.com" } };
 
     render(<App />);
 

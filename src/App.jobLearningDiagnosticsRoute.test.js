@@ -1,6 +1,19 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import { ROUTES } from "./constants/routes";
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+} from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const APP_MODULE_PATH = require.resolve("./App");
@@ -45,7 +58,13 @@ async function renderAppWithDevHashRoute(nodeEnv = "test") {
 }
 
 describe("App job learning diagnostics route gating", () => {
+  beforeEach(() => {
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
+  });
+
   afterEach(() => {
+    resetConfiguredTestWorkspace();
     process.env.NODE_ENV = ORIGINAL_NODE_ENV;
     window.history.replaceState({}, "", "/");
     delete require.cache[APP_MODULE_PATH];

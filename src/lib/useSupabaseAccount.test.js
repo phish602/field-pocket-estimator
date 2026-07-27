@@ -52,7 +52,7 @@ describe("useSupabaseAccount", () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(mockGetSupabaseClient).toHaveBeenCalledTimes(1);
+    expect(mockGetSupabaseClient).toHaveBeenCalledTimes(0);
     expect(result.current.companyUser).toBeNull();
     expect(result.current.company).toBeNull();
     expect(result.current.hasCompany).toBe(false);
@@ -147,13 +147,33 @@ describe("useSupabaseAccount", () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.companyUser).toEqual(expect.objectContaining({
-      company_id: "company_missing",
-      role: "member",
-    }));
-    expect(result.current.role).toBe("member");
+    expect(result.current.companyUser).toBeNull();
+    expect(result.current.role).toBe("");
     expect(result.current.company).toBeNull();
     expect(result.current.hasCompany).toBe(false);
     expect(result.current.error).toBe("Unable to load company status.");
+  });
+
+  test("never exposes user A company while user B is the requested identity", async () => {
+    const membershipA = createQueryChain({ data: { user_id: "user_a", company_id: "company_a", role: "owner" }, error: null });
+    const companyA = createQueryChain({ data: { id: "company_a" }, error: null }, { includeLimit: false });
+    let resolveMembershipB;
+    const membershipB = createQueryChain(new Promise((resolve) => { resolveMembershipB = resolve; }));
+    const client = {
+      from: jest.fn((table) => {
+        if (table === "company_users") return client.from.mock.calls.filter(([name]) => name === "company_users").length === 1 ? membershipA : membershipB;
+        return companyA;
+      }),
+    };
+    mockGetSupabaseClient.mockReturnValue(client);
+    const { result, rerender } = renderHook(({ user }) => useSupabaseAccount({ configured: true, user }), { initialProps: { user: { id: "user_a" } } });
+    await waitFor(() => expect(result.current.company?.id).toBe("company_a"));
+    rerender({ user: { id: "user_b" } });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.company).toBeNull();
+    expect(result.current.membership).toBeNull();
+    expect(result.current.hasCompany).toBe(false);
+    resolveMembershipB({ data: null, error: null });
+    await waitFor(() => expect(result.current.loading).toBe(false));
   });
 });
