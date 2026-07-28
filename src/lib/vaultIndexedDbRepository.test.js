@@ -358,6 +358,27 @@ async function writeRawMetadata(factory, value, tag = WORKSPACE_TAG) {
   }
 }
 
+async function readRawRecord(factory, logicalKey = RECORD_KEY, tag = WORKSPACE_TAG) {
+  const database = await openDatabase(factory, vaultDatabaseName(tag), WORKSPACE_VAULT_DATABASE_VERSION);
+  try {
+    return await requestResult(database.transaction(WORKSPACE_VAULT_RECORDS_STORE).objectStore(WORKSPACE_VAULT_RECORDS_STORE).get(logicalKey));
+  } finally {
+    database.close();
+  }
+}
+
+async function writeRawRecord(factory, value, tag = WORKSPACE_TAG) {
+  const database = await openDatabase(factory, vaultDatabaseName(tag), WORKSPACE_VAULT_DATABASE_VERSION);
+  try {
+    const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readwrite");
+    const completed = transactionComplete(transaction);
+    transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).put(value);
+    await completed;
+  } finally {
+    database.close();
+  }
+}
+
 function expectCode(promise, code) {
   return expect(promise).rejects.toEqual(expect.objectContaining({ name: "VaultRepositoryError", code, message: ERROR_MESSAGES[code] }));
 }
@@ -377,8 +398,13 @@ test("repository error foundation has the exact public contract", () => {
 test("repository constructor validates strict injections", () => {
   const factory = new IDBFactory();
   expect(Object.keys(repository(factory)).sort()).toEqual([
+    "createEncryptedRecord",
     "createWorkspaceVaultMetadata",
+    "deleteEncryptedRecord",
+    "listEncryptedRecordKeys",
+    "readEncryptedRecord",
     "readWorkspaceVaultMetadata",
+    "replaceEncryptedRecord",
     "replaceWorkspaceVaultMetadata",
     "workspaceDatabaseExists",
   ]);
@@ -804,4 +830,309 @@ test("blocked open closes a later successful database result", async () => {
 
   expect(close).toHaveBeenCalledTimes(1);
   expect(factory.open).toHaveBeenCalledTimes(1);
+});
+
+const RECORD_KEY = "estipaid-customers-v1";
+const SECOND_RECORD_KEY = "estipaid-settings-v1";
+const BLOB_ID = "A".repeat(22);
+const NEXT_BLOB_ID = "B".repeat(22);
+
+function recordInput(overrides = {}) {
+  return {
+    workspaceTag: WORKSPACE_TAG,
+    logicalKey: RECORD_KEY,
+    expectedRevision: null,
+    blobId: BLOB_ID,
+    recordSchemaVersion: 1,
+    ciphertext: new Uint8Array(16).fill(7),
+    iv: new Uint8Array(12).fill(8),
+    ...overrides,
+  };
+}
+
+async function createRecordWorkspace(factory, clock) {
+  const repo = repository(factory, clock);
+  await repo.createWorkspaceVaultMetadata(metadataInput());
+  return repo;
+}
+
+test("every approved logical key creates one encrypted record", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  const keys = [
+    "estipaid-settings-v1", "estipaid-estimator-v1", "estipaid-estimate-draft-v1", "estipaid-estimates-v1",
+    "estipaid-projects-v1", "estipaid-invoices-v1", "estipaid-pending-customer-use-v1", "estipaid-pending-customer-create-v1",
+    "estipaid-pending-customer-edit-v1", "estipaid-customer-edit-target-v1", "estipaid-restore-draft-on-create-v1", "estipaid-selectedCustomerId-v1",
+    "estipaid-selectedCustomerSnap-v1", "estipaid-customers-v1", "estipaid-customer-recent-v1", "estipaid-company-profile-v1",
+    "estipaid-subscription-plan-state-v1", "estipaid-subscription-plan-remote-cache-v1", "estipaid-audit-events-v1", "estipaid-stripe-checkout-sessions-v1",
+    "estipaid-stripe-checkout-create-locks-v1", "estipaid-scope-templates-v1", "estipaid-custom-labor-roles-v1", "estipaid-job-learning-reviewed-candidates-v1",
+    "estipaid-cloud-backup-queue-v1", "estipaid-cloud-auto-backup-pause-v1", "estipaid-cloud-partial-recovery-status-v1", "estipaid-cloud-asset-bindings-v1",
+    "estipaid-cloud-sync-baseline-v1", "estipaid-cloud-sync-conflict-vault-v1", "estipaid-cloud-convergence-journal-v1", "estipaid-job-learning-events-v1",
+  ];
+  try {
+    for (const [index, logicalKey] of keys.entries()) {
+      const blobId = `${String.fromCharCode(65 + (index % 26))}${"A".repeat(21)}`;
+      await repo.createEncryptedRecord(recordInput({ logicalKey, blobId }));
+    }
+    await expect(repo.listEncryptedRecordKeys({ workspaceTag: WORKSPACE_TAG })).resolves.toEqual([...keys].sort());
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record create and read preserve the locked schema with clones", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  const input = recordInput();
+  try {
+    const created = await repo.createEncryptedRecord(input);
+    expect(created).toEqual(expect.objectContaining({ version: 1, logicalKey: RECORD_KEY, blobId: BLOB_ID, revision: 1, recordSchemaVersion: 1 }));
+    expect(created.createdAt).toBe(created.updatedAt);
+    input.ciphertext[0] = 99;
+    created.iv[0] = 99;
+    const first = await repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY });
+    const second = await repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY });
+    expect(first.ciphertext[0]).toBe(7);
+    expect(second.iv[0]).toBe(8);
+    expect(first).not.toBe(second);
+    expect(first.ciphertext).not.toBe(second.ciphertext);
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record create rejects collisions, absent workspaces, and invalid inputs", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createEncryptedRecord(recordInput());
+    await expectCode(repo.createEncryptedRecord(recordInput()), "CONFLICT");
+    await expectCode(repo.createEncryptedRecord(recordInput({ expectedRevision: 1 })), "INVALID_INPUT");
+    await expectCode(repo.createEncryptedRecord(recordInput({ logicalKey: "estipaid-lang" })), "INVALID_INPUT");
+    await expectCode(repo.createEncryptedRecord(recordInput({ blobId: "short" })), "INVALID_INPUT");
+    await expectCode(repo.createEncryptedRecord(recordInput({ ciphertext: new Uint8Array(15) })), "INVALID_SCHEMA");
+    await expectCode(repository(factory).createEncryptedRecord(recordInput({ workspaceTag: OTHER_WORKSPACE_TAG })), "DATABASE_NOT_FOUND");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record list is sorted and exposes keys only", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expect(repo.listEncryptedRecordKeys({ workspaceTag: WORKSPACE_TAG })).resolves.toEqual([]);
+    await repo.createEncryptedRecord(recordInput({ logicalKey: RECORD_KEY }));
+    await repo.createEncryptedRecord(recordInput({ logicalKey: SECOND_RECORD_KEY, blobId: NEXT_BLOB_ID }));
+    const keys = await repo.listEncryptedRecordKeys({ workspaceTag: WORKSPACE_TAG });
+    expect(keys).toEqual([RECORD_KEY, SECOND_RECORD_KEY]);
+    expect(keys.every((key) => typeof key === "string")).toBe(true);
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record replacement uses CAS, rotates caller blobId, and preserves creation time", async () => {
+  const factory = new IDBFactory();
+  const ticks = [Date.parse("2026-07-27T12:00:00.000Z"), Date.parse("2026-07-27T12:00:00.000Z"), Date.parse("2026-07-27T12:00:00.000Z")];
+  const repo = await createRecordWorkspace(factory, () => ticks.shift());
+  try {
+    const created = await repo.createEncryptedRecord(recordInput());
+    const replaced = await repo.replaceEncryptedRecord(recordInput({ expectedRevision: 1, blobId: NEXT_BLOB_ID, ciphertext: new Uint8Array(16).fill(9) }));
+    expect(replaced).toEqual(expect.objectContaining({ revision: 2, blobId: NEXT_BLOB_ID, createdAt: created.createdAt }));
+    expect(Date.parse(replaced.updatedAt)).toBe(Date.parse(created.updatedAt) + 1);
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ expectedRevision: 2, blobId: NEXT_BLOB_ID })), "INVALID_INPUT");
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ expectedRevision: 1, blobId: "C".repeat(22) })), "CONFLICT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record replacement and delete return null when absent", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expect(repo.replaceEncryptedRecord(recordInput({ expectedRevision: 1, blobId: NEXT_BLOB_ID }))).resolves.toBeNull();
+    await expect(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 1 })).resolves.toBeNull();
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record delete uses revision CAS and commits before returning", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createEncryptedRecord(recordInput());
+    await expectCode(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 2 }), "CONFLICT");
+    await expect(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 1 })).resolves.toBe(true);
+    await expect(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY })).resolves.toBeNull();
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  "estipaid-lang",
+  "estipaid-device-id-v1",
+  "field-pocket-language",
+  "field-pocket-theme",
+  "field-pocket-show-costs",
+  "field-pocket-profile",
+  "field-pocket-profile-v1",
+  "field-pocket-customers-v1",
+  "field-pocket-estimates",
+  "field-pocket-invoices-v1",
+  "ESTIPAID-CUSTOMERS-V1",
+  "",
+  1,
+])("encrypted record APIs reject unallowlisted logical key %p", async (logicalKey) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createEncryptedRecord(recordInput({ logicalKey })), "INVALID_INPUT");
+    await expectCode(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey }), "INVALID_INPUT");
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ logicalKey, expectedRevision: 1, blobId: NEXT_BLOB_ID })), "INVALID_INPUT");
+    await expectCode(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey, expectedRevision: 1 }), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["twenty-one characters", "A".repeat(21)],
+  ["twenty-three characters", "A".repeat(23)],
+  ["padding", `${"A".repeat(21)}=`],
+  ["whitespace", `${"A".repeat(21)} `],
+  ["unicode", `${"A".repeat(21)}é`],
+  ["non-string", 1],
+])("encrypted record create rejects invalid blob ID: %s", async (_, blobId) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createEncryptedRecord(recordInput({ blobId })), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["too-short ciphertext", "ciphertext", new Uint8Array(15)],
+  ["too-long ciphertext", "ciphertext", new Uint8Array(1048577)],
+  ["wrong IV length", "iv", new Uint8Array(11)],
+  ["array buffer", "ciphertext", new ArrayBuffer(16)],
+  ["data view", "ciphertext", new DataView(new ArrayBuffer(16))],
+  ["wrong typed array", "ciphertext", new Uint16Array(8)],
+  ["plain array", "ciphertext", new Array(16).fill(0)],
+])("encrypted record create rejects invalid bytes: %s", async (_, field, value) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createEncryptedRecord(recordInput({ [field]: value })), "INVALID_SCHEMA");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record accepts frozen input and ciphertext boundary lengths", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  const input = recordInput();
+  Object.freeze(input);
+  try {
+    await expect(repo.createEncryptedRecord(input)).resolves.toEqual(expect.objectContaining({ ciphertext: expect.any(Uint8Array) }));
+    await expect(repo.createEncryptedRecord(recordInput({ logicalKey: SECOND_RECORD_KEY, blobId: NEXT_BLOB_ID, ciphertext: new Uint8Array(1048576) }))).resolves.toEqual(expect.objectContaining({ ciphertext: expect.any(Uint8Array) }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["unknown field", () => recordInput({ unknown: true })],
+  ["missing field", () => { const value = recordInput(); delete value.iv; return value; }],
+  ["undefined field", () => recordInput({ iv: undefined })],
+  ["accessor", () => { const value = recordInput(); Object.defineProperty(value, "iv", { enumerable: true, get: () => { throw new Error("must not run"); } }); return value; }],
+  ["symbol", () => { const value = recordInput(); value[Symbol("x")] = true; return value; }],
+  ["inherited field", () => Object.assign(Object.create({ inherited: true }), recordInput())],
+  ["non-enumerable extra", () => { const value = recordInput(); Object.defineProperty(value, "extra", { value: true }); return value; }],
+  ["null prototype", () => Object.assign(Object.create(null), recordInput())],
+])("encrypted record create rejects strict shape: %s", async (_, makeValue) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createEncryptedRecord(makeValue()), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record read, list, replace, and delete enforce exact shapes", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, extra: true }), "INVALID_INPUT");
+    await expectCode(repo.listEncryptedRecordKeys({ workspaceTag: WORKSPACE_TAG, extra: true }), "INVALID_INPUT");
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ expectedRevision: undefined, blobId: NEXT_BLOB_ID })), "INVALID_INPUT");
+    await expectCode(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 1, blobId: BLOB_ID }), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["invalid blob ID", (value) => { value.blobId = "short"; }],
+  ["invalid revision", (value) => { value.revision = 0; }],
+  ["invalid record schema", (value) => { value.recordSchemaVersion = 2; }],
+  ["invalid ciphertext", (value) => { value.ciphertext = new Uint8Array(15); }],
+  ["invalid IV", (value) => { value.iv = new Uint8Array(11); }],
+  ["invalid timestamp", (value) => { value.updatedAt = "bad"; }],
+  ["reversed timestamps", (value) => { value.createdAt = "2026-07-28T00:00:00.000Z"; }],
+  ["unknown field", (value) => { value.extra = true; }],
+  ["missing field", (value) => { delete value.iv; }],
+  ["invalid prototype", (value) => Object.setPrototypeOf(value, null)],
+])("encrypted record read maps persisted %s to corruption", async (_, mutate) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createEncryptedRecord(recordInput());
+    const raw = await readRawRecord(factory);
+    mutate(raw);
+    await writeRawRecord(factory, raw);
+    await expectCode(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY }), "RECORD_CORRUPT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record replacement detects overflow and preserves failed writes", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createEncryptedRecord(recordInput());
+    const before = await repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY });
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ expectedRevision: 2, blobId: NEXT_BLOB_ID })), "CONFLICT");
+    await expect(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY })).resolves.toEqual(before);
+    const raw = await readRawRecord(factory);
+    raw.revision = Number.MAX_SAFE_INTEGER;
+    await writeRawRecord(factory, raw);
+    await expectCode(repo.replaceEncryptedRecord(recordInput({ expectedRevision: Number.MAX_SAFE_INTEGER, blobId: NEXT_BLOB_ID })), "REVISION_OVERFLOW");
+    await expect(repo.readEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY })).resolves.toEqual(expect.objectContaining({ revision: Number.MAX_SAFE_INTEGER, blobId: BLOB_ID }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("encrypted record delete rejects corruption and preserves the record", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createEncryptedRecord(recordInput());
+    const raw = await readRawRecord(factory);
+    raw.ciphertext = new Uint8Array(15);
+    await writeRawRecord(factory, raw);
+    await expectCode(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 1 }), "RECORD_CORRUPT");
+    await expect(readRawRecord(factory)).resolves.toEqual(expect.objectContaining({ logicalKey: RECORD_KEY }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
 });

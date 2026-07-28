@@ -86,6 +86,63 @@ const KDF_FIELDS = Object.freeze([
   "hashLength",
   "outputType",
 ]);
+const RECORD_FIELDS = Object.freeze([
+  "version",
+  "logicalKey",
+  "blobId",
+  "revision",
+  "recordSchemaVersion",
+  "ciphertext",
+  "iv",
+  "createdAt",
+  "updatedAt",
+]);
+const RECORD_INPUT_FIELDS = Object.freeze([
+  "workspaceTag",
+  "logicalKey",
+  "expectedRevision",
+  "blobId",
+  "recordSchemaVersion",
+  "ciphertext",
+  "iv",
+]);
+const RECORD_READ_FIELDS = Object.freeze(["workspaceTag", "logicalKey"]);
+const RECORD_DELETE_FIELDS = Object.freeze(["workspaceTag", "logicalKey", "expectedRevision"]);
+const BLOB_ID = /^[A-Za-z0-9_-]{22}$/;
+const LOGICAL_KEYS = new Set([
+  "estipaid-settings-v1",
+  "estipaid-estimator-v1",
+  "estipaid-estimate-draft-v1",
+  "estipaid-estimates-v1",
+  "estipaid-projects-v1",
+  "estipaid-invoices-v1",
+  "estipaid-pending-customer-use-v1",
+  "estipaid-pending-customer-create-v1",
+  "estipaid-pending-customer-edit-v1",
+  "estipaid-customer-edit-target-v1",
+  "estipaid-restore-draft-on-create-v1",
+  "estipaid-selectedCustomerId-v1",
+  "estipaid-selectedCustomerSnap-v1",
+  "estipaid-customers-v1",
+  "estipaid-customer-recent-v1",
+  "estipaid-company-profile-v1",
+  "estipaid-subscription-plan-state-v1",
+  "estipaid-subscription-plan-remote-cache-v1",
+  "estipaid-audit-events-v1",
+  "estipaid-stripe-checkout-sessions-v1",
+  "estipaid-stripe-checkout-create-locks-v1",
+  "estipaid-scope-templates-v1",
+  "estipaid-custom-labor-roles-v1",
+  "estipaid-job-learning-reviewed-candidates-v1",
+  "estipaid-cloud-backup-queue-v1",
+  "estipaid-cloud-auto-backup-pause-v1",
+  "estipaid-cloud-partial-recovery-status-v1",
+  "estipaid-cloud-asset-bindings-v1",
+  "estipaid-cloud-sync-baseline-v1",
+  "estipaid-cloud-sync-conflict-vault-v1",
+  "estipaid-cloud-convergence-journal-v1",
+  "estipaid-job-learning-events-v1",
+]);
 const STORE_NAMES = Object.freeze([
   WORKSPACE_VAULT_METADATA_STORE,
   WORKSPACE_VAULT_RECORDS_STORE,
@@ -123,6 +180,16 @@ function isSafeInteger(value, minimum, maximum) {
 
 function requireWorkspaceTag(value, code) {
   if (typeof value !== "string" || !WORKSPACE_TAG.test(value)) throw repositoryError(code);
+  return value;
+}
+
+function requireLogicalKey(value, code) {
+  if (typeof value !== "string" || !LOGICAL_KEYS.has(value)) throw repositoryError(code);
+  return value;
+}
+
+function requireBlobId(value, code) {
+  if (typeof value !== "string" || !BLOB_ID.test(value)) throw repositoryError(code);
   return value;
 }
 
@@ -182,6 +249,29 @@ function requireCallerMetadata(value, revisionMode) {
   };
 }
 
+function requireCallerRecord(value, revisionMode) {
+  requireExactShape(value, RECORD_INPUT_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (RECORD_INPUT_FIELDS.some((field) => value[field] === undefined)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  requireWorkspaceTag(value.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  requireLogicalKey(value.logicalKey, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  requireBlobId(value.blobId, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (revisionMode === "create" && value.expectedRevision !== null) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (revisionMode === "replace" && !isSafeInteger(value.expectedRevision, 1, MAX_REVISION)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (!isSafeInteger(value.recordSchemaVersion, 1, 1)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  const ciphertext = value.ciphertext;
+  if (!(ciphertext instanceof Uint8Array) || Object.getPrototypeOf(ciphertext) !== Uint8Array.prototype || ciphertext.length < 16 || ciphertext.length > 1048576) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  }
+  return {
+    workspaceTag: value.workspaceTag,
+    logicalKey: value.logicalKey,
+    blobId: value.blobId,
+    recordSchemaVersion: 1,
+    ciphertext: new Uint8Array(ciphertext),
+    iv: requireUint8Array(value.iv, 12, VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA),
+  };
+}
+
 function requirePersistedMetadata(value, workspaceTag) {
   requireExactShape(value, METADATA_FIELDS, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
   if (
@@ -211,6 +301,34 @@ function requirePersistedMetadata(value, workspaceTag) {
   };
 }
 
+function requirePersistedRecord(value, logicalKey) {
+  requireExactShape(value, RECORD_FIELDS, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  if (
+    !isSafeInteger(value.version, 1, 1)
+    || requireLogicalKey(value.logicalKey, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT) !== logicalKey
+    || !isSafeInteger(value.revision, 1, MAX_REVISION)
+    || !isSafeInteger(value.recordSchemaVersion, 1, 1)
+    || !isCanonicalTimestamp(value.createdAt)
+    || !isCanonicalTimestamp(value.updatedAt)
+    || Date.parse(value.updatedAt) < Date.parse(value.createdAt)
+  ) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  const ciphertext = value.ciphertext;
+  if (!(ciphertext instanceof Uint8Array) || Object.getPrototypeOf(ciphertext) !== Uint8Array.prototype || ciphertext.length < 16 || ciphertext.length > 1048576) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  }
+  return {
+    version: 1,
+    logicalKey,
+    blobId: requireBlobId(value.blobId, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT),
+    revision: value.revision,
+    recordSchemaVersion: 1,
+    ciphertext: new Uint8Array(ciphertext),
+    iv: requireUint8Array(value.iv, 12, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
 function cloneMetadata(value) {
   return {
     version: value.version,
@@ -224,6 +342,20 @@ function cloneMetadata(value) {
     sentinelSchemaVersion: value.sentinelSchemaVersion,
     sentinelCiphertext: new Uint8Array(value.sentinelCiphertext),
     sentinelIv: new Uint8Array(value.sentinelIv),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function cloneRecord(value) {
+  return {
+    version: value.version,
+    logicalKey: value.logicalKey,
+    blobId: value.blobId,
+    revision: value.revision,
+    recordSchemaVersion: value.recordSchemaVersion,
+    ciphertext: new Uint8Array(value.ciphertext),
+    iv: new Uint8Array(value.iv),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
@@ -530,6 +662,180 @@ export function createVaultIndexedDbRepository(options = {}) {
         }
         await completed;
         return result === null ? null : cloneMetadata(result);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async createEncryptedRecord(input) {
+      const caller = requireCallerRecord(input, "create");
+      let database;
+      try {
+        database = await openExisting(caller.workspaceTag);
+        const timestamp = clockTimestamp(clock);
+        const record = {
+          version: 1,
+          logicalKey: caller.logicalKey,
+          blobId: caller.blobId,
+          revision: 1,
+          recordSchemaVersion: 1,
+          ciphertext: new Uint8Array(caller.ciphertext),
+          iv: new Uint8Array(caller.iv),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let request;
+        try {
+          request = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).add(record);
+          request.onerror = () => { if (!state.error) state.error = mapNativeError(request.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return cloneRecord(record);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async readEncryptedRecord(input) {
+      requireExactShape(input, RECORD_READ_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const logicalKey = requireLogicalKey(input.logicalKey, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      let database;
+      try {
+        database = await openExisting(workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readonly");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let result;
+        let request;
+        try {
+          request = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).get(logicalKey);
+          request.onsuccess = () => { result = request.result; };
+          request.onerror = () => { if (!state.error) state.error = mapNativeError(request.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        if (result === undefined) return null;
+        return cloneRecord(requirePersistedRecord(result, logicalKey));
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async listEncryptedRecordKeys(input) {
+      requireExactShape(input, READ_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      let database;
+      try {
+        database = await openExisting(workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readonly");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let keys;
+        let request;
+        try {
+          request = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).getAllKeys();
+          request.onsuccess = () => { keys = request.result; };
+          request.onerror = () => { if (!state.error) state.error = mapNativeError(request.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        if (!Array.isArray(keys)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+        return keys.map((key) => requireLogicalKey(key, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT)).sort();
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async replaceEncryptedRecord(input) {
+      const caller = requireCallerRecord(input, "replace");
+      let database;
+      try {
+        database = await openExisting(caller.workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let result = null;
+        let getRequest;
+        try {
+          getRequest = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).get(caller.logicalKey);
+          getRequest.onsuccess = () => {
+            if (getRequest.result === undefined) return;
+            let current;
+            try {
+              current = requirePersistedRecord(getRequest.result, caller.logicalKey);
+              if (current.revision !== input.expectedRevision) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              if (current.revision === MAX_REVISION) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.REVISION_OVERFLOW);
+              if (caller.blobId === current.blobId) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+              const updatedAt = clockTimestamp(clock, Date.parse(current.updatedAt) + 1);
+              result = {
+                version: 1,
+                logicalKey: caller.logicalKey,
+                blobId: caller.blobId,
+                revision: current.revision + 1,
+                recordSchemaVersion: 1,
+                ciphertext: new Uint8Array(caller.ciphertext),
+                iv: new Uint8Array(caller.iv),
+                createdAt: current.createdAt,
+                updatedAt,
+              };
+              const putRequest = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).put(result);
+              putRequest.onerror = () => { if (!state.error) state.error = mapNativeError(putRequest.error); };
+            } catch (error) {
+              abortWith(transaction, state, error);
+            }
+          };
+          getRequest.onerror = () => { if (!state.error) state.error = mapNativeError(getRequest.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return result === null ? null : cloneRecord(result);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async deleteEncryptedRecord(input) {
+      requireExactShape(input, RECORD_DELETE_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const logicalKey = requireLogicalKey(input.logicalKey, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      if (!isSafeInteger(input.expectedRevision, 1, MAX_REVISION)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      let database;
+      try {
+        database = await openExisting(workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_RECORDS_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let deleted = false;
+        let getRequest;
+        try {
+          getRequest = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).get(logicalKey);
+          getRequest.onsuccess = () => {
+            if (getRequest.result === undefined) return;
+            try {
+              const current = requirePersistedRecord(getRequest.result, logicalKey);
+              if (current.revision !== input.expectedRevision) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              const deleteRequest = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).delete(logicalKey);
+              deleteRequest.onerror = () => { if (!state.error) state.error = mapNativeError(deleteRequest.error); };
+              deleted = true;
+            } catch (error) {
+              abortWith(transaction, state, error);
+            }
+          };
+          getRequest.onerror = () => { if (!state.error) state.error = mapNativeError(getRequest.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return deleted ? true : null;
       } finally {
         if (database) database.close();
       }
