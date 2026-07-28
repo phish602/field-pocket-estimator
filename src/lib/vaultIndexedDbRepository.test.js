@@ -379,6 +379,27 @@ async function writeRawRecord(factory, value, tag = WORKSPACE_TAG) {
   }
 }
 
+async function readRawManifest(factory, tag = WORKSPACE_TAG) {
+  const database = await openDatabase(factory, vaultDatabaseName(tag), WORKSPACE_VAULT_DATABASE_VERSION);
+  try {
+    return await requestResult(database.transaction(WORKSPACE_VAULT_MIGRATION_STORE).objectStore(WORKSPACE_VAULT_MIGRATION_STORE).get("manifest"));
+  } finally {
+    database.close();
+  }
+}
+
+async function writeRawManifest(factory, value, tag = WORKSPACE_TAG) {
+  const database = await openDatabase(factory, vaultDatabaseName(tag), WORKSPACE_VAULT_DATABASE_VERSION);
+  try {
+    const transaction = database.transaction(WORKSPACE_VAULT_MIGRATION_STORE, "readwrite");
+    const completed = transactionComplete(transaction);
+    transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).put(value, "manifest");
+    await completed;
+  } finally {
+    database.close();
+  }
+}
+
 function expectCode(promise, code) {
   return expect(promise).rejects.toEqual(expect.objectContaining({ name: "VaultRepositoryError", code, message: ERROR_MESSAGES[code] }));
 }
@@ -399,12 +420,16 @@ test("repository constructor validates strict injections", () => {
   const factory = new IDBFactory();
   expect(Object.keys(repository(factory)).sort()).toEqual([
     "createEncryptedRecord",
+    "createMigrationManifest",
     "createWorkspaceVaultMetadata",
     "deleteEncryptedRecord",
+    "deleteMigrationManifest",
     "listEncryptedRecordKeys",
     "readEncryptedRecord",
+    "readMigrationManifest",
     "readWorkspaceVaultMetadata",
     "replaceEncryptedRecord",
+    "replaceMigrationManifest",
     "replaceWorkspaceVaultMetadata",
     "workspaceDatabaseExists",
   ]);
@@ -1132,6 +1157,228 @@ test("encrypted record delete rejects corruption and preserves the record", asyn
     await writeRawRecord(factory, raw);
     await expectCode(repo.deleteEncryptedRecord({ workspaceTag: WORKSPACE_TAG, logicalKey: RECORD_KEY, expectedRevision: 1 }), "RECORD_CORRUPT");
     await expect(readRawRecord(factory)).resolves.toEqual(expect.objectContaining({ logicalKey: RECORD_KEY }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+const TRANSITION_ID = "123e4567-e89b-42d3-a456-426614174000";
+const OTHER_TRANSITION_ID = "123e4567-e89b-42d3-b456-426614174001";
+
+function manifestInput(overrides = {}) {
+  return {
+    workspaceTag: WORKSPACE_TAG,
+    expectedRevision: null,
+    transitionId: TRANSITION_ID,
+    manifestSchemaVersion: 1,
+    ciphertext: new Uint8Array(16).fill(6),
+    iv: new Uint8Array(12).fill(5),
+    ...overrides,
+  };
+}
+
+test("migration manifest create and read preserve the strict envelope with clones", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  const input = manifestInput();
+  try {
+    const created = await repo.createMigrationManifest(input);
+    expect(created).toEqual(expect.objectContaining({ version: 1, transitionId: TRANSITION_ID, revision: 1, manifestSchemaVersion: 1 }));
+    expect(created.createdAt).toBe(created.updatedAt);
+    input.ciphertext[0] = 99;
+    created.iv[0] = 99;
+    const first = await repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG });
+    const second = await repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG });
+    expect(first.ciphertext[0]).toBe(6);
+    expect(second.iv[0]).toBe(5);
+    expect(first).not.toBe(second);
+    expect(first.ciphertext).not.toBe(second.ciphertext);
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest create rejects collisions, absent workspaces, and invalid expected revisions", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createMigrationManifest(manifestInput());
+    await expectCode(repo.createMigrationManifest(manifestInput()), "CONFLICT");
+    await expectCode(repo.createMigrationManifest(manifestInput({ expectedRevision: 1 })), "INVALID_INPUT");
+    await expectCode(repository(factory).createMigrationManifest(manifestInput({ workspaceTag: OTHER_WORKSPACE_TAG })), "DATABASE_NOT_FOUND");
+    await expect(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG })).resolves.toEqual(expect.objectContaining({ transitionId: TRANSITION_ID }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest read returns null for an empty existing migration store", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expect(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG })).resolves.toBeNull();
+    await expectCode(repo.readMigrationManifest({ workspaceTag: OTHER_WORKSPACE_TAG }), "DATABASE_NOT_FOUND");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest replacement uses ordered CAS and keeps the transition ID", async () => {
+  const factory = new IDBFactory();
+  const ticks = [Date.parse("2026-07-27T12:00:00.000Z"), Date.parse("2026-07-27T12:00:00.000Z"), Date.parse("2026-07-27T11:00:00.000Z")];
+  const repo = await createRecordWorkspace(factory, () => ticks.shift());
+  try {
+    const created = await repo.createMigrationManifest(manifestInput());
+    const replaced = await repo.replaceMigrationManifest(manifestInput({ expectedRevision: 1, ciphertext: new Uint8Array(16).fill(4) }));
+    expect(replaced).toEqual(expect.objectContaining({ transitionId: TRANSITION_ID, revision: 2, createdAt: created.createdAt }));
+    expect(Date.parse(replaced.updatedAt)).toBe(Date.parse(created.updatedAt) + 1);
+    await expectCode(repo.replaceMigrationManifest(manifestInput({ expectedRevision: 2, transitionId: OTHER_TRANSITION_ID })), "CONFLICT");
+    await expectCode(repo.replaceMigrationManifest(manifestInput({ expectedRevision: 1 })), "CONFLICT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest replacement handles absence, overflow, and preserves failed writes", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expect(repo.replaceMigrationManifest(manifestInput({ expectedRevision: 1 }))).resolves.toBeNull();
+    await repo.createMigrationManifest(manifestInput());
+    const raw = await readRawManifest(factory);
+    raw.revision = Number.MAX_SAFE_INTEGER;
+    await writeRawManifest(factory, raw);
+    await expectCode(repo.replaceMigrationManifest(manifestInput({ expectedRevision: Number.MAX_SAFE_INTEGER })), "REVISION_OVERFLOW");
+    await expect(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG })).resolves.toEqual(expect.objectContaining({ revision: Number.MAX_SAFE_INTEGER, transitionId: TRANSITION_ID }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest deletion uses CAS and never deletes corruption", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expect(repo.deleteMigrationManifest({ workspaceTag: WORKSPACE_TAG, expectedRevision: 1 })).resolves.toBeNull();
+    await repo.createMigrationManifest(manifestInput());
+    await expectCode(repo.deleteMigrationManifest({ workspaceTag: WORKSPACE_TAG, expectedRevision: 2 }), "CONFLICT");
+    const raw = await readRawManifest(factory);
+    raw.ciphertext = new Uint8Array(15);
+    await writeRawManifest(factory, raw);
+    await expectCode(repo.deleteMigrationManifest({ workspaceTag: WORKSPACE_TAG, expectedRevision: 1 }), "RECORD_CORRUPT");
+    await expect(readRawManifest(factory)).resolves.toEqual(expect.objectContaining({ transitionId: TRANSITION_ID }));
+    raw.ciphertext = new Uint8Array(16).fill(6);
+    await writeRawManifest(factory, raw);
+    await expect(repo.deleteMigrationManifest({ workspaceTag: WORKSPACE_TAG, expectedRevision: 1 })).resolves.toBe(true);
+    await expect(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG })).resolves.toBeNull();
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["uppercase", TRANSITION_ID.toUpperCase()],
+  ["UUIDv1", "123e4567-e89b-12d3-a456-426614174000"],
+  ["UUIDv3", "123e4567-e89b-32d3-a456-426614174000"],
+  ["UUIDv5", "123e4567-e89b-52d3-a456-426614174000"],
+  ["nil", "00000000-0000-0000-0000-000000000000"],
+  ["missing hyphens", "123e4567e89b42d3a456426614174000"],
+  ["braced", `{${TRANSITION_ID}}`],
+  ["whitespace", ` ${TRANSITION_ID}`],
+  ["non-string", 1],
+])("migration manifest create rejects invalid transition ID: %s", async (_, transitionId) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createMigrationManifest(manifestInput({ transitionId })), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["too-short ciphertext", "ciphertext", new Uint8Array(15)],
+  ["too-long ciphertext", "ciphertext", new Uint8Array(1048577)],
+  ["wrong IV length", "iv", new Uint8Array(11)],
+  ["array buffer", "ciphertext", new ArrayBuffer(16)],
+  ["data view", "ciphertext", new DataView(new ArrayBuffer(16))],
+  ["wrong typed array", "ciphertext", new Uint16Array(8)],
+  ["plain array", "ciphertext", new Array(16).fill(0)],
+])("migration manifest create rejects invalid bytes: %s", async (_, field, value) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createMigrationManifest(manifestInput({ [field]: value })), "INVALID_SCHEMA");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest accepts frozen input and ciphertext boundary lengths", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  const input = manifestInput();
+  Object.freeze(input);
+  try {
+    await expect(repo.createMigrationManifest(input)).resolves.toEqual(expect.objectContaining({ ciphertext: expect.any(Uint8Array) }));
+    await expect(repo.replaceMigrationManifest(manifestInput({ expectedRevision: 1, ciphertext: new Uint8Array(1048576) }))).resolves.toEqual(expect.objectContaining({ ciphertext: expect.any(Uint8Array) }));
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["unknown field", () => manifestInput({ unknown: true })],
+  ["missing field", () => { const value = manifestInput(); delete value.iv; return value; }],
+  ["undefined field", () => manifestInput({ iv: undefined })],
+  ["accessor", () => { const value = manifestInput(); Object.defineProperty(value, "iv", { enumerable: true, get: () => { throw new Error("must not run"); } }); return value; }],
+  ["symbol", () => { const value = manifestInput(); value[Symbol("x")] = true; return value; }],
+  ["inherited field", () => Object.assign(Object.create({ inherited: true }), manifestInput())],
+  ["non-enumerable extra", () => { const value = manifestInput(); Object.defineProperty(value, "extra", { value: true }); return value; }],
+  ["null prototype", () => Object.assign(Object.create(null), manifestInput())],
+])("migration manifest create rejects strict shape: %s", async (_, makeValue) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.createMigrationManifest(makeValue()), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("migration manifest read, replace, and delete enforce exact shapes", async () => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await expectCode(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG, extra: true }), "INVALID_INPUT");
+    await expectCode(repo.replaceMigrationManifest(manifestInput({ expectedRevision: undefined })), "INVALID_INPUT");
+    await expectCode(repo.deleteMigrationManifest({ workspaceTag: WORKSPACE_TAG, expectedRevision: 1, transitionId: TRANSITION_ID }), "INVALID_INPUT");
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["invalid transition ID", (value) => { value.transitionId = "bad"; }],
+  ["invalid revision", (value) => { value.revision = 0; }],
+  ["invalid schema", (value) => { value.manifestSchemaVersion = 2; }],
+  ["invalid ciphertext", (value) => { value.ciphertext = new Uint8Array(15); }],
+  ["invalid IV", (value) => { value.iv = new Uint8Array(11); }],
+  ["invalid timestamp", (value) => { value.updatedAt = "bad"; }],
+  ["reversed timestamps", (value) => { value.createdAt = "2026-07-28T00:00:00.000Z"; }],
+  ["workspace tag field", (value) => { value.workspaceTag = WORKSPACE_TAG; }],
+  ["unknown field", (value) => { value.extra = true; }],
+  ["missing field", (value) => { delete value.iv; }],
+  ["invalid prototype", (value) => Object.setPrototypeOf(value, null)],
+])("migration manifest read maps persisted %s to corruption", async (_, mutate) => {
+  const factory = new IDBFactory();
+  const repo = await createRecordWorkspace(factory);
+  try {
+    await repo.createMigrationManifest(manifestInput());
+    const raw = await readRawManifest(factory);
+    mutate(raw);
+    await writeRawManifest(factory, raw);
+    await expectCode(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG }), "RECORD_CORRUPT");
   } finally {
     await deleteFactoryDatabases(factory);
   }

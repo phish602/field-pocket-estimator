@@ -109,6 +109,27 @@ const RECORD_INPUT_FIELDS = Object.freeze([
 const RECORD_READ_FIELDS = Object.freeze(["workspaceTag", "logicalKey"]);
 const RECORD_DELETE_FIELDS = Object.freeze(["workspaceTag", "logicalKey", "expectedRevision"]);
 const BLOB_ID = /^[A-Za-z0-9_-]{22}$/;
+const MIGRATION_MANIFEST_KEY = "manifest";
+const MANIFEST_FIELDS = Object.freeze([
+  "version",
+  "transitionId",
+  "revision",
+  "manifestSchemaVersion",
+  "ciphertext",
+  "iv",
+  "createdAt",
+  "updatedAt",
+]);
+const MANIFEST_INPUT_FIELDS = Object.freeze([
+  "workspaceTag",
+  "expectedRevision",
+  "transitionId",
+  "manifestSchemaVersion",
+  "ciphertext",
+  "iv",
+]);
+const MANIFEST_DELETE_FIELDS = Object.freeze(["workspaceTag", "expectedRevision"]);
+const TRANSITION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LOGICAL_KEYS = new Set([
   "estipaid-settings-v1",
   "estipaid-estimator-v1",
@@ -193,6 +214,11 @@ function requireBlobId(value, code) {
   return value;
 }
 
+function requireTransitionId(value, code) {
+  if (typeof value !== "string" || !TRANSITION_ID.test(value)) throw repositoryError(code);
+  return value;
+}
+
 function requireUint8Array(value, length, code) {
   if (!(value instanceof Uint8Array) || Object.getPrototypeOf(value) !== Uint8Array.prototype || value.length !== length) {
     throw repositoryError(code);
@@ -272,6 +298,27 @@ function requireCallerRecord(value, revisionMode) {
   };
 }
 
+function requireCallerManifest(value, revisionMode) {
+  requireExactShape(value, MANIFEST_INPUT_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (MANIFEST_INPUT_FIELDS.some((field) => value[field] === undefined)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  requireWorkspaceTag(value.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  requireTransitionId(value.transitionId, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (revisionMode === "create" && value.expectedRevision !== null) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (revisionMode === "replace" && !isSafeInteger(value.expectedRevision, 1, MAX_REVISION)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (!isSafeInteger(value.manifestSchemaVersion, 1, 1)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  const ciphertext = value.ciphertext;
+  if (!(ciphertext instanceof Uint8Array) || Object.getPrototypeOf(ciphertext) !== Uint8Array.prototype || ciphertext.length < 16 || ciphertext.length > 1048576) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  }
+  return {
+    workspaceTag: value.workspaceTag,
+    transitionId: value.transitionId,
+    manifestSchemaVersion: 1,
+    ciphertext: new Uint8Array(ciphertext),
+    iv: requireUint8Array(value.iv, 12, VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA),
+  };
+}
+
 function requirePersistedMetadata(value, workspaceTag) {
   requireExactShape(value, METADATA_FIELDS, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
   if (
@@ -329,6 +376,32 @@ function requirePersistedRecord(value, logicalKey) {
   };
 }
 
+function requirePersistedManifest(value) {
+  requireExactShape(value, MANIFEST_FIELDS, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  if (
+    !isSafeInteger(value.version, 1, 1)
+    || !isSafeInteger(value.revision, 1, MAX_REVISION)
+    || !isSafeInteger(value.manifestSchemaVersion, 1, 1)
+    || !isCanonicalTimestamp(value.createdAt)
+    || !isCanonicalTimestamp(value.updatedAt)
+    || Date.parse(value.updatedAt) < Date.parse(value.createdAt)
+  ) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  const ciphertext = value.ciphertext;
+  if (!(ciphertext instanceof Uint8Array) || Object.getPrototypeOf(ciphertext) !== Uint8Array.prototype || ciphertext.length < 16 || ciphertext.length > 1048576) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
+  }
+  return {
+    version: 1,
+    transitionId: requireTransitionId(value.transitionId, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT),
+    revision: value.revision,
+    manifestSchemaVersion: 1,
+    ciphertext: new Uint8Array(ciphertext),
+    iv: requireUint8Array(value.iv, 12, VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
 function cloneMetadata(value) {
   return {
     version: value.version,
@@ -354,6 +427,19 @@ function cloneRecord(value) {
     blobId: value.blobId,
     revision: value.revision,
     recordSchemaVersion: value.recordSchemaVersion,
+    ciphertext: new Uint8Array(value.ciphertext),
+    iv: new Uint8Array(value.iv),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function cloneManifest(value) {
+  return {
+    version: value.version,
+    transitionId: value.transitionId,
+    revision: value.revision,
+    manifestSchemaVersion: value.manifestSchemaVersion,
     ciphertext: new Uint8Array(value.ciphertext),
     iv: new Uint8Array(value.iv),
     createdAt: value.createdAt,
@@ -824,6 +910,150 @@ export function createVaultIndexedDbRepository(options = {}) {
               const current = requirePersistedRecord(getRequest.result, logicalKey);
               if (current.revision !== input.expectedRevision) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
               const deleteRequest = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE).delete(logicalKey);
+              deleteRequest.onerror = () => { if (!state.error) state.error = mapNativeError(deleteRequest.error); };
+              deleted = true;
+            } catch (error) {
+              abortWith(transaction, state, error);
+            }
+          };
+          getRequest.onerror = () => { if (!state.error) state.error = mapNativeError(getRequest.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return deleted ? true : null;
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async createMigrationManifest(input) {
+      const caller = requireCallerManifest(input, "create");
+      let database;
+      try {
+        database = await openExisting(caller.workspaceTag);
+        const timestamp = clockTimestamp(clock);
+        const manifest = {
+          version: 1,
+          transitionId: caller.transitionId,
+          revision: 1,
+          manifestSchemaVersion: 1,
+          ciphertext: new Uint8Array(caller.ciphertext),
+          iv: new Uint8Array(caller.iv),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        const transaction = database.transaction(WORKSPACE_VAULT_MIGRATION_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let request;
+        try {
+          request = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).add(manifest, MIGRATION_MANIFEST_KEY);
+          request.onerror = () => { if (!state.error) state.error = mapNativeError(request.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return cloneManifest(manifest);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async readMigrationManifest(input) {
+      requireExactShape(input, READ_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      let database;
+      try {
+        database = await openExisting(workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_MIGRATION_STORE, "readonly");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let result;
+        let request;
+        try {
+          request = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).get(MIGRATION_MANIFEST_KEY);
+          request.onsuccess = () => { result = request.result; };
+          request.onerror = () => { if (!state.error) state.error = mapNativeError(request.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        if (result === undefined) return null;
+        return cloneManifest(requirePersistedManifest(result));
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async replaceMigrationManifest(input) {
+      const caller = requireCallerManifest(input, "replace");
+      let database;
+      try {
+        database = await openExisting(caller.workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_MIGRATION_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let result = null;
+        let getRequest;
+        try {
+          getRequest = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).get(MIGRATION_MANIFEST_KEY);
+          getRequest.onsuccess = () => {
+            if (getRequest.result === undefined) return;
+            let current;
+            try {
+              current = requirePersistedManifest(getRequest.result);
+              if (current.revision !== input.expectedRevision) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              if (current.revision === MAX_REVISION) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.REVISION_OVERFLOW);
+              if (caller.transitionId !== current.transitionId) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              const updatedAt = clockTimestamp(clock, Date.parse(current.updatedAt) + 1);
+              result = {
+                version: 1,
+                transitionId: current.transitionId,
+                revision: current.revision + 1,
+                manifestSchemaVersion: 1,
+                ciphertext: new Uint8Array(caller.ciphertext),
+                iv: new Uint8Array(caller.iv),
+                createdAt: current.createdAt,
+                updatedAt,
+              };
+              const putRequest = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).put(result, MIGRATION_MANIFEST_KEY);
+              putRequest.onerror = () => { if (!state.error) state.error = mapNativeError(putRequest.error); };
+            } catch (error) {
+              abortWith(transaction, state, error);
+            }
+          };
+          getRequest.onerror = () => { if (!state.error) state.error = mapNativeError(getRequest.error); };
+        } catch (error) {
+          abortWith(transaction, state, error);
+        }
+        await completed;
+        return result === null ? null : cloneManifest(result);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    async deleteMigrationManifest(input) {
+      requireExactShape(input, MANIFEST_DELETE_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      if (!isSafeInteger(input.expectedRevision, 1, MAX_REVISION)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      let database;
+      try {
+        database = await openExisting(workspaceTag);
+        const transaction = database.transaction(WORKSPACE_VAULT_MIGRATION_STORE, "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let deleted = false;
+        let getRequest;
+        try {
+          getRequest = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).get(MIGRATION_MANIFEST_KEY);
+          getRequest.onsuccess = () => {
+            if (getRequest.result === undefined) return;
+            try {
+              const current = requirePersistedManifest(getRequest.result);
+              if (current.revision !== input.expectedRevision) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              const deleteRequest = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE).delete(MIGRATION_MANIFEST_KEY);
               deleteRequest.onerror = () => { if (!state.error) state.error = mapNativeError(deleteRequest.error); };
               deleted = true;
             } catch (error) {
