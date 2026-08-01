@@ -1,5 +1,28 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
+} from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
 import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
@@ -437,6 +460,7 @@ async function continueCurrentDraftFromGuard() {
 
 async function openProjectDetail() {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   // Gate 13H: Projects moved out of the bottom nav (replaced by Home) into
   // the hamburger menu.
@@ -746,6 +770,7 @@ function createSavedInvoiceRecord({
 
 async function openContinueCreateFlow(intent = "estimate") {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
@@ -796,7 +821,10 @@ async function expectBlankBuilderFields() {
 
 describe("App Project Detail seeded new-document launches", () => {
   beforeEach(() => {
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
     projectDetailScreenModule.__resetProjectDetailTarget();
@@ -953,7 +981,10 @@ describe("App Project Detail seeded new-document launches", () => {
 
 describe("App Continue Create draft handoff", () => {
   beforeEach(() => {
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
     projectDetailScreenModule.__resetProjectDetailTarget();
@@ -1132,6 +1163,7 @@ describe("App Continue Create draft handoff", () => {
     localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([savedInvoice]));
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
 
     fireEvent.click(screen.getByRole("button", { name: /^invoices$/i }));
 

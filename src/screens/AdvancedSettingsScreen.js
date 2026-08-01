@@ -9,6 +9,10 @@ import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useDeviceLockStatus from "../lib/useDeviceLockStatus";
 import useSupabaseWorkspaceBootstrap from "../lib/useSupabaseWorkspaceBootstrap";
+import {
+  DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  VAULT_IDLE_LOCK_MINUTES,
+} from "../lib/vaultIdleLockSettings";
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
@@ -305,6 +309,10 @@ export default function AdvancedSettingsScreen({
   onOpenSnapshot = null,
   snapshotAvailable = false,
   developerCloudToolsEnabled,
+  vaultIdleLockMinutes = DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  vaultIdleLockOptions = VAULT_IDLE_LOCK_MINUTES,
+  onVaultIdleLockMinutesChange = null,
+  onVaultLockNow = null,
 } = {}) {
   const [settings, setSettings] = useState(() => loadSettings());
   const [busyLabel, setBusyLabel] = useState("");
@@ -1672,6 +1680,45 @@ export default function AdvancedSettingsScreen({
                 />
               )}
             />
+          </div>
+
+          <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+            <div className="pe-field-label" style={{ marginBottom: 2 }}>Local Vault Lock</div>
+            <div className="pe-field-helper" style={{ marginTop: -4 }}>
+              EstiPaid automatically locks the encrypted local vault after inactivity. Unlocking again requires the Local Data Password. Locking does not sign you out and does not delete local or cloud data.
+            </div>
+            <SettingRow
+              title="Lock after inactivity"
+              hint="Choose how long this workspace can remain unlocked without meaningful activity."
+              control={(
+                <select
+                  className="pe-input"
+                  aria-label="Automatic vault lock after inactivity"
+                  value={String(vaultIdleLockMinutes)}
+                  onChange={(event) => {
+                    const minutes = Number(event.target.value);
+                    if (VAULT_IDLE_LOCK_MINUTES.includes(minutes) && typeof onVaultIdleLockMinutesChange === "function") {
+                      onVaultIdleLockMinutesChange(minutes);
+                    }
+                  }}
+                >
+                  {vaultIdleLockOptions
+                    .filter((minutes) => VAULT_IDLE_LOCK_MINUTES.includes(minutes))
+                    .map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                </select>
+              )}
+            />
+            <div>
+              <button
+                type="button"
+                className="pe-btn pe-btn-ghost"
+                onClick={() => {
+                  if (typeof onVaultLockNow === "function") onVaultLockNow();
+                }}
+              >
+                Lock Now
+              </button>
+            </div>
           </div>
 
           <div style={shortcutGridStyle}>

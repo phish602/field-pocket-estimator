@@ -1,6 +1,42 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
+} from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
+// ISO-14K: inside a configured workspace, local business saves are routed
+// through the device-lock guard, which cannot confirm an active device without
+// a live Supabase client (it reports "no_workspace"). These suites exercise
+// builder/navigation/persistence behavior rather than device-lock policy, so
+// the guard is mocked to the verified-active-device answer. Device-lock policy
+// keeps its own dedicated suites.
+jest.mock("./lib/supabaseDeviceLock", () => ({
+  ...jest.requireActual("./lib/supabaseDeviceLock"),
+  ensureCurrentDeviceCanMutateBusinessData: jest.fn(),
+  ensureCurrentDeviceCanWriteCloud: jest.fn(),
+}));
+
+
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
@@ -145,13 +181,15 @@ function buildFullWorkTemplate(overrides = {}) {
   };
 }
 
-function openTemplatesFromMenu() {
+async function openTemplatesFromMenu() {
+  await waitForConfiguredWorkspaceShell();
   fireEvent.click(screen.getByLabelText("Open Menu"));
   const menu = screen.getByRole("dialog", { name: "Menu" });
   fireEvent.click(within(menu).getByRole("button", { name: "Templates" }));
 }
 
 async function openEstimateBuilderViaCreate() {
+  await waitForConfiguredWorkspaceShell();
   seedCompanyProfile();
   fireEvent.click(screen.getByLabelText("Create"));
   const launcher = await screen.findByRole("dialog", { name: /Start New/i });
@@ -181,15 +219,20 @@ function getScopeEditor() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
-  seedCompanyProfile();
+  // Restore first: a storage spy left by a previous test would otherwise block
+  // the workspace marker write and fail activation.
   jest.restoreAllMocks();
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
+  seedCompanyProfile();
 });
 
 test("1. Hamburger Templates opens a real Templates screen with a useful empty state", async () => {
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
 
   expect(await screen.findByRole("heading", { name: "Templates" })).toBeInTheDocument();
   expect(screen.getByText(/No saved templates yet/i)).toBeInTheDocument();
@@ -299,7 +342,7 @@ test("2. Saving a template from builder stays in place, shows success, and store
   expect(getScopeEditor().textContent).toContain("Repair the leaking roof curb and reseal all flashing.");
   expect(screen.getByPlaceholderText(CUSTOMER_SEARCH_PLACEHOLDER)).toHaveValue("Customer A");
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByRole("heading", { name: "Templates" })).toBeInTheDocument();
   expect(screen.getByText("Roof Repair Package")).toBeInTheDocument();
 }, 10000);
@@ -309,7 +352,7 @@ test("3. Templates screen lists saved template and shows work-package counts", a
 
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
 
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
   expect(screen.getByText(/Repair the leaking roof curb and reseal all flashing/i)).toBeInTheDocument();
@@ -461,7 +504,7 @@ test("10. Save as Template shows a friendly storage-full message when template s
 
   const actualSetItem = Storage.prototype.setItem;
   jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
-    if (key === STORAGE_KEYS.SCOPE_TEMPLATES) {
+    if (key === STORAGE_KEYS.SCOPE_TEMPLATES || String(key).endsWith(`:${STORAGE_KEYS.SCOPE_TEMPLATES}`)) {
       throw new DOMException("quota exceeded", "QuotaExceededError");
     }
     return actualSetItem.call(this, key, value);
@@ -502,7 +545,7 @@ test("6. Existing scope-only legacy template still appears and applies scope saf
 
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Legacy Scope Template")).toBeInTheDocument();
   expect(screen.getByText(/Scope-only legacy/i)).toBeInTheDocument();
 
@@ -531,7 +574,7 @@ test("7. Deleting a template removes it from Templates screen and builder dropdo
 
   const view = render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
   const deletedTemplateCard = screen.getByText("Roof Repair Package").closest("article");
@@ -549,7 +592,7 @@ test("7. Deleting a template removes it from Templates screen and builder dropdo
   view.unmount();
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package - Alternate")).toBeInTheDocument();
   expect(screen.queryByText("Roof Repair Package")).toBeNull();
 
@@ -564,7 +607,7 @@ test("11. Canceling template deletion preserves the rendered and persisted templ
 
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
   const templateCard = screen.getByText("Roof Repair Package").closest("article");
@@ -584,7 +627,7 @@ test("12. Renaming a template updates the shared template source", async () => {
 
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
   const templateCard = screen.getByText("Roof Repair Package").closest("article");
@@ -604,7 +647,7 @@ test("8. Templates screen and builder dropdown share the same template source", 
 
   render(<App />);
 
-  openTemplatesFromMenu();
+  await openTemplatesFromMenu();
   expect(await screen.findByText("Roof Repair Package")).toBeInTheDocument();
 
   await openEstimateBuilderViaCreate();

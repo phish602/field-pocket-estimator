@@ -1,8 +1,44 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
+} from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
+// ISO-14K: inside a configured workspace, local business saves are routed
+// through the device-lock guard, which cannot confirm an active device without
+// a live Supabase client (it reports "no_workspace"). These suites exercise
+// builder/navigation/persistence behavior rather than device-lock policy, so
+// the guard is mocked to the verified-active-device answer. Device-lock policy
+// keeps its own dedicated suites.
+jest.mock("./lib/supabaseDeviceLock", () => ({
+  ...jest.requireActual("./lib/supabaseDeviceLock"),
+  ensureCurrentDeviceCanMutateBusinessData: jest.fn(),
+  ensureCurrentDeviceCanWriteCloud: jest.fn(),
+}));
+
+
 import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { readCloudBackupQueueState } from "./lib/cloudBackupQueue";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -111,7 +147,10 @@ function buildSavedInvoice({ id, customerName, projectName, docNumber, updatedAt
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   jest.restoreAllMocks();
   seedCompanyProfile();
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
@@ -143,6 +182,7 @@ test("Home Resume Draft opens the live estimate draft instead of the newest save
   localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(screen.getByRole("button", { name: /Resume Draft/i })).toBeInTheDocument();
   expect(screen.queryByText(/Describe the Job/i)).not.toBeInTheDocument();
@@ -188,6 +228,7 @@ test("opening and leaving an existing invoice preserves an unrelated chambered e
   const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -242,6 +283,7 @@ test("opening and leaving an existing estimate preserves the chambered create dr
   const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Estimates"));
 
@@ -296,6 +338,7 @@ test("opening existing invoice does not show Continue Estimate blocker when esti
   );
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -346,6 +389,7 @@ test("StrictMode: opening existing invoice does not show Continue Estimate block
       <App />
     </React.StrictMode>
   );
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -394,6 +438,7 @@ test("StrictMode: opening an existing estimate preserves the chambered estimate 
       <App />
     </React.StrictMode>
   );
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Estimates"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -455,6 +500,7 @@ test("Home Resume Draft opens Invoice Builder for a live invoice draft even when
   );
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /Resume Draft/i }));
 
@@ -484,6 +530,7 @@ test("Home shows no Resume Draft when only saved estimates exist and continueLas
   localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(screen.queryByRole("button", { name: /Resume Draft/i })).toBeNull();
   expect(screen.queryByText(/Describe the Job/i)).not.toBeInTheDocument();
@@ -525,6 +572,7 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /Resume Draft/i }));
 

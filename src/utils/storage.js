@@ -79,9 +79,9 @@ function safeParseJSON(raw) {
   }
 }
 
-function hasStorageValue(key) {
+function hasStorageValue(storage, key) {
   try {
-    return localStorage.getItem(key) !== null;
+    return storage.getItem(key) !== null;
   } catch {
     return false;
   }
@@ -95,72 +95,78 @@ function parseLegacyBool(raw) {
   return null;
 }
 
-function removeLegacyKey(key) {
+function removeLegacyKey(storage, key) {
   try {
-    if (localStorage.getItem(key) === null) return false;
-    localStorage.removeItem(key);
+    if (storage.getItem(key) === null) return false;
+    storage.removeItem(key);
     return true;
   } catch {
     return false;
   }
 }
 
-function migrateLegacyArray(legacyKey, canonicalKey) {
+function migrateLegacyArray(storage, legacyKey, canonicalKey) {
   try {
-    const legacyRaw = localStorage.getItem(legacyKey);
+    const legacyRaw = storage.getItem(legacyKey);
     if (legacyRaw === null) return false;
-    if (hasStorageValue(canonicalKey)) {
-      removeLegacyKey(legacyKey);
+    if (hasStorageValue(storage, canonicalKey)) {
+      removeLegacyKey(storage, legacyKey);
       return false;
     }
     const parsed = safeParseJSON(legacyRaw);
     if (!Array.isArray(parsed)) return false;
     try {
-      localStorage.setItem(canonicalKey, JSON.stringify(parsed));
+      storage.setItem(canonicalKey, JSON.stringify(parsed));
     } catch (err) {
       _recordWriteFailure(canonicalKey, "migrateLegacyArray", err);
       return false;
     }
-    removeLegacyKey(legacyKey);
+    removeLegacyKey(storage, legacyKey);
     return true;
   } catch {
     return false;
   }
 }
 
-function migrateLegacyObject(legacyKey, canonicalKey, normalizer) {
+function migrateLegacyObject(storage, legacyKey, canonicalKey, normalizer) {
   try {
-    const legacyRaw = localStorage.getItem(legacyKey);
+    const legacyRaw = storage.getItem(legacyKey);
     if (legacyRaw === null) return false;
-    if (hasStorageValue(canonicalKey)) {
-      removeLegacyKey(legacyKey);
+    if (hasStorageValue(storage, canonicalKey)) {
+      removeLegacyKey(storage, legacyKey);
       return false;
     }
     const parsed = safeParseJSON(legacyRaw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
     const next = typeof normalizer === "function" ? normalizer(parsed) : parsed;
     try {
-      localStorage.setItem(canonicalKey, JSON.stringify(next));
+      storage.setItem(canonicalKey, JSON.stringify(next));
     } catch (err) {
       _recordWriteFailure(canonicalKey, "migrateLegacyObject", err);
       return false;
     }
-    removeLegacyKey(legacyKey);
+    removeLegacyKey(storage, legacyKey);
     return true;
   } catch {
     return false;
   }
 }
 
-export function migrateLegacyStorageNamespace() {
+export function migrateLegacyStorageNamespace({ storage, authorizedRecovery = false } = {}) {
+  // Legacy Field Pocket values are quarantined by default. This helper exists
+  // only for a later verified recovery workflow; ordinary runtime may not read,
+  // enumerate, copy, parse, delete, or mark these values.
+  if (authorizedRecovery !== true) return { ok: false, migrated: false, reason: "recovery_not_authorized" };
+  const recoveryStorage = storage;
+  if (!recoveryStorage) return { ok: false, migrated: false, reason: "storage_unavailable" };
   try {
-    if (typeof localStorage === "undefined") return false;
+    if (typeof recoveryStorage.length !== "number") return { ok: false, migrated: false, reason: "storage_unavailable" };
   } catch {
-    return false;
+    return { ok: false, migrated: false, reason: "storage_unavailable" };
   }
 
   try {
-    if (localStorage.getItem(STORAGE_MIGRATION_DONE_KEY) === "1") return false;
+    if (recoveryStorage.getItem(STORAGE_MIGRATION_DONE_KEY) === "1") return { ok: true, migrated: false, reason: "already_migrated" };
   } catch {
     return false;
   }
@@ -168,32 +174,32 @@ export function migrateLegacyStorageNamespace() {
   let migratedAny = false;
 
   try {
-    const legacyLang = localStorage.getItem(LEGACY_STORAGE_KEYS.LANG);
-    const hasCanonicalLang = hasStorageValue(STORAGE_KEYS.LANG);
+    const legacyLang = recoveryStorage.getItem(LEGACY_STORAGE_KEYS.LANG);
+    const hasCanonicalLang = hasStorageValue(recoveryStorage, STORAGE_KEYS.LANG);
     if (legacyLang !== null && !hasCanonicalLang) {
       const lang = String(legacyLang || "").trim().toLowerCase();
       if (lang === "en" || lang === "es") {
         try {
-          localStorage.setItem(STORAGE_KEYS.LANG, lang);
+          recoveryStorage.setItem(STORAGE_KEYS.LANG, lang);
         } catch (err) {
           _recordWriteFailure(STORAGE_KEYS.LANG, "migrateLegacyStorageNamespace:lang", err);
         }
         migratedAny = true;
       }
     }
-    if (legacyLang !== null && (hasStorageValue(STORAGE_KEYS.LANG) || String(legacyLang || "").trim() === "")) {
-      removeLegacyKey(LEGACY_STORAGE_KEYS.LANG);
+    if (legacyLang !== null && (hasStorageValue(recoveryStorage, STORAGE_KEYS.LANG) || String(legacyLang || "").trim() === "")) {
+      removeLegacyKey(recoveryStorage, LEGACY_STORAGE_KEYS.LANG);
     }
   } catch {}
 
   try {
-    const legacyShowCosts = localStorage.getItem(LEGACY_STORAGE_KEYS.SHOW_COSTS);
-    const hasCanonicalSettings = hasStorageValue(STORAGE_KEYS.SETTINGS);
+    const legacyShowCosts = recoveryStorage.getItem(LEGACY_STORAGE_KEYS.SHOW_COSTS);
+    const hasCanonicalSettings = hasStorageValue(recoveryStorage, STORAGE_KEYS.SETTINGS);
     if (legacyShowCosts !== null && !hasCanonicalSettings) {
       const parsedShowCosts = parseLegacyBool(legacyShowCosts);
       if (parsedShowCosts !== null) {
         try {
-          localStorage.setItem(
+          recoveryStorage.setItem(
             STORAGE_KEYS.SETTINGS,
             JSON.stringify({ internal: { showInternalCostFields: parsedShowCosts } })
           );
@@ -203,35 +209,35 @@ export function migrateLegacyStorageNamespace() {
         migratedAny = true;
       }
     }
-    if (legacyShowCosts !== null && hasStorageValue(STORAGE_KEYS.SETTINGS)) {
-      removeLegacyKey(LEGACY_STORAGE_KEYS.SHOW_COSTS);
+    if (legacyShowCosts !== null && hasStorageValue(recoveryStorage, STORAGE_KEYS.SETTINGS)) {
+      removeLegacyKey(recoveryStorage, LEGACY_STORAGE_KEYS.SHOW_COSTS);
     }
   } catch {}
 
   try {
-    if (migrateLegacyObject(LEGACY_STORAGE_KEYS.PROFILE_V1, STORAGE_KEYS.COMPANY_PROFILE, normalizeCompanyProfile)) {
+    if (migrateLegacyObject(recoveryStorage, LEGACY_STORAGE_KEYS.PROFILE_V1, STORAGE_KEYS.COMPANY_PROFILE, normalizeCompanyProfile)) {
       migratedAny = true;
     }
-    if (migrateLegacyObject(LEGACY_STORAGE_KEYS.PROFILE, STORAGE_KEYS.COMPANY_PROFILE, normalizeCompanyProfile)) {
+    if (migrateLegacyObject(recoveryStorage, LEGACY_STORAGE_KEYS.PROFILE, STORAGE_KEYS.COMPANY_PROFILE, normalizeCompanyProfile)) {
       migratedAny = true;
     }
-    if (hasStorageValue(STORAGE_KEYS.COMPANY_PROFILE)) {
-      removeLegacyKey(LEGACY_STORAGE_KEYS.PROFILE_V1);
-      removeLegacyKey(LEGACY_STORAGE_KEYS.PROFILE);
+    if (hasStorageValue(recoveryStorage, STORAGE_KEYS.COMPANY_PROFILE)) {
+      removeLegacyKey(recoveryStorage, LEGACY_STORAGE_KEYS.PROFILE_V1);
+      removeLegacyKey(recoveryStorage, LEGACY_STORAGE_KEYS.PROFILE);
     }
   } catch {}
 
-  if (migrateLegacyArray(LEGACY_STORAGE_KEYS.CUSTOMERS, STORAGE_KEYS.CUSTOMERS)) migratedAny = true;
-  if (migrateLegacyArray(LEGACY_STORAGE_KEYS.ESTIMATES, STORAGE_KEYS.ESTIMATES)) migratedAny = true;
-  if (migrateLegacyArray(LEGACY_STORAGE_KEYS.INVOICES, STORAGE_KEYS.INVOICES)) migratedAny = true;
+  if (migrateLegacyArray(recoveryStorage, LEGACY_STORAGE_KEYS.CUSTOMERS, STORAGE_KEYS.CUSTOMERS)) migratedAny = true;
+  if (migrateLegacyArray(recoveryStorage, LEGACY_STORAGE_KEYS.ESTIMATES, STORAGE_KEYS.ESTIMATES)) migratedAny = true;
+  if (migrateLegacyArray(recoveryStorage, LEGACY_STORAGE_KEYS.INVOICES, STORAGE_KEYS.INVOICES)) migratedAny = true;
 
-  removeLegacyKey(LEGACY_STORAGE_KEYS.THEME);
+  removeLegacyKey(recoveryStorage, LEGACY_STORAGE_KEYS.THEME);
 
   try {
-    localStorage.setItem(STORAGE_MIGRATION_DONE_KEY, "1");
+    recoveryStorage.setItem(STORAGE_MIGRATION_DONE_KEY, "1");
   } catch {}
 
-  return migratedAny;
+  return { ok: true, migrated: migratedAny, reason: "" };
 }
 
 function parseLegacyAddress(address) {
@@ -341,7 +347,6 @@ export function writeJsonStorage(key, value) {
 
 export function loadCompanyProfile() {
   try {
-    migrateLegacyStorageNamespace();
     const raw = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE) || "";
     if (!raw) return { ...DEFAULT_COMPANY_PROFILE };
     const parsed = JSON.parse(raw);

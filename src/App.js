@@ -17,7 +17,6 @@ import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { requireCompanyProfile } from "./utils/guards";
-import { migrateLegacyStorageNamespace } from "./utils/storage";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "./utils/projects";
 import { installDevJobLearningConsole } from "./utils/devJobLearningConsole";
@@ -33,8 +32,27 @@ import CloudHeaderStatusChip from "./components/CloudHeaderStatusChip";
 import DeviceLockGate from "./components/DeviceLockGate";
 import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
+import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
+import VaultAccessGate from "./screens/VaultAccessGate";
+import VaultCompatibilityGate from "./screens/VaultCompatibilityGate";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
+import useVaultSession from "./lib/useVaultSession";
+import useVaultCompatibilityBridge from "./lib/useVaultCompatibilityBridge";
+import { VAULT_BRIDGE_RELEASE } from "./lib/vaultBridgeBuildPolicy";
+import { workspaceTag as deriveVaultWorkspaceTag } from "./lib/vaultCrypto";
+import useVaultIdleLock from "./lib/useVaultIdleLock";
+import {
+  DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  VAULT_IDLE_LOCK_MINUTES,
+  readVaultIdleLockMinutes,
+  writeVaultIdleLockMinutes,
+} from "./lib/vaultIdleLockSettings";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
+import {
+  activateAccountScopedLocalStorage,
+  deactivateAccountScopedLocalStorage,
+  setActiveWorkspaceVaultCompatibility,
+} from "./lib/accountScopedLocalStorage";
 import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
 import { resolveCompanyEntitlements } from "./lib/companyEntitlementsApi";
 import { sanitizeLegacySubscriptionCaches } from "./lib/subscriptionCacheSanitation";
@@ -509,10 +527,6 @@ function buildProfileReturnTarget(activeTab, createIntent, requestedTab = "") {
 
   return { route: activeTab };
 }
-
-try {
-  migrateLegacyStorageNamespace();
-} catch {}
 
 function loadSavedEstimates() {
   try {
@@ -2497,7 +2511,14 @@ const styles = {
   stepLabel: { fontWeight: 800, fontSize: 12, letterSpacing: "0.2px" },
 };
 
-function EstiPaidAppShell({ auth = null, account = null, deviceLock = null } = {}) {
+function EstiPaidAppShell({
+  auth = null,
+  account = null,
+  deviceLock = null,
+  vaultIdleLockMinutes = DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  onVaultIdleLockMinutesChange = null,
+  onVaultLockNow = null,
+} = {}) {
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return undefined;
     installDevJobLearningConsole();
@@ -4007,6 +4028,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         onOpenTemplates={() => navigateTo(ROUTES.TEMPLATES)}
         onOpenSnapshot={() => navigateTo(ROUTES.SNAPSHOT)}
         snapshotAvailable={Boolean(FinancialSnapshotScreen)}
+        vaultIdleLockMinutes={vaultIdleLockMinutes}
+        vaultIdleLockOptions={VAULT_IDLE_LOCK_MINUTES}
+        onVaultIdleLockMinutesChange={onVaultIdleLockMinutesChange}
+        onVaultLockNow={onVaultLockNow}
       />
     ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
@@ -4558,13 +4583,22 @@ function AuthLoadingScreen() {
   );
 }
 
-// Local/offline use is preserved when Supabase is not configured for this
-// deployment (e.g. the current Jest test environment, or a build without
-// REACT_APP_SUPABASE_* env vars): the app shell renders directly, exactly as
-// it always has. Sign-in is only enforced when a real Supabase project is
-// wired up for this build.
+// A stable identity for "no workspace is open", so the not-eligible branch of
+// the activation effect can bail out without re-rendering in a loop.
+const IDLE_WORKSPACE = Object.freeze({ identity: "", status: "idle", namespace: "" });
+const IDLE_BRIDGE_WORKSPACE = Object.freeze({ identity: "", workspaceTag: "" });
+
 export default function App() {
   const auth = useSupabaseAuth();
+  // ISO-14D: the local workspace is namespaced by authenticated identity. Until
+  // that namespace is active and verified, no shell mounts, no worker gets an
+  // identity, and no EstiPaid storage read can reach a value.
+  const [workspace, setWorkspace] = useState(IDLE_WORKSPACE);
+  const [bridgeWorkspace, setBridgeWorkspace] = useState(IDLE_BRIDGE_WORKSPACE);
+  const [vaultIdleLockPreference, setVaultIdleLockPreference] = useState({
+    identity: "",
+    minutes: DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  });
 
   // A password-recovery callback establishes a real session, but that session
   // exists only to change the password. Until recovery ends, every account and
@@ -4577,20 +4611,106 @@ export default function App() {
   const operationalSession = recoveryGateActive ? null : auth.session;
 
   const account = useSupabaseAccount({ configured: operationalConfigured, user: operationalUser });
+
+  // The workspace identity is the immutable authenticated user UUID plus the
+  // resolved company UUID. Email/username are display metadata and never take
+  // part in it.
+  const workspaceIdentity = useMemo(() => {
+    const userId = String(auth.user?.id || "").trim();
+    const companyId = String(account.company?.id || "").trim();
+    return userId && companyId ? `${userId}|${companyId}` : "";
+  }, [auth.user?.id, account.company?.id]);
+
+  const workspaceEligible = Boolean(
+    operationalConfigured
+    && !auth.loading
+    && operationalSession
+    && !account.loading
+    && !account.error
+    && account.hasCompany
+    && account.membership
+    && workspaceIdentity
+  );
+
+  // Ready is recomputed during render, not just in the effect: the instant the
+  // authenticated identity changes, the previous workspace stops being ready,
+  // the shell unmounts, and the workers lose their identity -- before any
+  // effect has had a chance to run.
+  const workspaceReady = Boolean(
+    workspaceIdentity
+    && workspace.status === "ready"
+    && workspace.identity === workspaceIdentity
+  );
+
+  // The bridge only accepts the pseudonymous vault tag. It is derived after
+  // the account-scoped facade is active and is discarded synchronously when
+  // the active identity changes.
+  useEffect(() => {
+    if (!VAULT_BRIDGE_RELEASE || !workspaceReady || !workspaceIdentity) {
+      setBridgeWorkspace((previous) => (previous === IDLE_BRIDGE_WORKSPACE ? previous : IDLE_BRIDGE_WORKSPACE));
+      return undefined;
+    }
+    let current = true;
+    setBridgeWorkspace(IDLE_BRIDGE_WORKSPACE);
+    Promise.resolve(deriveVaultWorkspaceTag(auth.user?.id, account.company?.id))
+      .then((workspaceTag) => {
+        if (current) setBridgeWorkspace({ identity: workspaceIdentity, workspaceTag });
+      })
+      .catch(() => {
+        if (current) setBridgeWorkspace({ identity: workspaceIdentity, workspaceTag: "" });
+      });
+    return () => { current = false; };
+  }, [account.company?.id, auth.user?.id, workspaceIdentity, workspaceReady]);
+
+  const bridgeWorkspaceReady = Boolean(
+    bridgeWorkspace.identity === workspaceIdentity
+    && bridgeWorkspace.workspaceTag
+  );
+  const compatibility = useVaultCompatibilityBridge({
+    enabled: Boolean(VAULT_BRIDGE_RELEASE && workspaceReady && bridgeWorkspaceReady),
+    workspaceTag: bridgeWorkspaceReady ? bridgeWorkspace.workspaceTag : "",
+  });
+  const legacyCompatibilitySafe = Boolean(
+    VAULT_BRIDGE_RELEASE
+    && bridgeWorkspaceReady
+    && compatibility.state === "legacy-safe"
+  );
+
+  // The App is the only production consumer of the hook result. Mirror that
+  // narrow public state into the facade after each render so mocked/test hook
+  // results cannot accidentally bypass the synchronous mutation barrier.
+  useEffect(() => {
+    setActiveWorkspaceVaultCompatibility({
+      workspaceTag: bridgeWorkspaceReady ? bridgeWorkspace.workspaceTag : "",
+      state: legacyCompatibilitySafe ? "legacy-safe" : "checking",
+      generation: 0,
+    });
+  }, [bridgeWorkspace.workspaceTag, bridgeWorkspaceReady, legacyCompatibilitySafe]);
+
+  const workspaceCloudConfigured = Boolean(
+    operationalConfigured
+    && operationalSession
+    && account.hasCompany
+    && workspaceReady
+    && (!VAULT_BRIDGE_RELEASE || legacyCompatibilitySafe)
+  );
+  const cloudUser = workspaceCloudConfigured ? operationalUser : null;
+  const cloudCompany = workspaceCloudConfigured ? account.company : null;
+
   const deviceLock = useDeviceLockStatus({
-    configured: operationalConfigured,
-    user: operationalUser,
-    company: account.company,
-    enabled: Boolean(operationalConfigured && operationalSession),
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
+    enabled: workspaceCloudConfigured,
   });
 
   // Gate 13B: background automatic cloud backup worker. Called unconditionally
   // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
   // Supabase is configured, and a workspace exists.
   useCloudAutoConvergence({
-    configured: operationalConfigured,
-    user: operationalUser,
-    company: account.company,
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
     deviceLock,
   });
 
@@ -4599,21 +4719,100 @@ export default function App() {
   // backup (cloud writes stay disabled until ownership is confirmed active).
   useCloudAutoBackup({
     enabled: Boolean(
-      operationalConfigured && operationalSession
+      workspaceCloudConfigured
       && deviceLock.ready === true
       && deviceLock.loading === false
       && deviceLock.isActive === true
       && deviceLock.isLocked === false
     ),
-    configured: operationalConfigured,
-    user: operationalUser,
-    company: account.company,
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
     role: account.role,
     deviceLocked: Boolean(deviceLock.isLocked),
   });
 
+  // Activation order: auth -> account/company -> activate the exact namespace ->
+  // verify it -> only then may workers and the shell see an identity. The
+  // cleanup deactivates on identity change and on unmount, so a signed-out or
+  // switched account can never leave the previous namespace installed.
+  useEffect(() => {
+    if (!workspaceEligible) {
+      deactivateAccountScopedLocalStorage();
+      setWorkspace((previous) => (previous === IDLE_WORKSPACE ? previous : IDLE_WORKSPACE));
+      return undefined;
+    }
+
+    const activation = activateAccountScopedLocalStorage({
+      storage: typeof window === "undefined" ? null : window.localStorage,
+      userId: auth.user?.id,
+      companyId: account.company?.id,
+    });
+
+    setWorkspace(activation.ok
+      ? { identity: workspaceIdentity, status: "ready", namespace: activation.namespace }
+      : { identity: workspaceIdentity, status: "error", namespace: "" });
+
+    return () => deactivateAccountScopedLocalStorage();
+  }, [workspaceEligible, workspaceIdentity, auth.user?.id, account.company?.id]);
+
+  // ISO-15E2: the account-scoped facade must be active before the vault is
+  // inspected, and no business shell may mount until this exact identity has
+  // an active, module-private vault capability.
+  const vault = useVaultSession({
+    userId: auth.user?.id,
+    companyId: account.company?.id,
+    enabled: Boolean(
+      !VAULT_BRIDGE_RELEASE
+      && auth.configured
+      && operationalSession
+      && auth.user?.id
+      && account.hasCompany
+      && account.membership
+      && workspaceReady
+    ),
+  });
+
+  // The preference is read only after the exact account-scoped facade is
+  // active. Keeping its identity alongside the value prevents workspace A's
+  // duration from ever being used for workspace B during an identity switch.
+  useEffect(() => {
+    if (!workspaceReady) {
+      setVaultIdleLockPreference((previous) => (
+        previous.identity || previous.minutes !== DEFAULT_VAULT_IDLE_LOCK_MINUTES
+          ? { identity: "", minutes: DEFAULT_VAULT_IDLE_LOCK_MINUTES }
+          : previous
+      ));
+      return;
+    }
+    setVaultIdleLockPreference({
+      identity: workspaceIdentity,
+      minutes: readVaultIdleLockMinutes(),
+    });
+  }, [workspaceIdentity, workspaceReady]);
+
+  const vaultIdleLockMinutes = vaultIdleLockPreference.identity === workspaceIdentity
+    ? vaultIdleLockPreference.minutes
+    : DEFAULT_VAULT_IDLE_LOCK_MINUTES;
+
+  const changeVaultIdleLockMinutes = useCallback((minutes) => {
+    if (!workspaceReady || !workspaceIdentity || !VAULT_IDLE_LOCK_MINUTES.includes(minutes)) return { ok: false };
+    const written = writeVaultIdleLockMinutes(minutes);
+    if (written.ok) setVaultIdleLockPreference({ identity: workspaceIdentity, minutes });
+    return written;
+  }, [workspaceIdentity, workspaceReady]);
+
+  useVaultIdleLock({
+    enabled: Boolean(
+      workspaceReady
+      && vault.capability?.state === "unlocked"
+    ),
+    minutes: vaultIdleLockMinutes,
+    onLock: vault?.lock,
+  });
+
   if (!auth.configured) {
-    return <EstiPaidAppShell />;
+    return <WorkspaceAccessGate state="configuration-error" auth={auth} account={account} />;
   }
 
   if (auth.loading) {
@@ -4627,6 +4826,38 @@ export default function App() {
     return <AuthScreen auth={auth} />;
   }
 
+  if (account.loading) {
+    return <WorkspaceAccessGate state="loading" auth={auth} account={account} />;
+  }
+
+  if (account.error || !auth.user?.id) {
+    return <WorkspaceAccessGate state="account-error" auth={auth} account={account} />;
+  }
+
+  // A brand-new account has no company yet: ask for the company name, nothing
+  // else. No browser-data question is ever put to a contractor.
+  if (!account.hasCompany || !account.membership) {
+    return <WorkspaceAccessGate state="setup" auth={auth} account={account} />;
+  }
+
+  if (workspace.status === "error" && workspace.identity === workspaceIdentity) {
+    return <WorkspaceAccessGate state="activation-error" auth={auth} account={account} />;
+  }
+
+  // The shell must never run its storage initializers before the namespace is
+  // active, so a not-yet-ready workspace holds on the branded progress state.
+  if (!workspaceReady) {
+    return <WorkspaceAccessGate state="activating" auth={auth} account={account} />;
+  }
+
+  if (VAULT_BRIDGE_RELEASE && !legacyCompatibilitySafe) {
+    return <VaultCompatibilityGate state={compatibility.state} />;
+  }
+
+  if (!VAULT_BRIDGE_RELEASE && vault.capability?.state !== "unlocked") {
+    return <VaultAccessGate {...vault} />;
+  }
+
   return (
     <BusinessMutationGuardProvider
       configured={auth.configured}
@@ -4634,7 +4865,14 @@ export default function App() {
       company={account.company}
       deviceLock={deviceLock}
     >
-      <EstiPaidAppShell auth={auth} account={account} deviceLock={deviceLock} />
+      <EstiPaidAppShell
+        auth={auth}
+        account={account}
+        deviceLock={deviceLock}
+        vaultIdleLockMinutes={vaultIdleLockMinutes}
+        onVaultIdleLockMinutesChange={changeVaultIdleLockMinutes}
+        onVaultLockNow={vault?.lock}
+      />
     </BusinessMutationGuardProvider>
   );
 }

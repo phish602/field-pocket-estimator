@@ -1,6 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { buildUnlockedVaultSessionResult, resetConfiguredTestWorkspace, setupConfiguredWorkspace } from "./testUtils/configuredWorkspaceTestHarness";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
@@ -16,7 +31,11 @@ function seedCompanyProfile() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  resetConfiguredTestWorkspace();
+  // Fixtures are written only after the scoped workspace is open, so they land
+  // in the TEST_USER/TEST_COMPANY namespace rather than as unscoped values.
+  setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   seedCompanyProfile();
 
   try {
@@ -44,6 +63,10 @@ beforeEach(() => {
       });
     }
   } catch {}
+});
+
+afterEach(() => {
+  resetConfiguredTestWorkspace();
 });
 
 test("resets scroll position on mount and when navigating to a new page", async () => {

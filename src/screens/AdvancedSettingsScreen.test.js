@@ -409,6 +409,35 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     setItemSpy = null;
   });
 
+  test("renders Local Vault Lock with exactly four valid choices and a non-destructive Lock Now action", () => {
+    const onMinutesChange = jest.fn();
+    const onLockNow = jest.fn();
+    const signOut = jest.fn();
+    useSupabaseAuth.mockReturnValue(buildAuthState({ signOut }));
+    render(
+      <AdvancedSettingsScreen
+        vaultIdleLockMinutes={30}
+        vaultIdleLockOptions={[5, 15, 30, 60]}
+        onVaultIdleLockMinutesChange={onMinutesChange}
+        onVaultLockNow={onLockNow}
+      />,
+    );
+
+    expect(screen.getByText("Local Vault Lock")).toBeInTheDocument();
+    expect(screen.getByText(/does not sign you out and does not delete local or cloud data/i)).toBeInTheDocument();
+    const control = screen.getByLabelText("Automatic vault lock after inactivity");
+    expect([...control.options].map((option) => option.textContent)).toEqual(["5 minutes", "15 minutes", "30 minutes", "60 minutes"]);
+    expect(control).toHaveValue("30");
+    expect(screen.queryByRole("option", { name: /never|disabled|off|zero/i })).not.toBeInTheDocument();
+    fireEvent.change(control, { target: { value: "15" } });
+    expect(onMinutesChange).toHaveBeenCalledWith(15);
+    fireEvent.click(screen.getByRole("button", { name: "Lock Now" }));
+    expect(onLockNow).toHaveBeenCalledTimes(1);
+    expect(signOut).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
+    expect(JSON.stringify(onLockNow.mock.calls)).not.toMatch(/password|kek|dek|cryptokey|metadata/i);
+  });
+
   test("exports a redacted support bundle with read-only data", async () => {
     render(<AdvancedSettingsScreen />);
 

@@ -1,3 +1,24 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
+} from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 jest.mock("./utils/guards", () => ({
@@ -31,6 +52,8 @@ jest.mock("./screens/InvoicesScreen", () => {
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 
+const useVaultSession = require("./lib/useVaultSession").default;
+
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
   phone: "5551234567",
@@ -41,7 +64,10 @@ const COMPLETE_COMPANY_PROFILE = {
 };
 
 beforeEach(() => {
-  localStorage.clear();
+  resetConfiguredTestWorkspace();
+  setupConfiguredWorkspace();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(COMPLETE_COMPANY_PROFILE));
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
@@ -49,20 +75,26 @@ beforeEach(() => {
   localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([]));
 });
 
+afterEach(() => {
+  resetConfiguredTestWorkspace();
+});
+
 function getBottomNav() {
   return screen.getByRole("navigation", { name: /primary/i });
 }
 
-test("Home is present in the bottom nav and is the first item", () => {
+test("Home is present in the bottom nav and is the first item", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   const nav = getBottomNav();
   const buttons = within(nav).getAllByRole("button");
   expect(buttons[0]).toHaveAccessibleName("Home");
 });
 
-test("tapping Home from another bottom-nav screen returns to the dashboard", () => {
+test("tapping Home from another bottom-nav screen returns to the dashboard", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   const nav = getBottomNav();
   fireEvent.click(within(nav).getByRole("button", { name: "Estimates" }));
@@ -73,8 +105,9 @@ test("tapping Home from another bottom-nav screen returns to the dashboard", () 
   expect(screen.getByText("Turn Scope into Revenue")).toBeInTheDocument();
 });
 
-test("Home's bottom-nav button is active only while on Home", () => {
+test("Home's bottom-nav button is active only while on Home", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   const homeBtn = within(getBottomNav()).getByRole("button", { name: "Home" });
   expect(homeBtn.style.opacity).toBe("1");
@@ -85,8 +118,9 @@ test("Home's bottom-nav button is active only while on Home", () => {
   expect(homeBtnAfterNav.style.opacity).not.toBe("1");
 });
 
-test("Customers, Estimates, and Invoices remain reachable from the bottom nav", () => {
+test("Customers, Estimates, and Invoices remain reachable from the bottom nav", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
   const nav = getBottomNav();
 
   fireEvent.click(within(nav).getByRole("button", { name: "Customers" }));
@@ -99,8 +133,9 @@ test("Customers, Estimates, and Invoices remain reachable from the bottom nav", 
   expect(screen.getByTestId("invoices-screen")).toBeInTheDocument();
 });
 
-test("Projects is reachable from the hamburger menu after leaving the bottom nav", () => {
+test("Projects is reachable from the hamburger menu after leaving the bottom nav", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText(/open menu/i));
   fireEvent.click(screen.getByRole("button", { name: "Projects" }));
@@ -108,8 +143,9 @@ test("Projects is reachable from the hamburger menu after leaving the bottom nav
   expect(screen.getByTestId("projects-screen")).toBeInTheDocument();
 });
 
-test("the bottom nav does not include a separate Projects tab", () => {
+test("the bottom nav does not include a separate Projects tab", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   const nav = getBottomNav();
   expect(within(nav).queryByRole("button", { name: "Projects" })).not.toBeInTheDocument();

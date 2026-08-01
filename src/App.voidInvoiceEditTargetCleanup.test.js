@@ -1,7 +1,30 @@
+import {
+  resetConfiguredTestWorkspace,
+  setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
+} from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
+
+// ISO-14K: the operational shell requires an authenticated identity with an
+// active account-scoped workspace, so this suite states one explicitly and
+// seeds its fixtures inside that workspace namespace.
+jest.mock("./lib/useSupabaseAuth", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseAccount", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
+
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import App from "./App";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const INVOICES_KEY = "estipaid-invoices-v1";
@@ -90,30 +113,39 @@ function triggerCreateInvoiceFromLauncher() {
 
 describe("App readValidatedCreateEditTargets void invoice defense", () => {
   beforeEach(() => {
-    localStorage.clear();
+    resetConfiguredTestWorkspace();
+    setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   });
 
-  test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is void", () => {
+  afterEach(() => {
+    resetConfiguredTestWorkspace();
+  });
+
+  test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is void", async () => {
     const voidInv = makeVoidInvoice("inv_void_stale");
     localStorage.setItem(INVOICES_KEY, JSON.stringify([voidInv]));
     localStorage.setItem(EDIT_INVOICE_TARGET_KEY, "inv_void_stale");
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
     triggerBuilderNavigation();
 
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
   });
 
-  test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is missing (existing behavior preserved)", () => {
+  test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is missing (existing behavior preserved)", async () => {
     localStorage.setItem(EDIT_INVOICE_TARGET_KEY, "inv_missing_ghost");
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
     triggerBuilderNavigation();
 
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
   });
 
-  test("accepts a non-void invoice target: edit session is flagged active and modal appears on Create Invoice", () => {
+  test("accepts a non-void invoice target: edit session is flagged active and modal appears on Create Invoice", async () => {
     // Non-void (sent) invoice — should be accepted by validation, not cleared by the void guard.
     // We test via CreateLauncher → Invoice button path, which calls onCreateButtonRoute(INVOICE).
     // With a valid invoiceEditTarget, the "Start new document" modal appears instead of navigating,
@@ -123,6 +155,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
     localStorage.setItem(EDIT_INVOICE_TARGET_KEY, "inv_sent_valid");
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
     triggerCreateInvoiceFromLauncher();
 
     // Modal is shown because invoiceEditTarget was valid (non-void), proving the guard did not fire
@@ -131,7 +164,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBe("inv_sent_valid");
   });
 
-  test("does not disturb EDIT_INVOICE_TARGET_KEY for a void invoice before navigation clears it", () => {
+  test("does not disturb EDIT_INVOICE_TARGET_KEY for a void invoice before navigation clears it", async () => {
     // Verify the key exists at seed time (sanity), then builder navigation clears it.
     const voidInv = makeVoidInvoice("inv_void_sanity");
     localStorage.setItem(INVOICES_KEY, JSON.stringify([voidInv]));
@@ -140,6 +173,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBe("inv_void_sanity");
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
     triggerBuilderNavigation();
 
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();

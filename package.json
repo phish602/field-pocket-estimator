@@ -2,12 +2,16 @@
   "name": "field-pocket-estimator",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "proxy": "http://localhost:5055",
   "dependencies": {
     "@supabase/supabase-js": "^2.107.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "express": "^5.2.1",
+    "hash-wasm": "4.12.0",
     "jspdf": "^4.1.0",
     "jspdf-autotable": "^5.0.7",
     "react": "^19.2.4",
@@ -40,5 +44,8 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.5"
   }
 }
