@@ -424,6 +424,7 @@ test("repository constructor validates strict injections", () => {
     "createWorkspaceVaultMetadata",
     "deleteEncryptedRecord",
     "deleteMigrationManifest",
+    "deleteWorkspaceVaultDatabase",
     "listEncryptedRecordKeys",
     "readEncryptedRecord",
     "readMigrationManifest",
@@ -1381,5 +1382,210 @@ test.each([
     await expectCode(repo.readMigrationManifest({ workspaceTag: WORKSPACE_TAG }), "RECORD_CORRUPT");
   } finally {
     await deleteFactoryDatabases(factory);
+  }
+});
+
+test.each([
+  ["missing workspace tag", {}],
+  ["empty workspace tag", { workspaceTag: "" }],
+  ["malformed workspace tag", { workspaceTag: "A".repeat(42) }],
+  ["path injection", { workspaceTag: `${WORKSPACE_TAG}/other` }],
+  ["raw database name", { workspaceTag: WORKSPACE_TAG, databaseName: vaultDatabaseName() }],
+  ["raw user ID", { workspaceTag: WORKSPACE_TAG, userId: "123e4567-e89b-42d3-a456-426614174000" }],
+  ["raw company ID", { workspaceTag: WORKSPACE_TAG, companyId: "123e4567-e89b-42d3-b456-426614174001" }],
+])("workspace vault deletion rejects %s", async (_, input) => {
+  const factory = new IDBFactory();
+  try {
+    await expectCode(repository(factory).deleteWorkspaceVaultDatabase(input), "INVALID_INPUT");
+    expect(await factory.databases()).toEqual([]);
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("workspace vault deletion removes only the derived vault database and its encrypted contents", async () => {
+  const factory = new IDBFactory();
+  const repo = repository(factory);
+  let transitionDatabase;
+  try {
+    await repo.createWorkspaceVaultMetadata(metadataInput());
+    await repo.createEncryptedRecord(recordInput());
+    await repo.createMigrationManifest(manifestInput());
+    await repo.createWorkspaceVaultMetadata(metadataInput({ workspaceTag: OTHER_WORKSPACE_TAG }));
+    transitionDatabase = await openDatabase(factory, "estipaid-vault-control-v1", 1, (database) => {
+      database.createObjectStore("transitions");
+    });
+    transitionDatabase.close();
+    transitionDatabase = null;
+
+    await expect(repo.deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG })).resolves.toEqual({ deleted: true });
+    expect(await repo.workspaceDatabaseExists({ workspaceTag: WORKSPACE_TAG })).toBe(false);
+    expect(await repo.workspaceDatabaseExists({ workspaceTag: OTHER_WORKSPACE_TAG })).toBe(true);
+    expect(await repository(factory).readWorkspaceVaultMetadata({ workspaceTag: OTHER_WORKSPACE_TAG })).toEqual(expect.objectContaining({ workspaceTag: OTHER_WORKSPACE_TAG }));
+    expect((await factory.databases()).map((entry) => entry.name).sort()).toEqual([
+      "estipaid-vault-control-v1",
+      vaultDatabaseName(OTHER_WORKSPACE_TAG),
+    ]);
+  } finally {
+    if (transitionDatabase) transitionDatabase.close();
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("workspace vault deletion is idempotent and returns an immutable serializable result", async () => {
+  const factory = new IDBFactory();
+  const repo = repository(factory);
+  try {
+    const first = await repo.deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG });
+    const second = await repo.deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG });
+    expect(first).toBe(second);
+    expect(first).toEqual({ deleted: true });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(JSON.stringify(first)).toBe('{"deleted":true}');
+    expect(Object.keys(first)).toEqual(["deleted"]);
+    expect(first.workspaceTag).toBeUndefined();
+    expect(first.databaseName).toBeUndefined();
+    expect(first.request).toBeUndefined();
+    expect(first.database).toBeUndefined();
+    expect(await factory.databases()).toEqual([]);
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("workspace vault deletion waits for the delete request and never opens the database", async () => {
+  const request = {};
+  const factory = {
+    databases: jest.fn(),
+    open: jest.fn(() => { throw new Error("open must not run"); }),
+    deleteDatabase: jest.fn(() => request),
+  };
+  const repo = repository(factory);
+  let settled = false;
+  const pending = repo.deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG }).then((result) => {
+    settled = true;
+    return result;
+  });
+
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(factory.deleteDatabase).toHaveBeenCalledWith(vaultDatabaseName());
+  expect(factory.open).not.toHaveBeenCalled();
+  expect(factory.databases).not.toHaveBeenCalled();
+  request.onsuccess();
+  await expect(pending).resolves.toEqual({ deleted: true });
+});
+
+test("workspace vault deletion request errors fail closed and preserve the database", async () => {
+  const factory = new IDBFactory();
+  const seed = repository(factory);
+  const request = { error: { name: "AbortError" } };
+  const injected = {
+    databases: factory.databases.bind(factory),
+    open: jest.fn(() => { throw new Error("open must not run"); }),
+    deleteDatabase: jest.fn(() => request),
+  };
+  try {
+    await seed.createWorkspaceVaultMetadata(metadataInput());
+    const pending = repository(injected).deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG });
+    request.onerror();
+    await expectCode(pending, "TRANSACTION_ABORTED");
+    expect(await seed.workspaceDatabaseExists({ workspaceTag: WORKSPACE_TAG })).toBe(true);
+    expect(injected.open).not.toHaveBeenCalled();
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("workspace vault deletion synchronous failures fail closed and preserve the database", async () => {
+  const factory = new IDBFactory();
+  const seed = repository(factory);
+  const injected = {
+    databases: factory.databases.bind(factory),
+    open: jest.fn(() => { throw new Error("open must not run"); }),
+    deleteDatabase: jest.fn(() => { throw { name: "QuotaExceededError" }; }),
+  };
+  try {
+    await seed.createWorkspaceVaultMetadata(metadataInput());
+    await expectCode(repository(injected).deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG }), "QUOTA_EXCEEDED");
+    expect(await seed.workspaceDatabaseExists({ workspaceTag: WORKSPACE_TAG })).toBe(true);
+    expect(injected.open).not.toHaveBeenCalled();
+  } finally {
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("a blocked workspace vault deletion rejects without closing the external connection or reporting success", async () => {
+  const factory = new IDBFactory();
+  const seed = repository(factory);
+  const request = {};
+  const injected = {
+    databases: factory.databases.bind(factory),
+    open: jest.fn(() => { throw new Error("open must not run"); }),
+    deleteDatabase: jest.fn(() => request),
+  };
+  let external;
+  let closeSpy;
+  try {
+    await seed.createWorkspaceVaultMetadata(metadataInput());
+    external = await openDatabase(factory, vaultDatabaseName(), WORKSPACE_VAULT_DATABASE_VERSION);
+    closeSpy = jest.spyOn(external, "close");
+    const pending = repository(injected).deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG });
+    request.onblocked();
+    await expectCode(pending, "DATABASE_BLOCKED");
+    request.onsuccess();
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(await seed.workspaceDatabaseExists({ workspaceTag: WORKSPACE_TAG })).toBe(true);
+    expect(injected.open).not.toHaveBeenCalled();
+  } finally {
+    if (closeSpy) closeSpy.mockRestore();
+    if (external) external.close();
+    await deleteFactoryDatabases(factory);
+  }
+});
+
+test("workspace vault deletion has no browser storage, event, messaging, network, or transport side effects", async () => {
+  const request = {};
+  const factory = {
+    databases: jest.fn(),
+    open: jest.fn(() => { throw new Error("open must not run"); }),
+    deleteDatabase: jest.fn(() => request),
+  };
+  const storageGet = jest.spyOn(globalThis.Storage.prototype, "getItem");
+  const storageSet = jest.spyOn(globalThis.Storage.prototype, "setItem");
+  const storageRemove = jest.spyOn(globalThis.Storage.prototype, "removeItem");
+  const storageClear = jest.spyOn(globalThis.Storage.prototype, "clear");
+  const dispatch = jest.spyOn(globalThis, "dispatchEvent");
+  const postMessage = jest.spyOn(globalThis, "postMessage");
+  const originalFetch = globalThis.fetch;
+  const originalBroadcastChannel = globalThis.BroadcastChannel;
+  const fetchMock = jest.fn();
+  const broadcastChannel = jest.fn();
+  globalThis.fetch = fetchMock;
+  globalThis.BroadcastChannel = broadcastChannel;
+  try {
+    const pending = repository(factory).deleteWorkspaceVaultDatabase({ workspaceTag: WORKSPACE_TAG });
+    request.onsuccess();
+    await expect(pending).resolves.toEqual({ deleted: true });
+    [storageGet, storageSet, storageRemove, storageClear].forEach((spy) => {
+      expect(spy).not.toHaveBeenCalled();
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(broadcastChannel).not.toHaveBeenCalled();
+    expect(factory.open).not.toHaveBeenCalled();
+    expect(factory.databases).not.toHaveBeenCalled();
+  } finally {
+    storageGet.mockRestore();
+    storageSet.mockRestore();
+    storageRemove.mockRestore();
+    storageClear.mockRestore();
+    dispatch.mockRestore();
+    postMessage.mockRestore();
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+    if (originalBroadcastChannel === undefined) delete globalThis.BroadcastChannel;
+    else globalThis.BroadcastChannel = originalBroadcastChannel;
   }
 });

@@ -48,6 +48,7 @@ export const WORKSPACE_VAULT_RECORDS_STORE = "records";
 export const WORKSPACE_VAULT_MIGRATION_STORE = "migration";
 
 const METADATA_KEY = "vault";
+const DATABASE_DELETION_RESULT = Object.freeze({ deleted: true });
 const WORKSPACE_TAG = /^[A-Za-z0-9_-]{43}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const MAX_REVISION = Number.MAX_SAFE_INTEGER;
@@ -634,6 +635,28 @@ export function createVaultIndexedDbRepository(options = {}) {
       requireExactShape(input, READ_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
       const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
       return exists(workspaceTag);
+    },
+
+    async deleteWorkspaceVaultDatabase(input) {
+      requireExactShape(input, READ_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          callback(value);
+        };
+        let request;
+        try {
+          request = suppliedIndexedDb.deleteDatabase(databaseName(workspaceTag));
+          request.onblocked = () => finish(reject, repositoryError(VAULT_REPOSITORY_ERROR_CODES.DATABASE_BLOCKED));
+          request.onerror = () => finish(reject, mapNativeError(request.error));
+          request.onsuccess = () => finish(resolve, DATABASE_DELETION_RESULT);
+        } catch (error) {
+          finish(reject, mapNativeError(error));
+        }
+      });
     },
 
     async createWorkspaceVaultMetadata(input) {
