@@ -462,6 +462,23 @@ describe("global window.localStorage compatibility boundary", () => {
     localStorage.clear();
   });
 
+  test("migration-only guard writing and cleanup stay device-global and facade-bound", () => {
+    localStorage.clear();
+    const result = activateAccountScopedLocalStorage({ storage: window.localStorage, userId: USER_A, companyId: COMPANY_A });
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "test-workspace-tag", state: "legacy-safe", generation: 1 });
+    result.storage.setItem(STORAGE_KEYS.CUSTOMERS, "scoped-only");
+    expect(result.storage.removeVaultMigrationItem(STORAGE_KEYS.CUSTOMERS)).toBe(false);
+    expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"other"}')).toBeNull();
+    expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"transition"}')).toBe('{"version":1,"state":"transition"}');
+    expect(result.storage.setItem(STORAGE_KEYS.CUSTOMERS, "blocked")).toBeUndefined();
+    expect(result.storage.setVaultCompatibilityGuardValue('{"version":1,"state":"authoritative"}')).toBe('{"version":1,"state":"authoritative"}');
+    expect(result.storage.removeVaultMigrationItem(STORAGE_KEYS.CUSTOMERS)).toBe(true);
+    deactivateAccountScopedLocalStorage();
+    expect(localStorage.getItem(`${result.namespace}:${STORAGE_KEYS.CUSTOMERS}`)).toBeNull();
+    expect(localStorage.getItem("estipaid-vault-guard-v1")).toBe('{"version":1,"state":"authoritative"}');
+    localStorage.clear();
+  });
+
   test("re-activating does not stack facades or double-prefix keys", () => {
     localStorage.clear();
     activateAccountScopedLocalStorage({ storage: window.localStorage, userId: USER_A, companyId: COMPANY_A });

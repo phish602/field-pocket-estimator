@@ -132,7 +132,7 @@ const MANIFEST_INPUT_FIELDS = Object.freeze([
 ]);
 const MANIFEST_DELETE_FIELDS = Object.freeze(["workspaceTag", "expectedRevision"]);
 const TRANSITION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const LOGICAL_KEYS = new Set([
+export const VAULT_MIGRATION_LOGICAL_KEYS = Object.freeze([
   "estipaid-settings-v1",
   "estipaid-estimator-v1",
   "estipaid-estimate-draft-v1",
@@ -166,6 +166,7 @@ const LOGICAL_KEYS = new Set([
   "estipaid-cloud-convergence-journal-v1",
   "estipaid-job-learning-events-v1",
 ]);
+const LOGICAL_KEYS = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
 const STORE_NAMES = Object.freeze([
   WORKSPACE_VAULT_METADATA_STORE,
   WORKSPACE_VAULT_RECORDS_STORE,
