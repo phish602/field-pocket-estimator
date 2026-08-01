@@ -89,7 +89,7 @@ beforeEach(() => {
   useDeviceLockStatus.mockReturnValue({ loading: false, ready: true, isLocked: false, isActive: true });
   useVaultSession.mockReturnValue({
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
-    setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn(),
+    setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(),
   });
   const realGetItem = Storage.prototype.getItem;
   getItemSpy = jest.spyOn(Storage.prototype, "getItem").mockImplementation(function getItem(key) {
@@ -372,7 +372,7 @@ test.each([
   ["unsupported", { capability: { state: "unsupported", code: "UNSUPPORTED_ENVIRONMENT", message: "" } }],
   ["reset required", { capability: { state: "reset_required", code: "", message: "" } }],
 ])("vault %s keeps the normal shell unmounted after workspace activation", async (_name, vault) => {
-  useVaultSession.mockReturnValue({ setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn(), checking: false, pending: false, error: "", ...vault });
+  useVaultSession.mockReturnValue({ setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(), checking: false, pending: false, error: "", ...vault });
   render(<App />);
   await waitFor(() => expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id })));
   expect(dashboard()).not.toBeInTheDocument();
@@ -385,10 +385,35 @@ test("exact unlocked vault capability is required to mount the existing shell", 
   expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id }));
 });
 
+test("Lock Now delegates to the same tab-local vault lock without signing out, clearing storage, or deactivating the workspace", async () => {
+  const lock = jest.fn();
+  const signOut = jest.fn();
+  const clear = jest.spyOn(Storage.prototype, "clear");
+  useSupabaseAuth.mockReturnValue(auth({ signOut }));
+  useVaultSession.mockReturnValue({
+    capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
+    setup: jest.fn(), unlock: jest.fn(), lock, refresh: jest.fn(),
+  });
+  try {
+    render(<App />);
+    await waitFor(() => expect(dashboard()).toBeInTheDocument());
+    clear.mockClear();
+    fireEvent.click(screen.getByLabelText(/open menu/i));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Lock Now" }));
+    expect(lock).toHaveBeenCalledTimes(1);
+    expect(signOut).not.toHaveBeenCalled();
+    expect(clear).not.toHaveBeenCalled();
+    expect(dashboard()).toBeInTheDocument(); // the mocked hook has not yet published locked
+  } finally {
+    clear.mockRestore();
+  }
+});
+
 test("account and company changes immediately remove the shell before a new vault unlock", async () => {
   const { rerender } = render(<App />);
   await waitFor(() => expect(dashboard()).toBeInTheDocument());
-  useVaultSession.mockReturnValue({ capability: { state: "locked", code: "", message: "" }, checking: true, pending: false, error: "", setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn() });
+  useVaultSession.mockReturnValue({ capability: { state: "locked", code: "", message: "" }, checking: true, pending: false, error: "", setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn() });
   signedInAs(USER_B, COMPANY_B);
   rerender(<App />);
   expect(dashboard()).not.toBeInTheDocument();

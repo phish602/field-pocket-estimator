@@ -175,6 +175,23 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
   const setup = useCallback((password) => runPasswordOperation(setupVault, password), [runPasswordOperation]);
   const unlock = useCallback((password) => runPasswordOperation(unlockVault, password), [runPasswordOperation]);
 
+  const lock = useCallback(() => {
+    const current = currentRef.current;
+    // Invalidate every read/setup/unlock already in flight before clearing the
+    // module-private session. A later stale success must not republish unlock.
+    current.generation += 1;
+    pendingRef.current = false;
+    lockVault();
+    if (identity && current.identity === identity) {
+      resolvedIdentityRef.current = identity;
+      setResult({ capability: LOCKED_CAPABILITY, checking: false, pending: false, error: "" });
+    } else {
+      current.identity = "";
+      resolvedIdentityRef.current = "";
+      setResult({ capability: LOCKED_CAPABILITY, checking: false, pending: false, error: "" });
+    }
+  }, [identity]);
+
   const identityResolved = Boolean(identity && resolvedIdentityRef.current === identity);
   return {
     capability: identityResolved ? result.capability : LOCKED_CAPABILITY,
@@ -183,6 +200,7 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
     error: identityResolved ? result.error : "",
     setup,
     unlock,
+    lock,
     refresh,
   };
 }

@@ -139,6 +139,7 @@ function unlockedVaultSession() {
     error: null,
     setup: jest.fn(),
     unlock: jest.fn(),
+    lock: jest.fn(),
     refresh: jest.fn(),
   };
 }

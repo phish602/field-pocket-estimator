@@ -36,6 +36,13 @@ import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
 import VaultAccessGate from "./screens/VaultAccessGate";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
+import useVaultIdleLock from "./lib/useVaultIdleLock";
+import {
+  DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  VAULT_IDLE_LOCK_MINUTES,
+  readVaultIdleLockMinutes,
+  writeVaultIdleLockMinutes,
+} from "./lib/vaultIdleLockSettings";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
 import {
   activateAccountScopedLocalStorage,
@@ -2499,7 +2506,14 @@ const styles = {
   stepLabel: { fontWeight: 800, fontSize: 12, letterSpacing: "0.2px" },
 };
 
-function EstiPaidAppShell({ auth = null, account = null, deviceLock = null } = {}) {
+function EstiPaidAppShell({
+  auth = null,
+  account = null,
+  deviceLock = null,
+  vaultIdleLockMinutes = DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  onVaultIdleLockMinutesChange = null,
+  onVaultLockNow = null,
+} = {}) {
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return undefined;
     installDevJobLearningConsole();
@@ -4009,6 +4023,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         onOpenTemplates={() => navigateTo(ROUTES.TEMPLATES)}
         onOpenSnapshot={() => navigateTo(ROUTES.SNAPSHOT)}
         snapshotAvailable={Boolean(FinancialSnapshotScreen)}
+        vaultIdleLockMinutes={vaultIdleLockMinutes}
+        vaultIdleLockOptions={VAULT_IDLE_LOCK_MINUTES}
+        onVaultIdleLockMinutesChange={onVaultIdleLockMinutesChange}
+        onVaultLockNow={onVaultLockNow}
       />
     ) : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.SNAPSHOT) return FinancialSnapshotScreen ? (
@@ -4570,6 +4588,10 @@ export default function App() {
   // that namespace is active and verified, no shell mounts, no worker gets an
   // identity, and no EstiPaid storage read can reach a value.
   const [workspace, setWorkspace] = useState(IDLE_WORKSPACE);
+  const [vaultIdleLockPreference, setVaultIdleLockPreference] = useState({
+    identity: "",
+    minutes: DEFAULT_VAULT_IDLE_LOCK_MINUTES,
+  });
 
   // A password-recovery callback establishes a real session, but that session
   // exists only to change the password. Until recovery ends, every account and
@@ -4697,6 +4719,44 @@ export default function App() {
     ),
   });
 
+  // The preference is read only after the exact account-scoped facade is
+  // active. Keeping its identity alongside the value prevents workspace A's
+  // duration from ever being used for workspace B during an identity switch.
+  useEffect(() => {
+    if (!workspaceReady) {
+      setVaultIdleLockPreference((previous) => (
+        previous.identity || previous.minutes !== DEFAULT_VAULT_IDLE_LOCK_MINUTES
+          ? { identity: "", minutes: DEFAULT_VAULT_IDLE_LOCK_MINUTES }
+          : previous
+      ));
+      return;
+    }
+    setVaultIdleLockPreference({
+      identity: workspaceIdentity,
+      minutes: readVaultIdleLockMinutes(),
+    });
+  }, [workspaceIdentity, workspaceReady]);
+
+  const vaultIdleLockMinutes = vaultIdleLockPreference.identity === workspaceIdentity
+    ? vaultIdleLockPreference.minutes
+    : DEFAULT_VAULT_IDLE_LOCK_MINUTES;
+
+  const changeVaultIdleLockMinutes = useCallback((minutes) => {
+    if (!workspaceReady || !workspaceIdentity || !VAULT_IDLE_LOCK_MINUTES.includes(minutes)) return { ok: false };
+    const written = writeVaultIdleLockMinutes(minutes);
+    if (written.ok) setVaultIdleLockPreference({ identity: workspaceIdentity, minutes });
+    return written;
+  }, [workspaceIdentity, workspaceReady]);
+
+  useVaultIdleLock({
+    enabled: Boolean(
+      workspaceReady
+      && vault.capability?.state === "unlocked"
+    ),
+    minutes: vaultIdleLockMinutes,
+    onLock: vault?.lock,
+  });
+
   if (!auth.configured) {
     return <WorkspaceAccessGate state="configuration-error" auth={auth} account={account} />;
   }
@@ -4747,7 +4807,14 @@ export default function App() {
       company={account.company}
       deviceLock={deviceLock}
     >
-      <EstiPaidAppShell auth={auth} account={account} deviceLock={deviceLock} />
+      <EstiPaidAppShell
+        auth={auth}
+        account={account}
+        deviceLock={deviceLock}
+        vaultIdleLockMinutes={vaultIdleLockMinutes}
+        onVaultIdleLockMinutesChange={changeVaultIdleLockMinutes}
+        onVaultLockNow={vault?.lock}
+      />
     </BusinessMutationGuardProvider>
   );
 }

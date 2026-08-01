@@ -41,7 +41,7 @@ beforeEach(() => {
 test("exposes only the narrow non-secret hook surface", async () => {
   renderProbe();
   await waitFor(() => expect(latest.checking).toBe(false));
-  expect(Object.keys(latest).sort()).toEqual(["capability", "checking", "error", "pending", "refresh", "setup", "unlock"]);
+  expect(Object.keys(latest).sort()).toEqual(["capability", "checking", "error", "lock", "pending", "refresh", "setup", "unlock"]);
   expect(latest.capability).toEqual(locked);
   expect(JSON.stringify(latest)).not.toMatch(/password|dek|kek|cryptokey|metadata/i);
 });
@@ -78,6 +78,51 @@ test("setup and unlock delegate directly without returning password material", a
   await act(async () => { await latest.unlock("unlock-local-password"); });
   expect(vaultSession.unlockVault).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a", password: "unlock-local-password" });
   expect(Object.values(latest).filter((value) => typeof value === "string")).not.toContain("unlock-local-password");
+});
+
+test("manual lock synchronously delegates, publishes locked, and is idempotent", async () => {
+  vaultSession.readVaultCapability.mockResolvedValue(unlocked);
+  renderProbe();
+  await waitFor(() => expect(latest.capability.state).toBe("unlocked"));
+  act(() => { latest.lock(); latest.lock(); });
+  expect(vaultSession.lockVault).toHaveBeenCalledTimes(3); // identity activation plus two manual locks
+  expect(latest.capability).toEqual(locked);
+  expect(latest.pending).toBe(false);
+  expect(latest.error).toBe("");
+});
+
+test("manual lock invalidates an older capability read", async () => {
+  const read = deferred();
+  vaultSession.readVaultCapability.mockReturnValue(read.promise);
+  renderProbe();
+  act(() => { latest.lock(); });
+  expect(latest.capability).toEqual(locked);
+  await act(async () => { read.resolve(unlocked); await read.promise; });
+  expect(latest.capability).toEqual(locked);
+});
+
+test("manual lock invalidates pending setup and unlock without republishing stale success", async () => {
+  const setup = deferred();
+  const unlock = deferred();
+  vaultSession.setupVault.mockReturnValueOnce(setup.promise);
+  vaultSession.unlockVault.mockReturnValueOnce(unlock.promise);
+  renderProbe();
+  await waitFor(() => expect(latest.checking).toBe(false));
+
+  let setupResult;
+  act(() => { setupResult = latest.setup("setup-password"); });
+  act(() => { latest.lock(); });
+  expect(latest.capability).toEqual(locked);
+  await act(async () => { setup.resolve(unlocked); await setupResult; });
+  expect(latest.capability).toEqual(locked);
+
+  await waitFor(() => expect(latest.checking).toBe(false));
+  let unlockResult;
+  act(() => { unlockResult = latest.unlock("unlock-password"); });
+  act(() => { latest.lock(); });
+  await act(async () => { unlock.resolve(unlocked); await unlockResult; });
+  expect(latest.capability).toEqual(locked);
+  expect(JSON.stringify(latest)).not.toMatch(/setup-password|unlock-password|password|dek|kek/i);
 });
 
 test("authentication failure stays generic while structural, environment, and storage failures remain public states", async () => {
@@ -169,6 +214,7 @@ test("does not access web storage, events, messaging, network, or transition con
   try {
     renderProbe();
     await waitFor(() => expect(latest.checking).toBe(false));
+    act(() => { latest.lock(); });
     expect(local).not.toHaveBeenCalled();
     expect(session).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
