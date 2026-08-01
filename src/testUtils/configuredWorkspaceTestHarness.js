@@ -79,6 +79,21 @@ export function buildIdleDeviceLockResult(overrides = {}) {
   return { loading: false, ready: true, isLocked: false, isActive: true, ...overrides };
 }
 
+// Test-only public result for App suites whose subject intentionally starts
+// beyond the encrypted-vault gate. Each suite must still mock the hook and opt
+// into this result explicitly; this helper never alters production behavior.
+export function buildUnlockedVaultSessionResult() {
+  return {
+    capability: Object.freeze({ state: "unlocked", code: "", message: "" }),
+    checking: false,
+    pending: false,
+    error: null,
+    setup: jest.fn(),
+    unlock: jest.fn(),
+    refresh: jest.fn(),
+  };
+}
+
 function mockModuleDefault(path) {
   try {
     // eslint-disable-next-line global-require, import/no-dynamic-require

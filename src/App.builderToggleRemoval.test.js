@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,9 +13,12 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 import { STORAGE_KEYS } from "./constants/storageKeys";
 
 const COMPLETE_COMPANY_PROFILE = {
@@ -63,6 +67,7 @@ async function clickNewInvoice() {
 beforeEach(() => {
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   seedCompanyProfile();
 });
 

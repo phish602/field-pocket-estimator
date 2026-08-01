@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
+import { buildUnlockedVaultSessionResult } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -25,6 +26,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 // Gate 13F: Home now also runs the cloud-restore-prompt onboarding check.
 // Resolve it immediately here so this file's assertions (which finish
@@ -51,6 +53,7 @@ const useSupabaseAuth = require("./lib/useSupabaseAuth").default;
 const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
+const useVaultSession = require("./lib/useVaultSession").default;
 const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 function buildAuthState(overrides = {}) {
@@ -124,6 +127,7 @@ test("worker is disabled when Supabase is not configured, regardless of session"
 });
 
 test("worker is enabled only once signed in and Supabase is configured, using account company/role", async () => {
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
     configured: true,
@@ -156,6 +160,7 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
 });
 
 test("worker is disabled when the signed-in device is locked", () => {
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
     configured: true,

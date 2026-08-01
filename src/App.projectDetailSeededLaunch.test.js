@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,9 +13,12 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const PROJECT_CREATE_SEED_KEY = "estipaid-project-create-seed-v1";
 const PROJECT_DETAIL_RETURN_TARGET_KEY = "estipaid-project-detail-return-target-v1";
@@ -813,6 +817,7 @@ describe("App Project Detail seeded new-document launches", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
     projectDetailScreenModule.__resetProjectDetailTarget();
@@ -971,6 +976,7 @@ describe("App Continue Create draft handoff", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
     projectDetailScreenModule.__resetProjectDetailTarget();

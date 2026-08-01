@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,11 +13,14 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 import App from "./App";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
 const INVOICES_KEY = "estipaid-invoices-v1";
@@ -107,6 +111,7 @@ describe("App readValidatedCreateEditTargets void invoice defense", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   });
 
   test("clears EDIT_INVOICE_TARGET_KEY when the target invoice is void", () => {

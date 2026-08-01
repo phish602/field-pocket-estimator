@@ -12,6 +12,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -127,6 +128,20 @@ jest.mock("./utils/settings", () => {
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { DEFAULT_STATE } from "./estimator/defaultState";
+
+const useVaultSession = require("./lib/useVaultSession").default;
+
+function unlockedVaultSession() {
+  return {
+    capability: { state: "unlocked", code: "", message: "" },
+    checking: false,
+    pending: false,
+    error: null,
+    setup: jest.fn(),
+    unlock: jest.fn(),
+    refresh: jest.fn(),
+  };
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -308,6 +323,7 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
     jest.clearAllMocks();
+    useVaultSession.mockReturnValue(unlockedVaultSession());
   });
 
   test("saving an edited saved estimate does not overwrite the chambered live draft", async () => {
@@ -404,6 +420,7 @@ describe("App Clear Draft cleanup", () => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
     jest.clearAllMocks();
+    useVaultSession.mockReturnValue(unlockedVaultSession());
   });
 
   test("Clear fully resets customer/project/job identity and the persisted live draft", async () => {

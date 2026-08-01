@@ -9,6 +9,7 @@ import {
   TEST_USER,
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14L: another tab writes the PHYSICAL namespaced key, so the native
@@ -23,9 +24,12 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudBackupStatusBadge", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudHomeRestorePrompt", () => ({ __esModule: true, default: () => null }));
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const OTHER_USER = "99999999-9999-4999-8999-999999999999";
 const OTHER_COMPANY = "88888888-8888-4888-8888-888888888888";
@@ -58,6 +62,7 @@ beforeEach(() => {
   realStorage = window.localStorage;
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
 });
 
 afterEach(() => {

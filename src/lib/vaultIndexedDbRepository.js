@@ -1,3 +1,5 @@
+/* global globalThis */
+
 export const VAULT_REPOSITORY_ERROR_CODES = Object.freeze({
   INVALID_INPUT: "INVALID_INPUT",
   INVALID_SCHEMA: "INVALID_SCHEMA",
@@ -76,7 +78,6 @@ const CREATE_FIELDS = Object.freeze([
   "sentinelCiphertext",
   "sentinelIv",
 ]);
-const REPLACE_FIELDS = CREATE_FIELDS;
 const READ_FIELDS = Object.freeze(["workspaceTag"]);
 const KDF_FIELDS = Object.freeze([
   "algorithm",

@@ -143,9 +143,24 @@ jest.mock("../lib/useDeviceLockStatus", () => ({
 
 jest.mock("../lib/useCloudAutoBackup", () => ({ __esModule: true, default: () => null }));
 jest.mock("../lib/useCloudAutoConvergence", () => ({ __esModule: true, default: () => null }));
+jest.mock("../lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 import App from "../App";
 import AuthScreen from "./AuthScreen";
+
+const useVaultSession = require("../lib/useVaultSession").default;
+
+function unlockedVaultSession() {
+  return {
+    capability: { state: "unlocked", code: "", message: "" },
+    checking: false,
+    pending: false,
+    error: null,
+    setup: jest.fn(),
+    unlock: jest.fn(),
+    refresh: jest.fn(),
+  };
+}
 
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
@@ -195,6 +210,10 @@ beforeEach(() => {
 });
 
 describe("App-level auth gating", () => {
+  beforeEach(() => {
+    useVaultSession.mockReturnValue(unlockedVaultSession());
+  });
+
   test("no session renders AuthScreen", async () => {
     seedBaselineLocalData();
     render(<App />);

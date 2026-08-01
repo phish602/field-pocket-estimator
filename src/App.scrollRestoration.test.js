@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
-import { resetConfiguredTestWorkspace, setupConfiguredWorkspace } from "./testUtils/configuredWorkspaceTestHarness";
+import { buildUnlockedVaultSessionResult, resetConfiguredTestWorkspace, setupConfiguredWorkspace } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly.
@@ -11,6 +11,9 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
@@ -30,6 +33,7 @@ beforeEach(() => {
   // Fixtures are written only after the scoped workspace is open, so they land
   // in the TEST_USER/TEST_COMPANY namespace rather than as unscoped values.
   setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   seedCompanyProfile();
 
   try {

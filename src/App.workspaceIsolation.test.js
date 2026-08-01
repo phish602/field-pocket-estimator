@@ -14,6 +14,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudBackupStatusBadge", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudHomeRestorePrompt", () => ({ __esModule: true, default: () => null }));
@@ -24,6 +25,7 @@ const useSupabaseWorkspaceBootstrap = require("./lib/useSupabaseWorkspaceBootstr
 const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const USER_A = { id: "11111111-1111-4111-8111-111111111111", email: "a@example.test" };
 const USER_B = { id: "22222222-2222-4222-8222-222222222222", email: "b@example.test" };
@@ -85,6 +87,10 @@ beforeEach(() => {
   useSupabaseAccount.mockReturnValue(account());
   useSupabaseWorkspaceBootstrap.mockReturnValue({ createWorkspace: jest.fn(), creating: false, error: "", success: "", result: null });
   useDeviceLockStatus.mockReturnValue({ loading: false, ready: true, isLocked: false, isActive: true });
+  useVaultSession.mockReturnValue({
+    capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
+    setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn(),
+  });
   const realGetItem = Storage.prototype.getItem;
   getItemSpy = jest.spyOn(Storage.prototype, "getItem").mockImplementation(function getItem(key) {
     readKeys.push(key);
@@ -355,4 +361,36 @@ test("unconfigured account service fails closed without mounting the shell or wo
   expect(screen.getByText("EstiPaid couldn’t start securely")).toBeInTheDocument();
   expect(dashboard()).not.toBeInTheDocument();
   expectWorkersDisabled();
+});
+
+test.each([
+  ["inspection", { capability: { state: "locked", code: "", message: "" }, checking: true }],
+  ["setup required", { capability: { state: "setup_required", code: "", message: "" } }],
+  ["locked", { capability: { state: "locked", code: "", message: "" } }],
+  ["unlocking", { capability: { state: "unlocking", code: "", message: "" }, pending: true }],
+  ["damaged", { capability: { state: "damaged", code: "RECORD_CORRUPT", message: "" } }],
+  ["unsupported", { capability: { state: "unsupported", code: "UNSUPPORTED_ENVIRONMENT", message: "" } }],
+  ["reset required", { capability: { state: "reset_required", code: "", message: "" } }],
+])("vault %s keeps the normal shell unmounted after workspace activation", async (_name, vault) => {
+  useVaultSession.mockReturnValue({ setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn(), checking: false, pending: false, error: "", ...vault });
+  render(<App />);
+  await waitFor(() => expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id })));
+  expect(dashboard()).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Local Data Password access")).toBeInTheDocument();
+});
+
+test("exact unlocked vault capability is required to mount the existing shell", async () => {
+  render(<App />);
+  await waitFor(() => expect(dashboard()).toBeInTheDocument());
+  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id }));
+});
+
+test("account and company changes immediately remove the shell before a new vault unlock", async () => {
+  const { rerender } = render(<App />);
+  await waitFor(() => expect(dashboard()).toBeInTheDocument());
+  useVaultSession.mockReturnValue({ capability: { state: "locked", code: "", message: "" }, checking: true, pending: false, error: "", setup: jest.fn(), unlock: jest.fn(), refresh: jest.fn() });
+  signedInAs(USER_B, COMPANY_B);
+  rerender(<App />);
+  expect(dashboard()).not.toBeInTheDocument();
+  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ userId: USER_B.id, companyId: COMPANY_B.id }));
 });

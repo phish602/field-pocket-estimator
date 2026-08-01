@@ -33,7 +33,9 @@ import DeviceLockGate from "./components/DeviceLockGate";
 import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
+import VaultAccessGate from "./screens/VaultAccessGate";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
+import useVaultSession from "./lib/useVaultSession";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
 import {
   activateAccountScopedLocalStorage,
@@ -4679,6 +4681,22 @@ export default function App() {
     return () => deactivateAccountScopedLocalStorage();
   }, [workspaceEligible, workspaceIdentity, auth.user?.id, account.company?.id]);
 
+  // ISO-15E2: the account-scoped facade must be active before the vault is
+  // inspected, and no business shell may mount until this exact identity has
+  // an active, module-private vault capability.
+  const vault = useVaultSession({
+    userId: auth.user?.id,
+    companyId: account.company?.id,
+    enabled: Boolean(
+      auth.configured
+      && operationalSession
+      && auth.user?.id
+      && account.hasCompany
+      && account.membership
+      && workspaceReady
+    ),
+  });
+
   if (!auth.configured) {
     return <WorkspaceAccessGate state="configuration-error" auth={auth} account={account} />;
   }
@@ -4716,6 +4734,10 @@ export default function App() {
   // active, so a not-yet-ready workspace holds on the branded progress state.
   if (!workspaceReady) {
     return <WorkspaceAccessGate state="activating" auth={auth} account={account} />;
+  }
+
+  if (vault.capability?.state !== "unlocked") {
+    return <VaultAccessGate {...vault} />;
   }
 
   return (

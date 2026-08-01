@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,6 +13,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -28,6 +30,8 @@ jest.mock("./lib/supabaseDeviceLock", () => ({
 
 import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
 const EDIT_INVOICE_TARGET_KEY = "estipaid-edit-invoice-target-v1";
@@ -503,6 +507,7 @@ describe("App approved estimate invoice builder handoff", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     setItemSpy = jest.spyOn(Storage.prototype, "setItem");
   });

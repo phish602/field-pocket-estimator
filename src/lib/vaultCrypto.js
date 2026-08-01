@@ -1,3 +1,5 @@
+/* global globalThis */
+
 import { argon2id } from "hash-wasm";
 
 export const VaultCryptoErrorCode = Object.freeze({

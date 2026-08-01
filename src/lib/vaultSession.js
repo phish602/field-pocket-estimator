@@ -1,3 +1,5 @@
+/* global globalThis */
+
 import {
   PRODUCTION_KDF_PROFILE,
   VaultCryptoError,
@@ -88,10 +90,6 @@ function passwordBytes(password) {
 
 function zero(bytes) {
   if (bytes instanceof Uint8Array) bytes.fill(0);
-}
-
-function isRepositoryCode(error, code) {
-  return error instanceof VaultRepositoryError && error.code === code;
 }
 
 function mapFailure(error) {

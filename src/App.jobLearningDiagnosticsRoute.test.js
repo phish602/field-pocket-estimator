@@ -4,6 +4,7 @@ import { ROUTES } from "./constants/routes";
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -14,9 +15,11 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const APP_MODULE_PATH = require.resolve("./App");
+const useVaultSession = require("./lib/useVaultSession").default;
 
 function renderAppAtRoute(route, nodeEnv = "test") {
   const previousNodeEnv = process.env.NODE_ENV;
@@ -61,6 +64,7 @@ describe("App job learning diagnostics route gating", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   });
 
   afterEach(() => {

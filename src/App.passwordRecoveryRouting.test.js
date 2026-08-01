@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
+import { buildUnlockedVaultSessionResult } from "./testUtils/configuredWorkspaceTestHarness";
 
 // Phase 2.1 -- proves the root routing branch that keeps a password-recovery
 // session on the auth screen instead of the dashboard. No existing suite can
@@ -29,6 +30,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 jest.mock("./components/CloudHeaderStatusChip", () => ({
   __esModule: true,
@@ -58,6 +60,7 @@ const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
 const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
+const useVaultSession = require("./lib/useVaultSession").default;
 const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 const USER = { id: "user_1", email: "owner@example.com" };
@@ -208,6 +211,7 @@ test("an in-flight abandonment keeps the dashboard and every worker gated despit
 });
 
 test("after explicit continuation the normal authenticated hook inputs are restored", () => {
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   useSupabaseAuth.mockReturnValue(buildAuthState());
 
   render(<App />);
@@ -225,6 +229,7 @@ test("after explicit continuation the normal authenticated hook inputs are resto
 });
 
 test("a normal authenticated session still renders the app shell (routing unchanged)", async () => {
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   useSupabaseAuth.mockReturnValue(buildAuthState());
 
   render(<App />);

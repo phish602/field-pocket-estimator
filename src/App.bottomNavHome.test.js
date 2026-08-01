@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,6 +13,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
@@ -46,6 +48,8 @@ jest.mock("./screens/InvoicesScreen", () => {
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 
+const useVaultSession = require("./lib/useVaultSession").default;
+
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
   phone: "5551234567",
@@ -58,6 +62,7 @@ const COMPLETE_COMPANY_PROFILE = {
 beforeEach(() => {
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(COMPLETE_COMPANY_PROFILE));
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));

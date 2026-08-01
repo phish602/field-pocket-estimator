@@ -1,6 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -12,6 +13,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -31,6 +33,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+
+const useVaultSession = require("./lib/useVaultSession").default;
 
 const PROFILE = {
   companyName: "Desert Ridge",
@@ -54,6 +58,7 @@ describe("App Company Profile dirty-navigation integration", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(PROFILE));
     originalConfirm = window.confirm;
     window.confirm = jest.fn(() => true);

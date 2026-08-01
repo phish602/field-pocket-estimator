@@ -4,6 +4,7 @@ import { CLOUD_RESTORE_COMPLETE_EVENT } from "./lib/supabaseCloudRestore";
 import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
+  buildUnlockedVaultSessionResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
@@ -24,6 +25,7 @@ jest.mock("./lib/useCloudAutoBackup", () => ({
 jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 
 // The full Advanced Settings screen pulls in many independent Supabase
 // modules that are irrelevant to this navigation test; stub it so this test
@@ -33,11 +35,14 @@ jest.mock("./screens/AdvancedSettingsScreen", () => ({
   default: () => <div>Advanced Settings Stub</div>,
 }));
 
+const useVaultSession = require("./lib/useVaultSession").default;
+
 // ISO-14K: this suite exercises in-shell navigation, so it now signs in with an
 // explicit authenticated identity and opens that account's scoped workspace.
 beforeEach(() => {
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
 });
 
 afterEach(() => {
