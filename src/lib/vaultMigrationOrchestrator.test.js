@@ -60,12 +60,12 @@ function memoryFacade(seed = {}) {
       return values.has(key) ? values.get(key) : null;
     },
     setValue(key, value) { values.set(key, value); },
-    setVaultCompatibilityGuardValue(raw) {
+    setVaultCompatibilityGuardValue: jest.fn((raw) => {
       if (raw === '{"version":1,"state":"transition"}') guardState = "transition";
       else if (raw === '{"version":1,"state":"authoritative"}') guardState = "authoritative";
       else return null;
       return raw;
-    },
+    }),
     removeVaultMigrationItem(key) {
       if (guardState !== "authoritative" || failCleanup) return false;
       if (cleanupSuccessesBeforeFailure === 0) return false;
@@ -76,6 +76,7 @@ function memoryFacade(seed = {}) {
     setCleanupFailure(value) { failCleanup = value; },
     interruptNextRead() { failNextRead = true; },
     failCleanupAfter(successes) { cleanupSuccessesBeforeFailure = successes; },
+    setGuardState(state) { guardState = state; },
     guardState: () => guardState,
     values,
   };
@@ -217,24 +218,27 @@ test("authority survives cleanup failure and resumes idempotently without return
   expect(storage.values.has("estipaid-customers-v1")).toBe(false);
 });
 
-test("guard-write rejection creates no transition and leaves plaintext authority unchanged", async () => {
+test("guard-write rejection leaves a prepared transition and plaintext authority unchanged", async () => {
   const storage = memoryFacade({ "estipaid-customers-v1": "customer" });
+  const blockedTransition = memoryTransition();
   const blocked = createVaultMigrationOrchestrator({
-    storage, vaultRepository: memoryVault(), transitionRepository: memoryTransition(), deriveTag: async () => TAG,
+    storage, vaultRepository: memoryVault(), transitionRepository: blockedTransition, deriveTag: async () => TAG,
     withActiveDek: async ({ operation }) => operation(await testKey()), readGuard: () => guard(storage.guardState()),
     writeGuard: () => false, newTransitionId: () => TRANSITION_ID,
   });
   await expect(blocked.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
-    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, resumable: false,
+    state: "blocked", phase: "prepared", code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, resumable: true, authoritative: false,
   });
   expect(storage.guardState()).toBe("absent");
+  expect(blockedTransition.active()).toMatchObject({ phase: "prepared" });
 });
 
 test("interruption boundaries resume from durable state without returning to legacy-safe", async () => {
   const scenarios = [
     {
-      name: "after guard before transition record",
+      name: "before durable prepared transition",
       install: (setup) => setup.transition.createActiveTransition.mockRejectedValueOnce(new Error("interrupted")),
+      guardMayBeAbsent: true,
     },
     {
       name: "after transition record before manifest",
@@ -285,7 +289,7 @@ test("interruption boundaries resume from durable state without returning to leg
     scenario.install(setup);
     const first = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
     expect(first.state).toBe("blocked");
-    expect(setup.storage.guardState()).not.toBe("absent");
+    if (!scenario.guardMayBeAbsent) expect(setup.storage.guardState()).not.toBe("absent");
     await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
   }
 });
@@ -299,7 +303,7 @@ test("verification mismatch, source removal, and partial cleanup all remain fail
     return value;
   });
   await expect(corrupted.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
-    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, resumable: true,
+    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, resumable: false,
   });
   corrupted.vault.readEncryptedRecord.mockImplementation(readRecord);
   await expect(corrupted.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
@@ -322,6 +326,187 @@ test("verification mismatch, source removal, and partial cleanup all remain fail
   expect(cleanupStorage.guardState()).toBe("authoritative");
   cleanupStorage.failCleanupAfter(null);
   await expect(cleanup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+});
+
+test("no active transition plus authoritative guard does not automatically complete an unrelated workspace", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  const setup = await runner({ storage });
+  const migration = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
+  expect(migration).toEqual(expect.objectContaining({
+    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+    resumable: false, authoritative: false,
+  }));
+  expect(Object.isFrozen(migration)).toBe(true);
+  expect(setup.transition.createActiveTransition).not.toHaveBeenCalled();
+});
+
+test("no active transition plus authoritative guard completes only after current workspace integrity verification", async () => {
+  const setup = await runner({ storage: memoryFacade({ "estipaid-customers-v1": "customer" }) });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  const manifestReadsBeforeVerification = setup.vault.readMigrationManifest.mock.calls.length;
+  const recordReadsBeforeVerification = setup.vault.readEncryptedRecord.mock.calls.length;
+  const verified = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
+  expect(verified).toEqual({
+    state: "authoritative", phase: "", code: "", resumable: false, authoritative: true, cleanupPending: false,
+  });
+  expect(setup.vault.readMigrationManifest.mock.calls.length).toBeGreaterThan(manifestReadsBeforeVerification);
+  expect(setup.vault.readEncryptedRecord.mock.calls.length).toBeGreaterThan(recordReadsBeforeVerification);
+  expect(setup.storage.values.has("estipaid-customers-v1")).toBe(false);
+});
+
+test("transition guard plus no active transition returns GUARD_RECOVERY_REQUIRED and creates no transition", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("transition");
+  const setup = await runner({ storage });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toEqual(expect.objectContaining({
+    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.GUARD_RECOVERY_REQUIRED, resumable: false,
+  }));
+  expect(setup.transition.createActiveTransition).not.toHaveBeenCalled();
+});
+
+test("a second workspace cannot claim an orphaned transition guard", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("transition");
+  const transition = memoryTransition();
+  const key = await testKey();
+  const orchestrator = createVaultMigrationOrchestrator({
+    storage, vaultRepository: memoryVault(), transitionRepository: transition, deriveTag: async () => OTHER_TAG,
+    withActiveDek: async ({ operation }) => operation(key), readGuard: () => guard(storage.guardState()),
+    writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{\"version\":1,\"state\":\"${state}\"}`) !== null,
+    newTransitionId: () => OTHER_TRANSITION_ID,
+  });
+  await expect(orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
+    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.GUARD_RECOVERY_REQUIRED,
+  });
+  expect(transition.createActiveTransition).not.toHaveBeenCalled();
+});
+
+test("prepared transition is created before transition guard writing", async () => {
+  const setup = await runner();
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(setup.transition.createActiveTransition.mock.invocationCallOrder[0])
+    .toBeLessThan(setup.storage.setVaultCompatibilityGuardValue.mock.invocationCallOrder[0]);
+});
+
+test("successful transition guard verification occurs before prepared to guarded", async () => {
+  const setup = await runner();
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(setup.storage.setVaultCompatibilityGuardValue.mock.invocationCallOrder[0])
+    .toBeLessThan(setup.transition.advanceActiveTransition.mock.invocationCallOrder[0]);
+  expect(setup.transition.advanceActiveTransition.mock.calls[0]).toMatchObject([{ expectedPhase: "prepared", nextPhase: "guarded" }]);
+});
+
+test("guard-write failure leaves the transition prepared and never reaches the point of no return", async () => {
+  const storage = memoryFacade({ "estipaid-customers-v1": "customer" });
+  const transition = memoryTransition();
+  const blocked = createVaultMigrationOrchestrator({
+    storage, vaultRepository: memoryVault(), transitionRepository: transition, deriveTag: async () => TAG,
+    withActiveDek: async ({ operation }) => operation(await testKey()), readGuard: () => guard(storage.guardState()),
+    writeGuard: () => false, newTransitionId: () => TRANSITION_ID,
+  });
+  await expect(blocked.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
+    state: "blocked", phase: "prepared", resumable: true, authoritative: false,
+  });
+  expect(transition.active()).toMatchObject({ phase: "prepared" });
+  expect(transition.advanceActiveTransition).not.toHaveBeenCalled();
+});
+
+test("restart from matching prepared plus absent guard safely writes the guard and continues", async () => {
+  const transition = memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "prepared" });
+  const setup = await runner({ storage: memoryFacade(), transition });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(setup.storage.guardState()).toBe("authoritative");
+  expect(transition.advanceActiveTransition.mock.calls[0]).toMatchObject([{ expectedPhase: "prepared", nextPhase: "guarded" }]);
+});
+
+test("restart from matching prepared plus transition guard safely advances and continues", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("transition");
+  const transition = memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "prepared" });
+  const setup = await runner({ storage, transition });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(transition.advanceActiveTransition.mock.calls[0]).toMatchObject([{ expectedPhase: "prepared", nextPhase: "guarded" }]);
+});
+
+test("authoritative guard plus prepared fails closed", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "prepared" }) });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "prepared", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+});
+
+test("authoritative guard plus guarded fails closed", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "guarded" }) });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "guarded", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+});
+
+test("authoritative guard plus copying fails closed", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "copying" }) });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "copying", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+});
+
+test("authoritative guard plus verifying fails closed", async () => {
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "verifying" }) });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "verifying", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+});
+
+test("absent guard with guarded or later pre-authority phases fails closed", async () => {
+  for (const phase of ["guarded", "copying", "verifying"]) {
+    const setup = await runner({ transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase }) });
+    await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
+      state: "blocked", phase, code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT,
+    });
+  }
+});
+
+test("readActiveTransition rejection returns a frozen blocked result", async () => {
+  const transition = memoryTransition();
+  transition.readActiveTransition.mockRejectedValueOnce(new Error("read failed"));
+  const setup = await runner({ transition });
+  const migration = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
+  expect(migration).toMatchObject({ state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED });
+  expect(Object.isFrozen(migration)).toBe(true);
+});
+
+test("initial guard-read failure returns a frozen blocked result", async () => {
+  const key = await testKey();
+  const migration = await createVaultMigrationOrchestrator({
+    storage: memoryFacade(), vaultRepository: memoryVault(), transitionRepository: memoryTransition(), deriveTag: async () => TAG,
+    withActiveDek: async ({ operation }) => operation(key), readGuard: () => { throw new Error("guard read failed"); },
+  }).run({ userId: USER, companyId: COMPANY });
+  expect(migration).toMatchObject({ state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED });
+  expect(Object.isFrozen(migration)).toBe(true);
+});
+
+test("active-DEK wrapper rejection returns a frozen blocked result", async () => {
+  const migration = await createVaultMigrationOrchestrator({
+    storage: memoryFacade(), vaultRepository: memoryVault(), transitionRepository: memoryTransition(), deriveTag: async () => TAG,
+    withActiveDek: async () => { throw new Error("session failed"); }, readGuard: () => guard("absent"),
+  }).run({ userId: USER, companyId: COMPANY });
+  expect(migration).toMatchObject({ state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED });
+  expect(Object.isFrozen(migration)).toBe(true);
+});
+
+test("persistent ciphertext corruption remains blocked and is not claimed resumable by an unchanged rerun", async () => {
+  const setup = await runner({ storage: memoryFacade({ "estipaid-customers-v1": "customer" }) });
+  const original = setup.vault.readEncryptedRecord.getMockImplementation();
+  setup.vault.readEncryptedRecord.mockImplementation(async (input) => {
+    const value = await original(input);
+    if (value) value.ciphertext[0] ^= 1;
+    return value;
+  });
+  const first = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
+  const second = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
+  expect(first).toMatchObject({ state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, resumable: false });
+  expect(second).toMatchObject({ state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, resumable: false });
+  expect(Object.isFrozen(second)).toBe(true);
 });
 
 test("real fake-indexeddb repositories migrate the active account facade only", async () => {

@@ -36,6 +36,7 @@ export const VAULT_MIGRATION_ERROR_CODES = Object.freeze({
   SOURCE_CHANGED: "SOURCE_CHANGED",
   CLEANUP_PENDING: "CLEANUP_PENDING",
   STORAGE_OPERATION_FAILED: "STORAGE_OPERATION_FAILED",
+  AUTHORITATIVE_WORKSPACE_UNVERIFIED: "AUTHORITATIVE_WORKSPACE_UNVERIFIED",
 });
 
 export class VaultMigrationError extends Error {
@@ -117,6 +118,28 @@ function randomTransitionId() {
 
 function safePhase(value) {
   return PHASES.includes(value) ? value : "";
+}
+
+function validTransitionId(value) {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function validWorkspaceTag(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+function metadataForPhase(phase) {
+  const authoritative = phase === "cleaning" || phase === "authoritative";
+  return { resumable: Boolean(phase), authoritative, cleanupPending: authoritative };
+}
+
+function metadataForFailure(code, phase) {
+  const metadata = metadataForPhase(phase);
+  if (code === VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID || code === VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED) {
+    return { ...metadata, resumable: false };
+  }
+  return metadata;
 }
 
 function exactManifest(value, transitionId) {
@@ -272,6 +295,16 @@ async function sourceMatches(storage, manifest) {
   return true;
 }
 
+async function sourcesAreAbsent(storage, manifest) {
+  const absentManifest = Object.freeze({
+    ...manifest,
+    entries: Object.freeze(manifest.entries.map((entry) => Object.freeze({
+      ...entry, present: false, byteLength: null, digest: null, blobId: null,
+    }))),
+  });
+  return sourceMatches(storage, absentManifest);
+}
+
 export function createVaultMigrationOrchestrator({
   storage = getActiveAccountScopedStorage(),
   vaultRepository = createVaultIndexedDbRepository(),
@@ -284,44 +317,55 @@ export function createVaultMigrationOrchestrator({
 } = {}) {
   async function run({ userId, companyId } = {}) {
     if (typeof userId !== "string" || typeof companyId !== "string") return fail(VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST);
-    let workspaceTag;
+    let workspaceTag = null;
+    let active = null;
     try {
       workspaceTag = await deriveTag(userId, companyId);
+      if (!validWorkspaceTag(workspaceTag)) return fail(VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST);
       assertFacade(storage);
-    } catch {
-      return fail(VAULT_MIGRATION_ERROR_CODES.STORAGE_UNAVAILABLE);
-    }
+      const outcome = await withActiveDek({ workspaceTag, operation: async (dek) => {
+        try {
+          if (!await vaultRepository.workspaceDatabaseExists({ workspaceTag })) return fail(VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED);
 
-    let active = await transitionRepository.readActiveTransition({});
-    let guard = readGuard();
-    if (!guard || guard.state === "blocked") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, safePhase(active?.phase), { resumable: Boolean(active) });
-    if (active && active.workspaceTag !== workspaceTag) return fail(VAULT_MIGRATION_ERROR_CODES.OTHER_WORKSPACE_TRANSITION, safePhase(active.phase), { resumable: true });
-    if (!active && guard.state === "authoritative") return completed();
+          active = await transitionRepository.readActiveTransition({});
+          const guard = readGuard();
+          if (!guard || guard.state === "blocked") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, safePhase(active?.phase), metadataForPhase(safePhase(active?.phase)));
+          if (active && active.workspaceTag !== workspaceTag) return fail(VAULT_MIGRATION_ERROR_CODES.OTHER_WORKSPACE_TRANSITION, safePhase(active.phase), { resumable: true });
 
-    const outcome = await withActiveDek({ workspaceTag, operation: async (dek) => {
-      try {
-        if (!await vaultRepository.workspaceDatabaseExists({ workspaceTag })) return fail(VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED);
-
-        if (!active) {
-          // A durable transition may have been interrupted after the guard
-          // write. It is never treated as legacy-safe or cleared.
-          if (guard.state !== "transition" && !writeGuard({ state: "transition", storage })) {
-            return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE);
+          if (!active) {
+            if (guard.state === "transition") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_RECOVERY_REQUIRED);
+            if (guard.state === "authoritative") {
+              const stored = await vaultRepository.readMigrationManifest({ workspaceTag });
+              if (!stored || !validTransitionId(stored.transitionId)) return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
+              const manifest = await decodeManifest({ repository: vaultRepository, workspaceTag, transitionId: stored.transitionId, dek, userId, companyId });
+              if (!await verifyRecords({ repository: vaultRepository, workspaceTag, dek, userId, companyId, manifest }) || !await sourcesAreAbsent(storage, manifest)) {
+                return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
+              }
+              return completed();
+            }
+            if (guard.state !== "absent") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE);
+            active = await transitionRepository.createActiveTransition({ transitionId: newTransitionId(), workspaceTag });
           }
-          guard = readGuard();
-          if (guard?.state !== "transition") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE);
-          active = await transitionRepository.createActiveTransition({ transitionId: newTransitionId(), workspaceTag });
-        } else if (guard.state !== "transition" && guard.state !== "authoritative") {
-          return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_RECOVERY_REQUIRED, safePhase(active.phase), { resumable: true });
-        }
 
-        let phase = safePhase(active.phase);
-        if (!phase) return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, "", { resumable: true });
+          let phase = safePhase(active.phase);
+          if (!phase || !validTransitionId(active.transitionId)) return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, "", { resumable: true });
 
-        if (phase === "prepared") {
-          active = await transitionRepository.advanceActiveTransition({ transitionId: active.transitionId, workspaceTag, expectedPhase: "prepared", nextPhase: "guarded" });
-          phase = "guarded";
-        }
+          if (phase === "prepared") {
+            if (guard.state === "authoritative") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+            if (guard.state === "absent" && !writeGuard({ state: "transition", storage })) {
+              return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, phase, metadataForPhase(phase));
+            }
+            const verifiedGuard = readGuard();
+            if (!verifiedGuard || verifiedGuard.state !== "transition") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, phase, metadataForPhase(phase));
+            active = await transitionRepository.advanceActiveTransition({ transitionId: active.transitionId, workspaceTag, expectedPhase: "prepared", nextPhase: "guarded" });
+            phase = "guarded";
+          } else if (["guarded", "copying", "verifying"].includes(phase)) {
+            if (guard.state !== "transition") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+          } else if (phase === "cleaning") {
+            if (guard.state !== "transition" && guard.state !== "authoritative") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+          } else if (phase === "authoritative" && guard.state !== "authoritative") {
+            return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+          }
 
         let manifest;
         if (phase === "guarded") {
@@ -345,7 +389,7 @@ export function createVaultMigrationOrchestrator({
 
         if (phase === "verifying") {
           if (!await verifyRecords({ repository: vaultRepository, workspaceTag, dek, userId, companyId, manifest })) {
-            return fail(VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, phase, { resumable: true });
+            return fail(VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, phase, metadataForFailure(VAULT_MIGRATION_ERROR_CODES.VERIFICATION_FAILED, phase));
           }
           if (!await sourceMatches(storage, manifest)) return fail(VAULT_MIGRATION_ERROR_CODES.SOURCE_CHANGED, phase, { resumable: true });
           // `cleaning` is the durable vault-authority point. Nothing may start
@@ -376,12 +420,18 @@ export function createVaultMigrationOrchestrator({
           return completed();
         }
         return transitionResult(phase);
-      } catch (error) {
-        if (error instanceof VaultMigrationError) return fail(error.code, safePhase(active?.phase), { resumable: Boolean(active), authoritative: ["cleaning", "authoritative"].includes(active?.phase), cleanupPending: ["cleaning", "authoritative"].includes(active?.phase) });
-        return fail(VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED, safePhase(active?.phase), { resumable: Boolean(active), authoritative: ["cleaning", "authoritative"].includes(active?.phase), cleanupPending: ["cleaning", "authoritative"].includes(active?.phase) });
-      }
-    } });
-    return outcome || fail(VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED);
+        } catch (error) {
+          const phase = safePhase(active?.phase);
+          if (error instanceof VaultMigrationError) return fail(error.code, phase, metadataForFailure(error.code, phase));
+          return fail(VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED, phase, metadataForPhase(phase));
+        }
+      } });
+      return outcome || fail(VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED);
+    } catch (error) {
+      const phase = safePhase(active?.phase);
+      if (error instanceof VaultMigrationError) return fail(error.code, phase, metadataForPhase(phase));
+      return fail(VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED, phase, metadataForPhase(phase));
+    }
   }
   return Object.freeze({ run });
 }
