@@ -1,6 +1,7 @@
 import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { waitForConfiguredWorkspaceShell } from "../testUtils/configuredWorkspaceTestHarness";
 
 const AUTH_USER_ID = "auth-screen-user";
 const AUTH_COMPANY_ID = "auth-screen-company";
@@ -144,6 +145,8 @@ jest.mock("../lib/useDeviceLockStatus", () => ({
 jest.mock("../lib/useCloudAutoBackup", () => ({ __esModule: true, default: () => null }));
 jest.mock("../lib/useCloudAutoConvergence", () => ({ __esModule: true, default: () => null }));
 jest.mock("../lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("../lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("../lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 import App from "../App";
 import AuthScreen from "./AuthScreen";
@@ -229,7 +232,8 @@ describe("App-level auth gating", () => {
 
     render(<App />);
 
-    expect(await screen.findByLabelText("Invoices")).toBeInTheDocument();
+    await waitForConfiguredWorkspaceShell();
+    expect(screen.getByLabelText("Invoices")).toBeInTheDocument();
     expect(screen.queryByText(/Sign in to back up and restore your company/i)).not.toBeInTheDocument();
   });
 
@@ -243,7 +247,8 @@ describe("App-level auth gating", () => {
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-password" } });
     fireEvent.click(screen.getByRole("button", { name: /^Sign In$/i }));
 
-    expect(await screen.findByLabelText("Invoices")).toBeInTheDocument();
+    await waitForConfiguredWorkspaceShell();
+    expect(screen.getByLabelText("Invoices")).toBeInTheDocument();
     expect(screen.queryByText(/Sign in to back up and restore your company/i)).not.toBeInTheDocument();
   });
 
@@ -268,7 +273,8 @@ describe("App-level auth gating", () => {
 
     render(<App />);
 
-    expect(await screen.findByLabelText("Invoices")).toBeInTheDocument();
+    await waitForConfiguredWorkspaceShell();
+    expect(screen.getByLabelText("Invoices")).toBeInTheDocument();
 
     await act(async () => {
       mockSetSharedSession(null);

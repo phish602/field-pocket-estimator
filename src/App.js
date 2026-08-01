@@ -34,8 +34,12 @@ import useIsNarrowViewport from "./lib/useIsNarrowViewport";
 import AuthScreen from "./screens/AuthScreen";
 import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
 import VaultAccessGate from "./screens/VaultAccessGate";
+import VaultCompatibilityGate from "./screens/VaultCompatibilityGate";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
+import useVaultCompatibilityBridge from "./lib/useVaultCompatibilityBridge";
+import { VAULT_BRIDGE_RELEASE } from "./lib/vaultBridgeBuildPolicy";
+import { workspaceTag as deriveVaultWorkspaceTag } from "./lib/vaultCrypto";
 import useVaultIdleLock from "./lib/useVaultIdleLock";
 import {
   DEFAULT_VAULT_IDLE_LOCK_MINUTES,
@@ -47,6 +51,7 @@ import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContex
 import {
   activateAccountScopedLocalStorage,
   deactivateAccountScopedLocalStorage,
+  setActiveWorkspaceVaultCompatibility,
 } from "./lib/accountScopedLocalStorage";
 import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
 import { resolveCompanyEntitlements } from "./lib/companyEntitlementsApi";
@@ -4581,6 +4586,7 @@ function AuthLoadingScreen() {
 // A stable identity for "no workspace is open", so the not-eligible branch of
 // the activation effect can bail out without re-rendering in a loop.
 const IDLE_WORKSPACE = Object.freeze({ identity: "", status: "idle", namespace: "" });
+const IDLE_BRIDGE_WORKSPACE = Object.freeze({ identity: "", workspaceTag: "" });
 
 export default function App() {
   const auth = useSupabaseAuth();
@@ -4588,6 +4594,7 @@ export default function App() {
   // that namespace is active and verified, no shell mounts, no worker gets an
   // identity, and no EstiPaid storage read can reach a value.
   const [workspace, setWorkspace] = useState(IDLE_WORKSPACE);
+  const [bridgeWorkspace, setBridgeWorkspace] = useState(IDLE_BRIDGE_WORKSPACE);
   const [vaultIdleLockPreference, setVaultIdleLockPreference] = useState({
     identity: "",
     minutes: DEFAULT_VAULT_IDLE_LOCK_MINUTES,
@@ -4635,11 +4642,57 @@ export default function App() {
     && workspace.identity === workspaceIdentity
   );
 
+  // The bridge only accepts the pseudonymous vault tag. It is derived after
+  // the account-scoped facade is active and is discarded synchronously when
+  // the active identity changes.
+  useEffect(() => {
+    if (!VAULT_BRIDGE_RELEASE || !workspaceReady || !workspaceIdentity) {
+      setBridgeWorkspace((previous) => (previous === IDLE_BRIDGE_WORKSPACE ? previous : IDLE_BRIDGE_WORKSPACE));
+      return undefined;
+    }
+    let current = true;
+    setBridgeWorkspace(IDLE_BRIDGE_WORKSPACE);
+    Promise.resolve(deriveVaultWorkspaceTag(auth.user?.id, account.company?.id))
+      .then((workspaceTag) => {
+        if (current) setBridgeWorkspace({ identity: workspaceIdentity, workspaceTag });
+      })
+      .catch(() => {
+        if (current) setBridgeWorkspace({ identity: workspaceIdentity, workspaceTag: "" });
+      });
+    return () => { current = false; };
+  }, [account.company?.id, auth.user?.id, workspaceIdentity, workspaceReady]);
+
+  const bridgeWorkspaceReady = Boolean(
+    bridgeWorkspace.identity === workspaceIdentity
+    && bridgeWorkspace.workspaceTag
+  );
+  const compatibility = useVaultCompatibilityBridge({
+    enabled: Boolean(VAULT_BRIDGE_RELEASE && workspaceReady && bridgeWorkspaceReady),
+    workspaceTag: bridgeWorkspaceReady ? bridgeWorkspace.workspaceTag : "",
+  });
+  const legacyCompatibilitySafe = Boolean(
+    VAULT_BRIDGE_RELEASE
+    && bridgeWorkspaceReady
+    && compatibility.state === "legacy-safe"
+  );
+
+  // The App is the only production consumer of the hook result. Mirror that
+  // narrow public state into the facade after each render so mocked/test hook
+  // results cannot accidentally bypass the synchronous mutation barrier.
+  useEffect(() => {
+    setActiveWorkspaceVaultCompatibility({
+      workspaceTag: bridgeWorkspaceReady ? bridgeWorkspace.workspaceTag : "",
+      state: legacyCompatibilitySafe ? "legacy-safe" : "checking",
+      generation: 0,
+    });
+  }, [bridgeWorkspace.workspaceTag, bridgeWorkspaceReady, legacyCompatibilitySafe]);
+
   const workspaceCloudConfigured = Boolean(
     operationalConfigured
     && operationalSession
     && account.hasCompany
     && workspaceReady
+    && (!VAULT_BRIDGE_RELEASE || legacyCompatibilitySafe)
   );
   const cloudUser = workspaceCloudConfigured ? operationalUser : null;
   const cloudCompany = workspaceCloudConfigured ? account.company : null;
@@ -4710,7 +4763,8 @@ export default function App() {
     userId: auth.user?.id,
     companyId: account.company?.id,
     enabled: Boolean(
-      auth.configured
+      !VAULT_BRIDGE_RELEASE
+      && auth.configured
       && operationalSession
       && auth.user?.id
       && account.hasCompany
@@ -4796,7 +4850,11 @@ export default function App() {
     return <WorkspaceAccessGate state="activating" auth={auth} account={account} />;
   }
 
-  if (vault.capability?.state !== "unlocked") {
+  if (VAULT_BRIDGE_RELEASE && !legacyCompatibilitySafe) {
+    return <VaultCompatibilityGate state={compatibility.state} />;
+  }
+
+  if (!VAULT_BRIDGE_RELEASE && vault.capability?.state !== "unlocked") {
     return <VaultAccessGate {...vault} />;
   }
 

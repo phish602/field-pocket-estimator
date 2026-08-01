@@ -15,6 +15,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: jest.fn(() => Promise.resolve("A".repeat(43))) }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudBackupStatusBadge", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudHomeRestorePrompt", () => ({ __esModule: true, default: () => null }));
@@ -26,6 +28,9 @@ const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultCompatibilityBridge = require("./lib/useVaultCompatibilityBridge").default;
+const vaultCrypto = require("./lib/vaultCrypto");
+const { setActiveWorkspaceVaultCompatibility } = require("./lib/accountScopedLocalStorage");
 
 const USER_A = { id: "11111111-1111-4111-8111-111111111111", email: "a@example.test" };
 const USER_B = { id: "22222222-2222-4222-8222-222222222222", email: "b@example.test" };
@@ -91,6 +96,11 @@ beforeEach(() => {
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
     setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(),
   });
+  useVaultCompatibilityBridge.mockImplementation(() => {
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+    return { state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() };
+  });
+  vaultCrypto.workspaceTag.mockResolvedValue("A".repeat(43));
   const realGetItem = Storage.prototype.getItem;
   getItemSpy = jest.spyOn(Storage.prototype, "getItem").mockImplementation(function getItem(key) {
     readKeys.push(key);
@@ -364,25 +374,22 @@ test("unconfigured account service fails closed without mounting the shell or wo
 });
 
 test.each([
-  ["inspection", { capability: { state: "locked", code: "", message: "" }, checking: true }],
-  ["setup required", { capability: { state: "setup_required", code: "", message: "" } }],
-  ["locked", { capability: { state: "locked", code: "", message: "" } }],
-  ["unlocking", { capability: { state: "unlocking", code: "", message: "" }, pending: true }],
-  ["damaged", { capability: { state: "damaged", code: "RECORD_CORRUPT", message: "" } }],
-  ["unsupported", { capability: { state: "unsupported", code: "UNSUPPORTED_ENVIRONMENT", message: "" } }],
-  ["reset required", { capability: { state: "reset_required", code: "", message: "" } }],
-])("vault %s keeps the normal shell unmounted after workspace activation", async (_name, vault) => {
-  useVaultSession.mockReturnValue({ setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(), checking: false, pending: false, error: "", ...vault });
+  ["checking", "checking"], ["transition", "transition-blocked"], ["authoritative", "authoritative-blocked"],
+  ["corrupt", "corrupt-blocked"], ["storage", "storage-blocked"], ["other workspace", "other-workspace-transition"],
+])("bridge %s state keeps the normal shell unmounted after workspace activation", async (_name, state) => {
+  useVaultCompatibilityBridge.mockReturnValue({ state, checking: state === "checking", code: "", message: "", refresh: jest.fn() });
   render(<App />);
-  await waitFor(() => expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id })));
+  await waitFor(() => expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, userId: USER_A.id, companyId: COMPANY_A.id })));
   expect(dashboard()).not.toBeInTheDocument();
-  expect(screen.getByLabelText("Local Data Password access")).toBeInTheDocument();
+  expect(screen.getByLabelText("Local data compatibility access")).toBeInTheDocument();
+  expect(useCloudAutoConvergence).toHaveBeenLastCalledWith(expect.objectContaining({ configured: false, user: null, company: null }));
+  expect(useCloudAutoBackup).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, configured: false, user: null, company: null }));
 });
 
-test("exact unlocked vault capability is required to mount the existing shell", async () => {
+test("legacy-safe compatibility is required to mount the existing shell while vault session remains disabled", async () => {
   render(<App />);
   await waitFor(() => expect(dashboard()).toBeInTheDocument());
-  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id }));
+  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, userId: USER_A.id, companyId: COMPANY_A.id }));
 });
 
 test("Lock Now delegates to the same tab-local vault lock without signing out, clearing storage, or deactivating the workspace", async () => {

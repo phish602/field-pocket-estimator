@@ -2,7 +2,9 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly and
@@ -14,6 +16,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -145,6 +149,7 @@ function buildSavedInvoice({ id, customerName, projectName, docNumber, updatedAt
 beforeEach(() => {
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   jest.restoreAllMocks();
   seedCompanyProfile();
@@ -177,6 +182,7 @@ test("Home Resume Draft opens the live estimate draft instead of the newest save
   localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(screen.getByRole("button", { name: /Resume Draft/i })).toBeInTheDocument();
   expect(screen.queryByText(/Describe the Job/i)).not.toBeInTheDocument();
@@ -222,6 +228,7 @@ test("opening and leaving an existing invoice preserves an unrelated chambered e
   const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -276,6 +283,7 @@ test("opening and leaving an existing estimate preserves the chambered create dr
   const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Estimates"));
 
@@ -330,6 +338,7 @@ test("opening existing invoice does not show Continue Estimate blocker when esti
   );
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -380,6 +389,7 @@ test("StrictMode: opening existing invoice does not show Continue Estimate block
       <App />
     </React.StrictMode>
   );
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Invoices"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -428,6 +438,7 @@ test("StrictMode: opening an existing estimate preserves the chambered estimate 
       <App />
     </React.StrictMode>
   );
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText("Estimates"));
   fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
@@ -489,6 +500,7 @@ test("Home Resume Draft opens Invoice Builder for a live invoice draft even when
   );
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /Resume Draft/i }));
 
@@ -518,6 +530,7 @@ test("Home shows no Resume Draft when only saved estimates exist and continueLas
   localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(screen.queryByRole("button", { name: /Resume Draft/i })).toBeNull();
   expect(screen.queryByText(/Describe the Job/i)).not.toBeInTheDocument();
@@ -559,6 +572,7 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([]));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /Resume Draft/i }));
 

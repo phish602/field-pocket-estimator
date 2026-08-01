@@ -5,6 +5,7 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -16,12 +17,17 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({
+  __esModule: true,
+  default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }),
+}));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const APP_MODULE_PATH = require.resolve("./App");
 const useVaultSession = require("./lib/useVaultSession").default;
 
-function renderAppAtRoute(route, nodeEnv = "test") {
+async function renderAppAtRoute(route, nodeEnv = "test") {
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = nodeEnv;
 
@@ -38,6 +44,7 @@ function renderAppAtRoute(route, nodeEnv = "test") {
 
   const App = require("./App").default;
   const result = render(<App />);
+  await waitForConfiguredWorkspaceShell();
   useStateSpy.mockRestore();
 
   process.env.NODE_ENV = previousNodeEnv;
@@ -54,6 +61,7 @@ async function renderAppWithDevHashRoute(nodeEnv = "test") {
 
   const App = require("./App").default;
   const result = render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   process.env.NODE_ENV = previousNodeEnv;
   delete require.cache[APP_MODULE_PATH];
@@ -75,23 +83,23 @@ describe("App job learning diagnostics route gating", () => {
     jest.clearAllMocks();
   });
 
-  test("normal navigation does not expose diagnostics in the app shell", () => {
-    const { screen } = renderAppAtRoute(ROUTES.HOME, "test");
+  test("normal navigation does not expose diagnostics in the app shell", async () => {
+    const { screen } = await renderAppAtRoute(ROUTES.HOME, "test");
 
     expect(screen.queryByText(/job learning diagnostics/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /job learning diagnostics/i })).not.toBeInTheDocument();
     expect(screen.getByLabelText(/open menu/i)).toBeInTheDocument();
   });
 
-  test("dev/local access renders diagnostics only through the hidden route key", () => {
-    const { screen } = renderAppAtRoute(ROUTES.JOB_LEARNING_DIAGNOSTICS, "test");
+  test("dev/local access renders diagnostics only through the hidden route key", async () => {
+    const { screen } = await renderAppAtRoute(ROUTES.JOB_LEARNING_DIAGNOSTICS, "test");
 
     expect(screen.getByRole("heading", { name: /job learning diagnostics/i })).toBeInTheDocument();
     expect(screen.getByText(/read-only registry health and promotion audit/i)).toBeInTheDocument();
   });
 
-  test("production access does not render diagnostics even when the hidden route key is forced", () => {
-    const { screen } = renderAppAtRoute(ROUTES.JOB_LEARNING_DIAGNOSTICS, "production");
+  test("production access does not render diagnostics even when the hidden route key is forced", async () => {
+    const { screen } = await renderAppAtRoute(ROUTES.JOB_LEARNING_DIAGNOSTICS, "production");
 
     expect(screen.queryByRole("heading", { name: /job learning diagnostics/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/read-only registry health and promotion audit/i)).not.toBeInTheDocument();

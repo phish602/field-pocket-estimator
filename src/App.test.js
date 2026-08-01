@@ -4,6 +4,7 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from './testUtils/configuredWorkspaceTestHarness';
 
 // ISO-14K: the operational shell requires an authenticated identity with an
@@ -15,6 +16,8 @@ jest.mock('./lib/useDeviceLockStatus', () => ({ __esModule: true, default: jest.
 jest.mock('./lib/useCloudAutoBackup', () => ({ __esModule: true, default: jest.fn() }));
 jest.mock('./lib/useCloudAutoConvergence', () => ({ __esModule: true, default: jest.fn() }));
 jest.mock('./lib/useVaultSession', () => ({ __esModule: true, default: jest.fn() }));
+jest.mock('./lib/useVaultCompatibilityBridge', () => ({ __esModule: true, default: () => ({ state: 'legacy-safe', checking: false, code: '', message: '', refresh: jest.fn() }) }));
+jest.mock('./lib/vaultCrypto', () => ({ workspaceTag: () => Promise.resolve('A'.repeat(43)) }));
 
 const useVaultSession = require('./lib/useVaultSession').default;
 
@@ -28,8 +31,9 @@ afterEach(() => {
   resetConfiguredTestWorkspace();
 });
 
-test('renders app shell header actions', () => {
+test('renders app shell header actions', async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
   expect(screen.getByLabelText(/open menu/i)).toBeInTheDocument();
   expect(screen.getByLabelText(/open company profile/i)).toBeInTheDocument();
   expect(screen.queryByText("This Device Is Locked")).not.toBeInTheDocument();

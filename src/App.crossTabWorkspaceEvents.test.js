@@ -10,6 +10,7 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  buildLegacySafeVaultCompatibilityResult,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 // ISO-14L: another tab writes the PHYSICAL namespaced key, so the native
@@ -25,11 +26,16 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: jest.fn() }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudBackupStatusBadge", () => ({ __esModule: true, default: () => null }));
 jest.mock("./components/CloudHomeRestorePrompt", () => ({ __esModule: true, default: () => null }));
 
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultCompatibilityBridge = require("./lib/useVaultCompatibilityBridge").default;
+const vaultCrypto = require("./lib/vaultCrypto");
+const { setActiveWorkspaceVaultCompatibility } = require("./lib/accountScopedLocalStorage");
 
 const OTHER_USER = "99999999-9999-4999-8999-999999999999";
 const OTHER_COMPANY = "88888888-8888-4888-8888-888888888888";
@@ -62,7 +68,16 @@ beforeEach(() => {
   realStorage = window.localStorage;
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  // This suite seeds the already activated fixture workspace before App mounts.
+  // The explicit test-only bridge state permits that fixture write; production
+  // authorization still comes only from the compatibility hook.
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
+  vaultCrypto.workspaceTag.mockResolvedValue("A".repeat(43));
+  useVaultCompatibilityBridge.mockImplementation(() => {
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
+    return buildLegacySafeVaultCompatibilityResult();
+  });
 });
 
 afterEach(() => {
@@ -83,7 +98,7 @@ function simulateOtherTabWrite({ namespace, logicalKey, newValue, oldValue = nul
 
 async function openSavedEstimates() {
   render(<App />);
-  fireEvent.click(screen.getByRole("button", { name: /^Estimates$/i }));
+  fireEvent.click(await screen.findByRole("button", { name: /^Estimates$/i }));
   await screen.findByText(/Saved Estimates/i);
 }
 

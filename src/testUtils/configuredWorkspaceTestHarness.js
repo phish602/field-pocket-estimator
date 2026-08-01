@@ -16,6 +16,7 @@ import {
   activateAccountScopedLocalStorage,
   deactivateAccountScopedLocalStorage,
 } from "../lib/accountScopedLocalStorage";
+import { screen } from "@testing-library/react";
 
 export const TEST_USER = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -95,6 +96,22 @@ export function buildUnlockedVaultSessionResult() {
   };
 }
 
+export function buildLegacySafeVaultCompatibilityResult() {
+  return {
+    state: "legacy-safe",
+    checking: false,
+    code: "",
+    message: "",
+    refresh: jest.fn(),
+  };
+}
+
+// Wait for an existing persistent shell control. The compatibility gate never
+// renders this control, so this is a deterministic test-only readiness signal.
+export async function waitForConfiguredWorkspaceShell() {
+  return screen.findByLabelText(/open menu/i);
+}
+
 function mockModuleDefault(path) {
   try {
     // eslint-disable-next-line global-require, import/no-dynamic-require
@@ -123,6 +140,9 @@ export function primeConfiguredWorkspaceMocks(overrides = {}) {
   mockModuleDefault("../lib/useDeviceLockStatus")?.mockReturnValue(buildIdleDeviceLockResult(overrides.deviceLock));
   mockModuleDefault("../lib/useCloudAutoBackup")?.mockReturnValue({ running: false, ...overrides.cloudAutoBackup });
   mockModuleDefault("../lib/useCloudAutoConvergence")?.mockReturnValue({ ...overrides.cloudAutoConvergence });
+  mockModuleDefault("../lib/useVaultCompatibilityBridge")?.mockReturnValue(
+    overrides.vaultCompatibility || { state: "checking", checking: true, code: "", message: "", refresh: jest.fn() }
+  );
   primeVerifiedDeviceGuard(overrides.deviceGuard);
 }
 

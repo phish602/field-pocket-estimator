@@ -2,7 +2,9 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly and
@@ -14,6 +16,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -494,6 +498,7 @@ function expectEditInvoiceTargetWasNotSet(setItemSpy) {
 
 async function renderAppOnEstimates(projectName) {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /^Estimates$/i }));
 
@@ -507,6 +512,7 @@ describe("App approved estimate invoice builder handoff", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
     useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     setItemSpy = jest.spyOn(Storage.prototype, "setItem");
@@ -1199,6 +1205,7 @@ describe("App approved estimate invoice builder handoff", () => {
     }));
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
 
     act(() => {
       window.dispatchEvent(new Event("estipaid:hero-logo-longpress"));
@@ -1241,6 +1248,7 @@ describe("App approved estimate invoice builder handoff", () => {
     }));
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
 
     act(() => {
       window.dispatchEvent(new Event("estipaid:hero-logo-longpress"));

@@ -5,6 +5,7 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
@@ -26,6 +27,8 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 // The full Advanced Settings screen pulls in many independent Supabase
 // modules that are irrelevant to this navigation test; stub it so this test
@@ -49,8 +52,9 @@ afterEach(() => {
   resetConfiguredTestWorkspace();
 });
 
-test("a completed cloud restore navigates the user back to Home from another screen", () => {
+test("a completed cloud restore navigates the user back to Home from another screen", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText(/open menu/i));
   fireEvent.click(screen.getByText("Settings"));
@@ -64,8 +68,9 @@ test("a completed cloud restore navigates the user back to Home from another scr
   expect(screen.getByText("Turn Scope into Revenue")).toBeInTheDocument();
 });
 
-test("without a restore-complete event, the app does not navigate away on its own", () => {
+test("without a restore-complete event, the app does not navigate away on its own", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByLabelText(/open menu/i));
   fireEvent.click(screen.getByText("Settings"));

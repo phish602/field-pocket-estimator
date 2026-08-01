@@ -11,6 +11,7 @@ import {
   getActiveAccountWorkspaceNamespace,
   inspectAccountScopedWorkspace,
   isWorkspaceScopedLogicalKey,
+  setActiveWorkspaceVaultCompatibility,
 } from "./accountScopedLocalStorage";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
@@ -51,6 +52,7 @@ function seedLegacy(storage) {
 function open(storage, userId, companyId) {
   const result = activateAccountScopedLocalStorage({ storage, userId, companyId });
   expect(result.ok).toBe(true);
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "test-workspace-tag", state: "legacy-safe", generation: 1 });
   return result.storage;
 }
 
@@ -446,6 +448,7 @@ describe("global window.localStorage compatibility boundary", () => {
     const result = activateAccountScopedLocalStorage({ storage: window.localStorage, userId: USER_A, companyId: COMPANY_A });
     expect(result.ok).toBe(true);
     expect(result.installed).toBe(true);
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "test-workspace-tag", state: "legacy-safe", generation: 1 });
 
     // A module that captured nothing and simply calls the global sees only the
     // scoped workspace.
@@ -462,7 +465,9 @@ describe("global window.localStorage compatibility boundary", () => {
   test("re-activating does not stack facades or double-prefix keys", () => {
     localStorage.clear();
     activateAccountScopedLocalStorage({ storage: window.localStorage, userId: USER_A, companyId: COMPANY_A });
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "test-workspace-tag", state: "legacy-safe", generation: 1 });
     const second = activateAccountScopedLocalStorage({ storage: window.localStorage, userId: USER_A, companyId: COMPANY_A });
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "test-workspace-tag", state: "legacy-safe", generation: 2 });
     localStorage.setItem(STORAGE_KEYS.CUSTOMERS, "once");
 
     deactivateAccountScopedLocalStorage();

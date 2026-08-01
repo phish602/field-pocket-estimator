@@ -2,7 +2,9 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly and
@@ -14,6 +16,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -456,6 +460,7 @@ async function continueCurrentDraftFromGuard() {
 
 async function openProjectDetail() {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   // Gate 13H: Projects moved out of the bottom nav (replaced by Home) into
   // the hamburger menu.
@@ -765,6 +770,7 @@ function createSavedInvoiceRecord({
 
 async function openContinueCreateFlow(intent = "estimate") {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
@@ -817,6 +823,7 @@ describe("App Project Detail seeded new-document launches", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
     useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
@@ -976,6 +983,7 @@ describe("App Continue Create draft handoff", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
     useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     jest.clearAllMocks();
     mockInitialBuilderStates.length = 0;
@@ -1155,6 +1163,7 @@ describe("App Continue Create draft handoff", () => {
     localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([savedInvoice]));
 
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
 
     fireEvent.click(screen.getByRole("button", { name: /^invoices$/i }));
 

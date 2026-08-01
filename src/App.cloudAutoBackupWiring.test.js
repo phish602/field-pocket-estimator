@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
-import { buildUnlockedVaultSessionResult } from "./testUtils/configuredWorkspaceTestHarness";
+import { buildUnlockedVaultSessionResult, waitForConfiguredWorkspaceShell } from "./testUtils/configuredWorkspaceTestHarness";
 
 jest.mock("./lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -27,6 +27,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   default: jest.fn(),
 }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 // Gate 13F: Home now also runs the cloud-restore-prompt onboarding check.
 // Resolve it immediately here so this file's assertions (which finish
@@ -146,6 +148,7 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
   }));
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(useCloudAutoBackup).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -159,7 +162,7 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
   expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
 });
 
-test("worker is disabled when the signed-in device is locked", () => {
+test("worker is disabled when the signed-in device is locked", async () => {
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
@@ -186,6 +189,7 @@ test("worker is disabled when the signed-in device is locked", () => {
   });
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(useCloudAutoBackup).toHaveBeenCalledWith(
     expect.objectContaining({

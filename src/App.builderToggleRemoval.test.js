@@ -2,7 +2,9 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly and
@@ -14,6 +16,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
@@ -67,12 +71,14 @@ async function clickNewInvoice() {
 beforeEach(() => {
   resetConfiguredTestWorkspace();
   setupConfiguredWorkspace();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   seedCompanyProfile();
 });
 
 test("1. Create -> New Estimate opens Estimate Builder with no Estimate/Invoice toggle", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewEstimate();
 
@@ -83,6 +89,7 @@ test("1. Create -> New Estimate opens Estimate Builder with no Estimate/Invoice 
 
 test("2. Create -> New Invoice opens Invoice Builder with no toggle", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewInvoice();
 
@@ -95,6 +102,7 @@ test("2. Create -> New Invoice opens Invoice Builder with no toggle", async () =
 test("3. New Invoice draft guard: Continue Current Draft keeps Estimate Draft A and routes to Estimate Builder", async () => {
   seedMeaningfulDraft("estimate", "Draft A Customer");
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewInvoice();
 
@@ -111,6 +119,7 @@ test("3. New Invoice draft guard: Continue Current Draft keeps Estimate Draft A 
 test("4. New Invoice draft guard: Discard and Start New Invoice clears stale estimate data", async () => {
   seedMeaningfulDraft("estimate", "Draft A Customer");
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewInvoice();
 
@@ -125,6 +134,7 @@ test("4. New Invoice draft guard: Discard and Start New Invoice clears stale est
 test("5. New Estimate draft guard: Continue Current Draft keeps Invoice Draft A and routes to Invoice Builder", async () => {
   seedMeaningfulDraft("invoice", "Invoice Draft A Customer");
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewEstimate();
 
@@ -139,6 +149,7 @@ test("5. New Estimate draft guard: Continue Current Draft keeps Invoice Draft A 
 test("6. New Estimate draft guard: Discard and Start New Estimate clears stale invoice data", async () => {
   seedMeaningfulDraft("invoice", "Invoice Draft A Customer");
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewEstimate();
 
@@ -152,6 +163,7 @@ test("6. New Estimate draft guard: Discard and Start New Estimate clears stale i
 
 test("7. New Estimate with no existing draft does not show the draft guard", async () => {
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewEstimate();
 
@@ -162,6 +174,7 @@ test("7. New Estimate with no existing draft does not show the draft guard", asy
 test("8. New Estimate when an Estimate draft already exists does not show the draft guard (same docType)", async () => {
   seedMeaningfulDraft("estimate", "Existing Customer");
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   await clickNewEstimate();
 

@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
-import { buildUnlockedVaultSessionResult } from "./testUtils/configuredWorkspaceTestHarness";
+import { buildUnlockedVaultSessionResult, waitForConfiguredWorkspaceShell } from "./testUtils/configuredWorkspaceTestHarness";
 
 // Phase 2.1 -- proves the root routing branch that keeps a password-recovery
 // session on the auth screen instead of the dashboard. No existing suite can
@@ -31,6 +31,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   default: jest.fn(),
 }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 jest.mock("./components/CloudHeaderStatusChip", () => ({
   __esModule: true,
@@ -210,11 +212,12 @@ test("an in-flight abandonment keeps the dashboard and every worker gated despit
   );
 });
 
-test("after explicit continuation the normal authenticated hook inputs are restored", () => {
+test("after explicit continuation the normal authenticated hook inputs are restored", async () => {
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   useSupabaseAuth.mockReturnValue(buildAuthState());
 
   render(<App />);
+  await waitForConfiguredWorkspaceShell();
 
   expect(useSupabaseAccount).toHaveBeenCalledWith({ configured: true, user: USER });
   expect(useDeviceLockStatus).toHaveBeenCalledWith(
@@ -234,7 +237,8 @@ test("a normal authenticated session still renders the app shell (routing unchan
 
   render(<App />);
 
-  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+  await waitForConfiguredWorkspaceShell();
+  expect(screen.getByLabelText(/open menu/i)).toBeInTheDocument();
   expect(screen.queryByText("Set A New Password")).not.toBeInTheDocument();
 });
 

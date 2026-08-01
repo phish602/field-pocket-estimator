@@ -22,6 +22,8 @@
 // unscoped value. That fallback is the exact thing this module exists to
 // prevent.
 
+import { readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
+
 export const WORKSPACE_NAMESPACE_PREFIX = "estipaid-workspace-v2";
 
 // Written inside the namespace at activation and read back to prove the
@@ -54,6 +56,20 @@ const NAMESPACE_PREFIX_WITH_SEPARATOR = `${WORKSPACE_NAMESPACE_PREFIX}:`;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const MARKER_FIELDS = ["boundAt", "companyId", "userId", "version"];
 const facadeMetadata = new WeakMap();
+
+// ISO-15F1 -- one narrow, module-private handoff from the React bridge to the
+// synchronous compatibility facade. It intentionally retains no identity or
+// storage data: activation/deactivation revoke it before another workspace can
+// use the facade.
+let activeVaultCompatibility = { workspaceTag: "", state: "blocked", generation: 0 };
+
+export function setActiveWorkspaceVaultCompatibility({ workspaceTag = "", state = "blocked", generation = 0 } = {}) {
+  activeVaultCompatibility = {
+    workspaceTag: typeof workspaceTag === "string" ? workspaceTag : "",
+    state: state === "legacy-safe" ? "legacy-safe" : "blocked",
+    generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : 0,
+  };
+}
 
 function isQuarantinedLegacyKey(key) {
   return QUARANTINED_LEGACY_LOGICAL_KEYS.includes(key);
@@ -199,6 +215,17 @@ function createScopedStorageFacade({ storage, namespace }) {
     return normalizedKey;
   };
 
+  // The guard is re-read synchronously for every mutation. A stale bridge tab
+  // therefore cannot write after another tab has published a guard state.
+  const mayMutate = () => {
+    const guard = readVaultCompatibilityGuard();
+    return guard?.state === "absent"
+      && activeVaultCompatibility.state === "legacy-safe"
+      && activeVaultCompatibility.workspaceTag
+      && activeWorkspace?.namespace === namespace
+      && activeWorkspace?.facade === facade;
+  };
+
   // Physical -> logical for enumeration. Other workspaces and legacy unscoped
   // EstiPaid business keys are not merely unreadable, they are invisible.
   const visibleLogicalKeys = () => {
@@ -241,12 +268,14 @@ function createScopedStorageFacade({ storage, namespace }) {
       }
     },
     setItem(key, value) {
+      if (!mayMutate()) return undefined;
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
       return storage.setItem(toPhysicalKey(normalizedKey), value);
     },
     removeItem(key) {
+      if (!mayMutate()) return undefined;
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
@@ -256,6 +285,7 @@ function createScopedStorageFacade({ storage, namespace }) {
     // keys are removed: other workspaces, legacy unscoped values, Supabase auth
     // keys, language, device id, and unrelated data all survive.
     clear() {
+      if (!mayMutate()) return undefined;
       const keys = realKeysOf(storage);
       if (!keys) return undefined;
       keys
@@ -274,6 +304,12 @@ function createScopedStorageFacade({ storage, namespace }) {
 let installedGlobal = null; // { originalDescriptor, facade }
 let activeWorkspace = null; // { namespace, userId, companyId, storage, facade }
 let crossTabBridge = null;  // { namespace, listener } -- module-private, never exported
+
+// The bridge listener receives a native event whose storageArea is the real
+// Storage object even while the global property is temporarily the facade.
+export function isActiveAccountScopedNativeStorage(storage) {
+  return Boolean(activeWorkspace?.storage && storage === activeWorkspace.storage);
+}
 
 // ISO-14L -- cross-tab event bridge.
 //
@@ -391,6 +427,7 @@ export function activateAccountScopedLocalStorage({
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
   activeWorkspace = null;
+  setActiveWorkspaceVaultCompatibility();
 
   const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
   if (!namespace) return failed(ACCOUNT_SCOPED_STORAGE_ERROR.INCOMPLETE_IDENTITY);
@@ -429,6 +466,7 @@ export function deactivateAccountScopedLocalStorage() {
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
   activeWorkspace = null;
+  setActiveWorkspaceVaultCompatibility();
 }
 
 export function getActiveAccountWorkspaceNamespace() {

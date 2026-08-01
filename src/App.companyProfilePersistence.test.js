@@ -2,7 +2,9 @@ import {
   resetConfiguredTestWorkspace,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
+  waitForConfiguredWorkspaceShell,
 } from "./testUtils/configuredWorkspaceTestHarness";
+import { setActiveWorkspaceVaultCompatibility } from "./lib/accountScopedLocalStorage";
 
 // ISO-14K: the operational shell requires an authenticated identity with an
 // active account-scoped workspace, so this suite states one explicitly and
@@ -14,6 +16,8 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
+jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 // ISO-14K: inside a configured workspace, local business saves are routed
 // through the device-lock guard, which cannot confirm an active device without
@@ -58,6 +62,7 @@ describe("App Company Profile dirty-navigation integration", () => {
   beforeEach(() => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
     useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
     localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(PROFILE));
     originalConfirm = window.confirm;
@@ -71,6 +76,7 @@ describe("App Company Profile dirty-navigation integration", () => {
 
   test("a successful Company Profile save clears the shell dirty-navigation block", async () => {
     render(<App />);
+    await waitForConfiguredWorkspaceShell();
     shellAction("openCompanyProfile");
     expect(await screen.findByRole("heading", { name: "Company Profile" })).toBeInTheDocument();
 
