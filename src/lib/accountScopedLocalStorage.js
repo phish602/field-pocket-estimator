@@ -36,6 +36,9 @@ export const WORKSPACE_MARKER_VERSION = "estipaid-workspace-marker-v1";
 export const DEVICE_GLOBAL_LOGICAL_KEYS = Object.freeze([
   "estipaid-lang",
   "estipaid-device-id-v1",
+  // ISO-15H -- the compatibility guard is device-global by design. It is
+  // intentionally not a workspace record and is never a migration source.
+  "estipaid-vault-guard-v1",
 ]);
 
 export const QUARANTINED_LEGACY_LOGICAL_KEYS = Object.freeze([
@@ -280,6 +283,33 @@ function createScopedStorageFacade({ storage, namespace }) {
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
       return storage.removeItem(toPhysicalKey(normalizedKey));
+    },
+    // ISO-15H -- these two narrowly scoped methods are the only migration
+    // escape hatches. They stay inside this active facade, cannot name a
+    // physical key or another namespace, and never expose the backing store.
+    setVaultCompatibilityGuardValue(rawValue) {
+      if (rawValue !== '{"version":1,"state":"transition"}'
+        && rawValue !== '{"version":1,"state":"authoritative"}') return null;
+      try {
+        storage.setItem("estipaid-vault-guard-v1", rawValue);
+        return storage.getItem("estipaid-vault-guard-v1");
+      } catch {
+        return null;
+      }
+    },
+    removeVaultMigrationItem(key) {
+      const normalizedKey = normalizeStorageKey(key);
+      const guard = readVaultCompatibilityGuard();
+      if (!isWorkspaceScopedLogicalKey(normalizedKey)
+        || guard?.state !== "authoritative"
+        || activeWorkspace?.namespace !== namespace
+        || activeWorkspace?.facade !== facade) return false;
+      try {
+        storage.removeItem(`${scopedPrefix}${normalizedKey}`);
+        return storage.getItem(`${scopedPrefix}${normalizedKey}`) === null;
+      } catch {
+        return false;
+      }
     },
     // Never clears the browser origin. Only the active workspace's own scoped
     // keys are removed: other workspaces, legacy unscoped values, Supabase auth

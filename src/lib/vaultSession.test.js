@@ -67,10 +67,20 @@ async function fastKdf(callback, capture = null) {
   try { return await callback(); } finally { restore(); }
 }
 
-test("exports exactly the six non-secret vault-session operations", () => {
+test("exports exactly the seven non-secret vault-session operations", () => {
   expect(Object.keys(session).sort()).toEqual([
-    "deriveWorkspaceVaultTag", "getVaultCapability", "lockVault", "readVaultCapability", "setupVault", "unlockVault",
+    "deriveWorkspaceVaultTag", "getVaultCapability", "lockVault", "readVaultCapability", "runWithActiveVaultDek", "setupVault", "unlockVault",
   ]);
+});
+
+test("active DEK handoff is exact-workspace scoped and never returns a key", async () => {
+  const store = memoryRepository();
+  await fastKdf(() => session.setupVault({ userId: userA, companyId: companyA, password: PASSWORD }, overrides(store)));
+  const tag = await workspaceTag(userA, companyA);
+  await expect(session.runWithActiveVaultDek({ workspaceTag: "wrong", operation: jest.fn() })).resolves.toBeNull();
+  await expect(session.runWithActiveVaultDek({ workspaceTag: tag, operation: (dek) => ({ type: dek.type, extractable: dek.extractable }) }))
+    .resolves.toEqual({ type: "secret", extractable: false });
+  expect(await session.runWithActiveVaultDek({ workspaceTag: tag })).toBeNull();
 });
 
 test("workspace tag delegates to the completed crypto contract and hides identity from capability", async () => {

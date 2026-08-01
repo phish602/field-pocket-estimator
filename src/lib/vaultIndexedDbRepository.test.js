@@ -12,6 +12,7 @@ import {
   WORKSPACE_VAULT_METADATA_STORE,
   WORKSPACE_VAULT_RECORDS_STORE,
   WORKSPACE_VAULT_MIGRATION_STORE,
+  VAULT_MIGRATION_LOGICAL_KEYS,
 } from "./vaultIndexedDbRepository";
 
 let sequence = 0;
@@ -414,6 +415,17 @@ test("repository error foundation has the exact public contract", () => {
     expect(Object.prototype.hasOwnProperty.call(error, "cause")).toBe(false);
   });
   expect(() => new VaultRepositoryError("UNKNOWN")).toThrow();
+});
+
+test("migration logical-key allowlist is immutable and covers every current scoped storage key", () => {
+  expect(Object.isFrozen(VAULT_MIGRATION_LOGICAL_KEYS)).toBe(true);
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).toContain("estipaid-company-profile-v1");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).toContain("estipaid-customers-v1");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).toContain("estipaid-projects-v1");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).toContain("estipaid-estimates-v1");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).toContain("estipaid-invoices-v1");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).not.toContain("estipaid-lang");
+  expect(VAULT_MIGRATION_LOGICAL_KEYS).not.toContain("estipaid-vault-guard-v1");
 });
 
 test("repository constructor validates strict injections", () => {

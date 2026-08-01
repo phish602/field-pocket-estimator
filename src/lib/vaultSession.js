@@ -275,3 +275,12 @@ export function lockVault() {
 export function getVaultCapability() {
   return activeWorkspaceTag && activeDek ? capability("unlocked") : capability("locked");
 }
+
+// ISO-15H -- the migration engine may use the already-unlocked DEK only while
+// this module confirms the exact workspace binding. The key is never returned,
+// serialized, or retained by this helper.
+export async function runWithActiveVaultDek({ workspaceTag: tag, operation } = {}) {
+  if (typeof tag !== "string" || typeof operation !== "function") return null;
+  if (activeWorkspaceTag !== tag || !activeDek) return null;
+  return operation(activeDek);
+}
