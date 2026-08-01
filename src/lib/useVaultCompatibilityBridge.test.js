@@ -7,7 +7,13 @@ jest.mock("./vaultCompatibilityGuard", () => ({
   readVaultCompatibilityGuard: jest.fn(),
 }));
 jest.mock("./vaultTransitionControlRepository", () => ({ createVaultTransitionControlRepository: jest.fn() }));
-jest.mock("./vaultIndexedDbRepository", () => ({ createVaultIndexedDbRepository: jest.fn() }));
+jest.mock("./vaultIndexedDbRepository", () => ({
+  createVaultIndexedDbRepository: jest.fn(),
+  VAULT_REPOSITORY_ERROR_CODES: Object.freeze({
+    DATABASE_NOT_FOUND: "DATABASE_NOT_FOUND",
+    STORAGE_OPERATION_FAILED: "STORAGE_OPERATION_FAILED",
+  }),
+}));
 jest.mock("./accountScopedLocalStorage", () => ({
   isActiveAccountScopedNativeStorage: jest.fn(() => false),
   setActiveWorkspaceVaultCompatibility: jest.fn(),
@@ -26,10 +32,14 @@ function Probe(props) {
   return <div data-state={latest.state} />;
 }
 
-function wire({ guardResult = { state: "absent", code: "", message: "" }, activeTransition = null, manifest = null } = {}) {
+function wire({ guardResult = { state: "absent", code: "", message: "" }, activeTransition = null, manifest = null, manifestError = null } = {}) {
   guard.readVaultCompatibilityGuard.mockReturnValue(guardResult);
   transition.createVaultTransitionControlRepository.mockReturnValue({ readActiveTransition: jest.fn().mockResolvedValue(activeTransition) });
-  vault.createVaultIndexedDbRepository.mockReturnValue({ readMigrationManifest: jest.fn().mockResolvedValue(manifest) });
+  vault.createVaultIndexedDbRepository.mockReturnValue({
+    readMigrationManifest: manifestError
+      ? jest.fn().mockRejectedValue(manifestError)
+      : jest.fn().mockResolvedValue(manifest),
+  });
 }
 
 beforeEach(() => { latest = null; jest.clearAllMocks(); wire(); });
@@ -52,6 +62,25 @@ test("absent guard with no transition and manifest is positively legacy-safe", a
   render(<Probe enabled workspaceTag={TAG_A} />);
   await waitFor(() => expect(latest.state).toBe("legacy-safe"));
   expect(scoped.setActiveWorkspaceVaultCompatibility).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceTag: TAG_A, state: "legacy-safe" }));
+});
+
+test("absent vault database is treated as an absent migration manifest", async () => {
+  const databaseNotFound = Object.assign(new Error("missing database"), {
+    code: vault.VAULT_REPOSITORY_ERROR_CODES.DATABASE_NOT_FOUND,
+  });
+  wire({ activeTransition: null, manifestError: databaseNotFound });
+  render(<Probe enabled workspaceTag={TAG_A} />);
+  await waitFor(() => expect(latest.state).toBe("legacy-safe"));
+  expect(scoped.setActiveWorkspaceVaultCompatibility).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceTag: TAG_A, state: "legacy-safe" }));
+});
+
+test("non-absence manifest failures remain storage-blocked", async () => {
+  const storageFailure = Object.assign(new Error("storage failure"), {
+    code: vault.VAULT_REPOSITORY_ERROR_CODES.STORAGE_OPERATION_FAILED,
+  });
+  wire({ activeTransition: null, manifestError: storageFailure });
+  render(<Probe enabled workspaceTag={TAG_A} />);
+  await waitFor(() => expect(latest.state).toBe("storage-blocked"));
 });
 
 test.each([

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createVaultIndexedDbRepository } from "./vaultIndexedDbRepository";
+import { createVaultIndexedDbRepository, VAULT_REPOSITORY_ERROR_CODES } from "./vaultIndexedDbRepository";
 import { createVaultTransitionControlRepository } from "./vaultTransitionControlRepository";
 import { readVaultCompatibilityGuard, VAULT_COMPATIBILITY_GUARD_KEY } from "./vaultCompatibilityGuard";
 import { getVaultBridgeBuildPolicy } from "./vaultBridgeBuildPolicy";
@@ -24,6 +24,15 @@ function blockedForGuard(guard) {
 
 function canInspect(enabled, workspaceTag) {
   return Boolean(enabled && typeof workspaceTag === "string" && workspaceTag);
+}
+
+async function readBridgeMigrationManifest(vaultRepository, workspaceTag) {
+  try {
+    return await vaultRepository.readMigrationManifest({ workspaceTag });
+  } catch (error) {
+    if (error?.code === VAULT_REPOSITORY_ERROR_CODES.DATABASE_NOT_FOUND) return null;
+    throw error;
+  }
 }
 
 export default function useVaultCompatibilityBridge({ enabled = false, workspaceTag = "" } = {}) {
@@ -54,7 +63,7 @@ export default function useVaultCompatibilityBridge({ enabled = false, workspace
         const vaultRepository = createVaultIndexedDbRepository();
         [transition, manifest] = await Promise.all([
           transitionRepository.readActiveTransition({}),
-          vaultRepository.readMigrationManifest({ workspaceTag: tag }),
+          readBridgeMigrationManifest(vaultRepository, tag),
         ]);
       } catch {
         return publicResult("storage-blocked", "STORAGE_UNAVAILABLE", "Secure local storage is unavailable.");
