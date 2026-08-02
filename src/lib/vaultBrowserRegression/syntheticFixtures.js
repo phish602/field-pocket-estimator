@@ -37,7 +37,8 @@ export const SYNTHETIC_THIRD_IDENTITY = Object.freeze({
 // Fixture categories A..R from the ISO-15I fixture requirement.
 export const FIXTURE_CATEGORIES = Object.freeze({
   A: "empty-active-workspace",
-  B: "populated-active-workspace-all-approved-keys",
+  B: "mixed-presence-active-workspace",
+  ALL_APPROVED: "all-approved-active-workspace",
   C: "present-empty-string-values",
   D: "absent-values",
   E: "unicode-multibyte-utf8",
@@ -89,7 +90,7 @@ function largeValue() {
 // The approved business keys, assigned deterministic synthetic shapes so that
 // present-empty (C), absent (D), unicode (E), combining (F), emoji (G), and
 // large (H) are all represented inside the migration allowlist itself.
-export function buildPopulatedWorkspaceValues() {
+export function buildMixedPresenceWorkspaceValues() {
   const values = {};
   VAULT_MIGRATION_LOGICAL_KEYS.forEach((logicalKey, index) => {
     const slot = index % 6;
@@ -105,12 +106,31 @@ export function buildPopulatedWorkspaceValues() {
   return Object.freeze(values);
 }
 
+// The all-approved baseline is intentionally separate from the mixed fixture:
+// it proves the migration handles every current allowlisted key, including a
+// deterministic present-empty value, without conflating that claim with absent
+// value coverage.
+export function buildAllApprovedWorkspaceValues() {
+  const values = {};
+  VAULT_MIGRATION_LOGICAL_KEYS.forEach((logicalKey, index) => {
+    const slot = index % 6;
+    if (slot === 0) values[logicalKey] = "";
+    else if (slot === 1) values[logicalKey] = UNICODE_VALUE;
+    else if (slot === 2) values[logicalKey] = COMBINING_VALUE;
+    else if (slot === 3) values[logicalKey] = EMOJI_VALUE;
+    else values[logicalKey] = JSON.stringify({ note: "synthetic-all-approved", index });
+  });
+  values["estipaid-audit-events-v1"] = largeValue();
+  if (Object.keys(values).length !== VAULT_MIGRATION_LOGICAL_KEYS.length) throw new Error("FIXTURE_ALLOWLIST_MISMATCH");
+  return Object.freeze(values);
+}
+
 // Which approved logical keys the populated fixture leaves present-non-empty,
 // present-empty, and absent. Only key NAMES are returned -- they are public
 // source vocabulary -- so a regression scenario can target the exact state it
 // claims to test instead of assuming one.
-export function describeFixtureKeyRoles() {
-  const values = buildPopulatedWorkspaceValues();
+export function describeFixtureKeyRoles({ mode = "mixed" } = {}) {
+  const values = mode === "all-approved" ? buildAllApprovedWorkspaceValues() : buildMixedPresenceWorkspaceValues();
   const presentNonEmpty = [];
   const presentEmpty = [];
   const absent = [];
@@ -176,7 +196,7 @@ export function buildUnrelatedValues() {
 // Physical seeding. The fixtures are written straight to the real Storage
 // object, never through the compatibility facade, because a facade write is
 // exactly one of the behaviours under test.
-export function seedPhysicalLocalStorage({ storage, populated = true } = {}) {
+export function seedPhysicalLocalStorage({ storage, populated = true, fixtureMode = "mixed" } = {}) {
   if (!storage || typeof storage.setItem !== "function") throw new Error("STORAGE_UNAVAILABLE");
 
   const activeNamespace = buildAccountWorkspaceNamespace(SYNTHETIC_ACTIVE_IDENTITY);
@@ -186,7 +206,7 @@ export function seedPhysicalLocalStorage({ storage, populated = true } = {}) {
   const seeded = { activeScoped: 0, foreignScoped: 0, bareLegacy: 0, quarantined: 0, deviceGlobal: 0, authShaped: 0, unrelated: 0 };
 
   if (populated) {
-    const values = buildPopulatedWorkspaceValues();
+    const values = fixtureMode === "all-approved" ? buildAllApprovedWorkspaceValues() : buildMixedPresenceWorkspaceValues();
     Object.entries(values).forEach(([logicalKey, value]) => {
       storage.setItem(`${activeNamespace}:${logicalKey}`, value);
       seeded.activeScoped += 1;
@@ -223,12 +243,12 @@ export function seedPhysicalLocalStorage({ storage, populated = true } = {}) {
 
 // Fixture manifest for evidence. Category label, presence, and counts only --
 // no plaintext, no namespace, no UUID.
-export function describeFixtureManifest({ populated = true } = {}) {
-  const populatedValues = buildPopulatedWorkspaceValues();
+export function describeFixtureManifest({ populated = true, fixtureMode = "mixed" } = {}) {
+  const populatedValues = fixtureMode === "all-approved" ? buildAllApprovedWorkspaceValues() : buildMixedPresenceWorkspaceValues();
   const presentApproved = Object.keys(populatedValues).length;
   return Object.freeze([
     Object.freeze({ code: "A", category: FIXTURE_CATEGORIES.A, present: !populated, keyCount: populated ? 0 : 0 }),
-    Object.freeze({ code: "B", category: FIXTURE_CATEGORIES.B, present: populated, keyCount: populated ? presentApproved : 0 }),
+    Object.freeze({ code: "B", category: fixtureMode === "all-approved" ? "all-approved-active-workspace" : "mixed-presence-active-workspace", present: populated, keyCount: populated ? presentApproved : 0 }),
     Object.freeze({ code: "C", category: FIXTURE_CATEGORIES.C, present: populated, keyCount: populated ? Object.values(populatedValues).filter((value) => value === "").length : 0 }),
     Object.freeze({ code: "D", category: FIXTURE_CATEGORIES.D, present: populated, keyCount: populated ? VAULT_MIGRATION_LOGICAL_KEYS.length - presentApproved : VAULT_MIGRATION_LOGICAL_KEYS.length }),
     Object.freeze({ code: "E", category: FIXTURE_CATEGORIES.E, present: populated, keyCount: populated ? Object.values(populatedValues).filter((value) => value === UNICODE_VALUE).length : 0 }),

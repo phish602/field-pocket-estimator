@@ -4,7 +4,8 @@ import {
   SYNTHETIC_ACTIVE_IDENTITY,
   SYNTHETIC_FOREIGN_IDENTITY,
   SYNTHETIC_THIRD_IDENTITY,
-  buildPopulatedWorkspaceValues,
+  buildAllApprovedWorkspaceValues,
+  buildMixedPresenceWorkspaceValues,
   describeFixtureKeyRoles,
   describeFixtureManifest,
   seedPhysicalLocalStorage,
@@ -40,8 +41,8 @@ test("the three synthetic identities are distinct disposable UUID pairs", () => 
   expect(new Set(namespaces).size).toBe(3);
 });
 
-test("the populated workspace covers present-empty, absent, unicode, combining, emoji, and large values", () => {
-  const values = buildPopulatedWorkspaceValues();
+test("the mixed-presence workspace covers present-empty, absent, unicode, combining, emoji, and large values", () => {
+  const values = buildMixedPresenceWorkspaceValues();
   const present = Object.keys(values);
   const absent = VAULT_MIGRATION_LOGICAL_KEYS.filter((key) => !present.includes(key));
 
@@ -60,7 +61,7 @@ test("the populated workspace covers present-empty, absent, unicode, combining, 
   });
 });
 
-test("fixture key roles partition the approved allowlist exactly once", () => {
+test("mixed fixture key roles partition the approved allowlist exactly once", () => {
   const roles = describeFixtureKeyRoles();
   const combined = [...roles.presentNonEmpty, ...roles.presentEmpty, ...roles.absent].sort();
   expect(combined).toEqual([...VAULT_MIGRATION_LOGICAL_KEYS].sort());
@@ -69,7 +70,7 @@ test("fixture key roles partition the approved allowlist exactly once", () => {
   expect(roles.presentEmpty.length).toBeGreaterThan(0);
   expect(roles.absent.length).toBeGreaterThan(0);
 
-  const values = buildPopulatedWorkspaceValues();
+  const values = buildMixedPresenceWorkspaceValues();
   roles.presentNonEmpty.forEach((key) => expect(values[key].length).toBeGreaterThan(0));
   roles.presentEmpty.forEach((key) => expect(values[key]).toBe(""));
   roles.absent.forEach((key) => expect(Object.prototype.hasOwnProperty.call(values, key)).toBe(false));
@@ -90,7 +91,7 @@ test("seeding writes every required fixture category to the correct physical nam
   // Seeding writes business fixtures only; markers appear at activation.
   expect(categories.has("workspace-marker")).toBe(false);
 
-  expect(seeded.activeScoped).toBe(Object.keys(buildPopulatedWorkspaceValues()).length);
+  expect(seeded.activeScoped).toBe(Object.keys(buildMixedPresenceWorkspaceValues()).length);
   expect(seeded.bareLegacy).toBe(BARE_LEGACY_ESTIPAID_KEYS.length);
   expect(seeded.quarantined).toBe(QUARANTINED_LEGACY_LOGICAL_KEYS.length);
   expect(seeded.deviceGlobal).toBe(2);
@@ -124,11 +125,24 @@ test("the fixture manifest enumerates categories A through R without any plainte
 test("no fixture password is ever exported inside the manifest or the value builders", () => {
   const serialized = JSON.stringify({
     manifest: describeFixtureManifest({}),
-    values: buildPopulatedWorkspaceValues(),
+    values: buildMixedPresenceWorkspaceValues(),
   });
   [SYNTHETIC_ACTIVE_IDENTITY, SYNTHETIC_FOREIGN_IDENTITY, SYNTHETIC_THIRD_IDENTITY].forEach((identity) => {
     expect(serialized).not.toContain(identity.password);
     expect(serialized).not.toContain(identity.userId);
     expect(serialized).not.toContain(identity.companyId);
   });
+});
+
+test("the all-approved fixture contains every allowlisted key with every required present-value shape", () => {
+  const values = buildAllApprovedWorkspaceValues();
+  expect(Object.isFrozen(values)).toBe(true);
+  expect(Object.keys(values).sort()).toEqual([...VAULT_MIGRATION_LOGICAL_KEYS].sort());
+  expect(Object.keys(values)).toHaveLength(42);
+  expect(Object.values(values).some((value) => value === "")).toBe(true);
+  expect(Object.values(values).some((value) => /[á-ü]/.test(value))).toBe(true);
+  expect(Object.values(values).some((value) => /é/.test(value))).toBe(true);
+  expect(Object.values(values).some((value) => /\u{1F9F0}/u.test(value))).toBe(true);
+  expect(new TextEncoder().encode(values["estipaid-audit-events-v1"]).length).toBeGreaterThan(64 * 1024);
+  expect(describeFixtureKeyRoles({ mode: "all-approved" }).absent).toEqual([]);
 });

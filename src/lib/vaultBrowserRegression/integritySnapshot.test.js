@@ -1,5 +1,7 @@
 import {
   HARNESS_CONTROL_PREFIX,
+  canonicalizeIndexedDbValue,
+  compareIndexedDbContentIntegrity,
   LOCAL_STORAGE_CATEGORIES,
   categorizeDatabaseName,
   categorizePhysicalKey,
@@ -204,4 +206,110 @@ test("indexed database names are counted by category only", async () => {
   expect(summary.categories["other-workspace-vault"]).toBe(1);
   expect(summary.categories["transition-control"]).toBe(1);
   expect(JSON.stringify(summary)).not.toContain("A".repeat(43));
+});
+
+const bytesOf = (value) => Array.from(canonicalizeIndexedDbValue(value));
+
+test("canonical IndexedDB encoding distinguishes every supported value type", () => {
+  // A value's TYPE is part of its canonical bytes, so look-alike values across
+  // types can never collide.
+  const distinct = [
+    null, "1", 1, true, false, "true",
+    new Uint8Array([1, 2, 3]),
+    new Uint8Array([1, 2, 3]).buffer,
+    new Int8Array([1, 2, 3]),
+    new DataView(new Uint8Array([1, 2, 3]).buffer),
+    new Date(1767225600000),
+    1767225600000,
+    [1, 2],
+    { a: 1 },
+  ];
+  const encoded = distinct.map((value) => JSON.stringify(bytesOf(value)));
+  expect(new Set(encoded).size).toBe(distinct.length);
+});
+
+test("canonical IndexedDB encoding is deterministic and byte exact", () => {
+  expect(bytesOf({ a: 1, b: [2, 3] })).toEqual(bytesOf({ a: 1, b: [2, 3] }));
+  // Plain-object key order is not meaningful and must be normalised.
+  expect(bytesOf({ a: 1, b: 2 })).toEqual(bytesOf({ b: 2, a: 1 }));
+  // Array order IS meaningful and must be preserved.
+  expect(bytesOf([1, 2])).not.toEqual(bytesOf([2, 1]));
+  // Byte order inside binary values is preserved.
+  expect(bytesOf(new Uint8Array([1, 2]))).not.toEqual(bytesOf(new Uint8Array([2, 1])));
+  // Length framing prevents concatenation ambiguity.
+  expect(bytesOf(["a", "bc"])).not.toEqual(bytesOf(["ab", "c"]));
+  expect(bytesOf({ ab: "c" })).not.toEqual(bytesOf({ a: "bc" }));
+});
+
+test("negative zero stays distinct from zero", () => {
+  expect(bytesOf(-0)).not.toEqual(bytesOf(0));
+  expect(bytesOf(-0)).toEqual(bytesOf(-0));
+});
+
+test("valid IndexedDB primary key shapes all canonicalize", () => {
+  const keys = [42, "estipaid", new Date(0), new Uint8Array([9, 9]), [1, "a", new Date(5)]];
+  keys.forEach((key) => expect(canonicalizeIndexedDbValue(key)).toBeInstanceOf(Uint8Array));
+  expect(bytesOf(new Date(0))).not.toEqual(bytesOf(0));
+});
+
+test("unsupported, non-finite, symbol-bearing, and cyclic values fail closed", () => {
+  // Never silently converted to a generic string: an unmodelled value must
+  // raise, or two different database states could digest identically.
+  [undefined, () => {}, Symbol("s"), new Map(), new Set(), /re/, Object.create(null), new Error("x")]
+    .forEach((value) => expect(() => canonicalizeIndexedDbValue(value)).toThrow("UNSUPPORTED_INDEXEDDB_VALUE"));
+
+  [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]
+    .forEach((value) => expect(() => canonicalizeIndexedDbValue(value)).toThrow("UNSUPPORTED_INDEXEDDB_VALUE"));
+
+  expect(() => canonicalizeIndexedDbValue(new Date(Number.NaN))).toThrow("UNSUPPORTED_INDEXEDDB_VALUE");
+
+  // A symbol-keyed property is invisible to Object.keys, so digesting it would
+  // silently ignore real state.
+  const symbolBearing = { a: 1 };
+  symbolBearing[Symbol("hidden")] = 2;
+  expect(() => canonicalizeIndexedDbValue(symbolBearing)).toThrow("UNSUPPORTED_INDEXEDDB_VALUE");
+
+  const cyclicObject = { a: 1 };
+  cyclicObject.self = cyclicObject;
+  expect(() => canonicalizeIndexedDbValue(cyclicObject)).toThrow("CYCLIC_INDEXEDDB_VALUE");
+  const cyclicArray = [1];
+  cyclicArray.push(cyclicArray);
+  expect(() => canonicalizeIndexedDbValue(cyclicArray)).toThrow("CYCLIC_INDEXEDDB_VALUE");
+
+  // The same object appearing twice without a cycle is legal.
+  const shared = { a: 1 };
+  expect(() => canonicalizeIndexedDbValue([shared, shared])).not.toThrow();
+});
+
+test("preserved IndexedDB comparison requires matching stores records bytes and digest", () => {
+  const before = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 3, recordCount: 4, canonicalByteLength: 99, digest: "a" }] };
+  const same = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 3, recordCount: 4, canonicalByteLength: 99, digest: "a" }] };
+  const changed = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 3, recordCount: 4, canonicalByteLength: 100, digest: "b" }] };
+  const sameDigestFewerRecords = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 3, recordCount: 3, canonicalByteLength: 99, digest: "a" }] };
+  expect(compareIndexedDbContentIntegrity(before, same).allIdentical).toBe(true);
+  expect(compareIndexedDbContentIntegrity(before, changed).allIdentical).toBe(false);
+  expect(compareIndexedDbContentIntegrity(before, sameDigestFewerRecords).allIdentical).toBe(false);
+});
+
+test("an uncaptured IndexedDB comparison is never vacuously identical", () => {
+  // A caller that forgets to capture content integrity must FAIL the assertion,
+  // not silently pass it.
+  const populated = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 1, recordCount: 1, canonicalByteLength: 1, digest: "a" }] };
+  [[undefined, undefined], [{ entries: [] }, { entries: [] }], [populated, { entries: [] }], [{ entries: [] }, populated]]
+    .forEach(([before, after]) => {
+      const verdict = compareIndexedDbContentIntegrity(before, after);
+      expect(verdict.allIdentical).toBe(false);
+      expect(verdict.captured).toBe(false);
+      expect(verdict.reason).toBe("INDEXEDDB_CONTENT_NOT_CAPTURED");
+    });
+  expect(compareIndexedDbContentIntegrity(populated, populated).captured).toBe(true);
+});
+
+test("a missing category on either side is not identical", () => {
+  const before = { entries: [
+    { category: "foreign-workspace-vault", objectStoreCount: 1, recordCount: 1, canonicalByteLength: 1, digest: "a" },
+    { category: "third-workspace-vault", objectStoreCount: 1, recordCount: 1, canonicalByteLength: 1, digest: "b" },
+  ] };
+  const after = { entries: [{ category: "foreign-workspace-vault", objectStoreCount: 1, recordCount: 1, canonicalByteLength: 1, digest: "a" }] };
+  expect(compareIndexedDbContentIntegrity(before, after).allIdentical).toBe(false);
 });
