@@ -165,6 +165,24 @@ export const VAULT_MIGRATION_LOGICAL_KEYS = Object.freeze([
   "estipaid-cloud-sync-conflict-vault-v1",
   "estipaid-cloud-convergence-journal-v1",
   "estipaid-job-learning-events-v1",
+  // ISO-15J -- workspace business keys that are declared as module-local
+  // constants in screens rather than in src/constants/storageKeys.js. They were
+  // account-scoped by the ISO-14D facade but absent from this allowlist, so a
+  // completed migration would have left their plaintext on disk while the vault
+  // claimed authority. `estipaid-live-draft-edit-stash-v1` is the most serious:
+  // it holds a verbatim copy of `estipaid-estimate-draft-v1`.
+  // src/lib/vaultStorageClassification.js records why every remaining
+  // `estipaid-*` key is deliberately outside this list.
+  "estipaid-live-draft-edit-stash-v1",
+  "estipaid-scope-trade-starters-v1",
+  "estipaid-project-create-seed-v1",
+  "estipaid-estimates-search",
+  "estipaid-active-edit-context-v1",
+  "estipaid-edit-estimate-target-v1",
+  "estipaid-edit-invoice-target-v1",
+  "estipaid-project-detail-target-v1",
+  "estipaid-project-detail-return-target-v1",
+  "estipaid-profile-return-target-v1",
 ]);
 const LOGICAL_KEYS = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
 const STORE_NAMES = Object.freeze([

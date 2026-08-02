@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>ISO-15I vault browser regression harness</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
+      code { font-size: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">ISO-15I vault browser regression harness</h1>
+    <p>
+      Test-only page. Synthetic disposable state only. No production route, no
+      application navigation, no remote resource.
+    </p>
+    <p id="ready">harness: loading</p>
+    <script src="./vault-browser-harness.js"></script>
+    <script>
+      document.getElementById("ready").textContent =
+        window.__vaultBrowserRegressionReady ? "harness: ready" : "harness: failed";
+    </script>
+  </body>
+</html>
