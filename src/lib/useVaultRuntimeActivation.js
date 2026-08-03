@@ -496,18 +496,26 @@ export default function useVaultRuntimeActivation({
     return undefined;
   }, [identity, vaultUnlocked, userId, companyId, activate, revoke]);
 
-  // Durability is tracked honestly: a queued-but-uncommitted write reports
-  // `pending-writes`, and the first durability failure reports `blocked`.
-  //
-  // This is a subscription, not a poll: a timer would keep an open handle alive
-  // for the lifetime of every mounted app.
+  // Durability remains visible without revoking application access: queued
+  // encrypted writes keep the runtime in the public `ready` state and set the
+  // separate `pending` flag. Only an actual durability failure blocks the shell.
   useEffect(() => {
     const apply = (status) => {
       setResult((previous) => {
+        // Normalize a legacy in-memory `pending-writes` result if this module is
+        // replaced during development without a full page reload.
         if (previous.state !== "ready" && previous.state !== "pending-writes") return previous;
         if (status.state === "blocked") return publicResult("blocked", status.code || "DURABILITY_FAILED", BLOCKED_MESSAGE);
-        if (status.state === "pending-writes") return previous.state === "pending-writes" ? previous : publicResult("pending-writes", "", SAFE_MESSAGE, true);
-        if (status.state === "ready") return previous.state === "ready" ? previous : publicResult("ready");
+        if (status.state === "pending-writes") {
+          return previous.state === "ready" && previous.pending
+            ? previous
+            : publicResult("ready", "", SAFE_MESSAGE, true);
+        }
+        if (status.state === "ready") {
+          return previous.state === "ready" && !previous.pending
+            ? previous
+            : publicResult("ready");
+        }
         return previous;
       });
     };
