@@ -27,6 +27,7 @@ jest.mock("./lib/useSupabaseWorkspaceBootstrap", () => ({ __esModule: true, defa
 jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 

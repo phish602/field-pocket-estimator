@@ -18,11 +18,31 @@ jest.mock("./accountScopedLocalStorage", () => ({
   isActiveAccountScopedNativeStorage: jest.fn(() => false),
   setActiveWorkspaceVaultCompatibility: jest.fn(),
 }));
+// ISO-16: the compatibility bridge only ever operates under the BRIDGE-RELEASE
+// posture. The shipped policy is now the activation posture, under which the
+// bridge refuses outright (asserted at the end of this file), so the behavioural
+// cases below declare the posture they describe.
+jest.mock("./vaultBridgeBuildPolicy", () => ({
+  VAULT_BRIDGE_RELEASE: true,
+  VAULT_CREATION_ENABLED: false,
+  VAULT_MIGRATION_ENABLED: false,
+  getVaultBridgeBuildPolicy: jest.fn(() => ({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false })),
+}));
 
 const guard = require("./vaultCompatibilityGuard");
 const transition = require("./vaultTransitionControlRepository");
 const vault = require("./vaultIndexedDbRepository");
 const scoped = require("./accountScopedLocalStorage");
+
+// This project runs with jest's `resetMocks`, which strips any implementation
+// passed to `jest.fn()` in a mock factory. The bridge-release posture is
+// therefore primed before every test rather than in the factory.
+beforeEach(() => {
+  require("./vaultBridgeBuildPolicy").getVaultBridgeBuildPolicy.mockReturnValue({
+    bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false,
+  });
+});
+
 const TAG_A = "A".repeat(43);
 const TAG_B = "B".repeat(43);
 let latest;
@@ -138,4 +158,21 @@ test("unrelated events are ignored and unmount revokes authorization", async () 
   expect(guard.readVaultCompatibilityGuard).toHaveBeenCalledTimes(calls);
   rendered.unmount();
   expect(scoped.setActiveWorkspaceVaultCompatibility).toHaveBeenLastCalledWith(expect.objectContaining({ state: "checking" }));
+});
+
+// The shipped ISO-16 activation policy retires the bridge: it must never report
+// a workspace safe for legacy plaintext once vault creation and migration are on.
+test("the bridge refuses to operate under the shipped activation policy", async () => {
+  const policy = require("./vaultBridgeBuildPolicy");
+  policy.getVaultBridgeBuildPolicy.mockReturnValue({
+    bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true,
+  });
+  guard.readVaultCompatibilityGuard.mockReturnValue({ state: "absent", code: "", message: "" });
+  transition.createVaultTransitionControlRepository.mockReturnValue({ readActiveTransition: jest.fn(async () => null) });
+  vault.createVaultIndexedDbRepository.mockReturnValue({ readMigrationManifest: jest.fn(async () => null) });
+
+  render(<Probe enabled workspaceTag={TAG_A} />);
+  await waitFor(() => expect(latest.state).toBe("corrupt-blocked"));
+  expect(latest.code).toBe("BUILD_POLICY_INVALID");
+  expect(latest.state).not.toBe("legacy-safe");
 });

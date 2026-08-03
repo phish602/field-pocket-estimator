@@ -145,6 +145,7 @@ jest.mock("../lib/useDeviceLockStatus", () => ({
 jest.mock("../lib/useCloudAutoBackup", () => ({ __esModule: true, default: () => null }));
 jest.mock("../lib/useCloudAutoConvergence", () => ({ __esModule: true, default: () => null }));
 jest.mock("../lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("../lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("../lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("../lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
@@ -152,6 +153,7 @@ import App from "../App";
 import AuthScreen from "./AuthScreen";
 
 const useVaultSession = require("../lib/useVaultSession").default;
+const useVaultRuntimeActivation = require("../lib/useVaultRuntimeActivation").default;
 
 function unlockedVaultSession() {
   return {
@@ -216,6 +218,11 @@ beforeEach(() => {
 describe("App-level auth gating", () => {
   beforeEach(() => {
     useVaultSession.mockReturnValue(unlockedVaultSession());
+    // ISO-16: the shell mounts only when the authoritative runtime is ready.
+    useVaultRuntimeActivation.mockReturnValue({
+      state: "ready", checking: false, pending: false, code: "", message: "",
+      refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })),
+    });
   });
 
   test("no session renders AuthScreen", async () => {

@@ -1,5 +1,7 @@
 import {
   resetConfiguredTestWorkspace,
+  clearTestAuthoritativeRuntimeWrites,
+  getTestAuthoritativeRuntimeWrites,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
   waitForConfiguredWorkspaceShell,
@@ -16,6 +18,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
@@ -477,23 +480,23 @@ function createScopeImages(count = 1) {
   }));
 }
 
-// Inside an account-scoped workspace the physical key is namespaced, so the
-// spy sees "<namespace>:estipaid-edit-invoice-target-v1" rather than the bare
-// logical key.
-function isEditInvoiceTargetKey(key) {
-  return key === EDIT_INVOICE_TARGET_KEY || String(key).endsWith(`:${EDIT_INVOICE_TARGET_KEY}`);
+// ISO-16: the edit-invoice target is an APPROVED vault key, so under the
+// activation policy it is written to the encrypted runtime and never touches
+// Storage.prototype. These assertions therefore read the value back through the
+// application-visible storage surface (the account-scoped facade), which is
+// mechanism-independent: it holds whether the value lives in the vault or, in a
+// bridge build, in scoped plaintext.
+function editInvoiceTargetWrites() {
+  return getTestAuthoritativeRuntimeWrites()
+    .filter((write) => write.kind === "set" && write.key === EDIT_INVOICE_TARGET_KEY);
 }
 
 function expectEditInvoiceTargetWasSet(setItemSpy, expectedId) {
-  const matchingCall = setItemSpy.mock.calls.find(
-    ([key, value]) => isEditInvoiceTargetKey(key) && value === expectedId
-  );
-  expect(matchingCall).toBeTruthy();
+  expect(editInvoiceTargetWrites().some((write) => write.value === expectedId)).toBe(true);
 }
 
 function expectEditInvoiceTargetWasNotSet(setItemSpy) {
-  const matchingCall = setItemSpy.mock.calls.find(([key]) => isEditInvoiceTargetKey(key));
-  expect(matchingCall).toBeFalsy();
+  expect(editInvoiceTargetWrites()).toHaveLength(0);
 }
 
 async function renderAppOnEstimates(projectName) {
@@ -575,6 +578,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Mark Approved/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
 
@@ -705,6 +709,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Create Invoice/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
 
@@ -827,6 +832,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Create Invoice/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
 
@@ -1005,6 +1011,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Mark Approved/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
 
@@ -1086,6 +1093,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Mark Approved/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
 
@@ -1170,6 +1178,7 @@ describe("App approved estimate invoice builder handoff", () => {
     await screen.findByRole("button", { name: /Mark Approved/i });
 
     setItemSpy.mockClear();
+    clearTestAuthoritativeRuntimeWrites();
 
     fireEvent.click(screen.getByRole("button", { name: /Mark Approved/i }));
 

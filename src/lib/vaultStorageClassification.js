@@ -18,6 +18,8 @@
 // index.js, any screen, any hook, any listener, or any worker, so it adds
 // nothing to the Production bundle.
 
+import { EXCLUDED_FROM_MIGRATION } from "../constants/vaultStorageExclusions";
+
 // Structural identifiers: namespace prefixes, database names, and cryptographic
 // domain separators. These are never a stored workspace value.
 export const STRUCTURAL_IDENTIFIERS = Object.freeze([
@@ -30,20 +32,21 @@ export const STRUCTURAL_IDENTIFIERS = Object.freeze([
   "estipaid-vault-key-wrap-v1",
   "estipaid-vault-sentinel-v1",
   "estipaid-vault-migration-manifest-v1",
+  // ISO-16 -- the authoritative runtime catalog's AAD domain separator. Like
+  // every separator above it is a cryptographic constant, never a stored key.
+  "estipaid-vault-runtime-catalog-v1",
+  // ISO-16 -- the cross-tab BroadcastChannel name. A channel identifier, never
+  // a stored value: it carries only a workspace tag, a runtime generation, and a
+  // catalog revision, and it can never authorize a write.
+  "estipaid-vault-runtime-v1",
 ]);
 
 // Deliberately NOT migrated, with the reason each exclusion is safe.
-export const EXCLUDED_FROM_MIGRATION = Object.freeze({
-  "estipaid-lang": "device-global: a device keeps its language across accounts",
-  "estipaid-device-id-v1": "device-global: stable device identity, not workspace data",
-  "estipaid-vault-guard-v1": "device-global compatibility guard; migration writes it, never migrates it",
-  "estipaid-vault-idle-lock-minutes":
-    "vault UI preference that must stay readable while the vault is LOCKED; encrypting it would make it unreadable exactly when it is needed. Documented as non-secret and identity-free.",
-  "estipaid-storage-migrated-v1": "bookkeeping flag from the pre-ISO-14D storage migration; carries no business content",
-  "estipaid-home-restore-prompt-dismissed-v1": "UI dismissal flag; boolean only",
-  "estipaid-dev-cloud-tools-v1": "developer tool flag; not business data and not present in normal use",
-  "estipaid-dev-sample-registry-v1": "developer sample-data bookkeeping; not business data",
-});
+//
+// ISO-16 -- the list itself now lives in a leaf constants module so the
+// account-scoped facade can enforce the SAME classification at runtime without
+// creating an import cycle through this review module.
+export { EXCLUDED_FROM_MIGRATION };
 
 export function classifyLogicalKey(logicalKey, { migrationAllowlist = [], deviceGlobal = [], quarantined = [] } = {}) {
   if (typeof logicalKey !== "string" || !logicalKey) return "invalid";

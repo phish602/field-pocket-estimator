@@ -1,5 +1,6 @@
 import {
   resetConfiguredTestWorkspace,
+  setTestAuthoritativeRuntimeQuotaExceeded,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
   waitForConfiguredWorkspaceShell,
@@ -16,6 +17,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
@@ -502,13 +504,9 @@ test("10. Save as Template shows a friendly storage-full message when template s
 
   await openEstimateBuilderViaCreate();
 
-  const actualSetItem = Storage.prototype.setItem;
-  jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
-    if (key === STORAGE_KEYS.SCOPE_TEMPLATES || String(key).endsWith(`:${STORAGE_KEYS.SCOPE_TEMPLATES}`)) {
-      throw new DOMException("quota exceeded", "QuotaExceededError");
-    }
-    return actualSetItem.call(this, key, value);
-  });
+  // ISO-16: scope templates are an approved VAULT key, so a full device raises
+  // the quota error at the encrypted runtime boundary, not on Storage.prototype.
+  setTestAuthoritativeRuntimeQuotaExceeded(true);
 
   fireEvent.click(screen.getByRole("button", { name: /Save as Template/i }));
 

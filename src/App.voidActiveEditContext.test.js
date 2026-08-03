@@ -1,4 +1,5 @@
 import React from "react";
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 import { act, render } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";

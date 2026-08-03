@@ -9,7 +9,11 @@ import { createVaultTransitionControlRepository } from "./vaultTransitionControl
 import {
   VAULT_MIGRATION_ERROR_CODES,
   createVaultMigrationOrchestrator,
+  verifyCompletedVaultMigrationAuthority,
 } from "./vaultMigrationOrchestrator";
+import { encryptBytes, migrationManifestAad, recordAad } from "./vaultCrypto";
+import { VAULT_MIGRATION_LOGICAL_KEYS } from "./vaultIndexedDbRepository";
+import { base64url, digestBytes, utf8Bytes } from "./vaultRuntimeCatalog";
 
 const USER = "11111111-2222-4333-8444-555555555555";
 const COMPANY = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -541,4 +545,288 @@ test("real fake-indexeddb repositories migrate the active account facade only", 
     deactivateAccountScopedLocalStorage();
     localStorage.clear();
   }
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- completed-migration authority.
+//
+// The runtime seal must consume THIS verification rather than enumerating the
+// record store, so every way a record set can disagree with the frozen manifest
+// is exercised here, at the single source of truth.
+// ---------------------------------------------------------------------------
+
+function randomBlob() {
+  return base64url(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+}
+
+// Builds a completed post-migration workspace directly: encrypted records, a
+// frozen encrypted manifest, an authoritative guard, and no plaintext sources.
+async function completedWorkspace({
+  values = { "estipaid-customers-v1": "customer-value" },
+  transitionId = TRANSITION_ID,
+  manifestTransitionId = null,
+  mutateManifest = null,
+  extraRecords = {},
+  omitRecords = [],
+  recordAadKey = null,
+  omitManifest = false,
+} = {}) {
+  const dek = await testKey();
+  const vault = memoryVault();
+  const blobs = new Map();
+
+  const writeRecord = async (logicalKey, value, aadKey) => {
+    const plain = utf8Bytes(value);
+    const blobId = randomBlob();
+    blobs.set(logicalKey, { blobId, byteLength: plain.length, digest: await digestBytes(plain) });
+    const envelope = await encryptBytes(dek, plain, recordAad({
+      vaultFormatVersion: 1, userId: USER, companyId: COMPANY,
+      logicalStorageKey: aadKey || logicalKey, blobIdentifier: blobId, recordSchemaVersion: 1,
+    }));
+    await vault.createEncryptedRecord({
+      workspaceTag: TAG, logicalKey, expectedRevision: null, blobId,
+      recordSchemaVersion: 1, ciphertext: envelope.ciphertext, iv: envelope.iv,
+    });
+  };
+
+  for (const [logicalKey, value] of Object.entries(values)) {
+    await writeRecord(logicalKey, value, recordAadKey === logicalKey ? "estipaid-projects-v1" : null);
+  }
+
+  const manifest = {
+    version: 1,
+    transitionId: manifestTransitionId || transitionId,
+    entries: VAULT_MIGRATION_LOGICAL_KEYS.map((key) => (blobs.has(key)
+      ? { key, present: true, byteLength: blobs.get(key).byteLength, digest: blobs.get(key).digest, blobId: blobs.get(key).blobId }
+      : { key, present: false, byteLength: null, digest: null, blobId: null })),
+  };
+  if (typeof mutateManifest === "function") mutateManifest(manifest);
+
+  if (!omitManifest) {
+    const plain = utf8Bytes(JSON.stringify(manifest));
+    const envelope = await encryptBytes(dek, plain, migrationManifestAad({
+      vaultFormatVersion: 1, userId: USER, companyId: COMPANY, transitionId, manifestSchemaVersion: 1,
+    }));
+    await vault.createMigrationManifest({
+      workspaceTag: TAG, expectedRevision: null, transitionId, manifestSchemaVersion: 1,
+      ciphertext: envelope.ciphertext, iv: envelope.iv,
+    });
+  }
+
+  // Records written AFTER the manifest was frozen.
+  for (const [logicalKey, value] of Object.entries(extraRecords)) await writeRecord(logicalKey, value, null);
+  for (const logicalKey of omitRecords) vault.records.delete(logicalKey);
+
+  const storage = memoryFacade();
+  storage.setGuardState("authoritative");
+  return { dek, vault, storage };
+}
+
+async function verifyWorkspace(setup, overrides = {}) {
+  return verifyCompletedVaultMigrationAuthority({
+    workspaceTag: TAG,
+    dek: setup.dek,
+    userId: USER,
+    companyId: COMPANY,
+    vaultRepository: setup.vault,
+    storage: setup.storage,
+    readGuard: () => guard(setup.storage.guardState()),
+    ...overrides,
+  });
+}
+
+test("a completed migration verifies and returns only sanitized catalog inputs", async () => {
+  const setup = await completedWorkspace({ values: { "estipaid-customers-v1": "customer-value", "estipaid-settings-v1": "" } });
+  const verified = await verifyWorkspace(setup);
+  expect(verified.ok).toBe(true);
+  expect(verified.entries.map((entry) => entry.key).sort()).toEqual(["estipaid-customers-v1", "estipaid-settings-v1"]);
+  verified.entries.forEach((entry) => {
+    expect(Object.keys(entry).sort()).toEqual(["blobId", "byteLength", "digest", "key", "revision"]);
+    expect(entry.revision).toBe(1);
+  });
+  const serialized = JSON.stringify(verified.entries);
+  expect(serialized).not.toContain("customer-value");
+  expect(serialized).not.toContain(USER);
+  expect(serialized).not.toContain(COMPANY);
+  expect(serialized).not.toContain(TAG);
+  expect(serialized).not.toContain(TRANSITION_ID);
+});
+
+test("an empty completed migration verifies with no entries", async () => {
+  const setup = await completedWorkspace({ values: {} });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({ ok: true, entries: [] });
+});
+
+test("a missing manifest is never treated as authority", async () => {
+  const setup = await completedWorkspace({ omitManifest: true });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a non-authoritative guard is never treated as authority", async () => {
+  const setup = await completedWorkspace();
+  for (const state of ["absent", "transition", "blocked"]) {
+    // eslint-disable-next-line no-await-in-loop
+    await expect(verifyWorkspace(setup, { readGuard: () => guard(state) })).resolves.toMatchObject({
+      ok: false, code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE,
+    });
+  }
+  await expect(verifyWorkspace(setup, { readGuard: () => null })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE,
+  });
+  await expect(verifyWorkspace(setup, { readGuard: () => { throw new Error("unreadable"); } })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE,
+  });
+});
+
+test("a corrupted manifest envelope blocks", async () => {
+  const setup = await completedWorkspace();
+  const stored = await setup.vault.readMigrationManifest({ workspaceTag: TAG });
+  stored.ciphertext[0] ^= 0xff;
+  setup.vault.readMigrationManifest.mockImplementation(async () => ({ ...stored, ciphertext: stored.ciphertext.slice(), iv: stored.iv.slice() }));
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("a duplicated manifest key blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    manifest.entries[1] = { ...manifest.entries[0] };
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("a missing manifest key blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => { manifest.entries.pop(); } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("an unknown manifest key blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    manifest.entries[manifest.entries.length - 1] = {
+      key: "estipaid-unknown-key-v1", present: false, byteLength: null, digest: null, blobId: null,
+    };
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("a semantically invalid but validly encrypted manifest blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    const entry = manifest.entries.find((candidate) => candidate.key === "estipaid-customers-v1");
+    entry.present = false;                                                   // present data with an absent flag
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("a present manifest entry with no record blocks", async () => {
+  const setup = await completedWorkspace({ omitRecords: ["estipaid-customers-v1"] });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("an absent manifest entry that has a record blocks", async () => {
+  const setup = await completedWorkspace({ extraRecords: { "estipaid-projects-v1": "injected" } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a record blob identifier mismatch blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    const entry = manifest.entries.find((candidate) => candidate.key === "estipaid-customers-v1");
+    entry.blobId = randomBlob();
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a byte-length mismatch blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    const entry = manifest.entries.find((candidate) => candidate.key === "estipaid-customers-v1");
+    entry.byteLength = entry.byteLength + 1;
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a digest mismatch blocks", async () => {
+  const setup = await completedWorkspace({ mutateManifest: (manifest) => {
+    const entry = manifest.entries.find((candidate) => candidate.key === "estipaid-customers-v1");
+    entry.digest = "A".repeat(43);
+  } });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a record encrypted under the wrong logical-key AAD blocks", async () => {
+  const setup = await completedWorkspace({ recordAadKey: "estipaid-customers-v1" });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a manifest whose bound transition identity differs blocks", async () => {
+  const setup = await completedWorkspace({ manifestTransitionId: OTHER_TRANSITION_ID });
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID,
+  });
+});
+
+test("a manifest stored with an invalid transition identity blocks", async () => {
+  const setup = await completedWorkspace();
+  const stored = await setup.vault.readMigrationManifest({ workspaceTag: TAG });
+  setup.vault.readMigrationManifest.mockImplementation(async () => ({ ...stored, transitionId: "not-a-uuid" }));
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a workspace whose plaintext sources still exist blocks", async () => {
+  const setup = await completedWorkspace();
+  setup.storage.setValue("estipaid-customers-v1", "customer-value");
+  await expect(verifyWorkspace(setup)).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
+  });
+});
+
+test("a locked vault, unusable facade, or invalid request never verifies", async () => {
+  const setup = await completedWorkspace();
+  await expect(verifyWorkspace(setup, { dek: null })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED,
+  });
+  await expect(verifyWorkspace(setup, { workspaceTag: "short" })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST,
+  });
+  await expect(verifyWorkspace(setup, { userId: "" })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST,
+  });
+  await expect(verifyWorkspace(setup, { storage: { getItem: () => null } })).resolves.toMatchObject({
+    ok: false, code: VAULT_MIGRATION_ERROR_CODES.STORAGE_UNAVAILABLE,
+  });
+});
+
+test("verification never rewrites the frozen manifest", async () => {
+  const setup = await completedWorkspace();
+  const before = await setup.vault.readMigrationManifest({ workspaceTag: TAG });
+  const verified = await verifyWorkspace(setup);
+  expect(verified.ok).toBe(true);
+  const after = await setup.vault.readMigrationManifest({ workspaceTag: TAG });
+  expect(Array.from(after.ciphertext)).toEqual(Array.from(before.ciphertext));
+  expect(Array.from(after.iv)).toEqual(Array.from(before.iv));
+  expect(after.revision).toBe(before.revision);
+  expect(after.transitionId).toBe(before.transitionId);
+  expect(setup.vault.createMigrationManifest.mock.calls).toHaveLength(1);
 });

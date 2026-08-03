@@ -31,6 +31,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   default: jest.fn(),
 }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
@@ -63,6 +64,7 @@ const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultRuntimeActivation = require("./lib/useVaultRuntimeActivation").default;
 const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 const USER = { id: "user_1", email: "owner@example.com" };
@@ -213,6 +215,7 @@ test("an in-flight abandonment keeps the dashboard and every worker gated despit
 });
 
 test("after explicit continuation the normal authenticated hook inputs are restored", async () => {
+  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   useSupabaseAuth.mockReturnValue(buildAuthState());
 
@@ -232,6 +235,7 @@ test("after explicit continuation the normal authenticated hook inputs are resto
 });
 
 test("a normal authenticated session still renders the app shell (routing unchanged)", async () => {
+  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   useSupabaseAuth.mockReturnValue(buildAuthState());
 
