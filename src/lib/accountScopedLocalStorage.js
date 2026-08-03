@@ -24,7 +24,6 @@
 
 import {
   VAULT_COMPATIBILITY_GUARD_KEY,
-  readVaultCompatibilityGuard,
   verifyVaultCompatibilityGuardValue,
 } from "./vaultCompatibilityGuard";
 import { VAULT_MIGRATION_LOGICAL_KEYS } from "./vaultIndexedDbRepository";
@@ -141,12 +140,20 @@ function bindGuardStorageListener() {
   } catch { /* a non-browser environment simply reads through every time */ }
 }
 
-function deviceGuardState() {
+// The guard is read from the NATIVE backing Storage this facade wraps, never
+// from window.localStorage.
+//
+// Once the facade is installed globally, window.localStorage IS the facade, so
+// reading the guard through it re-enters getItem -> authoritativeRouting ->
+// deviceGuardState -> getItem ... until the stack is exhausted. Relying on the
+// catch to unwind that recursion "successfully" is not an implementation; the
+// read has to go straight to the real Storage object the module already holds.
+function readNativeGuardState(nativeStorage) {
   bindGuardStorageListener();
   if (guardStateValid) return guardStateCache;
   try {
-    if (typeof window === "undefined" || !window.localStorage || typeof window.localStorage.getItem !== "function") return "";
-    guardStateCache = verifyVaultCompatibilityGuardValue(window.localStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY))?.state || "";
+    if (!nativeStorage || typeof nativeStorage.getItem !== "function") return "";
+    guardStateCache = verifyVaultCompatibilityGuardValue(nativeStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY))?.state || "";
     guardStateValid = true;
     return guardStateCache;
   } catch {
@@ -380,13 +387,20 @@ function createScopedStorageFacade({ storage, namespace }) {
   const authoritativeRouting = () => {
     if (!isCurrentFacade()) return false;
     if (facadeInstalledRuntime()) return true;
-    return deviceGuardState() === "authoritative";
+    return readNativeGuardState(storage) === "authoritative";
   };
 
   // The guard is re-read synchronously for every mutation. A stale bridge tab
   // therefore cannot write after another tab has published a guard state.
+  // A fresh, uncached native read: a stale bridge tab must not be able to write
+  // after another tab has published a guard state.
+  const freshNativeGuard = () => {
+    invalidateDeviceGuardState();
+    return adoptGuardState({ state: readNativeGuardState(storage) });
+  };
+
   const mayMutate = () => {
-    const guard = adoptGuardState(readVaultCompatibilityGuard());
+    const guard = freshNativeGuard();
     return guard?.state === "absent"
       && activeVaultCompatibility.state === "legacy-safe"
       && activeVaultCompatibility.workspaceTag
@@ -579,7 +593,7 @@ function createScopedStorageFacade({ storage, namespace }) {
     },
     removeVaultMigrationItem(key) {
       const normalizedKey = normalizeStorageKey(key);
-      const guard = adoptGuardState(readVaultCompatibilityGuard());
+      const guard = freshNativeGuard();
       if (!isWorkspaceScopedLogicalKey(normalizedKey)
         || guard?.state !== "authoritative"
         || activeWorkspace?.namespace !== namespace

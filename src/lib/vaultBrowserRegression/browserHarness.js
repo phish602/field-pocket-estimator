@@ -1795,6 +1795,53 @@ export function createBrowserHarness() {
       });
     },
 
+    // ISO-16 review fix -- proves the guard read never re-enters the globally
+    // installed facade. Counts NATIVE backing-storage guard reads and nested
+    // facade calls; a stack overflow would show up as a thrown error instead.
+    nativeGuardReadProbe: async ({ logicalKey, plaintext } = {}) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      const globalIsFacade = window.localStorage === facade;
+      const nativePrototypeGet = Storage.prototype.getItem;
+      let guardReads = 0;
+      let depth = 0;
+      let nestedFacadeCalls = 0;
+      Storage.prototype.getItem = function instrumented(key) {
+        if (key === "estipaid-vault-guard-v1") guardReads += 1;
+        return nativePrototypeGet.call(this, key);
+      };
+      const originalFacadeGet = facade.getItem.bind(facade);
+      facade.getItem = (key) => {
+        depth += 1;
+        if (depth > 1) nestedFacadeCalls += 1;
+        try {
+          return originalFacadeGet(key);
+        } finally {
+          depth -= 1;
+        }
+      };
+      let read = null;
+      let threw = "";
+      try {
+        read = facade.getItem(logicalKey);
+        for (let index = 0; index < 20; index += 1) facade.getItem(logicalKey);
+      } catch (error) {
+        threw = String(error && (error.name || error));
+      } finally {
+        facade.getItem = originalFacadeGet;
+        Storage.prototype.getItem = nativePrototypeGet;
+      }
+      return Object.freeze({
+        attempted: true,
+        globalIsFacade,
+        readPresent: read !== null,
+        readsPlaintext: read === plaintext,
+        guardReads,
+        nestedFacadeCalls,
+        threw,
+      });
+    },
+
     runStateKey: RUN_STATE_KEY,
   });
 }

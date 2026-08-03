@@ -395,12 +395,20 @@ const SECOND_TAG = "C".repeat(43);
 const SECOND_NAMESPACE = buildAccountWorkspaceNamespace({ userId: SECOND_USER, companyId: SECOND_COMPANY });
 
 function setDeviceGuard(state) {
-  // The compatibility guard is device-global: it is always read from the real
-  // window.localStorage, never from the memory storage the facade wraps. A write
-  // from OUTSIDE this module looks exactly like another tab's write, so the
-  // storage event is dispatched with it -- that is the real invalidation signal.
-  if (state === null) window.localStorage.removeItem("estipaid-vault-guard-v1");
-  else window.localStorage.setItem("estipaid-vault-guard-v1", `{"version":1,"state":"${state}"}`);
+  // The compatibility guard is device-global and lives in the SAME backing store
+  // the facade wraps -- in production that is the real localStorage, here it is
+  // the injected memory storage. It is deliberately never read through
+  // window.localStorage, which is the facade itself once installed globally.
+  // A write from outside this module looks exactly like another tab's write, so
+  // the storage event goes with it: that is the real invalidation signal.
+  const raw = state === null ? null : `{"version":1,"state":"${state}"}`;
+  if (raw === null) {
+    storage.removeItem("estipaid-vault-guard-v1");
+    window.localStorage.removeItem("estipaid-vault-guard-v1");
+  } else {
+    storage.setItem("estipaid-vault-guard-v1", raw);
+    window.localStorage.setItem("estipaid-vault-guard-v1", raw);
+  }
   window.dispatchEvent(new StorageEvent("storage", { key: "estipaid-vault-guard-v1" }));
 }
 
@@ -540,4 +548,135 @@ test("the migration source accessor is refused to a retained facade", () => {
   });
   expect(serialized).not.toContain(NAMESPACE);
   expect(serialized).not.toContain(TAG);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- the guard is read from NATIVE storage, never through the
+// globally installed facade.
+//
+// Once activation installs the facade as window.localStorage, reading the guard
+// through window.localStorage re-enters getItem -> authoritativeRouting ->
+// guard read -> getItem ... until the stack is exhausted. These tests use the
+// REAL global installation and count native reads, so the proof does not depend
+// on a thrown RangeError or on timing.
+// ---------------------------------------------------------------------------
+
+describe("the globally installed facade never re-enters itself for the guard", () => {
+  let nativeGetItem;
+  let guardReads;
+  let facadeReentries;
+  let installedFacade;
+
+  beforeEach(() => {
+    guardReads = 0;
+    facadeReentries = 0;
+    // Spy on the NATIVE Storage prototype. Once the facade is installed,
+    // window.localStorage is the facade, so this counts only real backing reads.
+    nativeGetItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function instrumentedGetItem(key) {
+      if (key === "estipaid-vault-guard-v1") guardReads += 1;
+      return nativeGetItem.call(this, key);
+    };
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    deactivateAccountScopedLocalStorage();
+    revokeAuthoritativeVaultRuntime();
+    Storage.prototype.getItem = nativeGetItem;
+    window.localStorage.clear();
+    installedFacade = null;
+  });
+
+  // Tracks whether we are inside a facade getItem call.
+  let reentryDepth = 0;
+
+  // Counts NESTED facade getItem calls. One native guard read inside a single
+  // facade call is correct; a facade call that re-enters the facade is the
+  // recursion this fix removes.
+  function instrumentFacadeReentry(facadeUnderTest) {
+    const original = facadeUnderTest.getItem.bind(facadeUnderTest);
+    // eslint-disable-next-line no-param-reassign
+    facadeUnderTest.getItem = (key) => {
+      reentryDepth += 1;
+      if (reentryDepth > 1) facadeReentries += 1;
+      try {
+        return original(key);
+      } finally {
+        reentryDepth -= 1;
+      }
+    };
+  }
+
+  test("an approved read under an authoritative guard with no adapter is bounded and returns null", () => {
+    // 1/2/3: the actual native window.localStorage, really activated, really
+    // installed as the global.
+    // The REAL native Storage instance, captured before the facade replaces the
+    // global. Every native assertion below goes through this object.
+    const nativeStorage = window.localStorage;
+    nativeStorage.setItem("estipaid-vault-guard-v1", '{"version":1,"state":"authoritative"}');
+    const activation = activateAccountScopedLocalStorage({ storage: nativeStorage, userId: USER, companyId: COMPANY });
+    expect(activation.ok).toBe(true);
+    expect(activation.installed).toBe(true);
+    installedFacade = activation.storage;
+    expect(window.localStorage).toBe(installedFacade);
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: TAG, state: "legacy-safe", generation: 1 });
+    instrumentFacadeReentry(installedFacade);
+
+    // 4/5: a conflicting scoped plaintext value, an adapter installed and then
+    // revoked -- the exact state that used to recurse.
+    const namespace = buildAccountWorkspaceNamespace({ userId: USER, companyId: COMPANY });
+    nativeStorage.getItem("estipaid-vault-guard-v1");                  // proves the native spy is live
+    expect(guardReads).toBeGreaterThan(0);
+    nativeStorage.setItem(`${namespace}:estipaid-customers-v1`, "plaintext-value");
+    const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+    installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+    revokeAuthoritativeVaultRuntime();
+
+    guardReads = 0;
+    facadeReentries = 0;
+
+    // 6/7: the read completes and returns null, never the plaintext.
+    expect(window.localStorage.getItem("estipaid-customers-v1")).toBeNull();
+
+    // 8/9/10: exactly one native guard read after invalidation, no re-entry,
+    // and no reliance on a thrown RangeError.
+    expect(guardReads).toBe(1);
+    expect(facadeReentries).toBe(0);
+
+    // Repeated reads use the cache: still one native guard read in total.
+    for (let index = 0; index < 25; index += 1) {
+      expect(window.localStorage.getItem("estipaid-customers-v1")).toBeNull();
+    }
+    expect(guardReads).toBe(1);
+    expect(facadeReentries).toBe(0);
+
+    // 11: documented native exclusions still work.
+    nativeStorage.setItem(`${namespace}:estipaid-vault-idle-lock-minutes`, "30");
+    expect(window.localStorage.getItem("estipaid-vault-idle-lock-minutes")).toBe("30");
+    // ... and the scoped plaintext is still physically present, just invisible.
+    expect(nativeStorage.getItem(`${namespace}:estipaid-customers-v1`)).toBe("plaintext-value");
+  });
+
+  test("transition mode still reads the migration source through the global facade", () => {
+    const nativeStorage = window.localStorage;
+    nativeStorage.setItem("estipaid-vault-guard-v1", '{"version":1,"state":"transition"}');
+    const activation = activateAccountScopedLocalStorage({ storage: nativeStorage, userId: USER, companyId: COMPANY });
+    expect(activation.installed).toBe(true);
+    installedFacade = activation.storage;
+    instrumentFacadeReentry(installedFacade);
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: TAG, state: "legacy-safe", generation: 1 });
+
+    const namespace = buildAccountWorkspaceNamespace({ userId: USER, companyId: COMPANY });
+    nativeStorage.setItem(`${namespace}:estipaid-customers-v1`, "frozen-source");
+    guardReads = 0;
+    facadeReentries = 0;
+
+    // Mid-transition the application surface still reads the frozen source, and
+    // so does the privileged migration accessor.
+    expect(window.localStorage.getItem("estipaid-customers-v1")).toBe("frozen-source");
+    expect(installedFacade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe("frozen-source");
+    expect(facadeReentries).toBe(0);
+    expect(guardReads).toBeLessThanOrEqual(2);
+  });
 });
