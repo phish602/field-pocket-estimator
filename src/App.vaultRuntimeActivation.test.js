@@ -74,10 +74,9 @@ test.each([
   ["migrating"],
   ["sealing"],
   ["hydrating"],
-  ["pending-writes"],
   ["blocked"],
 ])("the shell does not mount while the runtime is %s", async (state) => {
-  setup({ runtime: buildReadyVaultRuntimeResult({ state, checking: state !== "blocked" && state !== "pending-writes" }) });
+  setup({ runtime: buildReadyVaultRuntimeResult({ state, checking: state !== "blocked" }) });
   render(<App />);
   await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
   expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
@@ -233,23 +232,31 @@ test("a failed candidate leaves App blocked behind the gate", async () => {
   expect(convergence.configured).toBe(false);
 });
 
-test("the shell is never rendered between two ready states", async () => {
+test("a queued encrypted write keeps the current shell mounted", async () => {
   setup();
   const view = render(<App />);
-  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+  const originalMenu = await screen.findByLabelText(/open menu/i);
 
-  // Every intermediate state of a revalidation, in the order the hook publishes
-  // them. At no point may the shell be mounted while the runtime is not ready,
-  // which is what would render an empty workspace.
-  for (const state of ["hydrating", "pending-writes", "hydrating"]) {
-    useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state, checking: state === "hydrating" }));
-    view.rerender(<App />);
-    // eslint-disable-next-line no-await-in-loop
-    await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
-    expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
-  }
-
-  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult());
+  useVaultRuntimeActivation.mockReturnValue(
+    buildReadyVaultRuntimeResult({
+      state: "ready",
+      checking: false,
+      pending: true,
+    })
+  );
   view.rerender(<App />);
-  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+
+  expect(screen.getByLabelText(/open menu/i)).toBe(originalMenu);
+  expect(screen.queryByLabelText(/encrypted local data access/i)).not.toBeInTheDocument();
+
+  useVaultRuntimeActivation.mockReturnValue(
+    buildReadyVaultRuntimeResult({
+      state: "ready",
+      checking: false,
+      pending: false,
+    })
+  );
+  view.rerender(<App />);
+
+  expect(screen.getByLabelText(/open menu/i)).toBe(originalMenu);
 });
