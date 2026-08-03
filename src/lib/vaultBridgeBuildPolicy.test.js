@@ -21,27 +21,23 @@ test("bridge policy exposes only immutable compile-time values", () => {
   expect(Object.keys(policy).sort()).toEqual([
     "VAULT_BRIDGE_RELEASE", "VAULT_CREATION_ENABLED", "VAULT_MIGRATION_ENABLED", "getVaultBridgeBuildPolicy",
   ]);
-  // PR19 containment posture: restore the normal bridge flow while the
-  // passwordless device-key design is built and reviewed.
-  expect(policy.VAULT_BRIDGE_RELEASE).toBe(true);
-  expect(policy.VAULT_CREATION_ENABLED).toBe(false);
-  expect(policy.VAULT_MIGRATION_ENABLED).toBe(false);
+  expect(policy.VAULT_BRIDGE_RELEASE).toBe(false);
+  expect(policy.VAULT_CREATION_ENABLED).toBe(true);
+  expect(policy.VAULT_MIGRATION_ENABLED).toBe(true);
   const result = policy.getVaultBridgeBuildPolicy();
-  expect(result).toEqual({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false });
+  expect(result).toEqual({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
   expect(Object.isFrozen(result)).toBe(true);
   expect(JSON.parse(JSON.stringify(result))).toEqual(result);
 });
 
 test("bridge policy ignores storage, URL, messages, and runtime events", () => {
-  localStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ migrationEnabled: true }));
-  sessionStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ vaultCreationEnabled: true }));
-  window.history.pushState({}, "", "/?migrationEnabled=true#vaultCreationEnabled=true");
-  window.dispatchEvent(new MessageEvent("message", { data: { migrationEnabled: true } }));
-  expect(policy.getVaultBridgeBuildPolicy()).toEqual({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false });
+  localStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ migrationEnabled: false }));
+  sessionStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ vaultCreationEnabled: false }));
+  window.history.pushState({}, "", "/?migrationEnabled=false#vaultCreationEnabled=false");
+  window.dispatchEvent(new MessageEvent("message", { data: { migrationEnabled: false } }));
+  expect(policy.getVaultBridgeBuildPolicy()).toEqual({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
 });
 
-// Comments are stripped first: the invariant is about what the module EXECUTES,
-// and the module's own comment legitimately names the mechanisms it refuses.
 function executableSource(file) {
   return fs.readFileSync(file, "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -58,10 +54,9 @@ test("the policy module reads no environment variable, query string, storage key
     "localStorage", "sessionStorage", "document.cookie",
     "hostname", "fetch(", "navigator",
   ].forEach((token) => expect(source).not.toContain(token));
-  // Plain constants only: no call can produce a different posture.
-  expect(source).toMatch(/export const VAULT_BRIDGE_RELEASE = true;/);
-  expect(source).toMatch(/export const VAULT_CREATION_ENABLED = false;/);
-  expect(source).toMatch(/export const VAULT_MIGRATION_ENABLED = false;/);
+  expect(source).toMatch(/export const VAULT_BRIDGE_RELEASE = false;/);
+  expect(source).toMatch(/export const VAULT_CREATION_ENABLED = true;/);
+  expect(source).toMatch(/export const VAULT_MIGRATION_ENABLED = true;/);
 });
 
 test("no application source can override the build policy constants", () => {
@@ -78,9 +73,6 @@ test("no application source can override the build policy constants", () => {
   expect(offenders).toEqual([]);
 });
 
-// Any REFERENCE counts -- importing the symbol, calling it, or passing it by
-// reference. That is stricter than matching a call shape and cannot be evaded by
-// handing the function to a helper.
 test("migration is reachable only from its own module and the controlled activation hook", () => {
   const referrers = [];
   collectSources(SRC).forEach((file) => {
@@ -92,7 +84,7 @@ test("migration is reachable only from its own module and the controlled activat
   expect(referrers.sort()).toEqual(["lib/useVaultRuntimeActivation.js", "lib/vaultMigrationOrchestrator.js"]);
 });
 
-test("vault creation is reachable only from its own module and the password setup operation", () => {
+test("vault creation remains reachable only from the session hook and session module", () => {
   const referrers = [];
   collectSources(SRC).forEach((file) => {
     const source = fs.readFileSync(file, "utf8");

@@ -1,17 +1,16 @@
-// ISO-15F1 -- bridge release is a compile-time policy, never runtime input.
+// The vault posture is a compile-time policy, never runtime input.
 //
-// PR19 CONTAINMENT. The encrypted runtime implementation remains in the codebase,
-// but the user-facing password setup/unlock path is disabled while EstiPaid moves
-// to a passwordless device-key design. There is no environment variable, query
-// string, localStorage key, hostname check, remote flag, or percentage rollout
-// that can change this posture: changing it requires reviewed source code.
+// PASSWORDLESS DEVICE-KEY ACTIVATION. EstiPaid now creates and opens the local
+// encrypted vault with a non-extractable AES-256 key stored by the browser for
+// the exact signed-in workspace. Users keep their normal EstiPaid login and are
+// never asked to create or remember a second password.
 //
-// The compatibility bridge temporarily owns the normal application lifecycle.
-// Vault creation and migration are dormant, so users are not asked to create or
-// remember a second Local Data Password and no new encrypted migration starts.
-export const VAULT_BRIDGE_RELEASE = true;
-export const VAULT_CREATION_ENABLED = false;
-export const VAULT_MIGRATION_ENABLED = false;
+// There is no environment variable, query string, localStorage key, hostname
+// check, remote flag, or percentage rollout that can change this posture. The
+// only way to change it is reviewed source code.
+export const VAULT_BRIDGE_RELEASE = false;
+export const VAULT_CREATION_ENABLED = true;
+export const VAULT_MIGRATION_ENABLED = true;
 
 const POLICY = Object.freeze({
   bridgeRelease: VAULT_BRIDGE_RELEASE,
