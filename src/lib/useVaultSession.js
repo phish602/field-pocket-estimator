@@ -10,6 +10,8 @@ const LOCKED_CAPABILITY = Object.freeze({ state: "locked", code: "", message: ""
 const SAFE_STORAGE_CODE = "STORAGE_OPERATION_FAILED";
 const PUBLIC_CODES = new Set([
   "AUTHENTICATION_FAILED",
+  "DEVICE_KEY_MISSING",
+  "DEVICE_KEY_MISMATCH",
   "RECORD_CORRUPT",
   "UNSUPPORTED_ENVIRONMENT",
   "UNSUPPORTED_KDF_POLICY",
@@ -31,14 +33,18 @@ function publicCapability(value) {
   const state = String(value?.state || "locked");
   const suppliedCode = String(value?.code || "");
   const code = PUBLIC_CODES.has(suppliedCode) ? suppliedCode : "";
-  // The headless runtime only returns public capability data. Copy exactly
-  // that small surface instead of retaining an object returned by a crypto or
-  // repository operation.
   if (code === "AUTHENTICATION_FAILED") {
     return { state: "locked", code, message: "The Local Data Password is incorrect or the local vault is damaged." };
   }
   if (state === "damaged") return { state, code, message: "The local vault is damaged." };
   if (state === "unsupported") return { state, code, message: "Secure local vault support is unavailable." };
+  if (state === "reset_required") {
+    return {
+      state,
+      code,
+      message: "This device can no longer open its local encrypted data. Restore from cloud backup or reset local data.",
+    };
+  }
   if (code) return { state, code, message: "Vault storage operation failed." };
   return { state, code: "", message: "" };
 }
@@ -62,7 +68,7 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
   const resolvedIdentityRef = useRef("");
   const pendingRef = useRef(false);
 
-  const inspect = useCallback((nextIdentity) => {
+  const activate = useCallback((nextIdentity) => {
     const [nextUserId, nextCompanyId] = nextIdentity.split("|");
     const generation = ++currentRef.current.generation;
     currentRef.current.identity = nextIdentity;
@@ -70,10 +76,23 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
     setResult({ capability: LOCKED_CAPABILITY, checking: true, pending: false, error: "" });
 
     return Promise.resolve(readVaultCapability({ userId: nextUserId, companyId: nextCompanyId }))
+      .then(async (capability) => {
+        const state = String(capability?.state || "locked");
+        if (state === "setup_required") {
+          return setupVault({ userId: nextUserId, companyId: nextCompanyId });
+        }
+        if (state === "locked") {
+          return unlockVault({ userId: nextUserId, companyId: nextCompanyId });
+        }
+        return capability;
+      })
       .then((capability) => {
         if (!currentRef.current.mounted
           || currentRef.current.generation !== generation
-          || currentRef.current.identity !== nextIdentity) return LOCKED_CAPABILITY;
+          || currentRef.current.identity !== nextIdentity) {
+          lockVault();
+          return LOCKED_CAPABILITY;
+        }
         resolvedIdentityRef.current = nextIdentity;
         const safeCapability = publicCapability(capability);
         setResult({ capability: safeCapability, checking: false, pending: false, error: "" });
@@ -82,7 +101,10 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
       .catch(() => {
         if (!currentRef.current.mounted
           || currentRef.current.generation !== generation
-          || currentRef.current.identity !== nextIdentity) return LOCKED_CAPABILITY;
+          || currentRef.current.identity !== nextIdentity) {
+          lockVault();
+          return LOCKED_CAPABILITY;
+        }
         resolvedIdentityRef.current = nextIdentity;
         setResult({ capability: failedCapability(), checking: false, pending: false, error: SAFE_STORAGE_CODE });
         return failedCapability();
@@ -108,28 +130,27 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
       currentRef.current.identity = "";
       resolvedIdentityRef.current = "";
       pendingRef.current = false;
-      // Lock synchronously when workspace access is withdrawn. This leaves no
-      // render in which a prior workspace can keep an unlocked shell alive.
       lockVault();
       setResult({ capability: LOCKED_CAPABILITY, checking: false, pending: false, error: "" });
       return undefined;
     }
 
-    // Identity changes invalidate the in-memory DEK before the next workspace
-    // is inspected. This is deliberately synchronous and idempotent.
     lockVault();
-    inspect(identity);
+    activate(identity);
     return undefined;
-  }, [identity, inspect]);
+  }, [activate, identity]);
 
   const refresh = useCallback(() => {
     if (!identity) {
       lockVault();
       return Promise.resolve(LOCKED_CAPABILITY);
     }
-    return inspect(identity);
-  }, [identity, inspect]);
+    return activate(identity);
+  }, [activate, identity]);
 
+  // Kept for backwards compatibility with any pre-device-key vault already
+  // created during development. The normal EstiPaid flow never asks users for
+  // these operations; automatic device-key activation owns setup and unlock.
   const runPasswordOperation = useCallback(async (operation, password) => {
     const startingIdentity = currentRef.current.identity;
     const startingGeneration = currentRef.current.generation;
@@ -146,8 +167,6 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
 
     let capability;
     try {
-      // `password` is a submit-local argument. The hook never stores it in
-      // state, context, a ref, or any returned value.
       capability = await operation({ userId: activeUserId, companyId: activeCompanyId, password });
     } catch {
       capability = failedCapability();
@@ -159,10 +178,8 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
       || current.generation !== startingGeneration
       || current.identity !== startingIdentity
       || startingIdentity !== identity) {
-      // A stale successful setup/unlock may have installed a DEK in the
-      // headless singleton. Drop it before any later identity can proceed.
       lockVault();
-      if (current.mounted && current.identity) inspect(current.identity);
+      if (current.mounted && current.identity) activate(current.identity);
       return LOCKED_CAPABILITY;
     }
 
@@ -170,15 +187,13 @@ export default function useVaultSession({ userId, companyId, enabled = false } =
     resolvedIdentityRef.current = startingIdentity;
     setResult({ capability: safeCapability, checking: false, pending: false, error: "" });
     return safeCapability;
-  }, [identity, inspect]);
+  }, [activate, identity]);
 
   const setup = useCallback((password) => runPasswordOperation(setupVault, password), [runPasswordOperation]);
   const unlock = useCallback((password) => runPasswordOperation(unlockVault, password), [runPasswordOperation]);
 
   const lock = useCallback(() => {
     const current = currentRef.current;
-    // Invalidate every read/setup/unlock already in flight before clearing the
-    // module-private session. A later stale success must not republish unlock.
     current.generation += 1;
     pendingRef.current = false;
     lockVault();
