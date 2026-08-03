@@ -322,7 +322,11 @@ export async function verifyCompletedVaultMigrationAuthority({
   storage = getActiveAccountScopedStorage(),
   readGuard = readVaultCompatibilityGuard,
 } = {}) {
-  const unverified = Object.freeze({ ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED, transitionId: "", entries: Object.freeze([]) });
+  // The result carries ONLY what the first catalog needs. The transition id is
+  // deliberately absent from both the success and the failure shape: the seal
+  // caller has no use for it, and it is exactly the kind of identifier that
+  // should never travel out of the verification boundary.
+  const unverified = Object.freeze({ ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED, entries: Object.freeze([]) });
   if (typeof userId !== "string" || !userId || typeof companyId !== "string" || !companyId) {
     return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST });
   }
@@ -359,7 +363,7 @@ export async function verifyCompletedVaultMigrationAuthority({
     for (const entry of entries) {
       if (!VAULT_MIGRATION_LOGICAL_KEYS.includes(entry.key)) return unverified;
     }
-    return Object.freeze({ ok: true, code: "", transitionId: stored.transitionId, entries });
+    return Object.freeze({ ok: true, code: "", entries });
   } catch (error) {
     if (error instanceof VaultMigrationError && error.code === VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID) {
       return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID });

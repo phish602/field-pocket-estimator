@@ -18,6 +18,8 @@ import { migrateActiveWorkspaceVault } from "./vaultMigrationOrchestrator";
 import { deriveWorkspaceVaultTag } from "./vaultSession";
 import {
   flushVaultRuntime,
+  freezeVaultRuntimeMutations,
+  unfreezeVaultRuntimeMutations,
   subscribeVaultRuntimeStatus,
   subscribeVaultRuntimeRevalidation,
   hydrateVaultRuntime,
@@ -187,9 +189,11 @@ export default function useVaultRuntimeActivation({
   // before the new identity does any work. Same-identity refreshes go through
   // `revalidate` instead, which never tears down a healthy runtime.
   // -------------------------------------------------------------------------
-  const runActivation = useCallback(async (activeIdentity, activeUserId, activeCompanyId) => {
+  const runActivation = useCallback(async (activeIdentity, activeUserId, activeCompanyId, owner = null) => {
     const generation = ++current.current.generation;
     current.current.identity = activeIdentity;
+    // This operation now owns exactly this identity and generation.
+    if (owner) { owner.identity = activeIdentity; owner.generation = generation; }
     revoke();
     setResult(CHECKING);
 
@@ -315,23 +319,36 @@ export default function useVaultRuntimeActivation({
   // were durable. Revalidation now flushes first, re-hydrates in place, and
   // only replaces the cache once the new state verifies.
   // -------------------------------------------------------------------------
-  const revalidate = useCallback(async (activeIdentity, activeUserId, activeCompanyId) => {
+  const revalidate = useCallback(async (activeIdentity, activeUserId, activeCompanyId, owner = null) => {
     if (current.current.identity !== activeIdentity) return DISABLED;
+    if (owner) { owner.identity = activeIdentity; owner.generation = current.current.generation; }
     if (revalidation.current.running) {
-      // Coalesce: one more pass will run after the in-flight one, so a burst of
-      // cross-tab messages produces at most one extra hydration.
+      // Coalesce: one more pass runs after the in-flight one, so a burst of
+      // cross-tab messages (N+1 then N+2 then N+3) produces at most one extra
+      // pass and never two overlapping hydrations.
       revalidation.current.queued = true;
       return DISABLED;
     }
     revalidation.current.running = true;
     let outcome = DISABLED;
+    // Held in a const box so the per-pass helpers below can flip it without
+    // closing over a reassigned loop variable.
+    const pass = { frozen: false };
     try {
       do {
         revalidation.current.queued = false;
         const generation = current.current.generation;
+        if (owner) owner.generation = generation;
         const stale = () => !current.current.mounted
           || current.current.generation !== generation
           || current.current.identity !== activeIdentity;
+        const fail = (code) => {
+          pass.frozen = false;
+          revoke();
+          const blocked = publicResult("blocked", code, BLOCKED_MESSAGE);
+          setResult(blocked);
+          return blocked;
+        };
 
         let workspaceTag;
         try {
@@ -340,40 +357,37 @@ export default function useVaultRuntimeActivation({
           workspaceTag = "";
         }
         if (stale()) return DISABLED;
-        if (!WORKSPACE_TAG.test(workspaceTag || "")) {
-          revoke();
-          setResult(publicResult("blocked", "IDENTITY_UNAVAILABLE", BLOCKED_MESSAGE));
-          return publicResult("blocked", "IDENTITY_UNAVAILABLE", BLOCKED_MESSAGE);
-        }
+        if (!WORKSPACE_TAG.test(workspaceTag || "")) return fail("IDENTITY_UNAVAILABLE");
 
-        // Queued local mutations must reach durability BEFORE the cache is
-        // replaced, otherwise re-hydration would silently discard them.
+        // 1. Queued local mutations must reach durability BEFORE anything is
+        //    replaced, otherwise re-hydration would silently discard them.
         const flushed = await flushVaultRuntime();
         if (stale()) return DISABLED;
         if (flushed.state === "blocked") {
-          // A conflict here means another tab already committed over this one's
+          // A conflict means another tab already committed over this tab's
           // expected revision. That is a hard block, never a silent overwrite.
-          const code = flushed.code || "DURABILITY_FAILED";
-          revoke();
-          outcome = publicResult("blocked", code, BLOCKED_MESSAGE);
-          setResult(outcome);
-          return outcome;
+          return fail(flushed.code || "DURABILITY_FAILED");
         }
 
+        // 2. Freeze new mutations and publish a checking state, so App puts the
+        //    shell behind VaultRuntimeGate and cloud workers lose their identity
+        //    for the duration. Reads keep serving the last VERIFIED cache; new
+        //    approved writes get a definite refusal rather than being accepted
+        //    into a session that is about to be replaced.
+        freezeVaultRuntimeMutations();
+        pass.frozen = true;
+        if (!stale()) setResult(publicResult("hydrating", "", HYDRATING_MESSAGE));
+
+        // 3. Verify a candidate. hydrateVaultRuntime keeps the previous verified
+        //    runtime active throughout and swaps atomically only on success.
         const hydrated = await hydrateVaultRuntime({ userId: activeUserId, companyId: activeCompanyId });
         if (stale()) return DISABLED;
-        if (!hydrated.ok) {
-          revoke();
-          outcome = publicResult("blocked", hydrated.code || "HYDRATION_FAILED", BLOCKED_MESSAGE);
-          setResult(outcome);
-          return outcome;
-        }
-        if (!installAdapter(workspaceTag, hydrated.generation)) {
-          revoke();
-          outcome = publicResult("blocked", "ADAPTER_UNAVAILABLE", BLOCKED_MESSAGE);
-          setResult(outcome);
-          return outcome;
-        }
+        if (!hydrated.ok) return fail(hydrated.code || "HYDRATION_FAILED");
+
+        // 4. The replacement already happened inside hydration; bind the adapter
+        //    to the new generation and reopen mutations.
+        if (!installAdapter(workspaceTag, hydrated.generation)) return fail("ADAPTER_UNAVAILABLE");
+        pass.frozen = false;
         if (stale()) {
           revoke();
           return DISABLED;
@@ -382,6 +396,9 @@ export default function useVaultRuntimeActivation({
         setResult(outcome);
       } while (revalidation.current.queued);
     } finally {
+      // A revalidation that ends without replacing the runtime must never leave
+      // mutations frozen.
+      if (pass.frozen) unfreezeVaultRuntimeMutations();
       revalidation.current.running = false;
       revalidation.current.queued = false;
     }
@@ -397,18 +414,27 @@ export default function useVaultRuntimeActivation({
   // the runtime is revoked and the hook reports `blocked`.
   // -------------------------------------------------------------------------
   const guarded = useCallback(async (run) => {
+    // Ownership snapshot. The operation fills it in once it knows which identity
+    // and activation generation it belongs to, so a late rejection from a
+    // SUPERSEDED operation can never revoke or block the identity that replaced
+    // it. A stale owner returns disabled and changes nothing.
+    const owner = { identity: current.current.identity, generation: current.current.generation };
     try {
-      return await run();
+      return await run(owner);
     } catch {
+      const stale = !current.current.mounted
+        || current.current.identity !== owner.identity
+        || current.current.generation !== owner.generation;
+      if (stale) return DISABLED;
       revoke();
       const blocked = publicResult("blocked", "ACTIVATION_FAILED", BLOCKED_MESSAGE);
-      if (current.current.mounted) setResult(blocked);
+      setResult(blocked);
       return blocked;
     }
   }, [revoke]);
 
   const activate = useCallback((activeIdentity, activeUserId, activeCompanyId) => guarded(
-    () => runActivation(activeIdentity, activeUserId, activeCompanyId),
+    (owner) => runActivation(activeIdentity, activeUserId, activeCompanyId, owner),
   ), [guarded, runActivation]);
 
   useEffect(() => {
@@ -458,14 +484,24 @@ export default function useVaultRuntimeActivation({
     if (!identity || !vaultUnlocked) return undefined;
     return subscribeVaultRuntimeRevalidation(() => {
       if (current.current.identity !== identity) return;
-      guarded(() => revalidate(identity, userId, companyId));
+      guarded((owner) => revalidate(identity, userId, companyId, owner));
     });
   }, [identity, vaultUnlocked, userId, companyId, guarded, revalidate]);
 
+  // A manual refresh of the SAME identity is a revalidation, not a re-activation:
+  // it must flush accepted writes, freeze, gate the shell, verify a candidate and
+  // swap atomically. Running the destructive activation path here revoked the
+  // runtime before the flush and could lose an accepted write.
   const refresh = useCallback(() => {
     if (!identity || !vaultUnlocked) return Promise.resolve(DISABLED);
+    // Only a runtime that is actually installed for this identity can be
+    // revalidated; anything else (never activated, blocked, disabled) still
+    // needs the full activation path.
+    if (current.current.identity === identity && isVaultRuntimeReady()) {
+      return guarded((owner) => revalidate(identity, userId, companyId, owner));
+    }
     return activate(identity, userId, companyId);
-  }, [activate, identity, userId, companyId, vaultUnlocked]);
+  }, [activate, guarded, revalidate, identity, userId, companyId, vaultUnlocked]);
 
   // Bounded flush before a deliberate lock. A failed flush never claims a clean
   // lock: the runtime stays blocked and the shell stays unmounted.

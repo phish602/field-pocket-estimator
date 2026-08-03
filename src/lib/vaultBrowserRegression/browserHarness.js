@@ -48,7 +48,12 @@ import {
   createVaultMigrationOrchestrator,
   verifyCompletedVaultMigrationAuthority,
 } from "../vaultMigrationOrchestrator";
-import { subscribeVaultRuntimeRevalidation } from "../vaultRuntimeStore";
+import {
+  freezeVaultRuntimeMutations,
+  isVaultRuntimeFrozen,
+  subscribeVaultRuntimeRevalidation,
+  unfreezeVaultRuntimeMutations,
+} from "../vaultRuntimeStore";
 import { resolveVaultActivationPlan } from "../useVaultRuntimeActivation";
 import {
   flushVaultRuntime,
@@ -70,6 +75,12 @@ import {
   revokeAuthoritativeVaultRuntime,
 } from "../accountScopedLocalStorage";
 import { decryptBytes, encryptBytes, migrationManifestAad, recordAad } from "../vaultCrypto";
+import {
+  buildRuntimeCatalog,
+  encryptRuntimeCatalog,
+  randomBlobId,
+  utf8Bytes,
+} from "../vaultRuntimeCatalog";
 import { getVaultBridgeBuildPolicy } from "../vaultBridgeBuildPolicy";
 import {
   CRASH_BOUNDARIES,
@@ -128,6 +139,9 @@ let nativeStorage = null;
 let revalidationCapture = null;
 let revalidationSignalCount = 0;
 let stashedCatalogEnvelope = null;
+let logicalEventCapture = [];
+let logicalEventListener = null;
+let originalBroadcastChannel = null;
 
 function realStorage() {
   if (!nativeStorage) {
@@ -1429,6 +1443,176 @@ export function createBrowserHarness() {
       } catch (error) {
         return Object.freeze({ threw: true, ok: false, code: String(error?.code || "THREW") });
       }
+    },
+
+    // ---- ISO-16 atomic-revalidation probes ------------------------------
+
+    // Runs one same-identity revalidation exactly as the production hook does:
+    // flush, freeze, verify a candidate while the previous runtime stays active,
+    // then install the adapter for the new generation.
+    revalidateRuntime: async ({ identity = "active", observe = false } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const before = describeVaultRuntime();
+      const flushed = await flushVaultRuntime();
+      if (flushed.state === "blocked") {
+        return Object.freeze({ ok: false, stage: "flush", code: flushed.code, ready: isVaultRuntimeReady() });
+      }
+      freezeVaultRuntimeMutations();
+      // While frozen: reads still serve the last verified cache, the adapter is
+      // not ready, and every approved mutation is definitively refused.
+      const during = observe
+        ? Object.freeze({
+          frozen: isVaultRuntimeFrozen(),
+          ready: isVaultRuntimeReady(),
+          adapterInstalled: isAuthoritativeVaultRuntimeInstalled(),
+          entryCount: runtimeLogicalKeys().length,
+          writeRefused: runtimeSetItem(VAULT_MIGRATION_LOGICAL_KEYS[0], "refused-while-frozen") === false,
+          facadeWriteRefused: (() => {
+            const facade = getActiveAccountScopedStorage();
+            if (!facade) return true;
+            const key = VAULT_MIGRATION_LOGICAL_KEYS[0];
+            const previous = facade.getItem(key);
+            facade.setItem(key, "refused-through-facade");
+            return facade.getItem(key) === previous;
+          })(),
+        })
+        : null;
+      const hydrated = await hydrateVaultRuntime({ userId, companyId });
+      if (!hydrated.ok) {
+        unfreezeVaultRuntimeMutations();
+        return Object.freeze({ ok: false, stage: "hydrate", code: hydrated.code, during, ready: isVaultRuntimeReady() });
+      }
+      const installed = installAuthoritativeVaultRuntime({
+        workspaceTag,
+        generation: hydrated.generation,
+        adapter: {
+          isReady: (generation) => isVaultRuntimeReady(generation),
+          getItem: (logicalKey) => runtimeGetItem(logicalKey),
+          setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
+          removeItem: (logicalKey) => runtimeRemoveItem(logicalKey),
+          clear: () => runtimeClearValue(),
+          keys: () => runtimeLogicalKeys(),
+        },
+      });
+      const after = describeVaultRuntime();
+      return Object.freeze({
+        ok: true,
+        stage: "ready",
+        code: "",
+        during,
+        installed,
+        ready: isVaultRuntimeReady(),
+        generationBefore: before.generation || 0,
+        generationAfter: after.generation || 0,
+        catalogRevisionBefore: before.catalogRevision || 0,
+        catalogRevisionAfter: after.catalogRevision || 0,
+      });
+    },
+
+    // Commits durably from OUTSIDE this tab's cache, which is what another tab
+    // looks like: the durable catalog advances while this runtime is unaware.
+    commitBehindTheRuntime: async ({ logicalKey, value, identity = "active" }) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const outcome = await runWithActiveVaultDek({ workspaceTag, operation: async (dek) => {
+        const repository = vaultRepository();
+        const storedCatalog = await repository.readRuntimeCatalog({ workspaceTag });
+        if (!storedCatalog) return Object.freeze({ committed: false });
+        const existing = await repository.readEncryptedRecord({ workspaceTag, logicalKey });
+        const plain = utf8Bytes(value);
+        const blobId = randomBlobId();
+        const envelope = await encryptBytes(dek, plain, recordAad({
+          vaultFormatVersion: 1, userId, companyId,
+          logicalStorageKey: logicalKey, blobIdentifier: blobId, recordSchemaVersion: 1,
+        }));
+        const keys = await repository.listEncryptedRecordKeys({ workspaceTag });
+        const entries = [];
+        for (const key of keys) {
+          if (key === logicalKey) continue;
+          const record = await repository.readEncryptedRecord({ workspaceTag, logicalKey: key });
+          const bytes = await decryptBytes(dek, record.ciphertext, record.iv, recordAad({
+            vaultFormatVersion: 1, userId, companyId,
+            logicalStorageKey: key, blobIdentifier: record.blobId, recordSchemaVersion: 1,
+          }));
+          entries.push({ key, blobId: record.blobId, byteLength: bytes.length, digest: await digestBytes(bytes), revision: record.revision });
+          bytes.fill(0);
+        }
+        entries.push({
+          key: logicalKey, blobId, byteLength: plain.length,
+          digest: await digestBytes(plain), revision: existing ? existing.revision + 1 : 1,
+        });
+        const catalog = buildRuntimeCatalog({
+          runtimeGeneration: storedCatalog.runtimeGeneration,
+          catalogRevision: storedCatalog.revision + 1,
+          entries,
+        });
+        const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId, companyId, catalog });
+        await repository.commitRuntimeRecordSet({
+          workspaceTag,
+          logicalKey,
+          expectedRecordRevision: existing ? existing.revision : null,
+          expectedCatalogRevision: storedCatalog.revision,
+          blobId,
+          recordSchemaVersion: 1,
+          ciphertext: envelope.ciphertext,
+          iv: envelope.iv,
+          catalogCiphertext: catalogEnvelope.ciphertext,
+          catalogIv: catalogEnvelope.iv,
+          runtimeGeneration: storedCatalog.runtimeGeneration,
+          runtimeSchemaVersion: 1,
+        });
+        plain.fill(0);
+        return Object.freeze({ committed: true, catalogRevision: storedCatalog.revision + 1 });
+      } });
+      return outcome || Object.freeze({ committed: false });
+    },
+
+    // Logical-key change events observed during a revalidation, with what a
+    // listener sees when it reads back synchronously.
+    captureLogicalEvents: ({ action = "start" } = {}) => {
+      if (action === "start") {
+        logicalEventCapture = [];
+        logicalEventListener = (event) => {
+          const key = event?.detail?.key;
+          logicalEventCapture.push({
+            matchesCache: runtimeGetItem(key) === event?.detail?.value,
+            readyAtDispatch: isVaultRuntimeReady(),
+          });
+        };
+        window.addEventListener("pe-localstorage", logicalEventListener);
+        return Object.freeze({ capturing: true, events: 0 });
+      }
+      if (action === "stop" && logicalEventListener) {
+        window.removeEventListener("pe-localstorage", logicalEventListener);
+        logicalEventListener = null;
+      }
+      return Object.freeze({
+        capturing: Boolean(logicalEventListener),
+        events: logicalEventCapture.length,
+        allMatchedCache: logicalEventCapture.every((entry) => entry.matchesCache),
+        allReadyAtDispatch: logicalEventCapture.every((entry) => entry.readyAtDispatch),
+      });
+    },
+
+    // Replaces BroadcastChannel with a constructor that throws, so the fallback
+    // selection can be exercised against a genuinely unusable transport.
+    breakBroadcastChannel: ({ mode = "throw" } = {}) => {
+      if (!originalBroadcastChannel) originalBroadcastChannel = window.BroadcastChannel;
+      if (mode === "restore") {
+        window.BroadcastChannel = originalBroadcastChannel;
+        return Object.freeze({ mode: "restore", usable: typeof window.BroadcastChannel === "function" });
+      }
+      window.BroadcastChannel = mode === "unusable"
+        ? function UnusableChannel() { return { name: "unusable" }; }
+        : function ThrowingChannel() { throw new Error("synthetic transport failure"); };
+      return Object.freeze({ mode, constructorPresent: typeof window.BroadcastChannel === "function" });
+    },
+
+    dispatchFocusSignal: async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((resolve) => { window.setTimeout(resolve, 60); });
+      return Object.freeze({ dispatched: "focus", visibilityState: document.visibilityState });
     },
 
     runStateKey: RUN_STATE_KEY,

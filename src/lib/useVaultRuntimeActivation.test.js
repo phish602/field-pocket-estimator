@@ -32,6 +32,8 @@ jest.mock("./vaultSession", () => ({
 }));
 jest.mock("./vaultRuntimeStore", () => ({
   flushVaultRuntime: jest.fn(),
+  freezeVaultRuntimeMutations: jest.fn(),
+  unfreezeVaultRuntimeMutations: jest.fn(),
   getVaultRuntimeStatus: jest.fn(() => ({ state: "ready", generation: 1, pending: 0, code: "", entryCount: 0 })),
   subscribeVaultRuntimeStatus: jest.fn(() => () => {}),
   subscribeVaultRuntimeRevalidation: jest.fn(() => () => {}),
@@ -84,6 +86,8 @@ beforeEach(() => {
   runtime.sealVaultRuntime.mockResolvedValue({ ok: true, state: "sealed", code: "", entryCount: 1, generation: 0 });
   runtime.hydrateVaultRuntime.mockResolvedValue({ ok: true, state: "ready", code: "", entryCount: 1, generation: 1 });
   runtime.flushVaultRuntime.mockResolvedValue({ state: "ready", code: "", pending: 0, generation: 1, entryCount: 1 });
+  runtime.freezeVaultRuntimeMutations.mockReturnValue({ frozen: true, generation: 1, pending: 0 });
+  runtime.unfreezeVaultRuntimeMutations.mockReturnValue({ frozen: false, generation: 1 });
   runtime.isVaultRuntimeReady.mockReturnValue(true);
   runtime.subscribeVaultRuntimeStatus.mockReturnValue(() => {});
   runtime.subscribeVaultRuntimeRevalidation.mockReturnValue(() => {});
@@ -554,12 +558,28 @@ test("a revalidation that lands after an identity switch installs nothing for th
   await waitFor(() => expect(latest.state).toBe("ready"));
 });
 
-test("a manual refresh re-runs full activation", async () => {
+test("a manual refresh of the same identity uses the queue-safe path, not full activation", async () => {
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
-  runtime.hydrateVaultRuntime.mockClear();
+
+  const order = [];
+  runtime.flushVaultRuntime.mockImplementation(async () => { order.push("flush"); return { state: "ready", code: "", pending: 0, generation: 1, entryCount: 1 }; });
+  runtime.hydrateVaultRuntime.mockImplementation(async () => { order.push("hydrate"); return { ok: true, state: "ready", code: "", entryCount: 1, generation: 4 }; });
+  runtime.revokeVaultRuntime.mockClear();
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  orchestrator.migrateActiveWorkspaceVault.mockClear();
+  runtime.sealVaultRuntime.mockClear();
+
   await act(async () => { await latest.refresh(); });
-  expect(runtime.hydrateVaultRuntime).toHaveBeenCalled();
+
+  // Flushed BEFORE anything was replaced, and nothing was revoked first.
+  expect(order).toEqual(["flush", "hydrate"]);
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  // The destructive activation path did not run.
+  expect(orchestrator.migrateActiveWorkspaceVault).not.toHaveBeenCalled();
+  expect(runtime.sealVaultRuntime).not.toHaveBeenCalled();
+  expect(scoped.installAuthoritativeVaultRuntime).toHaveBeenCalledWith(expect.objectContaining({ generation: 4 }));
   expect(latest.state).toBe("ready");
 });
 
@@ -619,4 +639,299 @@ test("activation never leaves an unhandled rejection behind", async () => {
   process.off("unhandledRejection", record);
   view.unmount();
   expect(unhandled).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- atomic, gated revalidation.
+// ---------------------------------------------------------------------------
+
+test("revalidation freezes mutations and publishes a gated checking state before verifying", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  const order = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  runtime.flushVaultRuntime.mockImplementation(async () => { order.push("flush"); return { state: "ready", code: "", pending: 0, generation: 1, entryCount: 1 }; });
+  runtime.freezeVaultRuntimeMutations.mockImplementation(() => { order.push("freeze"); return { frozen: true, generation: 1, pending: 0 }; });
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    order.push("hydrate");
+    await gate;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: 9 };
+  });
+  scoped.installAuthoritativeVaultRuntime.mockImplementation(() => { order.push("install"); return true; });
+
+  const signal = revalidation();
+  await act(async () => { signal(); await Promise.resolve(); });
+  // Mid-verification: mutations are frozen and the hook is NOT ready, so App
+  // keeps the shell behind VaultRuntimeGate and cloud workers see no identity.
+  expect(order).toEqual(["flush", "freeze", "hydrate"]);
+  expect(latest.state).toBe("hydrating");
+  expect(latest.checking).toBe(true);
+
+  await act(async () => { release(); await Promise.resolve(); });
+  expect(order).toEqual(["flush", "freeze", "hydrate", "install"]);
+  expect(latest.state).toBe("ready");
+  // A successful replacement clears the freeze inside the store, so the hook
+  // does not need to unfreeze.
+  expect(runtime.unfreezeVaultRuntimeMutations).not.toHaveBeenCalled();
+});
+
+test("a failed candidate blocks and never publishes candidate state", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  runtime.hydrateVaultRuntime.mockResolvedValue({ ok: false, state: "blocked", code: "RECORD_INVALID", entryCount: 0, generation: 0 });
+  scoped.installAuthoritativeVaultRuntime.mockClear();
+  await act(async () => { await revalidation()(); });
+
+  expect(latest.state).toBe("blocked");
+  expect(latest.code).toBe("RECORD_INVALID");
+  expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+});
+
+test("a queued write survives a manual refresh", async () => {
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  runtime.revokeVaultRuntime.mockClear();
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  let flushedPending = null;
+  runtime.flushVaultRuntime.mockImplementation(async () => {
+    flushedPending = 2;                                                       // two accepted writes were still queued
+    return { state: "ready", code: "", pending: 0, generation: 1, entryCount: 1 };
+  });
+  await act(async () => { await latest.refresh(); });
+  // The refresh waited for the queue instead of discarding it.
+  expect(flushedPending).toBe(2);
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+  expect(latest.state).toBe("ready");
+});
+
+test("a refresh that loses compare-and-set blocks rather than discarding the write", async () => {
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  runtime.flushVaultRuntime.mockResolvedValue({ state: "blocked", code: "CONFLICT", pending: 1, generation: 1, entryCount: 1 });
+  runtime.hydrateVaultRuntime.mockClear();
+  await act(async () => { await latest.refresh(); });
+  expect(latest.state).toBe("blocked");
+  expect(latest.code).toBe("CONFLICT");
+  expect(runtime.hydrateVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("repeated refresh calls coalesce into one extra pass", async () => {
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let hydrations = 0;
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    hydrations += 1;
+    if (hydrations === 1) await gate;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: hydrations + 1 };
+  });
+
+  await act(async () => {
+    const first = latest.refresh();
+    latest.refresh();
+    latest.refresh();
+    release();
+    await first;
+  });
+  expect(hydrations).toBe(2);
+});
+
+test("a refresh during a remote revalidation queues exactly one additional pass", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let hydrations = 0;
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    hydrations += 1;
+    if (hydrations === 1) await gate;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: hydrations + 1 };
+  });
+
+  await act(async () => {
+    const remote = revalidation()();
+    latest.refresh();
+    latest.refresh();
+    release();
+    await remote;
+  });
+  expect(hydrations).toBe(2);
+});
+
+test("cross-tab commits arriving during a paused hydration are not lost (N+1, N+2, N+3)", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  // The store keeps the previous runtime active at revision N throughout
+  // verification, so its channel handler still compares against N and a newer
+  // commit still reaches the coalescing logic.
+  let revision = 1;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let hydrations = 0;
+  const overlapping = [];
+  let inFlight = 0;
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    hydrations += 1;
+    inFlight += 1;
+    overlapping.push(inFlight);
+    if (hydrations === 1) await gate;
+    inFlight -= 1;
+    revision += 1;                                                            // this pass adopted the newest durable revision
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: hydrations + 1 };
+  });
+
+  const signal = revalidation();
+  await act(async () => {
+    signal();                        // N+1 starts the pass
+    await Promise.resolve();
+    signal();                        // N+2 arrives while hydration is paused
+    signal();                        // N+3 arrives during the same pause
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  // One in-flight pass plus exactly one coalesced pass, never overlapping.
+  expect(hydrations).toBe(2);
+  expect(Math.max(...overlapping)).toBe(1);
+  expect(revision).toBe(3);
+  expect(latest.state).toBe("ready");
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- stale exception ownership.
+//
+// A rejection from a SUPERSEDED operation must never revoke or block the
+// identity that replaced it.
+// ---------------------------------------------------------------------------
+
+const NEXT_USER = "22222222-3333-4444-8555-666666666666";
+
+function rejectingLater() {
+  let reject;
+  const promise = new Promise((resolve, error) => { reject = error; });
+  // An unhandled rejection would fail the run; the hook is the only consumer.
+  promise.catch(() => {});
+  return { promise, reject: () => reject(new Error("superseded operation exploded")) };
+}
+
+test("a superseded activation rejection never disturbs the new identity", async () => {
+  const pending = rejectingLater();
+  runtime.hydrateVaultRuntime.mockImplementation(({ userId: id }) => (id === USER
+    ? pending.promise
+    : Promise.resolve({ ok: true, state: "ready", code: "", entryCount: 1, generation: 2 })));
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+  expect(latest.state).toBe("ready");
+  expect(latest.code).toBe("");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("a superseded migration rejection never disturbs the new identity", async () => {
+  const pending = rejectingLater();
+  orchestrator.migrateActiveWorkspaceVault.mockImplementation(({ userId: id }) => (id === USER
+    ? pending.promise
+    : Promise.resolve({ state: "authoritative", code: "", phase: "" })));
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(latest.state).toBe("ready");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("a superseded seal rejection never disturbs the new identity", async () => {
+  const pending = rejectingLater();
+  runtime.sealVaultRuntime.mockImplementation(({ userId: id }) => (id === USER
+    ? pending.promise
+    : Promise.resolve({ ok: true, state: "sealed", code: "", entryCount: 1, generation: 0 })));
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(latest.state).toBe("ready");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("a superseded hydration rejection never disturbs the new identity", async () => {
+  const pending = rejectingLater();
+  runtime.hydrateVaultRuntime.mockImplementation(({ userId: id }) => (id === USER
+    ? pending.promise
+    : Promise.resolve({ ok: true, state: "ready", code: "", entryCount: 1, generation: 3 })));
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  const installsBefore = scoped.installAuthoritativeVaultRuntime.mock.calls.length;
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(latest.state).toBe("ready");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(scoped.installAuthoritativeVaultRuntime.mock.calls.length).toBe(installsBefore);
+});
+
+test("a superseded revalidation rejection never disturbs the new identity", async () => {
+  const revalidation = captureRevalidation();
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  const pending = rejectingLater();
+  runtime.flushVaultRuntime.mockImplementationOnce(() => pending.promise);
+  let inFlight;
+  await act(async () => { inFlight = revalidation()(); await Promise.resolve(); });
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await inFlight; await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(latest.state).toBe("ready");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("a superseded refresh rejection never disturbs the new identity", async () => {
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  const pending = rejectingLater();
+  runtime.flushVaultRuntime.mockImplementationOnce(() => pending.promise);
+  let inFlight;
+  await act(async () => { inFlight = latest.refresh(); await Promise.resolve(); });
+
+  view.rerender(<Probe enabled userId={NEXT_USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => { pending.reject(); await inFlight; await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(latest.state).toBe("ready");
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
 });

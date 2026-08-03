@@ -135,10 +135,26 @@ function exactRevalidationMessage(value) {
   return value;
 }
 
+// A constructor that exists is not proof of a usable transport: it can throw, or
+// return an object that cannot carry a message. The focus/visibility fallback is
+// chosen on what was ACTUALLY opened, never on the constructor's presence.
+function usableChannel(candidate) {
+  return Boolean(candidate)
+    && typeof candidate === "object"
+    && typeof candidate.postMessage === "function"
+    && typeof candidate.close === "function";
+}
+
 function openChannel() {
   if (channel || typeof globalThis.BroadcastChannel !== "function") return channel;
   try {
-    channel = new globalThis.BroadcastChannel(RUNTIME_CHANNEL_NAME);
+    const opened = new globalThis.BroadcastChannel(RUNTIME_CHANNEL_NAME);
+    if (!usableChannel(opened)) {
+      try { if (opened && typeof opened.close === "function") opened.close(); } catch { /* nothing to close */ }
+      channel = null;
+      return null;
+    }
+    channel = opened;
     channel.onmessage = (event) => {
       const message = exactRevalidationMessage(event?.data);
       if (!message) return;
@@ -181,7 +197,7 @@ function closeChannel() {
  */
 export function subscribeVaultRuntimeRevalidation(listener) {
   revalidationListener = typeof listener === "function" ? listener : null;
-  openChannel();
+  const bus = openChannel();
   // Where BroadcastChannel is unavailable, focus and visibility are the
   // fallback revalidation signals. Revision CAS still rejects stale writes.
   // A visibilitychange that HIDES the tab is not a freshness signal: revalidating
@@ -190,14 +206,19 @@ export function subscribeVaultRuntimeRevalidation(listener) {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     if (typeof revalidationListener === "function") revalidationListener();
   };
-  if (typeof window !== "undefined" && typeof window.addEventListener === "function"
-    && typeof globalThis.BroadcastChannel !== "function") {
+  // Exactly one pair of fallback listeners, and only when the transport is
+  // genuinely unavailable (missing constructor, throwing constructor, or an
+  // object that cannot carry a message).
+  const fallbackInstalled = !bus
+    && typeof window !== "undefined"
+    && typeof window.addEventListener === "function";
+  if (fallbackInstalled) {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
   }
   return () => {
     revalidationListener = null;
-    if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+    if (fallbackInstalled && typeof window !== "undefined" && typeof window.removeEventListener === "function") {
       window.removeEventListener("focus", onFocus);
       try { document.removeEventListener("visibilitychange", onFocus); } catch { /* jsdom teardown */ }
     }
@@ -228,7 +249,35 @@ export function getVaultRuntimeStatus() {
 }
 
 export function isVaultRuntimeReady(generation) {
-  return Boolean(active && !active.blocked && (generation === undefined || active.generation === generation));
+  // A frozen runtime is mid-revalidation: its cache is still the last verified
+  // one, but it is not "ready", so the facade fails closed rather than letting a
+  // write land in a session that is about to be replaced.
+  return Boolean(active && !active.blocked && !active.frozen
+    && (generation === undefined || active.generation === generation));
+}
+
+/**
+ * Freeze mutations for a same-identity revalidation. Reads keep serving the last
+ * VERIFIED cache; every new approved mutation gets a definite refusal instead of
+ * being accepted into a session that is about to be replaced.
+ */
+export function freezeVaultRuntimeMutations() {
+  if (!active || active.blocked) return Object.freeze({ frozen: false, generation: 0, pending: 0 });
+  active.frozen = true;
+  notifyStatus();
+  return Object.freeze({ frozen: true, generation: active.generation, pending: active.queue.length });
+}
+
+/** Reopen mutations when a revalidation ends without replacing the runtime. */
+export function unfreezeVaultRuntimeMutations() {
+  if (!active) return Object.freeze({ frozen: false, generation: 0 });
+  active.frozen = false;
+  notifyStatus();
+  return Object.freeze({ frozen: false, generation: active.generation });
+}
+
+export function isVaultRuntimeFrozen() {
+  return Boolean(active && active.frozen);
 }
 
 function recordAadFor({ userId, companyId, logicalKey, blobId }) {
@@ -246,8 +295,19 @@ function recordAadFor({ userId, companyId, logicalKey, blobId }) {
 // Hydration
 // ---------------------------------------------------------------------------
 
-function hydrationFailure(code) {
+function failureResult(code) {
   return Object.freeze({ ok: false, state: "blocked", code, entryCount: 0, generation: 0 });
+}
+
+// A failed candidate is fail-closed for ITS OWN identity: the runtime it was
+// verifying is revoked rather than left serving unverifiable durable state. It
+// must never revoke a runtime belonging to a DIFFERENT identity -- a late
+// failure from a superseded workspace cannot tear down the one that replaced it.
+function hydrationFailureFor({ userId, companyId }) {
+  return (code) => {
+    if (!active || (active.userId === userId && active.companyId === companyId)) revokeVaultRuntime();
+    return failureResult(code);
+  };
 }
 
 /**
@@ -255,11 +315,14 @@ function hydrationFailure(code) {
  * synchronous cache. Nothing is published unless the ENTIRE set verifies.
  */
 export async function hydrateVaultRuntime({ userId, companyId, repository = null } = {}) {
-  // Snapshot the outgoing cache: after the NEW set verifies, the application is
-  // told exactly which logical keys changed. Events are never emitted from
-  // unverified state.
-  const previousCache = active && !active.blocked ? new Map(active.cache) : null;
-  revokeVaultRuntime();
+  // The previously verified runtime stays ACTIVE for the whole of verification.
+  // Revoking first left a window in which the hook could still report ready
+  // while the authoritative cache was already gone: reads looked empty and
+  // writes were refused with no explanation. Everything below is built into a
+  // local CANDIDATE and only becomes active in one atomic step at the end.
+  const previous = active && !active.blocked ? active : null;
+  const previousCache = previous ? new Map(previous.cache) : null;
+  const hydrationFailure = hydrationFailureFor({ userId, companyId });
   let workspaceTag;
   try {
     workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
@@ -301,8 +364,11 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
           : VAULT_RUNTIME_ERROR_CODES.RECORD_MISSING);
       }
 
-      const cache = new Map();
-      const meta = new Map();
+      // Candidate state. Nothing here is reachable from runtimeGetItem,
+      // runtimeSetItem, the status surface, or the installed adapter until the
+      // atomic replacement below succeeds.
+      const candidateCache = new Map();
+      const candidateMeta = new Map();
       for (const entry of catalog.entries) {
         let record;
         try {
@@ -323,8 +389,8 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
             recordAadFor({ userId, companyId, logicalKey: entry.key, blobId: entry.blobId }));
           if (bytes.length !== entry.byteLength) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_INVALID);
           if (await digestBytes(bytes) !== entry.digest) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_INVALID);
-          cache.set(entry.key, new TextDecoder().decode(bytes));
-          meta.set(entry.key, { blobId: entry.blobId, revision: entry.revision, byteLength: entry.byteLength, digest: entry.digest });
+          candidateCache.set(entry.key, new TextDecoder().decode(bytes));
+          candidateMeta.set(entry.key, { blobId: entry.blobId, revision: entry.revision, byteLength: entry.byteLength, digest: entry.digest });
         } catch {
           return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_INVALID);
         } finally {
@@ -333,25 +399,50 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
         }
       }
 
+      // ---- atomic replacement ------------------------------------------
+      // The entire candidate verified. Retire the outgoing session and publish
+      // the new one in one synchronous step, so no observer can ever see a
+      // half-replaced runtime.
       generationCounter += 1;
-      active = {
+      const candidate = {
         generation: generationCounter,
         workspaceTag,
         userId,
         companyId,
         repository: vaultRepository,
-        cache,
-        meta,
+        cache: candidateCache,
+        meta: candidateMeta,
         catalogRevision: stored.revision,
         runtimeGeneration: stored.runtimeGeneration,
         queue: [],
         draining: false,
         blocked: false,
         blockedCode: "",
+        frozen: false,
       };
+      if (active && active !== previous && (active.userId !== userId || active.companyId !== companyId)) {
+        // A different identity took over while this candidate was verifying.
+        // Publishing here would hand one workspace's cache to another.
+        candidateCache.clear();
+        candidateMeta.clear();
+        return failureResult(VAULT_RUNTIME_ERROR_CODES.CONFLICT);
+      }
+      if (previous && active === previous) {
+        // The outgoing session is retired, not merely dropped: any late async
+        // completion bound to it can still see that it is no longer current.
+        previous.queue.length = 0;
+        previous.cache.clear();
+        previous.meta.clear();
+        previous.blocked = true;
+        previous.blockedCode = "REPLACED";
+      }
+      active = candidate;
       notifyStatus();
-      dispatchChangedLogicalKeys(previousCache, cache);
-      return Object.freeze({ ok: true, state: "ready", code: "", entryCount: cache.size, generation: active.generation });
+      // Events are emitted only AFTER replacement, so a listener that reads back
+      // synchronously sees the new cache, never the candidate or the old one.
+      dispatchChangedLogicalKeys(previousCache, candidate.cache);
+      if (previousCache) previousCache.clear();
+      return Object.freeze({ ok: true, state: "ready", code: "", entryCount: candidate.cache.size, generation: candidate.generation });
     },
   });
 
@@ -367,7 +458,7 @@ export async function sealVaultRuntime({ userId, companyId, repository = null, s
   try {
     workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
   } catch {
-    return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
+    return failureResult(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
   }
   const vaultRepository = repository || createVaultIndexedDbRepository();
 
@@ -378,7 +469,7 @@ export async function sealVaultRuntime({ userId, companyId, repository = null, s
       try {
         existing = await vaultRepository.readRuntimeCatalog({ workspaceTag });
       } catch {
-        return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
+        return failureResult(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
       }
       if (existing) return Object.freeze({ ok: true, state: "already-sealed", code: "", entryCount: 0, generation: 0 });
 
@@ -390,7 +481,7 @@ export async function sealVaultRuntime({ userId, companyId, repository = null, s
         workspaceTag, dek, userId, companyId, vaultRepository, storage, readGuard,
       });
       if (!authority.ok) {
-        return hydrationFailure(authority.code === VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED
+        return failureResult(authority.code === VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED
           ? VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED
           : VAULT_RUNTIME_ERROR_CODES.MIGRATION_UNVERIFIED);
       }
@@ -400,7 +491,7 @@ export async function sealVaultRuntime({ userId, companyId, repository = null, s
       // key list before it can enter the catalog.
       const entries = [];
       for (const entry of authority.entries) {
-        if (!APPROVED.has(entry.key)) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_UNEXPECTED);
+        if (!APPROVED.has(entry.key)) return failureResult(VAULT_RUNTIME_ERROR_CODES.RECORD_UNEXPECTED);
         entries.push({
           key: entry.key,
           blobId: entry.blobId,
@@ -423,15 +514,15 @@ export async function sealVaultRuntime({ userId, companyId, repository = null, s
           ciphertext: envelope.ciphertext,
           iv: envelope.iv,
         });
-        if (!created) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.CONFLICT);
+        if (!created) return failureResult(VAULT_RUNTIME_ERROR_CODES.CONFLICT);
         return Object.freeze({ ok: true, state: "sealed", code: "", entryCount: entries.length, generation: 0 });
       } catch (error) {
-        return hydrationFailure(error?.code === "CONFLICT" ? VAULT_RUNTIME_ERROR_CODES.CONFLICT : VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
+        return failureResult(error?.code === "CONFLICT" ? VAULT_RUNTIME_ERROR_CODES.CONFLICT : VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
       }
     },
   });
 
-  return outcome || hydrationFailure(VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED);
+  return outcome || failureResult(VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED);
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +551,7 @@ function enqueue(operation) {
 }
 
 export function runtimeSetItem(logicalKey, value) {
-  if (!active || active.blocked) return false;
+  if (!active || active.blocked || active.frozen) return false;
   if (!APPROVED.has(logicalKey)) return false;
   const next = String(value);
   // Synchronous cache update keeps read-after-write identical to localStorage.
@@ -470,7 +561,7 @@ export function runtimeSetItem(logicalKey, value) {
 }
 
 export function runtimeRemoveItem(logicalKey) {
-  if (!active || active.blocked) return false;
+  if (!active || active.blocked || active.frozen) return false;
   if (!APPROVED.has(logicalKey)) return false;
   if (!active.cache.has(logicalKey)) return true;
   active.cache.delete(logicalKey);
@@ -479,7 +570,7 @@ export function runtimeRemoveItem(logicalKey) {
 }
 
 export function runtimeClear() {
-  if (!active || active.blocked) return false;
+  if (!active || active.blocked || active.frozen) return false;
   if (active.cache.size === 0) return true;
   active.cache.clear();
   enqueue({ kind: "clear", generation: active.generation });

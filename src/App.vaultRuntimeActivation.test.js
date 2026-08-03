@@ -182,3 +182,74 @@ test("the activation hook is not enabled while the vault is locked", async () =>
   const activation = useVaultRuntimeActivation.mock.calls.at(-1)[0];
   expect(activation.vaultUnlocked).toBe(false);
 });
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- App during an ATOMIC same-identity revalidation.
+//
+// Revalidation freezes mutations and publishes a checking state, so the shell
+// goes back behind the gate and cloud workers lose their identity until the
+// candidate has verified and the new adapter is installed.
+// ---------------------------------------------------------------------------
+
+test("a revalidation gates the shell and remounts it only after replacement", async () => {
+  setup();
+  const view = render(<App />);
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+
+  // The runtime freezes mutations and publishes `hydrating` while it verifies.
+  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "hydrating", checking: true }));
+  view.rerender(<App />);
+  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+
+  // Cloud workers see no identity for the whole frozen window.
+  const convergence = useCloudAutoConvergence.mock.calls.at(-1)[0];
+  expect(convergence.configured).toBe(false);
+  expect(convergence.user).toBeNull();
+  const backup = useCloudAutoBackup.mock.calls.at(-1)[0];
+  expect(backup.configured).toBe(false);
+
+  // Atomic replacement finished and the adapter is installed for the new
+  // generation: the shell comes back.
+  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult());
+  view.rerender(<App />);
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+});
+
+test("a failed candidate leaves App blocked behind the gate", async () => {
+  setup();
+  const view = render(<App />);
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+
+  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "hydrating", checking: true }));
+  view.rerender(<App />);
+  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+
+  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "blocked", checking: false, code: "RECORD_INVALID" }));
+  view.rerender(<App />);
+  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+  const convergence = useCloudAutoConvergence.mock.calls.at(-1)[0];
+  expect(convergence.configured).toBe(false);
+});
+
+test("the shell is never rendered between two ready states", async () => {
+  setup();
+  const view = render(<App />);
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+
+  // Every intermediate state of a revalidation, in the order the hook publishes
+  // them. At no point may the shell be mounted while the runtime is not ready,
+  // which is what would render an empty workspace.
+  for (const state of ["hydrating", "pending-writes", "hydrating"]) {
+    useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state, checking: state === "hydrating" }));
+    view.rerender(<App />);
+    // eslint-disable-next-line no-await-in-loop
+    await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+    expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+  }
+
+  useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult());
+  view.rerender(<App />);
+  expect(await screen.findByLabelText(/open menu/i)).toBeInTheDocument();
+});

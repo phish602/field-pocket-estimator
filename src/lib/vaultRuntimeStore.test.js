@@ -6,7 +6,10 @@
 import { IDBFactory } from "fake-indexeddb";
 import {
   VAULT_RUNTIME_ERROR_CODES,
+  freezeVaultRuntimeMutations,
+  isVaultRuntimeFrozen,
   subscribeVaultRuntimeRevalidation,
+  unfreezeVaultRuntimeMutations,
   describeVaultRuntime,
   flushVaultRuntime,
   getVaultRuntimeStatus,
@@ -24,7 +27,7 @@ import { createVaultIndexedDbRepository } from "./vaultIndexedDbRepository";
 import { lockVault, setupVault, deriveWorkspaceVaultTag, runWithActiveVaultDek } from "./vaultSession";
 import { encryptBytes, migrationManifestAad, recordAad, setTestArgon2Adapter } from "./vaultCrypto";
 import { VAULT_MIGRATION_LOGICAL_KEYS } from "./vaultIndexedDbRepository";
-import { digestBytes, randomBlobId, utf8Bytes } from "./vaultRuntimeCatalog";
+import { buildRuntimeCatalog, digestBytes, encryptRuntimeCatalog, randomBlobId, utf8Bytes } from "./vaultRuntimeCatalog";
 
 const USER = "11111111-2222-4333-8444-555555555555";
 const COMPANY = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -897,4 +900,353 @@ describe("focus and visibility fallback", () => {
     channels.clear();
     delete globalThis.BroadcastChannel;
   });
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- ATOMIC hydration.
+//
+// Hydration used to revoke the active runtime before it had verified anything,
+// leaving a window in which the hook could still report ready while the cache
+// was already gone: reads looked empty and writes were refused for no visible
+// reason. The previous verified runtime now stays active for the whole of
+// verification and is replaced in one step, only after the entire candidate
+// verifies.
+// ---------------------------------------------------------------------------
+
+// A repository whose record reads can be paused mid-hydration.
+function gatedRepository(base, { pauseOnKey }) {
+  let release = null;
+  const paused = new Promise((resolve) => { release = resolve; });
+  let armed = true;
+  return {
+    repository: {
+      ...base,
+      readEncryptedRecord: async (options) => {
+        if (armed && options.logicalKey === pauseOnKey) {
+          armed = false;
+          await paused;
+        }
+        return base.readEncryptedRecord(options);
+      },
+    },
+    release: () => release(),
+  };
+}
+
+test("the previous runtime stays readable and ready throughout verification", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await writeMigratedRecord("estipaid-projects-v1", "second");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  const firstGeneration = describeVaultRuntime().generation;
+
+  const gated = gatedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: gated.repository });
+  await Promise.resolve();
+
+  // Mid-verification: the last verified cache is still serving, still ready, and
+  // still on the same generation.
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+  expect(runtimeGetItem("estipaid-projects-v1")).toBe("second");
+  expect(isVaultRuntimeReady()).toBe(true);
+  expect(describeVaultRuntime().generation).toBe(firstGeneration);
+
+  gated.release();
+  const hydrated = await hydrating;
+  expect(hydrated.ok).toBe(true);
+  // Replacement is a single step onto a NEW generation.
+  expect(describeVaultRuntime().generation).toBe(firstGeneration + 1);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+});
+
+test("a candidate that fails verification never partially replaces the runtime", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  const generation = describeVaultRuntime().generation;
+
+  const failing = {
+    ...repository,
+    readEncryptedRecord: async () => null,                                   // record vanished
+  };
+  const observed = [];
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: failing });
+  observed.push(runtimeGetItem("estipaid-customers-v1"));
+  const hydrated = await hydrating;
+
+  expect(hydrated.ok).toBe(false);
+  expect(hydrated.code).toBe(VAULT_RUNTIME_ERROR_CODES.RECORD_MISSING);
+  // During verification the old value was still served ...
+  expect(observed).toEqual(["original"]);
+  // ... and after a failed candidate the runtime is fail-closed, not partial.
+  expect(isVaultRuntimeReady()).toBe(false);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBeNull();
+  expect(describeVaultRuntime()).toEqual({ active: false });
+  expect(generation).toBeGreaterThan(0);
+});
+
+// Commits a record + catalog exactly as ANOTHER TAB's runtime would, without
+// touching this tab's in-memory cache. That is the only way to produce the real
+// cross-tab situation: durable state ahead of the live cache.
+async function commitBehindTheRuntime(logicalKey, value) {
+  const workspaceTag = await deriveWorkspaceVaultTag(USER, COMPANY);
+  await runWithActiveVaultDek({ workspaceTag, operation: async (dek) => {
+    const storedCatalog = await repository.readRuntimeCatalog({ workspaceTag });
+    const existing = await repository.readEncryptedRecord({ workspaceTag, logicalKey });
+    const plain = utf8Bytes(value);
+    const blobId = randomBlobId();
+    const envelope = await encryptBytes(dek, plain, recordAad({
+      vaultFormatVersion: 1, userId: USER, companyId: COMPANY,
+      logicalStorageKey: logicalKey, blobIdentifier: blobId, recordSchemaVersion: 1,
+    }));
+    const keys = await repository.listEncryptedRecordKeys({ workspaceTag });
+    const entries = [];
+    for (const key of keys) {
+      if (key === logicalKey) continue;
+      const record = await repository.readEncryptedRecord({ workspaceTag, logicalKey: key });
+      const bytes = await decryptBytes(dek, record.ciphertext, record.iv, recordAad({
+        vaultFormatVersion: 1, userId: USER, companyId: COMPANY,
+        logicalStorageKey: key, blobIdentifier: record.blobId, recordSchemaVersion: 1,
+      }));
+      entries.push({ key, blobId: record.blobId, byteLength: bytes.length, digest: await digestBytes(bytes), revision: record.revision });
+      bytes.fill(0);
+    }
+    entries.push({
+      key: logicalKey, blobId, byteLength: plain.length,
+      digest: await digestBytes(plain), revision: existing ? existing.revision + 1 : 1,
+    });
+    const catalog = buildRuntimeCatalog({
+      runtimeGeneration: storedCatalog.runtimeGeneration,
+      catalogRevision: storedCatalog.revision + 1,
+      entries,
+    });
+    const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
+    await repository.commitRuntimeRecordSet({
+      workspaceTag,
+      logicalKey,
+      expectedRecordRevision: existing ? existing.revision : null,
+      expectedCatalogRevision: storedCatalog.revision,
+      blobId,
+      recordSchemaVersion: 1,
+      ciphertext: envelope.ciphertext,
+      iv: envelope.iv,
+      catalogCiphertext: catalogEnvelope.ciphertext,
+      catalogIv: catalogEnvelope.iv,
+      runtimeGeneration: storedCatalog.runtimeGeneration,
+      runtimeSchemaVersion: 1,
+    });
+    plain.fill(0);
+    return true;
+  } });
+}
+
+test("logical change events fire only after the atomic replacement", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+
+  // Another tab commits a newer value; this tab's cache is now stale.
+  await commitBehindTheRuntime("estipaid-customers-v1", "committed-elsewhere");
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+
+  const seen = [];
+  const listener = (event) => {
+    // A listener that reads back synchronously must see the NEW cache.
+    seen.push({ detail: event.detail.value, readBack: runtimeGetItem(event.detail.key), ready: isVaultRuntimeReady() });
+  };
+  window.addEventListener("pe-localstorage", listener);
+  try {
+    const hydrated = await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+    expect(hydrated.ok).toBe(true);
+  } finally {
+    window.removeEventListener("pe-localstorage", listener);
+  }
+  expect(seen).toHaveLength(1);
+  seen.forEach((entry) => {
+    expect(entry.detail).toBe("committed-elsewhere");
+    // The listener read back the NEW cache, from a ready runtime: the event
+    // cannot be observed before the atomic replacement.
+    expect(entry.readBack).toBe("committed-elsewhere");
+    expect(entry.ready).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- frozen mutations during revalidation.
+// ---------------------------------------------------------------------------
+
+test("a frozen runtime keeps serving reads and definitively refuses writes", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+
+  const frozen = freezeVaultRuntimeMutations();
+  expect(frozen).toMatchObject({ frozen: true, pending: 0 });
+  expect(isVaultRuntimeFrozen()).toBe(true);
+  // Reads still serve the last verified cache.
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+  expect(runtimeLogicalKeys()).toEqual(["estipaid-customers-v1"]);
+  // The adapter is not ready, so the facade fails closed rather than writing.
+  expect(isVaultRuntimeReady()).toBe(false);
+  // Every mutation gets a definite refusal -- never silent acceptance.
+  expect(runtimeSetItem("estipaid-customers-v1", "while-frozen")).toBe(false);
+  expect(runtimeRemoveItem("estipaid-customers-v1")).toBe(false);
+  expect(runtimeClear()).toBe(false);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+  expect(getVaultRuntimeStatus().pending).toBe(0);
+
+  unfreezeVaultRuntimeMutations();
+  expect(isVaultRuntimeFrozen()).toBe(false);
+  expect(isVaultRuntimeReady()).toBe(true);
+  expect(runtimeSetItem("estipaid-customers-v1", "after-unfreeze")).toBe(true);
+  const status = await flushVaultRuntime();
+  expect(status.state).toBe("ready");
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("after-unfreeze");
+});
+
+test("an atomic replacement clears the freeze", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  freezeVaultRuntimeMutations();
+  expect(isVaultRuntimeReady()).toBe(false);
+
+  const hydrated = await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  expect(hydrated.ok).toBe(true);
+  expect(isVaultRuntimeFrozen()).toBe(false);
+  expect(isVaultRuntimeReady()).toBe(true);
+});
+
+test("freezing an absent or blocked runtime reports no freeze", async () => {
+  expect(freezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0, pending: 0 });
+  expect(unfreezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0 });
+  expect(isVaultRuntimeFrozen()).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- fallback selection follows the ACTUAL transport.
+//
+// A constructor that merely exists is not proof of a usable channel: it can
+// throw, or hand back an object that cannot carry a message. The focus/
+// visibility fallback is chosen on what was really opened.
+// ---------------------------------------------------------------------------
+
+describe("transport-aware focus fallback", () => {
+  let unsubscribe = null;
+  let signals = 0;
+  let visibility = "visible";
+
+  beforeEach(async () => {
+    signals = 0;
+    visibility = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    channels.clear();
+    await readyRuntime();
+  });
+
+  afterEach(() => {
+    if (unsubscribe) unsubscribe();
+    unsubscribe = null;
+    channels.forEach((entry) => entry.close());
+    channels.clear();
+    delete globalThis.BroadcastChannel;
+    delete document.visibilityState;
+  });
+
+  function subscribe() {
+    unsubscribe = subscribeVaultRuntimeRevalidation(() => { signals += 1; });
+  }
+
+  test("a usable channel means no focus fallback", () => {
+    globalThis.BroadcastChannel = FakeBroadcastChannel;
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(signals).toBe(0);
+    // ... and the real transport still delivers.
+    const remote = new FakeBroadcastChannel("estipaid-vault-runtime-v1");
+    const described = describeVaultRuntime();
+    remote.postMessage({
+      type: "runtime-committed",
+      workspaceTag: TAG_FOR_TEST,
+      runtimeGeneration: described.runtimeGeneration,
+      catalogRevision: described.catalogRevision + 1,
+    });
+    expect(signals).toBe(1);
+    remote.close();
+  });
+
+  test("a missing constructor installs the fallback", () => {
+    delete globalThis.BroadcastChannel;
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    expect(signals).toBe(1);
+  });
+
+  test("a constructor that throws installs the fallback", () => {
+    globalThis.BroadcastChannel = function ThrowingChannel() { throw new Error("blocked by policy"); };
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    expect(signals).toBe(1);
+  });
+
+  test("a constructor returning an unusable object installs the fallback", () => {
+    globalThis.BroadcastChannel = function UnusableChannel() { return { name: "unusable" }; };
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    expect(signals).toBe(1);
+  });
+
+  test("the fallback ignores hidden visibility and hidden focus", () => {
+    delete globalThis.BroadcastChannel;
+    subscribe();
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    expect(signals).toBe(0);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(signals).toBe(1);
+  });
+
+  test("cleanup removes the fallback listeners exactly once", () => {
+    delete globalThis.BroadcastChannel;
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    expect(signals).toBe(1);
+    unsubscribe();
+    unsubscribe = null;
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(signals).toBe(1);
+  });
+
+  test("resubscribing does not install duplicate fallback listeners", () => {
+    delete globalThis.BroadcastChannel;
+    subscribe();
+    unsubscribe();
+    subscribe();
+    window.dispatchEvent(new Event("focus"));
+    // One listener, one signal -- not two.
+    expect(signals).toBe(1);
+  });
+});
+
+test("a failed hydration for another identity never revokes the active runtime", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "mine");
+  await sealMigratedWorkspace();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  const generation = describeVaultRuntime().generation;
+
+  // A late hydration belonging to a DIFFERENT workspace fails; the runtime that
+  // replaced it must be untouched.
+  const foreign = await hydrateVaultRuntime({
+    userId: "99999999-8888-4777-8666-555555555555",
+    companyId: COMPANY,
+    repository,
+  });
+  expect(foreign.ok).toBe(false);
+  expect(isVaultRuntimeReady()).toBe(true);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("mine");
+  expect(describeVaultRuntime().generation).toBe(generation);
 });
