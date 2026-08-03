@@ -31,8 +31,11 @@ jest.mock("./vaultSession", () => ({
   runWithActiveVaultDek: jest.fn(),
 }));
 jest.mock("./vaultRuntimeStore", () => ({
+  beginVaultRuntimeActivation: jest.fn(),
   flushVaultRuntime: jest.fn(),
   freezeVaultRuntimeMutations: jest.fn(),
+  hasVaultRuntimeSession: jest.fn(),
+  isVaultRuntimeReadable: jest.fn(),
   unfreezeVaultRuntimeMutations: jest.fn(),
   getVaultRuntimeStatus: jest.fn(() => ({ state: "ready", generation: 1, pending: 0, code: "", entryCount: 0 })),
   subscribeVaultRuntimeStatus: jest.fn(() => () => {}),
@@ -63,6 +66,7 @@ const scoped = require("./accountScopedLocalStorage");
 const USER = "11111111-2222-4333-8444-555555555555";
 const COMPANY = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 let latest;
+const leases = [];
 
 function Probe(props) {
   latest = useVaultRuntimeActivation(props);
@@ -77,6 +81,7 @@ function primeRepository({ catalog = null } = {}) {
 
 beforeEach(() => {
   latest = undefined;
+  leases.length = 0;
   // resetMocks strips factory implementations, so the workspace tag is primed here.
   require("./vaultSession").deriveWorkspaceVaultTag.mockResolvedValue("A".repeat(43));
   policy.getVaultBridgeBuildPolicy.mockReturnValue({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
@@ -86,8 +91,17 @@ beforeEach(() => {
   runtime.sealVaultRuntime.mockResolvedValue({ ok: true, state: "sealed", code: "", entryCount: 1, generation: 0 });
   runtime.hydrateVaultRuntime.mockResolvedValue({ ok: true, state: "ready", code: "", entryCount: 1, generation: 1 });
   runtime.flushVaultRuntime.mockResolvedValue({ state: "ready", code: "", pending: 0, generation: 1, entryCount: 1 });
-  runtime.freezeVaultRuntimeMutations.mockReturnValue({ frozen: true, generation: 1, pending: 0 });
-  runtime.unfreezeVaultRuntimeMutations.mockReturnValue({ frozen: false, generation: 1 });
+  // The real store hands back an OPAQUE lease; the hook must carry that exact
+  // token into hydration and back into unfreeze.
+  runtime.freezeVaultRuntimeMutations.mockImplementation(() => {
+    leases.push(Object.freeze({}));
+    return { frozen: true, generation: 1, pending: 0, lease: leases[leases.length - 1] };
+  });
+  runtime.unfreezeVaultRuntimeMutations.mockReturnValue({ frozen: false, generation: 1, stale: false });
+  runtime.beginVaultRuntimeActivation.mockImplementation(() => Object.freeze({}));
+  // A session exists for this identity even while it is frozen.
+  runtime.hasVaultRuntimeSession.mockReturnValue(true);
+  runtime.isVaultRuntimeReadable.mockReturnValue(true);
   runtime.isVaultRuntimeReady.mockReturnValue(true);
   runtime.subscribeVaultRuntimeStatus.mockReturnValue(() => {});
   runtime.subscribeVaultRuntimeRevalidation.mockReturnValue(() => {});
@@ -934,4 +948,172 @@ test("a superseded refresh rejection never disturbs the new identity", async () 
   await act(async () => { pending.reject(); await inFlight; await new Promise((resolve) => setTimeout(resolve, 0)); });
   expect(latest.state).toBe("ready");
   expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- a refresh while FROZEN must still coalesce.
+//
+// A frozen runtime deliberately reports isVaultRuntimeReady() === false, so
+// using readiness as the test for "does this identity own a session" sent the
+// second refresh down the DESTRUCTIVE activation path. These tests model the
+// real freeze contract rather than a permanently-true mock: freezing flips
+// readiness to false and only the exact lease reopens it.
+// ---------------------------------------------------------------------------
+
+function installRealFreezeSemantics() {
+  const session = { frozen: false, lease: null, generation: 1 };
+  runtime.freezeVaultRuntimeMutations.mockImplementation(() => {
+    session.frozen = true;
+    session.lease = Object.freeze({});
+    return { frozen: true, generation: session.generation, pending: 0, lease: session.lease };
+  });
+  runtime.unfreezeVaultRuntimeMutations.mockImplementation((lease) => {
+    if (lease !== session.lease) return { frozen: session.frozen, generation: session.generation, stale: true };
+    session.frozen = false;
+    session.lease = null;
+    return { frozen: false, generation: session.generation, stale: false };
+  });
+  // Exactly the real contract: frozen is NOT ready, but the session exists.
+  runtime.isVaultRuntimeReady.mockImplementation(() => !session.frozen);
+  runtime.isVaultRuntimeReadable.mockImplementation(() => true);
+  runtime.hasVaultRuntimeSession.mockImplementation(() => true);
+  return session;
+}
+
+test("a second and third refresh while frozen coalesce instead of re-activating", async () => {
+  const session = installRealFreezeSemantics();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let hydrations = 0;
+  const frozenDuringHydration = [];
+  const readyDuringHydration = [];
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    hydrations += 1;
+    frozenDuringHydration.push(session.frozen);
+    readyDuringHydration.push(runtime.isVaultRuntimeReady());
+    if (hydrations === 1) await gate;
+    session.frozen = false;
+    session.lease = null;
+    session.generation += 1;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: session.generation };
+  });
+
+  orchestrator.migrateActiveWorkspaceVault.mockClear();
+  runtime.sealVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+  runtime.beginVaultRuntimeActivation.mockClear();
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => {
+    latest.refresh();                       // pass 1 -- freezes
+    await Promise.resolve();
+    latest.refresh();                       // pass 2 request -- while frozen
+    latest.refresh();                       // pass 3 request -- while frozen
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  // 1/2: the first refresh froze, and readiness really did become false.
+  expect(frozenDuringHydration[0]).toBe(true);
+  expect(readyDuringHydration[0]).toBe(false);
+  // 3/6: the later refreshes coalesced into exactly ONE additional pass.
+  expect(hydrations).toBe(2);
+  // 4: initial activation never ran.
+  expect(orchestrator.migrateActiveWorkspaceVault).not.toHaveBeenCalled();
+  expect(runtime.sealVaultRuntime).not.toHaveBeenCalled();
+  expect(runtime.beginVaultRuntimeActivation).not.toHaveBeenCalled();
+  // 5: nothing was revoked.
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(latest.state).toBe("ready");
+});
+
+test("a remote signal arriving while frozen also coalesces rather than re-activating", async () => {
+  const session = installRealFreezeSemantics();
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let hydrations = 0;
+  runtime.hydrateVaultRuntime.mockImplementation(async () => {
+    hydrations += 1;
+    if (hydrations === 1) await gate;
+    session.frozen = false;
+    session.generation += 1;
+    return { ok: true, state: "ready", code: "", entryCount: 1, generation: session.generation };
+  });
+  orchestrator.migrateActiveWorkspaceVault.mockClear();
+  runtime.beginVaultRuntimeActivation.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+
+  const signal = revalidation();
+  await act(async () => {
+    signal();                               // remote pass starts and freezes
+    await Promise.resolve();
+    latest.refresh();                       // manual refresh while frozen
+    signal();                               // another remote signal while frozen
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(hydrations).toBe(2);
+  expect(orchestrator.migrateActiveWorkspaceVault).not.toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("the hook carries the exact lease into hydration and back into unfreeze", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  runtime.hydrateVaultRuntime.mockClear();
+  await act(async () => { await revalidation()(); });
+
+  const hydrateCall = runtime.hydrateVaultRuntime.mock.calls.at(-1)[0];
+  expect(hydrateCall.lease).toBe(leases[leases.length - 1]);
+  expect(Object.keys(hydrateCall.lease)).toEqual([]);
+  // A successful replacement cleared the freeze with the session it retired, so
+  // the hook does not call unfreeze at all.
+  expect(runtime.unfreezeVaultRuntimeMutations).not.toHaveBeenCalled();
+});
+
+test("a stale candidate leaves the hook result untouched", async () => {
+  const revalidation = captureRevalidation();
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  // The store reports that this pass no longer owns the session.
+  runtime.hydrateVaultRuntime.mockResolvedValue({ ok: false, state: "stale", code: "STALE_SESSION", entryCount: 0, generation: 0 });
+  scoped.installAuthoritativeVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+
+  await act(async () => { await revalidation()(); });
+
+  // Not blocked, not revoked, no adapter installed: it simply stood down.
+  expect(latest.state).toBe("ready");
+  expect(latest.code).toBe("");
+  expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).not.toHaveBeenCalled();
+  expect(scoped.revokeAuthoritativeVaultRuntime).not.toHaveBeenCalled();
+});
+
+test("initial activation claims an activation token and a stale one publishes nothing", async () => {
+  render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  await waitFor(() => expect(latest.state).toBe("ready"));
+  expect(runtime.beginVaultRuntimeActivation).toHaveBeenCalled();
+  const activationToken = runtime.beginVaultRuntimeActivation.mock.results.at(-1).value;
+  expect(runtime.hydrateVaultRuntime.mock.calls.at(-1)[0].activation).toBe(activationToken);
+
+  // A later activation whose candidate comes back stale must not block the hook.
+  runtime.hydrateVaultRuntime.mockResolvedValue({ ok: false, state: "stale", code: "STALE_SESSION", entryCount: 0, generation: 0 });
+  scoped.installAuthoritativeVaultRuntime.mockClear();
+  await act(async () => { await latest.refresh(); });
+  expect(latest.state).not.toBe("blocked");
+  expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
 });

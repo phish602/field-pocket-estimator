@@ -206,18 +206,30 @@ test("an adapter for a different workspace tag is never honoured", () => {
   expect(isAuthoritativeVaultRuntimeInstalled(TAG)).toBe(false);
 });
 
-test("a not-ready or stale-generation adapter is never honoured", () => {
+test("a not-ready or stale-generation adapter reads absent, never scoped plaintext", () => {
   activate();
   const adapter = fakeAdapter({ generation: 2, seed: { "estipaid-customers-v1": "runtime" } });
-  // Installed generation 1 while the adapter only reports ready for 2.
+  // Installed generation 1 while the adapter only answers for generation 2.
   installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
-  expect(facade.getItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+  // ISO-16 review fix: an installed-but-unusable authoritative runtime does NOT
+  // reopen the scoped plaintext business channel. The key reads absent.
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+  // Documented native exclusions still enumerate; the approved business key does not.
+  const enumerated = [];
+  for (let index = 0; index < facade.length; index += 1) enumerated.push(facade.key(index));
+  expect(enumerated).not.toContain("estipaid-customers-v1");
 
   const live = fakeAdapter({ generation: 1, seed: { "estipaid-customers-v1": "runtime" } });
   installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter: live });
   expect(facade.getItem("estipaid-customers-v1")).toBe("runtime");
   live.ready = false;
-  expect(facade.getItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+
+  // The plaintext value is still physically present -- it is invisible, not
+  // deleted -- and becomes irrelevant again once the runtime answers.
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"stale-plaintext"}');
+  live.ready = true;
+  expect(facade.getItem("estipaid-customers-v1")).toBe("runtime");
 });
 
 test("deactivating the workspace revokes the authoritative adapter synchronously", () => {
@@ -234,4 +246,136 @@ test("a malformed adapter is rejected outright", () => {
   expect(installAuthoritativeVaultRuntime({ workspaceTag: "", generation: 1, adapter: fakeAdapter() })).toBe(false);
   expect(installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 0, adapter: fakeAdapter() })).toBe(false);
   expect(isAuthoritativeVaultRuntimeInstalled()).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- a FROZEN runtime is still an authoritative runtime.
+//
+// Being installed for this workspace and being mutation-ready are different
+// questions. Treating "temporarily not mutation-ready" as "no authoritative
+// runtime exists" made the facade fall through to scoped physical localStorage
+// for getItem, length, and key -- exactly the plaintext channel the vault
+// exists to close.
+// ---------------------------------------------------------------------------
+
+// Mirrors the real runtime contract: a frozen session can still READ its last
+// verified cache, but refuses every mutation.
+function freezableAdapter({ generation = 1, seed = {} } = {}) {
+  const cache = new Map(Object.entries(seed));
+  return {
+    cache,
+    frozen: false,
+    revoked: false,
+    canRead(requested) { return !this.revoked && requested === generation; },
+    canMutate(requested) { return !this.revoked && !this.frozen && requested === generation; },
+    isReady(requested) { return this.canMutate(requested); },
+    getItem(key) { return cache.has(key) ? cache.get(key) : null; },
+    setItem(key, value) { if (this.canMutate(generation)) cache.set(key, String(value)); },
+    removeItem(key) { if (this.canMutate(generation)) cache.delete(key); },
+    clear() { if (this.canMutate(generation)) cache.clear(); },
+    keys() { return [...cache.keys()]; },
+  };
+}
+
+test("a frozen runtime serves encrypted reads and never scoped plaintext", () => {
+  activate();
+  const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  // A conflicting scoped plaintext value for the same approved key.
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+
+  adapter.frozen = true;
+  expect(facade.getItem("estipaid-customers-v1")).toBe("encrypted-value");
+  expect(facade.getItem("estipaid-customers-v1")).not.toBe("plaintext-value");
+
+  // Enumeration comes from the encrypted runtime, not from the scoped prefix.
+  const enumerated = [];
+  for (let index = 0; index < facade.length; index += 1) enumerated.push(facade.key(index));
+  expect(enumerated).toContain("estipaid-customers-v1");
+  // The documented native exclusion is still visible; foreign, quarantined, and
+  // bare-legacy keys stay invisible.
+  expect(enumerated).toContain("estipaid-vault-idle-lock-minutes");
+  expect(enumerated).not.toContain("field-pocket-customers-v1");
+});
+
+test("a frozen runtime refuses every approved mutation without touching plaintext", () => {
+  activate();
+  const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+  adapter.frozen = true;
+
+  facade.setItem("estipaid-customers-v1", "written-while-frozen");
+  facade.setItem("estipaid-projects-v1", "written-while-frozen");
+  facade.removeItem("estipaid-customers-v1");
+  facade.clear();
+
+  // The cache is untouched ...
+  expect(adapter.cache.get("estipaid-customers-v1")).toBe("encrypted-value");
+  expect(adapter.cache.has("estipaid-projects-v1")).toBe(false);
+  expect(adapter.cache.size).toBe(1);
+  // ... and no scoped plaintext was created or modified.
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-projects-v1`)).toBeNull();
+  // Reads still serve the verified cache throughout.
+  expect(facade.getItem("estipaid-customers-v1")).toBe("encrypted-value");
+});
+
+test("documented exclusions and unknown keys keep their frozen behaviour", () => {
+  activate();
+  const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  adapter.frozen = true;
+
+  // A documented native exclusion keeps using its classified location.
+  expect(facade.getItem("estipaid-vault-idle-lock-minutes")).toBe("30");
+  facade.setItem("estipaid-vault-idle-lock-minutes", "15");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-vault-idle-lock-minutes`)).toBe("15");
+
+  // An unclassified workspace-shaped key reads absent and refuses mutation.
+  expect(facade.getItem("estipaid-brand-new-key-v1")).toBeNull();
+  facade.setItem("estipaid-brand-new-key-v1", "value");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-brand-new-key-v1`)).toBeNull();
+
+  // Quarantined and foreign keys stay invisible and immutable.
+  expect(facade.getItem("field-pocket-customers-v1")).toBeNull();
+  facade.setItem("field-pocket-customers-v1", "mutated");
+  expect(storage.getItem("field-pocket-customers-v1")).toBe('{"note":"quarantined"}');
+  expect(storage.getItem(`${FOREIGN_NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"foreign"}');
+});
+
+test("after the atomic replacement reads come from the new encrypted cache", () => {
+  activate();
+  const first = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter: first });
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+  first.frozen = true;
+  expect(facade.getItem("estipaid-customers-v1")).toBe("encrypted-value");
+
+  // The replacement installs a new adapter for the new generation.
+  const replacement = freezableAdapter({ generation: 2, seed: { "estipaid-customers-v1": "replacement-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 2, adapter: replacement });
+  expect(facade.getItem("estipaid-customers-v1")).toBe("replacement-value");
+  facade.setItem("estipaid-customers-v1", "written-after-replacement");
+  expect(replacement.cache.get("estipaid-customers-v1")).toBe("written-after-replacement");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
+});
+
+test("after lock or revocation no approved plaintext fallback is available", () => {
+  activate();
+  const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+
+  // A lock that leaves the adapter installed but unusable.
+  adapter.revoked = true;
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+  facade.setItem("estipaid-customers-v1", "written-after-lock");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
+
+  // A full revocation uninstalls the adapter; approved business plaintext is
+  // still not served, because the workspace vault compatibility is no longer
+  // legacy-safe once authority exists.
+  revokeAuthoritativeVaultRuntime();
+  expect(isAuthoritativeVaultRuntimeInstalled(TAG)).toBe(false);
 });

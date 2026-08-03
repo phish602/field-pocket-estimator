@@ -44,6 +44,7 @@ export const VAULT_RUNTIME_ERROR_CODES = Object.freeze({
   CATALOG_ABSENT: "CATALOG_ABSENT",
   CATALOG_INVALID: "CATALOG_INVALID",
   RECORD_INVALID: "RECORD_INVALID",
+  STALE_SESSION: "STALE_SESSION",
   MIGRATION_UNVERIFIED: "MIGRATION_UNVERIFIED",
   RECORD_MISSING: "RECORD_MISSING",
   RECORD_UNEXPECTED: "RECORD_UNEXPECTED",
@@ -59,6 +60,50 @@ const RECORD_SCHEMA_VERSION = 1;
 // Module-private. Never exported, never serialized, never exposed on window.
 let active = null;
 let generationCounter = 0;
+
+// ---------------------------------------------------------------------------
+// Exact runtime-session ownership
+//
+// Identity equality is NOT enough. The same user and company can lock, idle
+// lock, log out and back in, unlock again, or re-activate while an older
+// operation is still in flight, and that older operation must not be able to
+// publish, revoke, block, clear, or unfreeze whatever replaced it.
+//
+// So every long operation carries an OPAQUE token bound to the exact session it
+// began from. The token is an empty frozen object: it carries no identity, no
+// workspace tag, no key material, no plaintext, and no repository record. The
+// binding lives here, in a WeakMap the token holder can never read.
+// ---------------------------------------------------------------------------
+
+const leaseSessions = new WeakMap();
+let currentActivation = null;
+
+function newToken() {
+  return Object.freeze({});
+}
+
+function leaseOwnsActiveSession(lease) {
+  return Boolean(lease && active && active.lease === lease && leaseSessions.get(lease) === active);
+}
+
+function activationIsCurrent(token) {
+  return Boolean(token && token === currentActivation);
+}
+
+/**
+ * Claims ownership of the NEXT runtime session for an initial activation. A
+ * completion whose token is no longer current (lock, unmount, or a newer
+ * activation) can never recreate a runtime.
+ */
+export function beginVaultRuntimeActivation() {
+  currentActivation = newToken();
+  return currentActivation;
+}
+
+/** True while a runtime session exists for this tab, frozen or not. */
+export function hasVaultRuntimeSession() {
+  return Boolean(active && !active.blocked);
+}
 
 function idle() {
   return Object.freeze({ state: "idle", generation: 0, pending: 0, code: "", entryCount: 0 });
@@ -248,6 +293,17 @@ export function getVaultRuntimeStatus() {
   return publicStatus();
 }
 
+/**
+ * Readable: the last VERIFIED cache can still answer approved reads, including
+ * while mutations are frozen for a revalidation. This is deliberately separate
+ * from readiness -- a facade that treats "temporarily not mutation-ready" as "no
+ * authoritative runtime" would fall back to scoped plaintext.
+ */
+export function isVaultRuntimeReadable(generation) {
+  return Boolean(active && !active.blocked
+    && (generation === undefined || active.generation === generation));
+}
+
 export function isVaultRuntimeReady(generation) {
   // A frozen runtime is mid-revalidation: its cache is still the last verified
   // one, but it is not "ready", so the facade fails closed rather than letting a
@@ -262,18 +318,29 @@ export function isVaultRuntimeReady(generation) {
  * being accepted into a session that is about to be replaced.
  */
 export function freezeVaultRuntimeMutations() {
-  if (!active || active.blocked) return Object.freeze({ frozen: false, generation: 0, pending: 0 });
+  if (!active || active.blocked) return Object.freeze({ frozen: false, generation: 0, pending: 0, lease: null });
+  const lease = newToken();
   active.frozen = true;
+  active.lease = lease;
+  leaseSessions.set(lease, active);
   notifyStatus();
-  return Object.freeze({ frozen: true, generation: active.generation, pending: active.queue.length });
+  return Object.freeze({ frozen: true, generation: active.generation, pending: active.queue.length, lease });
 }
 
-/** Reopen mutations when a revalidation ends without replacing the runtime. */
-export function unfreezeVaultRuntimeMutations() {
-  if (!active) return Object.freeze({ frozen: false, generation: 0 });
+/**
+ * Reopen mutations when a revalidation ends without replacing the runtime. Only
+ * the EXACT lease that froze the session may reopen it: a stale lease, a lease
+ * from a replaced session or another generation, and no lease at all all leave
+ * the current runtime untouched.
+ */
+export function unfreezeVaultRuntimeMutations(lease) {
+  if (!leaseOwnsActiveSession(lease)) {
+    return Object.freeze({ frozen: Boolean(active && active.frozen), generation: active ? active.generation : 0, stale: true });
+  }
   active.frozen = false;
+  active.lease = null;
   notifyStatus();
-  return Object.freeze({ frozen: false, generation: active.generation });
+  return Object.freeze({ frozen: false, generation: active.generation, stale: false });
 }
 
 export function isVaultRuntimeFrozen() {
@@ -299,13 +366,27 @@ function failureResult(code) {
   return Object.freeze({ ok: false, state: "blocked", code, entryCount: 0, generation: 0 });
 }
 
-// A failed candidate is fail-closed for ITS OWN identity: the runtime it was
-// verifying is revoked rather than left serving unverifiable durable state. It
-// must never revoke a runtime belonging to a DIFFERENT identity -- a late
-// failure from a superseded workspace cannot tear down the one that replaced it.
-function hydrationFailureFor({ userId, companyId }) {
+function staleResult() {
+  // A superseded operation reports itself stale and changes nothing at all.
+  return Object.freeze({ ok: false, state: "stale", code: VAULT_RUNTIME_ERROR_CODES.STALE_SESSION, entryCount: 0, generation: 0 });
+}
+
+// A failed candidate is fail-closed for the EXACT session it was verifying: that
+// session is revoked rather than left serving unverifiable durable state. A
+// failure whose lease or activation claim is no longer current changes nothing,
+// so a late failure can never tear down the runtime that replaced it.
+function hydrationFailureFor({ lease, activation, userId, companyId }) {
   return (code) => {
-    if (!active || (active.userId === userId && active.companyId === companyId)) revokeVaultRuntime();
+    // Ownership is BOTH the exact token and the exact identity. A token proves
+    // the session has not been replaced; the identity check proves this failure
+    // belongs to that session's workspace at all. Without a token (an internal
+    // or test-only hydration) the identity check alone still applies.
+    const sameIdentity = !active || (active.userId === userId && active.companyId === companyId);
+    const tokenCurrent = lease
+      ? leaseOwnsActiveSession(lease)
+      : (activation ? activationIsCurrent(activation) : true);
+    if (!tokenCurrent || !sameIdentity) return staleResult();
+    revokeVaultRuntime();
     return failureResult(code);
   };
 }
@@ -314,7 +395,7 @@ function hydrationFailureFor({ userId, companyId }) {
  * Verify the encrypted runtime catalog and every record it names, then publish a
  * synchronous cache. Nothing is published unless the ENTIRE set verifies.
  */
-export async function hydrateVaultRuntime({ userId, companyId, repository = null } = {}) {
+export async function hydrateVaultRuntime({ userId, companyId, repository = null, lease = null, activation = null } = {}) {
   // The previously verified runtime stays ACTIVE for the whole of verification.
   // Revoking first left a window in which the hook could still report ready
   // while the authoritative cache was already gone: reads looked empty and
@@ -322,7 +403,12 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
   // local CANDIDATE and only becomes active in one atomic step at the end.
   const previous = active && !active.blocked ? active : null;
   const previousCache = previous ? new Map(previous.cache) : null;
-  const hydrationFailure = hydrationFailureFor({ userId, companyId });
+  const hydrationFailure = hydrationFailureFor({ lease, activation, userId, companyId });
+  // A revalidation must present a lease that still owns the exact active
+  // session; an initial activation must present the current activation claim.
+  // Anything else is already superseded and stops here.
+  if (lease && !leaseOwnsActiveSession(lease)) return staleResult();
+  if (!lease && activation && !activationIsCurrent(activation)) return staleResult();
   let workspaceTag;
   try {
     workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
@@ -419,7 +505,18 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
         blocked: false,
         blockedCode: "",
         frozen: false,
+        lease: null,
       };
+      // Ownership is re-checked at the LAST possible moment. Between the start
+      // of verification and here the runtime may have been locked, revoked,
+      // replaced by a newer same-identity activation, or unmounted -- in every
+      // one of those cases this candidate is stale and must be discarded.
+      const stillOwns = lease ? leaseOwnsActiveSession(lease) : activationIsCurrent(activation);
+      if ((lease || activation) && !stillOwns) {
+        candidateCache.clear();
+        candidateMeta.clear();
+        return staleResult();
+      }
       if (active && active !== previous && (active.userId !== userId || active.companyId !== companyId)) {
         // A different identity took over while this candidate was verifying.
         // Publishing here would hand one workspace's cache to another.
@@ -733,6 +830,11 @@ export async function flushVaultRuntime() {
 
 /** Immediate, synchronous revocation. Nothing survives an identity change. */
 export function revokeVaultRuntime() {
+  // A revocation (lock, idle lock, logout, identity switch, unmount) ends any
+  // activation claim FIRST, and does so even when no session exists yet: an
+  // initial activation that completes after the lock must not recreate a
+  // runtime behind the gate.
+  currentActivation = null;
   if (!active) return;
   const session = active;
   session.queue.length = 0;

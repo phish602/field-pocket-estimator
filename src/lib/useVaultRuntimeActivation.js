@@ -17,12 +17,15 @@ import { createVaultTransitionControlRepository } from "./vaultTransitionControl
 import { migrateActiveWorkspaceVault } from "./vaultMigrationOrchestrator";
 import { deriveWorkspaceVaultTag } from "./vaultSession";
 import {
+  beginVaultRuntimeActivation,
   flushVaultRuntime,
   freezeVaultRuntimeMutations,
+  hasVaultRuntimeSession,
   unfreezeVaultRuntimeMutations,
   subscribeVaultRuntimeStatus,
   subscribeVaultRuntimeRevalidation,
   hydrateVaultRuntime,
+  isVaultRuntimeReadable,
   isVaultRuntimeReady,
   revokeVaultRuntime,
   runtimeClear,
@@ -173,6 +176,11 @@ export default function useVaultRuntimeActivation({
     workspaceTag,
     generation,
     adapter: {
+      // canRead stays true while mutations are frozen: the last VERIFIED cache
+      // is still the only correct answer for an approved key, and falling back
+      // to scoped plaintext is exactly what must never happen.
+      canRead: (adapterGeneration) => isVaultRuntimeReadable(adapterGeneration),
+      canMutate: (adapterGeneration) => isVaultRuntimeReady(adapterGeneration),
       isReady: (adapterGeneration) => isVaultRuntimeReady(adapterGeneration),
       getItem: (logicalKey) => runtimeGetItem(logicalKey),
       setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
@@ -195,6 +203,9 @@ export default function useVaultRuntimeActivation({
     // This operation now owns exactly this identity and generation.
     if (owner) { owner.identity = activeIdentity; owner.generation = generation; }
     revoke();
+    // Claim the next runtime session. A completion after lock, unmount, or a
+    // newer activation can no longer recreate a runtime behind the gate.
+    const activationToken = beginVaultRuntimeActivation();
     setResult(CHECKING);
 
     const stale = () => !current.current.mounted
@@ -294,8 +305,12 @@ export default function useVaultRuntimeActivation({
 
     // 4. Hydrate and verify the runtime catalog and every record it names.
     settle(publicResult("hydrating", "", HYDRATING_MESSAGE));
-    const hydrated = await hydrateVaultRuntime({ userId: activeUserId, companyId: activeCompanyId, repository: vaultRepository });
+    const hydrated = await hydrateVaultRuntime({
+      userId: activeUserId, companyId: activeCompanyId, repository: vaultRepository, activation: activationToken,
+    });
     if (stale()) return DISABLED;
+    // A stale candidate changed nothing and must not be reported as a failure.
+    if (hydrated.state === "stale") return DISABLED;
     if (!hydrated.ok) return settle(publicResult("blocked", hydrated.code || "HYDRATION_FAILED", BLOCKED_MESSAGE));
 
     // 5. Install the authoritative synchronous adapter for this exact workspace
@@ -333,7 +348,7 @@ export default function useVaultRuntimeActivation({
     let outcome = DISABLED;
     // Held in a const box so the per-pass helpers below can flip it without
     // closing over a reassigned loop variable.
-    const pass = { frozen: false };
+    const pass = { frozen: false, lease: null };
     try {
       do {
         revalidation.current.queued = false;
@@ -344,6 +359,7 @@ export default function useVaultRuntimeActivation({
           || current.current.identity !== activeIdentity;
         const fail = (code) => {
           pass.frozen = false;
+          pass.lease = null;
           revoke();
           const blocked = publicResult("blocked", code, BLOCKED_MESSAGE);
           setResult(blocked);
@@ -374,20 +390,39 @@ export default function useVaultRuntimeActivation({
         //    for the duration. Reads keep serving the last VERIFIED cache; new
         //    approved writes get a definite refusal rather than being accepted
         //    into a session that is about to be replaced.
-        freezeVaultRuntimeMutations();
-        pass.frozen = true;
+        const frozen = freezeVaultRuntimeMutations();
+        pass.frozen = frozen.frozen;
+        pass.lease = frozen.lease;
         if (!stale()) setResult(publicResult("hydrating", "", HYDRATING_MESSAGE));
 
         // 3. Verify a candidate. hydrateVaultRuntime keeps the previous verified
         //    runtime active throughout and swaps atomically only on success.
-        const hydrated = await hydrateVaultRuntime({ userId: activeUserId, companyId: activeCompanyId });
+        const hydrated = await hydrateVaultRuntime({
+          userId: activeUserId, companyId: activeCompanyId, lease: pass.lease,
+        });
         if (stale()) return DISABLED;
+        // The lease no longer owns the active session: the runtime was locked,
+        // revoked, or replaced while this candidate was verifying. It published
+        // nothing, so this pass simply stands down.
+        if (hydrated.state === "stale") {
+          pass.frozen = false;
+          pass.lease = null;
+          // This pass published a gated state before it lost ownership, so it
+          // must not leave the hook stuck in `hydrating`. It reports what the
+          // CURRENT owner is, without touching the runtime: ready if a healthy
+          // session exists, otherwise disabled for whoever owns it next.
+          const settled = isVaultRuntimeReady() ? publicResult("ready") : DISABLED;
+          if (current.current.mounted && current.current.identity === activeIdentity) setResult(settled);
+          return settled;
+        }
         if (!hydrated.ok) return fail(hydrated.code || "HYDRATION_FAILED");
 
         // 4. The replacement already happened inside hydration; bind the adapter
         //    to the new generation and reopen mutations.
         if (!installAdapter(workspaceTag, hydrated.generation)) return fail("ADAPTER_UNAVAILABLE");
+        // The replacement cleared the freeze with the session it retired.
         pass.frozen = false;
+        pass.lease = null;
         if (stale()) {
           revoke();
           return DISABLED;
@@ -398,7 +433,8 @@ export default function useVaultRuntimeActivation({
     } finally {
       // A revalidation that ends without replacing the runtime must never leave
       // mutations frozen.
-      if (pass.frozen) unfreezeVaultRuntimeMutations();
+      // Only the exact lease may reopen mutations; a stale one changes nothing.
+      if (pass.frozen && pass.lease) unfreezeVaultRuntimeMutations(pass.lease);
       revalidation.current.running = false;
       revalidation.current.queued = false;
     }
@@ -494,10 +530,12 @@ export default function useVaultRuntimeActivation({
   // runtime before the flush and could lose an accepted write.
   const refresh = useCallback(() => {
     if (!identity || !vaultUnlocked) return Promise.resolve(DISABLED);
-    // Only a runtime that is actually installed for this identity can be
-    // revalidated; anything else (never activated, blocked, disabled) still
-    // needs the full activation path.
-    if (current.current.identity === identity && isVaultRuntimeReady()) {
+    // A FROZEN runtime deliberately reports not-ready, so readiness must never
+    // be the test for "does this identity own a session". Using it meant a
+    // second refresh during a revalidation fell into the destructive activation
+    // path instead of coalescing.
+    if (current.current.identity === identity
+      && (revalidation.current.running || hasVaultRuntimeSession())) {
       return guarded((owner) => revalidate(identity, userId, companyId, owner));
     }
     return activate(identity, userId, companyId);

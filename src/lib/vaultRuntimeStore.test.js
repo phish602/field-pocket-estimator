@@ -6,7 +6,9 @@
 import { IDBFactory } from "fake-indexeddb";
 import {
   VAULT_RUNTIME_ERROR_CODES,
+  beginVaultRuntimeActivation,
   freezeVaultRuntimeMutations,
+  hasVaultRuntimeSession,
   isVaultRuntimeFrozen,
   subscribeVaultRuntimeRevalidation,
   unfreezeVaultRuntimeMutations,
@@ -1082,6 +1084,9 @@ test("a frozen runtime keeps serving reads and definitively refuses writes", asy
 
   const frozen = freezeVaultRuntimeMutations();
   expect(frozen).toMatchObject({ frozen: true, pending: 0 });
+  // The lease is opaque: an empty frozen object carrying nothing at all.
+  expect(Object.keys(frozen.lease)).toEqual([]);
+  expect(Object.isFrozen(frozen.lease)).toBe(true);
   expect(isVaultRuntimeFrozen()).toBe(true);
   // Reads still serve the last verified cache.
   expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
@@ -1095,7 +1100,11 @@ test("a frozen runtime keeps serving reads and definitively refuses writes", asy
   expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
   expect(getVaultRuntimeStatus().pending).toBe(0);
 
-  unfreezeVaultRuntimeMutations();
+  // Only the exact lease reopens mutations.
+  expect(unfreezeVaultRuntimeMutations()).toMatchObject({ stale: true });
+  expect(unfreezeVaultRuntimeMutations(Object.freeze({}))).toMatchObject({ stale: true });
+  expect(isVaultRuntimeFrozen()).toBe(true);
+  unfreezeVaultRuntimeMutations(frozen.lease);
   expect(isVaultRuntimeFrozen()).toBe(false);
   expect(isVaultRuntimeReady()).toBe(true);
   expect(runtimeSetItem("estipaid-customers-v1", "after-unfreeze")).toBe(true);
@@ -1118,8 +1127,8 @@ test("an atomic replacement clears the freeze", async () => {
 });
 
 test("freezing an absent or blocked runtime reports no freeze", async () => {
-  expect(freezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0, pending: 0 });
-  expect(unfreezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0 });
+  expect(freezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0, pending: 0, lease: null });
+  expect(unfreezeVaultRuntimeMutations()).toEqual({ frozen: false, generation: 0, stale: true });
   expect(isVaultRuntimeFrozen()).toBe(false);
 });
 
@@ -1249,4 +1258,217 @@ test("a failed hydration for another identity never revokes the active runtime",
   expect(isVaultRuntimeReady()).toBe(true);
   expect(runtimeGetItem("estipaid-customers-v1")).toBe("mine");
   expect(describeVaultRuntime().generation).toBe(generation);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- EXACT runtime-session lease.
+//
+// Identity equality is not enough: the same user and company can lock, idle
+// lock, log out and back in, unlock, or re-activate while an older operation is
+// still verifying. Every long operation now carries an opaque token bound to
+// the exact session it began from, and a superseded operation may not publish,
+// revoke, block, clear, or unfreeze whatever replaced it.
+// ---------------------------------------------------------------------------
+
+// Pauses hydration at a chosen record so a lock or a re-activation can happen
+// while the candidate is mid-flight.
+function pausedRepository(base, { pauseOnKey }) {
+  let release = null;
+  const paused = new Promise((resolve) => { release = resolve; });
+  let armed = true;
+  let reached = null;
+  const reachedPause = new Promise((resolve) => { reached = resolve; });
+  return {
+    repository: {
+      ...base,
+      readEncryptedRecord: async (options) => {
+        if (armed && options.logicalKey === pauseOnKey) {
+          armed = false;
+          reached();
+          await paused;
+        }
+        return base.readEncryptedRecord(options);
+      },
+    },
+    reachedPause,
+    release: () => release(),
+  };
+}
+
+async function readyTwoKeyRuntime() {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await writeMigratedRecord("estipaid-projects-v1", "second");
+  await sealMigratedWorkspace();
+  const hydrated = await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository });
+  expect(hydrated.ok).toBe(true);
+}
+
+test("the lease is opaque and reports an active session even while frozen", async () => {
+  await readyTwoKeyRuntime();
+  expect(hasVaultRuntimeSession()).toBe(true);
+  const { lease } = freezeVaultRuntimeMutations();
+  // Frozen is deliberately NOT ready, but the session still exists -- which is
+  // what a repeated refresh must key off.
+  expect(isVaultRuntimeReady()).toBe(false);
+  expect(hasVaultRuntimeSession()).toBe(true);
+  expect(JSON.stringify(lease)).toBe("{}");
+  expect(Object.getOwnPropertyNames(lease)).toEqual([]);
+  expect(Object.getOwnPropertySymbols(lease)).toEqual([]);
+  unfreezeVaultRuntimeMutations(lease);
+});
+
+test("a candidate whose runtime locked mid-flight publishes nothing", async () => {
+  await readyTwoKeyRuntime();
+  const { lease } = freezeVaultRuntimeMutations();
+  const paused = pausedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: paused.repository, lease });
+  await paused.reachedPause;
+
+  // A manual or idle lock revokes the runtime while the candidate is paused.
+  revokeVaultRuntime();
+  paused.release();
+  const outcome = await hydrating;
+
+  expect(outcome).toMatchObject({ ok: false, state: "stale", code: VAULT_RUNTIME_ERROR_CODES.STALE_SESSION });
+  // Nothing was recreated behind the lock.
+  expect(hasVaultRuntimeSession()).toBe(false);
+  expect(isVaultRuntimeReady()).toBe(false);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBeNull();
+  expect(describeVaultRuntime()).toEqual({ active: false });
+});
+
+test("a successful stale candidate never disturbs a newer same-identity session", async () => {
+  await readyTwoKeyRuntime();
+  const { lease } = freezeVaultRuntimeMutations();
+  const paused = pausedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: paused.repository, lease });
+  await paused.reachedPause;
+
+  // Lock, then unlock and re-activate the SAME identity: generation B.
+  revokeVaultRuntime();
+  const activation = beginVaultRuntimeActivation();
+  const reactivated = await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository, activation });
+  expect(reactivated.ok).toBe(true);
+  const generationB = describeVaultRuntime().generation;
+  runtimeSetItem("estipaid-customers-v1", "written-by-b");
+  await flushVaultRuntime();
+
+  paused.release();
+  const outcome = await hydrating;
+
+  expect(outcome).toMatchObject({ ok: false, state: "stale" });
+  // Generation B is untouched: same generation, same cache, still ready, queue
+  // intact, not frozen, not blocked.
+  expect(describeVaultRuntime().generation).toBe(generationB);
+  expect(isVaultRuntimeReady()).toBe(true);
+  expect(isVaultRuntimeFrozen()).toBe(false);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("written-by-b");
+  expect(getVaultRuntimeStatus().state).toBe("ready");
+});
+
+test("a FAILED stale candidate never revokes or blocks the newer session", async () => {
+  await readyTwoKeyRuntime();
+  const { lease } = freezeVaultRuntimeMutations();
+  const failingPaused = pausedRepository({
+    ...repository,
+    readEncryptedRecord: async (options) => (options.logicalKey === "estipaid-projects-v1"
+      ? null                                                                  // the record vanished
+      : repository.readEncryptedRecord(options)),
+  }, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: failingPaused.repository, lease });
+  await failingPaused.reachedPause;
+
+  revokeVaultRuntime();
+  const activation = beginVaultRuntimeActivation();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository, activation });
+  const generationB = describeVaultRuntime().generation;
+
+  failingPaused.release();
+  const outcome = await hydrating;
+
+  expect(outcome).toMatchObject({ ok: false, state: "stale" });
+  expect(describeVaultRuntime().generation).toBe(generationB);
+  expect(isVaultRuntimeReady()).toBe(true);
+  expect(getVaultRuntimeStatus().state).toBe("ready");
+  expect(getVaultRuntimeStatus().code).toBe("");
+  expect(runtimeGetItem("estipaid-customers-v1")).toBe("original");
+});
+
+test("a stale lease cannot unfreeze, freeze, or clear the newer session", async () => {
+  await readyTwoKeyRuntime();
+  const stale = freezeVaultRuntimeMutations();
+  revokeVaultRuntime();
+  const activation = beginVaultRuntimeActivation();
+  await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository, activation });
+  const generationB = describeVaultRuntime().generation;
+  const fresh = freezeVaultRuntimeMutations();
+  expect(isVaultRuntimeFrozen()).toBe(true);
+
+  // The old operation reaching its `finally` must not reopen generation B.
+  expect(unfreezeVaultRuntimeMutations(stale.lease)).toMatchObject({ stale: true });
+  expect(isVaultRuntimeFrozen()).toBe(true);
+  expect(isVaultRuntimeReady()).toBe(false);
+  expect(describeVaultRuntime().generation).toBe(generationB);
+
+  // Only the exact current lease reopens it.
+  expect(unfreezeVaultRuntimeMutations(fresh.lease)).toMatchObject({ stale: false });
+  expect(isVaultRuntimeFrozen()).toBe(false);
+  expect(isVaultRuntimeReady()).toBe(true);
+});
+
+test("a candidate cannot publish into a different workspace identity", async () => {
+  await readyTwoKeyRuntime();
+  const { lease } = freezeVaultRuntimeMutations();
+  const paused = pausedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: paused.repository, lease });
+  await paused.reachedPause;
+
+  // The workspace switched to another identity entirely.
+  revokeVaultRuntime();
+  paused.release();
+  const outcome = await hydrating;
+  expect(outcome).toMatchObject({ ok: false, state: "stale" });
+  expect(hasVaultRuntimeSession()).toBe(false);
+});
+
+test("an activation candidate that completes after a lock recreates nothing", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await writeMigratedRecord("estipaid-projects-v1", "second");
+  await sealMigratedWorkspace();
+
+  const activation = beginVaultRuntimeActivation();
+  const paused = pausedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: paused.repository, activation });
+  await paused.reachedPause;
+
+  // Unmount / lock while the initial candidate is still verifying.
+  revokeVaultRuntime();
+  paused.release();
+  const outcome = await hydrating;
+
+  expect(outcome).toMatchObject({ ok: false, state: "stale" });
+  expect(hasVaultRuntimeSession()).toBe(false);
+  expect(runtimeGetItem("estipaid-customers-v1")).toBeNull();
+});
+
+test("a superseded activation token cannot publish over a newer activation", async () => {
+  await writeMigratedRecord("estipaid-customers-v1", "original");
+  await writeMigratedRecord("estipaid-projects-v1", "second");
+  await sealMigratedWorkspace();
+
+  const first = beginVaultRuntimeActivation();
+  const paused = pausedRepository(repository, { pauseOnKey: "estipaid-projects-v1" });
+  const hydrating = hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository: paused.repository, activation: first });
+  await paused.reachedPause;
+
+  // A newer activation claims the session and completes first.
+  const second = beginVaultRuntimeActivation();
+  const newer = await hydrateVaultRuntime({ userId: USER, companyId: COMPANY, repository, activation: second });
+  expect(newer.ok).toBe(true);
+  const generationB = describeVaultRuntime().generation;
+
+  paused.release();
+  expect(await hydrating).toMatchObject({ ok: false, state: "stale" });
+  expect(describeVaultRuntime().generation).toBe(generationB);
+  expect(isVaultRuntimeReady()).toBe(true);
 });

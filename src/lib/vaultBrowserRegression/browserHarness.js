@@ -49,7 +49,9 @@ import {
   verifyCompletedVaultMigrationAuthority,
 } from "../vaultMigrationOrchestrator";
 import {
+  beginVaultRuntimeActivation,
   freezeVaultRuntimeMutations,
+  hasVaultRuntimeSession,
   isVaultRuntimeFrozen,
   subscribeVaultRuntimeRevalidation,
   unfreezeVaultRuntimeMutations,
@@ -74,6 +76,7 @@ import {
   isAuthoritativeVaultRuntimeInstalled,
   revokeAuthoritativeVaultRuntime,
 } from "../accountScopedLocalStorage";
+import { isVaultRuntimeReadable } from "../vaultRuntimeStore";
 import { decryptBytes, encryptBytes, migrationManifestAad, recordAad } from "../vaultCrypto";
 import {
   buildRuntimeCatalog,
@@ -142,6 +145,7 @@ let stashedCatalogEnvelope = null;
 let logicalEventCapture = [];
 let logicalEventListener = null;
 let originalBroadcastChannel = null;
+const heldLeases = {};
 
 function realStorage() {
   if (!nativeStorage) {
@@ -1133,6 +1137,8 @@ export function createBrowserHarness() {
         workspaceTag,
         generation: status.generation,
         adapter: {
+          canRead: (generation) => isVaultRuntimeReadable(generation),
+          canMutate: (generation) => isVaultRuntimeReady(generation),
           isReady: (generation) => isVaultRuntimeReady(generation),
           getItem: (logicalKey) => runtimeGetItem(logicalKey),
           setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
@@ -1458,7 +1464,7 @@ export function createBrowserHarness() {
       if (flushed.state === "blocked") {
         return Object.freeze({ ok: false, stage: "flush", code: flushed.code, ready: isVaultRuntimeReady() });
       }
-      freezeVaultRuntimeMutations();
+      const frozenLease = freezeVaultRuntimeMutations().lease || null;
       // While frozen: reads still serve the last verified cache, the adapter is
       // not ready, and every approved mutation is definitively refused.
       const during = observe
@@ -1478,15 +1484,18 @@ export function createBrowserHarness() {
           })(),
         })
         : null;
-      const hydrated = await hydrateVaultRuntime({ userId, companyId });
+      const hydrated = await hydrateVaultRuntime({ userId, companyId, lease: frozenLease });
       if (!hydrated.ok) {
-        unfreezeVaultRuntimeMutations();
-        return Object.freeze({ ok: false, stage: "hydrate", code: hydrated.code, during, ready: isVaultRuntimeReady() });
+        // Only the exact lease reopens the session it froze.
+        unfreezeVaultRuntimeMutations(frozenLease);
+        return Object.freeze({ ok: false, stage: "hydrate", code: hydrated.code, state: hydrated.state, during, ready: isVaultRuntimeReady() });
       }
       const installed = installAuthoritativeVaultRuntime({
         workspaceTag,
         generation: hydrated.generation,
         adapter: {
+          canRead: (generation) => isVaultRuntimeReadable(generation),
+          canMutate: (generation) => isVaultRuntimeReady(generation),
           isReady: (generation) => isVaultRuntimeReady(generation),
           getItem: (logicalKey) => runtimeGetItem(logicalKey),
           setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
@@ -1613,6 +1622,115 @@ export function createBrowserHarness() {
       window.dispatchEvent(new Event("focus"));
       await new Promise((resolve) => { window.setTimeout(resolve, 60); });
       return Object.freeze({ dispatched: "focus", visibilityState: document.visibilityState });
+    },
+
+    // ---- ISO-16 exact runtime-session lease probes ----------------------
+
+    // Freezes the exact active session and keeps the lease module-private here,
+    // so a suite can drive a stale candidate without ever handling the token.
+    holdRuntimeLease: ({ slot = "current" } = {}) => {
+      const frozen = freezeVaultRuntimeMutations();
+      heldLeases[slot] = frozen.lease || null;
+      return Object.freeze({
+        frozen: frozen.frozen,
+        held: Boolean(heldLeases[slot]),
+        opaque: heldLeases[slot] ? Object.getOwnPropertyNames(heldLeases[slot]).length === 0 : false,
+        ready: isVaultRuntimeReady(),
+        session: hasVaultRuntimeSession(),
+      });
+    },
+
+    releaseRuntimeLease: ({ slot = "current" } = {}) => {
+      const outcome = unfreezeVaultRuntimeMutations(heldLeases[slot] || null);
+      return Object.freeze({ stale: Boolean(outcome.stale), frozen: isVaultRuntimeFrozen(), ready: isVaultRuntimeReady() });
+    },
+
+    // Runs a hydration under a HELD lease, optionally against a repository that
+    // makes the candidate fail, so a stale success and a stale failure can both
+    // be exercised after the session underneath has been replaced.
+    hydrateUnderHeldLease: async ({ slot = "current", identity = "active", mode = "succeed" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const lease = heldLeases[slot] || null;
+      const repository = mode === "fail"
+        ? { ...vaultRepository(), readEncryptedRecord: async () => null }
+        : undefined;
+      const outcome = await hydrateVaultRuntime({ userId, companyId, repository, lease });
+      return Object.freeze({ ok: outcome.ok, state: outcome.state, code: outcome.code });
+    },
+
+    // Claims an activation token and hydrates under it, exactly as the initial
+    // activation path does.
+    activateRuntimeSession: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const activation = beginVaultRuntimeActivation();
+      const hydrated = await hydrateVaultRuntime({ userId, companyId, activation });
+      if (!hydrated.ok) return Object.freeze({ ok: false, state: hydrated.state, code: hydrated.code });
+      const installed = installAuthoritativeVaultRuntime({
+        workspaceTag,
+        generation: hydrated.generation,
+        adapter: {
+          canRead: (generation) => isVaultRuntimeReadable(generation),
+          canMutate: (generation) => isVaultRuntimeReady(generation),
+          isReady: (generation) => isVaultRuntimeReady(generation),
+          getItem: (logicalKey) => runtimeGetItem(logicalKey),
+          setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
+          removeItem: (logicalKey) => runtimeRemoveItem(logicalKey),
+          clear: () => runtimeClearValue(),
+          keys: () => runtimeLogicalKeys(),
+        },
+      });
+      return Object.freeze({ ok: true, state: "ready", code: "", installed, generation: hydrated.generation });
+    },
+
+    // Sanitized view of the current session: counts and flags only.
+    runtimeSessionState: () => {
+      const described = describeVaultRuntime();
+      return Object.freeze({
+        session: hasVaultRuntimeSession(),
+        frozen: isVaultRuntimeFrozen(),
+        ready: isVaultRuntimeReady(),
+        generation: described.active ? described.generation : 0,
+        catalogRevision: described.active ? described.catalogRevision : 0,
+        entryCount: described.active ? described.entryCount : 0,
+        blocked: described.active ? described.blocked : false,
+        code: described.active ? described.code : "",
+      });
+    },
+
+    // Writes scoped PLAINTEXT for an approved key directly into the physical
+    // store, so the frozen facade can be proven never to serve it.
+    injectScopedPlaintext: async ({ logicalKey, value, identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
+      realStorage().setItem(`${namespace}:${logicalKey}`, value);
+      return Object.freeze({ injected: realStorage().getItem(`${namespace}:${logicalKey}`) === value });
+    },
+
+    // What the FACADE answers for an approved key, plus whether the injected
+    // plaintext is still physically present and untouched.
+    frozenFacadeProbe: async ({ logicalKey, plaintext, identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      const read = facade.getItem(logicalKey);
+      const keys = [];
+      for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+      const cacheBefore = runtimeGetItem(logicalKey);
+      facade.setItem(logicalKey, "written-while-frozen");
+      facade.removeItem(logicalKey);
+      facade.clear();
+      return Object.freeze({
+        attempted: true,
+        readsPlaintext: read === plaintext,
+        readMatchesRuntime: read === cacheBefore,
+        readPresent: read !== null,
+        enumeratesKey: keys.includes(logicalKey),
+        cacheUnchanged: runtimeGetItem(logicalKey) === cacheBefore,
+        plaintextUnchanged: realStorage().getItem(`${namespace}:${logicalKey}`) === plaintext,
+        entryCount: runtimeLogicalKeys().length,
+      });
     },
 
     runStateKey: RUN_STATE_KEY,

@@ -124,14 +124,39 @@ export function classifyAuthoritativeKey(logicalKey) {
   return "refused";
 }
 
-// The adapter is honoured only while it matches the workspace the facade was
-// activated for AND reports itself ready for its own generation.
-function activeAuthoritativeAdapter() {
+// Being INSTALLED for this workspace and being MUTATION-READY are different
+// questions, and conflating them was a real hazard: during a revalidation the
+// runtime deliberately reports not-ready, and the facade then fell through to
+// scoped physical localStorage for reads and enumeration. After authority that
+// is exactly the plaintext channel the vault exists to close.
+function installedAuthoritativeRuntime() {
   if (!authoritativeRuntime) return null;
   if (!activeVaultCompatibility.workspaceTag
     || activeVaultCompatibility.workspaceTag !== authoritativeRuntime.workspaceTag) return null;
-  if (!authoritativeRuntime.adapter.isReady(authoritativeRuntime.generation)) return null;
-  return authoritativeRuntime.adapter;
+  return authoritativeRuntime;
+}
+
+// Readable: the adapter can still serve the last VERIFIED cache. A frozen
+// runtime is readable but not mutable.
+function readableAuthoritativeAdapter() {
+  const installed = installedAuthoritativeRuntime();
+  if (!installed) return null;
+  const { adapter, generation } = installed;
+  const readable = typeof adapter.canRead === "function"
+    ? adapter.canRead(generation)
+    : adapter.isReady(generation);
+  return readable ? adapter : null;
+}
+
+// Mutable: the adapter will accept a durable mutation right now.
+function mutableAuthoritativeAdapter() {
+  const installed = installedAuthoritativeRuntime();
+  if (!installed) return null;
+  const { adapter, generation } = installed;
+  const mutable = typeof adapter.canMutate === "function"
+    ? adapter.canMutate(generation)
+    : adapter.isReady(generation);
+  return mutable ? adapter : null;
 }
 
 function isQuarantinedLegacyKey(key) {
@@ -335,12 +360,19 @@ function createScopedStorageFacade({ storage, namespace }) {
 
   const facade = {
     get length() {
-      const adapter = activeAuthoritativeAdapter();
-      return adapter ? authoritativeLogicalKeys(adapter).length : visibleLogicalKeys().length;
+      const adapter = readableAuthoritativeAdapter();
+      if (adapter) return authoritativeLogicalKeys(adapter).length;
+      // Installed but not readable (blocked): approved keys must NOT reappear
+      // from scoped plaintext, so nothing authoritative is enumerated.
+      if (installedAuthoritativeRuntime()) return authoritativeLogicalKeys({ keys: () => [] }).length;
+      return visibleLogicalKeys().length;
     },
     key(index) {
-      const adapter = activeAuthoritativeAdapter();
-      const keys = adapter ? authoritativeLogicalKeys(adapter) : visibleLogicalKeys();
+      const adapter = readableAuthoritativeAdapter();
+      const installed = installedAuthoritativeRuntime();
+      const keys = adapter
+        ? authoritativeLogicalKeys(adapter)
+        : (installed ? authoritativeLogicalKeys({ keys: () => [] }) : visibleLogicalKeys());
       const position = Number(index);
       if (!Number.isInteger(position) || position < 0 || position >= keys.length) return null;
       return keys[position];
@@ -349,11 +381,16 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return null;
       if (isForeignPhysicalKey(normalizedKey)) return null;
-      const adapter = activeAuthoritativeAdapter();
-      if (adapter) {
+      const installed = installedAuthoritativeRuntime();
+      if (installed) {
         const routing = classifyAuthoritativeKey(normalizedKey);
-        // Approved business data is served from the verified encrypted runtime.
-        if (routing === "vault") return adapter.getItem(normalizedKey);
+        if (routing === "vault") {
+          // Approved business data is served from the verified encrypted runtime
+          // -- including while mutations are frozen. If the runtime cannot even
+          // read, the key is absent; it never falls back to scoped plaintext.
+          const adapter = readableAuthoritativeAdapter();
+          return adapter ? adapter.getItem(normalizedKey) : null;
+        }
         // An unclassified workspace-shaped key has no authoritative home, so it
         // reads as absent rather than reopening a plaintext business channel.
         if (routing === "refused") return null;
@@ -369,11 +406,16 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
-      const adapter = activeAuthoritativeAdapter();
-      if (adapter) {
+      const installed = installedAuthoritativeRuntime();
+      if (installed) {
         const routing = classifyAuthoritativeKey(normalizedKey);
-        // Never writes scoped plaintext for business data.
-        if (routing === "vault") { adapter.setItem(normalizedKey, value); return undefined; }
+        // Never writes scoped plaintext for business data. While frozen the
+        // mutation is refused outright rather than deferred or redirected.
+        if (routing === "vault") {
+          const adapter = mutableAuthoritativeAdapter();
+          if (adapter) adapter.setItem(normalizedKey, value);
+          return undefined;
+        }
         if (routing === "refused") return undefined;
         return storage.setItem(toPhysicalKey(normalizedKey), value);
       }
@@ -384,10 +426,14 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
-      const adapter = activeAuthoritativeAdapter();
-      if (adapter) {
+      const installed = installedAuthoritativeRuntime();
+      if (installed) {
         const routing = classifyAuthoritativeKey(normalizedKey);
-        if (routing === "vault") { adapter.removeItem(normalizedKey); return undefined; }
+        if (routing === "vault") {
+          const adapter = mutableAuthoritativeAdapter();
+          if (adapter) adapter.removeItem(normalizedKey);
+          return undefined;
+        }
         if (routing === "refused") return undefined;
         return storage.removeItem(toPhysicalKey(normalizedKey));
       }
@@ -425,12 +471,14 @@ function createScopedStorageFacade({ storage, namespace }) {
     // keys are removed: other workspaces, legacy unscoped values, Supabase auth
     // keys, language, device id, and unrelated data all survive.
     clear() {
-      const adapter = activeAuthoritativeAdapter();
-      if (adapter) {
+      const installed = installedAuthoritativeRuntime();
+      if (installed) {
         // Clears only approved encrypted business records. Vault metadata, the
         // frozen migration manifest, other workspaces, device-global keys, and
-        // quarantined legacy values are all untouched.
-        adapter.clear();
+        // quarantined legacy values are all untouched. A frozen runtime refuses
+        // the clear rather than performing a partial one.
+        const adapter = mutableAuthoritativeAdapter();
+        if (adapter) adapter.clear();
         return undefined;
       }
       if (!mayMutate()) return undefined;
