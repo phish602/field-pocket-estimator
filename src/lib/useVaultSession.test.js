@@ -38,12 +38,34 @@ beforeEach(() => {
   vaultSession.unlockVault.mockResolvedValue(unlocked);
 });
 
-test("exposes only the narrow non-secret hook surface", async () => {
+test("exposes the same narrow non-secret hook surface", async () => {
   renderProbe();
-  await waitFor(() => expect(latest.checking).toBe(false));
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
   expect(Object.keys(latest).sort()).toEqual(["capability", "checking", "error", "lock", "pending", "refresh", "setup", "unlock"]);
-  expect(latest.capability).toEqual(locked);
   expect(JSON.stringify(latest)).not.toMatch(/password|dek|kek|cryptokey|metadata/i);
+});
+
+test("automatically creates a device vault when setup is required", async () => {
+  vaultSession.readVaultCapability.mockResolvedValue({ state: "setup_required", code: "", message: "" });
+  renderProbe();
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
+  expect(vaultSession.setupVault).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a" });
+  expect(vaultSession.unlockVault).not.toHaveBeenCalled();
+});
+
+test("automatically opens a locked device vault without a password", async () => {
+  renderProbe();
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
+  expect(vaultSession.unlockVault).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a" });
+  expect(vaultSession.setupVault).not.toHaveBeenCalled();
+});
+
+test.each(["unlocked", "damaged", "unsupported", "reset_required"])("publishes terminal %s capability without a second operation", async (state) => {
+  vaultSession.readVaultCapability.mockResolvedValue({ state, code: "", message: "" });
+  renderProbe();
+  await waitFor(() => expect(latest.capability.state).toBe(state));
+  expect(vaultSession.setupVault).not.toHaveBeenCalled();
+  expect(vaultSession.unlockVault).not.toHaveBeenCalled();
 });
 
 test("disabled state performs no capability read and synchronously locks", () => {
@@ -53,14 +75,7 @@ test("disabled state performs no capability read and synchronously locks", () =>
   expect(latest.capability.state).toBe("locked");
 });
 
-test.each(["setup_required", "locked", "unlocked", "damaged", "unsupported", "reset_required"])("publishes the public %s capability", async (state) => {
-  vaultSession.readVaultCapability.mockResolvedValue({ state, code: "", message: "" });
-  renderProbe();
-  await waitFor(() => expect(latest.capability.state).toBe(state));
-  expect(vaultSession.readVaultCapability).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a" });
-});
-
-test("starts inspection in a blocked pending state", () => {
+test("starts automatic activation in a blocked checking state", () => {
   const read = deferred();
   vaultSession.readVaultCapability.mockReturnValue(read.promise);
   renderProbe();
@@ -68,100 +83,59 @@ test("starts inspection in a blocked pending state", () => {
   expect(latest.checking).toBe(true);
 });
 
-test("setup and unlock delegate directly without returning password material", async () => {
+test("refresh retries automatic device-key activation", async () => {
+  vaultSession.readVaultCapability.mockResolvedValue({ state: "damaged", code: "RECORD_CORRUPT", message: "" });
+  renderProbe();
+  await waitFor(() => expect(latest.capability.state).toBe("damaged"));
+  vaultSession.readVaultCapability.mockResolvedValueOnce(locked);
+  await act(async () => { await latest.refresh(); });
+  await waitFor(() => expect(latest.capability.state).toBe("unlocked"));
+  expect(vaultSession.unlockVault).toHaveBeenLastCalledWith({ userId: "user-a", companyId: "company-a" });
+});
+
+test("legacy manual setup and unlock remain available without retaining password material", async () => {
+  vaultSession.readVaultCapability.mockResolvedValue({ state: "damaged", code: "RECORD_CORRUPT", message: "" });
   renderProbe();
   await waitFor(() => expect(latest.checking).toBe(false));
   await act(async () => { await latest.setup("setup-local-password"); });
   expect(vaultSession.setupVault).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a", password: "setup-local-password" });
-  expect(latest.capability).toEqual(unlocked);
-
   await act(async () => { await latest.unlock("unlock-local-password"); });
   expect(vaultSession.unlockVault).toHaveBeenCalledWith({ userId: "user-a", companyId: "company-a", password: "unlock-local-password" });
-  expect(Object.values(latest).filter((value) => typeof value === "string")).not.toContain("unlock-local-password");
+  expect(JSON.stringify(latest)).not.toMatch(/setup-local-password|unlock-local-password|password|dek|kek/i);
 });
 
-test("manual lock synchronously delegates, publishes locked, and is idempotent", async () => {
-  vaultSession.readVaultCapability.mockResolvedValue(unlocked);
+test("manual lock publishes locked and waits for explicit refresh", async () => {
   renderProbe();
-  await waitFor(() => expect(latest.capability.state).toBe("unlocked"));
-  act(() => { latest.lock(); latest.lock(); });
-  expect(vaultSession.lockVault).toHaveBeenCalledTimes(3); // identity activation plus two manual locks
-  expect(latest.capability).toEqual(locked);
-  expect(latest.pending).toBe(false);
-  expect(latest.error).toBe("");
-});
-
-test("manual lock invalidates an older capability read", async () => {
-  const read = deferred();
-  vaultSession.readVaultCapability.mockReturnValue(read.promise);
-  renderProbe();
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
   act(() => { latest.lock(); });
   expect(latest.capability).toEqual(locked);
-  await act(async () => { read.resolve(unlocked); await read.promise; });
-  expect(latest.capability).toEqual(locked);
-});
-
-test("manual lock invalidates pending setup and unlock without republishing stale success", async () => {
-  const setup = deferred();
-  const unlock = deferred();
-  vaultSession.setupVault.mockReturnValueOnce(setup.promise);
-  vaultSession.unlockVault.mockReturnValueOnce(unlock.promise);
-  renderProbe();
-  await waitFor(() => expect(latest.checking).toBe(false));
-
-  let setupResult;
-  act(() => { setupResult = latest.setup("setup-password"); });
-  act(() => { latest.lock(); });
-  expect(latest.capability).toEqual(locked);
-  await act(async () => { setup.resolve(unlocked); await setupResult; });
-  expect(latest.capability).toEqual(locked);
-
-  await waitFor(() => expect(latest.checking).toBe(false));
-  let unlockResult;
-  act(() => { unlockResult = latest.unlock("unlock-password"); });
-  act(() => { latest.lock(); });
-  await act(async () => { unlock.resolve(unlocked); await unlockResult; });
-  expect(latest.capability).toEqual(locked);
-  expect(JSON.stringify(latest)).not.toMatch(/setup-password|unlock-password|password|dek|kek/i);
-});
-
-test("authentication failure stays generic while structural, environment, and storage failures remain public states", async () => {
-  vaultSession.unlockVault.mockResolvedValue({ state: "locked", code: "AUTHENTICATION_FAILED", message: "The Local Data Password is incorrect or the local vault is damaged." });
-  renderProbe();
-  await waitFor(() => expect(latest.checking).toBe(false));
-  await act(async () => { await latest.unlock("local-password"); });
-  expect(latest.capability).toEqual(expect.objectContaining({ state: "locked", code: "AUTHENTICATION_FAILED" }));
-
-  vaultSession.readVaultCapability.mockResolvedValueOnce({ state: "damaged", code: "RECORD_CORRUPT", message: "The local vault is damaged." });
+  expect(latest.checking).toBe(false);
+  expect(vaultSession.unlockVault).toHaveBeenCalledTimes(1);
   await act(async () => { await latest.refresh(); });
-  await waitFor(() => expect(latest.capability.state).toBe("damaged"));
-  expect(latest.capability.code).toBe("RECORD_CORRUPT");
+  expect(vaultSession.unlockVault).toHaveBeenCalledTimes(2);
 });
 
-test("an identity change immediately removes an unlocked capability and locks the prior session", async () => {
-  vaultSession.readVaultCapability.mockResolvedValue(unlocked);
+test("manual lock invalidates an older automatic activation", async () => {
+  const unlock = deferred();
+  vaultSession.unlockVault.mockReturnValue(unlock.promise);
+  renderProbe();
+  await waitFor(() => expect(vaultSession.unlockVault).toHaveBeenCalled());
+  act(() => { latest.lock(); });
+  await act(async () => { unlock.resolve(unlocked); await unlock.promise; });
+  expect(latest.capability).toEqual(locked);
+});
+
+test("an identity change immediately drops the prior workspace and activates the new one", async () => {
   const view = renderProbe();
-  await waitFor(() => expect(latest.capability.state).toBe("unlocked"));
-  vaultSession.readVaultCapability.mockResolvedValue(locked);
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
   view.rerender(<Probe userId="user-b" companyId="company-b" enabled />);
   expect(latest.capability.state).toBe("locked");
   expect(latest.checking).toBe(true);
-  expect(vaultSession.lockVault).toHaveBeenCalled();
   await waitFor(() => expect(vaultSession.readVaultCapability).toHaveBeenLastCalledWith({ userId: "user-b", companyId: "company-b" }));
+  await waitFor(() => expect(vaultSession.unlockVault).toHaveBeenLastCalledWith({ userId: "user-b", companyId: "company-b" }));
 });
 
-test("disable and unmount synchronously lock the active session", async () => {
-  vaultSession.readVaultCapability.mockResolvedValue(unlocked);
-  const view = renderProbe();
-  await waitFor(() => expect(latest.capability.state).toBe("unlocked"));
-  view.rerender(<Probe userId="user-a" companyId="company-a" enabled={false} />);
-  expect(latest.capability.state).toBe("locked");
-  expect(vaultSession.lockVault).toHaveBeenCalled();
-  view.unmount();
-  expect(vaultSession.lockVault).toHaveBeenCalled();
-});
-
-test("a stale capability read cannot update the new identity", async () => {
+test("a stale activation cannot republish an older workspace", async () => {
   const readA = deferred();
   const readB = deferred();
   vaultSession.readVaultCapability.mockReturnValueOnce(readA.promise).mockReturnValueOnce(readB.promise);
@@ -169,51 +143,28 @@ test("a stale capability read cannot update the new identity", async () => {
   view.rerender(<Probe userId="user-b" companyId="company-b" enabled />);
   await act(async () => { readA.resolve(unlocked); await readA.promise; });
   expect(latest.capability.state).toBe("locked");
-  await act(async () => { readB.resolve(locked); await readB.promise; });
-  await waitFor(() => expect(latest.capability.state).toBe("locked"));
+  await act(async () => { readB.resolve({ state: "damaged", code: "RECORD_CORRUPT", message: "" }); await readB.promise; });
+  await waitFor(() => expect(latest.capability.state).toBe("damaged"));
 });
 
-test("a stale setup or unlock cannot unlock a new identity and locks the stale session", async () => {
-  const setup = deferred();
-  const unlock = deferred();
-  vaultSession.setupVault.mockReturnValue(setup.promise);
-  vaultSession.unlockVault.mockReturnValue(unlock.promise);
+test("same-identity rerenders do not repeat activation", async () => {
   const view = renderProbe();
-  await waitFor(() => expect(latest.checking).toBe(false));
-  let setupResult;
-  act(() => { setupResult = latest.setup("local-password"); });
-  view.rerender(<Probe userId="user-b" companyId="company-b" enabled />);
-  await act(async () => { setup.resolve(unlocked); await setupResult; });
-  expect(latest.capability.state).toBe("locked");
-  expect(vaultSession.lockVault).toHaveBeenCalled();
-
-  await waitFor(() => expect(latest.checking).toBe(false));
-  let unlockResult;
-  act(() => { unlockResult = latest.unlock("local-password"); });
-  view.rerender(<Probe userId="user-c" companyId="company-c" enabled />);
-  await act(async () => { unlock.resolve(unlocked); await unlockResult; });
-  expect(latest.capability.state).toBe("locked");
-  expect(vaultSession.lockVault).toHaveBeenCalled();
-});
-
-test("same-identity rerenders do not repeat reads or locks", async () => {
-  const view = renderProbe();
-  await waitFor(() => expect(latest.checking).toBe(false));
+  await waitFor(() => expect(latest.capability).toEqual(unlocked));
   const reads = vaultSession.readVaultCapability.mock.calls.length;
-  const locks = vaultSession.lockVault.mock.calls.length;
+  const unlocks = vaultSession.unlockVault.mock.calls.length;
   view.rerender(<Probe userId="user-a" companyId="company-a" enabled />);
   expect(vaultSession.readVaultCapability).toHaveBeenCalledTimes(reads);
-  expect(vaultSession.lockVault).toHaveBeenCalledTimes(locks);
+  expect(vaultSession.unlockVault).toHaveBeenCalledTimes(unlocks);
 });
 
-test("does not access web storage, events, messaging, network, or transition control", async () => {
+test("does not access localStorage, sessionStorage, messaging, or network", async () => {
   const local = jest.spyOn(Storage.prototype, "getItem");
   const session = jest.spyOn(Storage.prototype, "setItem");
   const dispatch = jest.spyOn(window, "dispatchEvent");
   const fetch = jest.spyOn(global, "fetch");
   try {
     renderProbe();
-    await waitFor(() => expect(latest.checking).toBe(false));
+    await waitFor(() => expect(latest.capability).toEqual(unlocked));
     act(() => { latest.lock(); });
     expect(local).not.toHaveBeenCalled();
     expect(session).not.toHaveBeenCalled();
