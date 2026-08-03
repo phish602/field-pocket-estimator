@@ -144,7 +144,7 @@ function bindGuardStorageListener() {
 // from window.localStorage.
 //
 // Once the facade is installed globally, window.localStorage IS the facade, so
-// reading the guard through it re-enters getItem -> authoritativeRouting ->
+// reading the guard through it re-enters getItem -> protectedRouting ->
 // deviceGuardState -> getItem ... until the stack is exhausted. Relying on the
 // catch to unwind that recursion "successfully" is not an implementation; the
 // read has to go straight to the real Storage object the module already holds.
@@ -152,12 +152,18 @@ function readNativeGuardState(nativeStorage) {
   bindGuardStorageListener();
   if (guardStateValid) return guardStateCache;
   try {
-    if (!nativeStorage || typeof nativeStorage.getItem !== "function") return "";
-    guardStateCache = verifyVaultCompatibilityGuardValue(nativeStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY))?.state || "";
+    if (!nativeStorage || typeof nativeStorage.getItem !== "function") {
+      guardStateCache = "blocked";
+      guardStateValid = true;
+      return guardStateCache;
+    }
+    guardStateCache = verifyVaultCompatibilityGuardValue(nativeStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY))?.state || "blocked";
     guardStateValid = true;
     return guardStateCache;
   } catch {
-    return "";
+    guardStateCache = "blocked";
+    guardStateValid = true;
+    return guardStateCache;
   }
 }
 
@@ -379,15 +385,14 @@ function createScopedStorageFacade({ storage, namespace }) {
   const facadeReadableAdapter = () => (isCurrentFacade() ? readableAuthoritativeAdapter() : null);
   const facadeMutableAdapter = () => (isCurrentFacade() ? mutableAuthoritativeAdapter() : null);
 
-  // Authoritative ROUTING applies to the exact current facade when an adapter is
-  // installed for it, OR when the workspace has settled into authority even
-  // without one (revoked, not yet reinstalled, stale generation, vault locked).
-  // The TRANSITION guard is deliberately excluded: migration still has to read
-  // its frozen plaintext source through its established contract.
-  const authoritativeRouting = () => {
+  // Protected routing applies to the exact current facade when an adapter is
+  // installed for it, or unless the verified guard is exactly the legacy-safe
+  // absent/transition state. Any unreadable or unrecognized state fails closed.
+  const protectedRouting = () => {
     if (!isCurrentFacade()) return false;
     if (facadeInstalledRuntime()) return true;
-    return readNativeGuardState(storage) === "authoritative";
+    const guardState = readNativeGuardState(storage);
+    return guardState !== "absent" && guardState !== "transition";
   };
 
   // The guard is re-read synchronously for every mutation. A stale bridge tab
@@ -459,7 +464,7 @@ function createScopedStorageFacade({ storage, namespace }) {
     if (!isCurrentFacade()) return staleVisibleLogicalKeys();
     const adapter = facadeReadableAdapter();
     if (adapter) return authoritativeLogicalKeys(adapter);
-    if (authoritativeRouting()) return authoritativeLogicalKeys({ keys: () => [] });
+    if (protectedRouting()) return authoritativeLogicalKeys({ keys: () => [] });
     return visibleLogicalKeys();
   };
 
@@ -497,7 +502,7 @@ function createScopedStorageFacade({ storage, namespace }) {
       // the currently active workspace's runtime.
       if (!isCurrentFacade()) {
         if (isWorkspaceScopedLogicalKey(normalizedKey)) return null;
-      } else if (authoritativeRouting()) {
+      } else if (protectedRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         if (routing === "vault") {
           // Approved business data is served from the verified encrypted runtime
@@ -524,7 +529,7 @@ function createScopedStorageFacade({ storage, namespace }) {
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
       if (!isCurrentFacade()) {
         if (isWorkspaceScopedLogicalKey(normalizedKey)) return undefined;
-      } else if (authoritativeRouting()) {
+      } else if (protectedRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         // Never writes scoped plaintext for business data. Without a mutable
         // matching adapter the mutation is refused outright rather than
@@ -546,7 +551,7 @@ function createScopedStorageFacade({ storage, namespace }) {
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
       if (!isCurrentFacade()) {
         if (isWorkspaceScopedLogicalKey(normalizedKey)) return undefined;
-      } else if (authoritativeRouting()) {
+      } else if (protectedRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         if (routing === "vault") {
           const adapter = facadeMutableAdapter();
@@ -611,7 +616,7 @@ function createScopedStorageFacade({ storage, namespace }) {
     clear() {
       // A retained facade clears nothing at all.
       if (!isCurrentFacade()) return undefined;
-      if (authoritativeRouting()) {
+      if (protectedRouting()) {
         // Clears only approved encrypted business records. Vault metadata, the
         // frozen migration manifest, other workspaces, device-global keys, and
         // quarantined legacy values are all untouched. A frozen or absent

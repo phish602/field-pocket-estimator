@@ -1842,6 +1842,82 @@ export function createBrowserHarness() {
       });
     },
 
+    // A malformed device guard must close the approved plaintext channel while
+    // preserving documented exclusions and device-global storage behaviour.
+    malformedGuardFacadeProbe: async ({ logicalKey, plaintext } = {}) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      const { userId, companyId } = identityFor("active");
+      const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
+      const plaintextKey = `${namespace}:${logicalKey}`;
+      const nativeExclusionKey = `${namespace}:estipaid-vault-idle-lock-minutes`;
+      const backingStorage = realStorage();
+      backingStorage.setItem(VAULT_COMPATIBILITY_GUARD_KEY, "{malformed");
+      backingStorage.setItem(plaintextKey, plaintext);
+      backingStorage.setItem(nativeExclusionKey, "available");
+      backingStorage.setItem("estipaid-device-id-v1", "available");
+      window.dispatchEvent(new StorageEvent("storage", { key: VAULT_COMPATIBILITY_GUARD_KEY }));
+      revokeAuthoritativeVaultRuntime();
+
+      const nativeGetItem = Storage.prototype.getItem;
+      let guardReads = 0;
+      let depth = 0;
+      let nestedFacadeCalls = 0;
+      let networkRequests = 0;
+      Storage.prototype.getItem = function instrumentedGetItem(key) {
+        if (key === VAULT_COMPATIBILITY_GUARD_KEY) guardReads += 1;
+        return nativeGetItem.call(this, key);
+      };
+      const originalFacadeGet = facade.getItem.bind(facade);
+      const nativeFetch = window.fetch;
+      facade.getItem = (key) => {
+        depth += 1;
+        if (depth > 1) nestedFacadeCalls += 1;
+        try {
+          return originalFacadeGet(key);
+        } finally {
+          depth -= 1;
+        }
+      };
+      if (typeof nativeFetch === "function") {
+        window.fetch = (...args) => {
+          networkRequests += 1;
+          return nativeFetch(...args);
+        };
+      }
+
+      let read = null;
+      let keys = [];
+      let threw = "";
+      try {
+        read = facade.getItem(logicalKey);
+        for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+        facade.setItem(logicalKey, "attempted-write");
+        facade.removeItem(logicalKey);
+        facade.clear();
+      } catch (error) {
+        threw = String(error && (error.name || error));
+      } finally {
+        facade.getItem = originalFacadeGet;
+        Storage.prototype.getItem = nativeGetItem;
+        if (typeof nativeFetch === "function") window.fetch = nativeFetch;
+      }
+
+      return Object.freeze({
+        attempted: true,
+        readPresent: read !== null,
+        readsPlaintext: read === plaintext,
+        enumeratesKey: keys.includes(logicalKey),
+        plaintextUnchanged: backingStorage.getItem(plaintextKey) === plaintext,
+        nativeExclusionReadable: facade.getItem("estipaid-vault-idle-lock-minutes") === "available",
+        deviceGlobalReadable: facade.getItem("estipaid-device-id-v1") === "available",
+        guardReads,
+        nestedFacadeCalls,
+        networkRequests,
+        threw,
+      });
+    },
+
     runStateKey: RUN_STATE_KEY,
   });
 }

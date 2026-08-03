@@ -412,6 +412,11 @@ function setDeviceGuard(state) {
   window.dispatchEvent(new StorageEvent("storage", { key: "estipaid-vault-guard-v1" }));
 }
 
+function setRawDeviceGuard(raw) {
+  storage.setItem("estipaid-vault-guard-v1", raw);
+  window.dispatchEvent(new StorageEvent("storage", { key: "estipaid-vault-guard-v1" }));
+}
+
 afterEach(() => {
   window.localStorage.removeItem("estipaid-vault-guard-v1");
 });
@@ -494,6 +499,47 @@ test("an authoritative workspace with no adapter never serves scoped plaintext",
   expect(storage.getItem("field-pocket-customers-v1")).toBe('{"note":"quarantined"}');
   expect(storage.getItem(`${FOREIGN_NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"foreign"}');
   expect(facade.getItem("estipaid-device-id-v1")).toBe("synthetic-device");
+});
+
+test("a malformed guard fails closed without changing classified native keys", () => {
+  activate();
+  setRawDeviceGuard("{malformed");
+  const plaintextKey = `${NAMESPACE}:estipaid-customers-v1`;
+  storage.setItem(plaintextKey, "plaintext-value");
+
+  expect(() => {
+    expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+    const keys = [];
+    for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+    expect(keys).not.toContain("estipaid-customers-v1");
+    expect(keys).toEqual(expect.arrayContaining([
+      "estipaid-vault-idle-lock-minutes",
+      "estipaid-device-id-v1",
+      "synthetic-third-party",
+    ]));
+
+    facade.setItem("estipaid-customers-v1", "attempted-write");
+    facade.removeItem("estipaid-customers-v1");
+    facade.clear();
+  }).not.toThrow();
+
+  expect(storage.getItem(plaintextKey)).toBe("plaintext-value");
+  expect(facade.getItem("estipaid-vault-idle-lock-minutes")).toBe("30");
+  expect(facade.getItem("estipaid-device-id-v1")).toBe("synthetic-device");
+  expect(facade.getItem("synthetic-third-party")).toBe("unrelated");
+  expect(facade.getItem("field-pocket-customers-v1")).toBeNull();
+  expect(storage.getItem(`${FOREIGN_NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"foreign"}');
+});
+
+test("an absent guard retains the legacy plaintext migration source path", () => {
+  activate();
+  setDeviceGuard(null);
+  const plaintextKey = `${NAMESPACE}:estipaid-customers-v1`;
+
+  expect(facade.getItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+  facade.setItem("estipaid-customers-v1", "legacy-safe-write");
+  expect(storage.getItem(plaintextKey)).toBe("legacy-safe-write");
+  expect(facade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe("legacy-safe-write");
 });
 
 test("a stale-generation adapter under an authoritative guard still reads absent", () => {
@@ -678,5 +724,45 @@ describe("the globally installed facade never re-enters itself for the guard", (
     expect(installedFacade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe("frozen-source");
     expect(facadeReentries).toBe(0);
     expect(guardReads).toBeLessThanOrEqual(2);
+  });
+
+  test("a native guard read failure fails closed without re-entering the facade", () => {
+    const nativeStorage = window.localStorage;
+    const activation = activateAccountScopedLocalStorage({ storage: nativeStorage, userId: USER, companyId: COMPANY });
+    expect(activation.installed).toBe(true);
+    installedFacade = activation.storage;
+    instrumentFacadeReentry(installedFacade);
+    setActiveWorkspaceVaultCompatibility({ workspaceTag: TAG, state: "legacy-safe", generation: 1 });
+
+    const namespace = buildAccountWorkspaceNamespace({ userId: USER, companyId: COMPANY });
+    const plaintextKey = `${namespace}:estipaid-customers-v1`;
+    nativeStorage.setItem(plaintextKey, "plaintext-value");
+    const instrumentedGetItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function failOnlyTheGuard(key) {
+      if (key === "estipaid-vault-guard-v1") {
+        guardReads += 1;
+        throw new Error("guard unavailable");
+      }
+      return instrumentedGetItem.call(this, key);
+    };
+
+    guardReads = 0;
+    facadeReentries = 0;
+    try {
+      expect(() => {
+        expect(window.localStorage.getItem("estipaid-customers-v1")).toBeNull();
+        const keys = [];
+        for (let index = 0; index < window.localStorage.length; index += 1) keys.push(window.localStorage.key(index));
+        expect(keys).not.toContain("estipaid-customers-v1");
+        window.localStorage.setItem("estipaid-customers-v1", "attempted-write");
+        window.localStorage.removeItem("estipaid-customers-v1");
+        window.localStorage.clear();
+      }).not.toThrow();
+      expect(guardReads).toBe(1);
+      expect(facadeReentries).toBe(0);
+      expect(nativeStorage.getItem(plaintextKey)).toBe("plaintext-value");
+    } finally {
+      Storage.prototype.getItem = instrumentedGetItem;
+    }
   });
 });
