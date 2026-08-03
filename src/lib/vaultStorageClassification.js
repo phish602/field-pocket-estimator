@@ -27,6 +27,9 @@ export const STRUCTURAL_IDENTIFIERS = Object.freeze([
   "estipaid-workspace-marker-v1",
   "estipaid-vault-v1-",
   "estipaid-vault-control-v1",
+  // Passwordless vault device-key IndexedDB database name. This is a
+  // structural browser-storage identifier, never a logical workspace value.
+  "estipaid-vault-device-keys-v1",
   "estipaid-vault-workspace-v1",
   "estipaid-vault-record-v1",
   "estipaid-vault-key-wrap-v1",

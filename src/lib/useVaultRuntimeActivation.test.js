@@ -286,18 +286,19 @@ test("a durability failure published by the runtime blocks the hook", async () =
   expect(latest.code).toBe("DURABILITY_FAILED");
 });
 
-test("a pending durable write is reported honestly, then clears when it commits", async () => {
+test("a pending durable write keeps access ready while reporting durability, then clears", async () => {
   let publish;
   runtime.subscribeVaultRuntimeStatus.mockImplementation((listener) => { publish = listener; return () => {}; });
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
 
   await act(async () => { publish({ state: "pending-writes", generation: 1, pending: 2, code: "", entryCount: 1 }); });
-  expect(latest.state).toBe("pending-writes");
+  expect(latest.state).toBe("ready");
   expect(latest.pending).toBe(true);
 
   await act(async () => { publish({ state: "ready", generation: 1, pending: 0, code: "", entryCount: 1 }); });
   expect(latest.state).toBe("ready");
+  expect(latest.pending).toBe(false);
 });
 
 test("another tab committing a newer catalog triggers revalidation", async () => {
