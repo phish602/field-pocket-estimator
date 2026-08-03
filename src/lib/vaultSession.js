@@ -18,9 +18,14 @@ import {
   VAULT_REPOSITORY_ERROR_CODES,
   createVaultIndexedDbRepository,
 } from "./vaultIndexedDbRepository";
+import {
+  VaultDeviceKeyError,
+  VAULT_DEVICE_KEY_ERROR_CODES,
+  createVaultDeviceKeyStore,
+} from "./vaultDeviceKeyStore";
 
-// ISO-15E1 keeps the only unwrapped vault key in these module-private bindings.
-// They are deliberately not exported, serialized, dispatched, or persisted.
+// The only unwrapped vault key lives in these module-private bindings. It is
+// never exported, serialized, dispatched, or persisted as raw key material.
 let activeWorkspaceTag = null;
 let activeDek = null;
 
@@ -37,6 +42,7 @@ const STATES = new Set([
 const AUTHENTICATION_CODE = "AUTHENTICATION_FAILED";
 const AUTHENTICATION_MESSAGE = "The Local Data Password is incorrect or the local vault is damaged.";
 const DAMAGED_MESSAGE = "The local vault is damaged.";
+const DEVICE_KEY_RESET_MESSAGE = "This device can no longer open its local encrypted data. Restore from cloud backup or reset local data.";
 
 function capability(state, code = "", message = "") {
   if (!STATES.has(state)) throw new Error("Invalid vault capability state.");
@@ -62,6 +68,13 @@ function repositoryFor(overrides) {
   return createVaultIndexedDbRepository();
 }
 
+function deviceKeyStoreFor(overrides) {
+  if (isTestOverrides(overrides) && typeof overrides.deviceKeyStoreFactory === "function") {
+    return overrides.deviceKeyStoreFactory();
+  }
+  return createVaultDeviceKeyStore();
+}
+
 function randomSalt(overrides) {
   if (isTestOverrides(overrides) && typeof overrides.randomBytes === "function") {
     const value = overrides.randomBytes(32);
@@ -83,8 +96,6 @@ function passwordBytes(password) {
   if (typeof password !== "string") {
     throw new VaultCryptoError(VaultCryptoErrorCode.INVALID_INPUT, "Invalid password.");
   }
-  // Copy into this realm's Uint8Array brand before handing bytes to the strict
-  // crypto contract. This also avoids retaining an encoder-owned view.
   return new Uint8Array(new TextEncoder().encode(password.normalize("NFC")));
 }
 
@@ -93,6 +104,15 @@ function zero(bytes) {
 }
 
 function mapFailure(error) {
+  if (error instanceof VaultDeviceKeyError) {
+    if (error.code === VAULT_DEVICE_KEY_ERROR_CODES.UNSUPPORTED_ENVIRONMENT) {
+      return capability("unsupported", error.code, error.message);
+    }
+    if (error.code === VAULT_DEVICE_KEY_ERROR_CODES.RECORD_CORRUPT) {
+      return capability("reset_required", error.code, DEVICE_KEY_RESET_MESSAGE);
+    }
+    return capability("locked", error.code, "Vault storage operation failed.");
+  }
   if (error instanceof VaultCryptoError) {
     if (error.code === VaultCryptoErrorCode.CRYPTO_AUTHENTICATION_FAILED) {
       return capability("locked", AUTHENTICATION_CODE, AUTHENTICATION_MESSAGE);
@@ -125,9 +145,6 @@ async function inspectWorkspace(repository, tag) {
   const metadata = await repository.readWorkspaceVaultMetadata({ workspaceTag: tag });
   if (metadata) return { state: "locked", metadata };
 
-  // A schema-valid database without metadata is safe to initialize only when
-  // both encrypted stores are empty. This prevents an empty dashboard over
-  // encrypted records whose key metadata was lost.
   const [recordKeys, manifest] = await Promise.all([
     repository.listEncryptedRecordKeys({ workspaceTag: tag }),
     repository.readMigrationManifest({ workspaceTag: tag }),
@@ -155,20 +172,27 @@ function aadFor(metadata, userId, companyId) {
   };
 }
 
+async function verifyStoredMetadataWithKek({ metadata, userId, companyId, kek }) {
+  let dek = null;
+  const aad = aadFor(metadata, userId, companyId);
+  dek = await unwrapDek(kek, metadata.wrappedDekCiphertext, metadata.wrappedDekIv, aad.wrap);
+  await verifySentinel(dek, metadata.sentinelCiphertext, metadata.sentinelIv, aad.sentinel);
+  return dek;
+}
+
 async function verifyStoredMetadata({ metadata, userId, companyId, bytes }) {
   let kek = null;
-  let dek = null;
   try {
     kek = await deriveKek(bytes, metadata.salt, metadata.kdfParameters);
-    const aad = aadFor(metadata, userId, companyId);
-    dek = await unwrapDek(kek, metadata.wrappedDekCiphertext, metadata.wrappedDekIv, aad.wrap);
-    await verifySentinel(dek, metadata.sentinelCiphertext, metadata.sentinelIv, aad.sentinel);
-    return dek;
+    return await verifyStoredMetadataWithKek({ metadata, userId, companyId, kek });
   } finally {
-    // The returned DEK is intentionally the only exception: its sole caller
-    // transfers it directly into the module-private session on success.
     kek = null;
   }
+}
+
+function installSession(tag, dek) {
+  activeWorkspaceTag = tag;
+  activeDek = dek;
 }
 
 export async function deriveWorkspaceVaultTag(userId, companyId) {
@@ -189,6 +213,7 @@ export async function readVaultCapability({ userId, companyId } = {}, overrides)
 
 export async function setupVault({ userId, companyId, password } = {}, overrides) {
   lockPrivateSession();
+  const passwordMode = typeof password === "string";
   let bytes = null;
   let kek = null;
   let generatedDek = null;
@@ -203,31 +228,54 @@ export async function setupVault({ userId, companyId, password } = {}, overrides
     }
 
     const salt = randomSalt(overrides);
-    bytes = passwordBytes(password);
-    kek = await deriveKek(bytes, salt, PRODUCTION_KDF_PROFILE);
+    if (passwordMode) {
+      bytes = passwordBytes(password);
+      kek = await deriveKek(bytes, salt, PRODUCTION_KDF_PROFILE);
+    } else {
+      kek = await deviceKeyStoreFor(overrides).getOrCreate({ workspaceTag: tag });
+    }
+
     const metadataShape = { version: 1, kdfVersion: 1, sentinelSchemaVersion: 1 };
     const aad = aadFor(metadataShape, userId, companyId);
     const wrapped = await createWrappedDek(kek, aad.wrap);
     generatedDek = wrapped.dek;
     const sentinel = await createSentinel(generatedDek, aad.sentinel);
-    await repository.createWorkspaceVaultMetadata({
-      workspaceTag: tag,
-      expectedRevision: null,
-      kdfVersion: 1,
-      kdfParameters: { ...PRODUCTION_KDF_PROFILE },
-      salt,
-      wrappedDekCiphertext: wrapped.wrappedDek,
-      wrappedDekIv: wrapped.wrapIv,
-      sentinelSchemaVersion: 1,
-      sentinelCiphertext: sentinel.ciphertext,
-      sentinelIv: sentinel.iv,
-    });
+
+    try {
+      await repository.createWorkspaceVaultMetadata({
+        workspaceTag: tag,
+        expectedRevision: null,
+        kdfVersion: 1,
+        kdfParameters: { ...PRODUCTION_KDF_PROFILE },
+        salt,
+        wrappedDekCiphertext: wrapped.wrappedDek,
+        wrappedDekIv: wrapped.wrapIv,
+        sentinelSchemaVersion: 1,
+        sentinelCiphertext: sentinel.ciphertext,
+        sentinelIv: sentinel.iv,
+      });
+    } catch (error) {
+      // Two tabs can both observe an empty workspace. The device-key store makes
+      // them converge on the same non-extractable KEK, so the losing tab may
+      // safely verify the winner's metadata instead of entering a retry loop.
+      if (!passwordMode && error instanceof VaultRepositoryError && error.code === VAULT_REPOSITORY_ERROR_CODES.CONFLICT) {
+        const winner = await repository.readWorkspaceVaultMetadata({ workspaceTag: tag });
+        if (!winner) throw error;
+        verifiedDek = await verifyStoredMetadataWithKek({ metadata: winner, userId, companyId, kek });
+        installSession(tag, verifiedDek);
+        verifiedDek = null;
+        return capability("unlocked");
+      }
+      throw error;
+    }
+
     const stored = await repository.readWorkspaceVaultMetadata({ workspaceTag: tag });
     if (!stored) throw new VaultRepositoryError(VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT);
-    verifiedDek = await verifyStoredMetadata({ metadata: stored, userId, companyId, bytes });
+    verifiedDek = passwordMode
+      ? await verifyStoredMetadata({ metadata: stored, userId, companyId, bytes })
+      : await verifyStoredMetadataWithKek({ metadata: stored, userId, companyId, kek });
     generatedDek = null;
-    activeWorkspaceTag = tag;
-    activeDek = verifiedDek;
+    installSession(tag, verifiedDek);
     verifiedDek = null;
     return capability("unlocked");
   } catch (error) {
@@ -244,17 +292,33 @@ export async function setupVault({ userId, companyId, password } = {}, overrides
 
 export async function unlockVault({ userId, companyId, password } = {}, overrides) {
   lockPrivateSession();
+  const passwordMode = typeof password === "string";
   let bytes = null;
+  let kek = null;
   let dek = null;
   try {
     const tag = await deriveWorkspaceVaultTag(userId, companyId);
     const inspected = await inspectWorkspace(repositoryFor(overrides), tag);
     if (inspected.state === "setup_required") return capability("setup_required");
     if (inspected.state === "damaged") return capability("damaged", VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT, DAMAGED_MESSAGE);
-    bytes = passwordBytes(password);
-    dek = await verifyStoredMetadata({ metadata: inspected.metadata, userId, companyId, bytes });
-    activeWorkspaceTag = tag;
-    activeDek = dek;
+
+    if (passwordMode) {
+      bytes = passwordBytes(password);
+      dek = await verifyStoredMetadata({ metadata: inspected.metadata, userId, companyId, bytes });
+    } else {
+      kek = await deviceKeyStoreFor(overrides).read({ workspaceTag: tag });
+      if (!kek) return capability("reset_required", "DEVICE_KEY_MISSING", DEVICE_KEY_RESET_MESSAGE);
+      try {
+        dek = await verifyStoredMetadataWithKek({ metadata: inspected.metadata, userId, companyId, kek });
+      } catch (error) {
+        if (error instanceof VaultCryptoError && error.code === VaultCryptoErrorCode.CRYPTO_AUTHENTICATION_FAILED) {
+          return capability("reset_required", "DEVICE_KEY_MISMATCH", DEVICE_KEY_RESET_MESSAGE);
+        }
+        throw error;
+      }
+    }
+
+    installSession(tag, dek);
     dek = null;
     return capability("unlocked");
   } catch (error) {
@@ -263,6 +327,7 @@ export async function unlockVault({ userId, companyId, password } = {}, override
   } finally {
     zero(bytes);
     bytes = null;
+    kek = null;
     dek = null;
   }
 }
@@ -276,9 +341,6 @@ export function getVaultCapability() {
   return activeWorkspaceTag && activeDek ? capability("unlocked") : capability("locked");
 }
 
-// ISO-15H -- the migration engine may use the already-unlocked DEK only while
-// this module confirms the exact workspace binding. The key is never returned,
-// serialized, or retained by this helper.
 export async function runWithActiveVaultDek({ workspaceTag: tag, operation } = {}) {
   if (typeof tag !== "string" || typeof operation !== "function") return null;
   if (activeWorkspaceTag !== tag || !activeDek) return null;
