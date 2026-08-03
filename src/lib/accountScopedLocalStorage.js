@@ -22,7 +22,11 @@
 // unscoped value. That fallback is the exact thing this module exists to
 // prevent.
 
-import { readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
+import {
+  VAULT_COMPATIBILITY_GUARD_KEY,
+  readVaultCompatibilityGuard,
+  verifyVaultCompatibilityGuardValue,
+} from "./vaultCompatibilityGuard";
 import { VAULT_MIGRATION_LOGICAL_KEYS } from "./vaultIndexedDbRepository";
 import { isDocumentedStorageExclusion } from "../constants/vaultStorageExclusions";
 
@@ -69,6 +73,7 @@ const facadeMetadata = new WeakMap();
 let activeVaultCompatibility = { workspaceTag: "", state: "blocked", generation: 0 };
 
 export function setActiveWorkspaceVaultCompatibility({ workspaceTag = "", state = "blocked", generation = 0 } = {}) {
+  invalidateDeviceGuardState();
   activeVaultCompatibility = {
     workspaceTag: typeof workspaceTag === "string" ? workspaceTag : "",
     state: state === "legacy-safe" ? "legacy-safe" : "blocked",
@@ -89,6 +94,7 @@ export function setActiveWorkspaceVaultCompatibility({ workspaceTag = "", state 
 let authoritativeRuntime = null;
 
 export function installAuthoritativeVaultRuntime({ workspaceTag = "", generation = 0, adapter = null } = {}) {
+  invalidateDeviceGuardState();
   if (typeof workspaceTag !== "string" || !workspaceTag || !Number.isSafeInteger(generation) || generation < 1) return false;
   if (!adapter || typeof adapter.getItem !== "function" || typeof adapter.setItem !== "function"
     || typeof adapter.removeItem !== "function" || typeof adapter.clear !== "function"
@@ -98,6 +104,7 @@ export function installAuthoritativeVaultRuntime({ workspaceTag = "", generation
 }
 
 export function revokeAuthoritativeVaultRuntime() {
+  invalidateDeviceGuardState();
   authoritativeRuntime = null;
 }
 
@@ -107,6 +114,53 @@ export function isAuthoritativeVaultRuntimeInstalled(workspaceTag) {
 }
 
 const APPROVED_VAULT_KEYS = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
+
+// The compatibility guard is one device-global string, and the facade sits on
+// the hottest path in the app -- every synchronous storage read goes through it.
+// Reading and verifying the guard on every one of those reads is measurably
+// expensive, so the verified state is cached and invalidated on exactly the
+// events that can change it: this tab writing the guard, the active workspace or
+// compatibility state changing, an adapter being installed or revoked, and
+// another tab's storage event.
+let guardStateValid = false;
+let guardStateCache = "";
+let guardStorageListenerBound = false;
+
+function invalidateDeviceGuardState() {
+  guardStateValid = false;
+}
+
+function bindGuardStorageListener() {
+  if (guardStorageListenerBound) return;
+  guardStorageListenerBound = true;
+  try {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    window.addEventListener("storage", (event) => {
+      if (!event || event.key === null || event.key === VAULT_COMPATIBILITY_GUARD_KEY) invalidateDeviceGuardState();
+    });
+  } catch { /* a non-browser environment simply reads through every time */ }
+}
+
+function deviceGuardState() {
+  bindGuardStorageListener();
+  if (guardStateValid) return guardStateCache;
+  try {
+    if (typeof window === "undefined" || !window.localStorage || typeof window.localStorage.getItem !== "function") return "";
+    guardStateCache = verifyVaultCompatibilityGuardValue(window.localStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY))?.state || "";
+    guardStateValid = true;
+    return guardStateCache;
+  } catch {
+    return "";
+  }
+}
+
+// Every fresh read of the guard elsewhere in this module refreshes the cache, so
+// the mutation paths (which always re-read) keep the read path honest too.
+function adoptGuardState(guard) {
+  guardStateCache = guard?.state || "";
+  guardStateValid = true;
+  return guard;
+}
 
 // Three-way classification while the authoritative runtime is installed:
 //
@@ -303,10 +357,36 @@ function createScopedStorageFacade({ storage, namespace }) {
     return normalizedKey;
   };
 
+  // ISO-16 review fix -- authoritative routing is bound to THIS facade.
+  //
+  // A facade retained from a previous workspace must never reach the runtime
+  // that a later workspace installed, and must not keep serving its own old
+  // scoped business data either. Every authoritative decision below therefore
+  // starts from "am I the exact currently active facade for the exact currently
+  // active namespace".
+  const isCurrentFacade = () => Boolean(activeWorkspace)
+    && activeWorkspace.facade === facade
+    && activeWorkspace.namespace === namespace;
+
+  const facadeInstalledRuntime = () => (isCurrentFacade() ? installedAuthoritativeRuntime() : null);
+  const facadeReadableAdapter = () => (isCurrentFacade() ? readableAuthoritativeAdapter() : null);
+  const facadeMutableAdapter = () => (isCurrentFacade() ? mutableAuthoritativeAdapter() : null);
+
+  // Authoritative ROUTING applies to the exact current facade when an adapter is
+  // installed for it, OR when the workspace has settled into authority even
+  // without one (revoked, not yet reinstalled, stale generation, vault locked).
+  // The TRANSITION guard is deliberately excluded: migration still has to read
+  // its frozen plaintext source through its established contract.
+  const authoritativeRouting = () => {
+    if (!isCurrentFacade()) return false;
+    if (facadeInstalledRuntime()) return true;
+    return deviceGuardState() === "authoritative";
+  };
+
   // The guard is re-read synchronously for every mutation. A stale bridge tab
   // therefore cannot write after another tab has published a guard state.
   const mayMutate = () => {
-    const guard = readVaultCompatibilityGuard();
+    const guard = adoptGuardState(readVaultCompatibilityGuard());
     return guard?.state === "absent"
       && activeVaultCompatibility.state === "legacy-safe"
       && activeVaultCompatibility.workspaceTag
@@ -358,21 +438,38 @@ function createScopedStorageFacade({ storage, namespace }) {
     return [...visible];
   };
 
+  // Enumeration in every state: a stale facade shows no workspace-scoped key at
+  // all, an authoritative workspace enumerates the encrypted runtime (never
+  // scoped plaintext business keys), and everything else keeps native behaviour.
+  const facadeVisibleKeys = () => {
+    if (!isCurrentFacade()) return staleVisibleLogicalKeys();
+    const adapter = facadeReadableAdapter();
+    if (adapter) return authoritativeLogicalKeys(adapter);
+    if (authoritativeRouting()) return authoritativeLogicalKeys({ keys: () => [] });
+    return visibleLogicalKeys();
+  };
+
+  // A retained facade keeps only what is not workspace data: device-global keys,
+  // auth tokens, and unrelated origin values.
+  const staleVisibleLogicalKeys = () => {
+    const keys = realKeysOf(storage);
+    if (!keys) return [];
+    const visible = [];
+    keys.forEach((key) => {
+      if (key.startsWith(NAMESPACE_PREFIX_WITH_SEPARATOR)) return;   // any workspace, including its own
+      if (isWorkspaceScopedLogicalKey(key)) return;                  // quarantined bare legacy
+      if (isQuarantinedLegacyKey(key)) return;
+      visible.push(key);
+    });
+    return visible;
+  };
+
   const facade = {
     get length() {
-      const adapter = readableAuthoritativeAdapter();
-      if (adapter) return authoritativeLogicalKeys(adapter).length;
-      // Installed but not readable (blocked): approved keys must NOT reappear
-      // from scoped plaintext, so nothing authoritative is enumerated.
-      if (installedAuthoritativeRuntime()) return authoritativeLogicalKeys({ keys: () => [] }).length;
-      return visibleLogicalKeys().length;
+      return facadeVisibleKeys().length;
     },
     key(index) {
-      const adapter = readableAuthoritativeAdapter();
-      const installed = installedAuthoritativeRuntime();
-      const keys = adapter
-        ? authoritativeLogicalKeys(adapter)
-        : (installed ? authoritativeLogicalKeys({ keys: () => [] }) : visibleLogicalKeys());
+      const keys = facadeVisibleKeys();
       const position = Number(index);
       if (!Number.isInteger(position) || position < 0 || position >= keys.length) return null;
       return keys[position];
@@ -381,14 +478,19 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return null;
       if (isForeignPhysicalKey(normalizedKey)) return null;
-      const installed = installedAuthoritativeRuntime();
-      if (installed) {
+      // A retained facade for a workspace that is no longer active has no
+      // workspace data at all: not its own old scoped values, and certainly not
+      // the currently active workspace's runtime.
+      if (!isCurrentFacade()) {
+        if (isWorkspaceScopedLogicalKey(normalizedKey)) return null;
+      } else if (authoritativeRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         if (routing === "vault") {
           // Approved business data is served from the verified encrypted runtime
-          // -- including while mutations are frozen. If the runtime cannot even
-          // read, the key is absent; it never falls back to scoped plaintext.
-          const adapter = readableAuthoritativeAdapter();
+          // -- including while mutations are frozen, while the adapter is being
+          // reinstalled, and while the vault is locked. If no readable adapter
+          // matches, the key is ABSENT; it never falls back to scoped plaintext.
+          const adapter = facadeReadableAdapter();
           return adapter ? adapter.getItem(normalizedKey) : null;
         }
         // An unclassified workspace-shaped key has no authoritative home, so it
@@ -406,13 +508,15 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
-      const installed = installedAuthoritativeRuntime();
-      if (installed) {
+      if (!isCurrentFacade()) {
+        if (isWorkspaceScopedLogicalKey(normalizedKey)) return undefined;
+      } else if (authoritativeRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
-        // Never writes scoped plaintext for business data. While frozen the
-        // mutation is refused outright rather than deferred or redirected.
+        // Never writes scoped plaintext for business data. Without a mutable
+        // matching adapter the mutation is refused outright rather than
+        // deferred, redirected, or written as plaintext.
         if (routing === "vault") {
-          const adapter = mutableAuthoritativeAdapter();
+          const adapter = facadeMutableAdapter();
           if (adapter) adapter.setItem(normalizedKey, value);
           return undefined;
         }
@@ -426,11 +530,12 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
-      const installed = installedAuthoritativeRuntime();
-      if (installed) {
+      if (!isCurrentFacade()) {
+        if (isWorkspaceScopedLogicalKey(normalizedKey)) return undefined;
+      } else if (authoritativeRouting()) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         if (routing === "vault") {
-          const adapter = mutableAuthoritativeAdapter();
+          const adapter = facadeMutableAdapter();
           if (adapter) adapter.removeItem(normalizedKey);
           return undefined;
         }
@@ -446,6 +551,7 @@ function createScopedStorageFacade({ storage, namespace }) {
     setVaultCompatibilityGuardValue(rawValue) {
       if (rawValue !== '{"version":1,"state":"transition"}'
         && rawValue !== '{"version":1,"state":"authoritative"}') return null;
+      invalidateDeviceGuardState();
       try {
         storage.setItem("estipaid-vault-guard-v1", rawValue);
         return storage.getItem("estipaid-vault-guard-v1");
@@ -453,9 +559,27 @@ function createScopedStorageFacade({ storage, namespace }) {
         return null;
       }
     },
+    // ISO-15H/ISO-16 -- the migration orchestrator's privileged read of the
+    // frozen scoped PLAINTEXT source. Ordinary getItem stops serving business
+    // plaintext the moment the guard is authoritative, but the completed-
+    // authority verification still has to be able to prove the sources are
+    // really gone, so it reads through this named, current-facade-only,
+    // workspace-scoped-only accessor instead of through the application surface.
+    readVaultMigrationSourceItem(key) {
+      const normalizedKey = normalizeStorageKey(key);
+      if (!isCurrentFacade()) return null;
+      if (!isWorkspaceScopedLogicalKey(normalizedKey)) return null;
+      if (isQuarantinedLegacyKey(normalizedKey) || isForeignPhysicalKey(normalizedKey)) return null;
+      try {
+        const value = storage.getItem(`${scopedPrefix}${normalizedKey}`);
+        return value === undefined ? null : value;
+      } catch {
+        return null;
+      }
+    },
     removeVaultMigrationItem(key) {
       const normalizedKey = normalizeStorageKey(key);
-      const guard = readVaultCompatibilityGuard();
+      const guard = adoptGuardState(readVaultCompatibilityGuard());
       if (!isWorkspaceScopedLogicalKey(normalizedKey)
         || guard?.state !== "authoritative"
         || activeWorkspace?.namespace !== namespace
@@ -471,13 +595,14 @@ function createScopedStorageFacade({ storage, namespace }) {
     // keys are removed: other workspaces, legacy unscoped values, Supabase auth
     // keys, language, device id, and unrelated data all survive.
     clear() {
-      const installed = installedAuthoritativeRuntime();
-      if (installed) {
+      // A retained facade clears nothing at all.
+      if (!isCurrentFacade()) return undefined;
+      if (authoritativeRouting()) {
         // Clears only approved encrypted business records. Vault metadata, the
         // frozen migration manifest, other workspaces, device-global keys, and
-        // quarantined legacy values are all untouched. A frozen runtime refuses
-        // the clear rather than performing a partial one.
-        const adapter = mutableAuthoritativeAdapter();
+        // quarantined legacy values are all untouched. A frozen or absent
+        // adapter refuses the clear rather than performing a partial one.
+        const adapter = facadeMutableAdapter();
         if (adapter) adapter.clear();
         return undefined;
       }
@@ -623,6 +748,7 @@ export function activateAccountScopedLocalStorage({
   const previousNamespace = activeWorkspace?.namespace || "";
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
+  invalidateDeviceGuardState();
   activeWorkspace = null;
 
   const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
@@ -660,6 +786,7 @@ export function activateAccountScopedLocalStorage({
     return failed(ACCOUNT_SCOPED_STORAGE_ERROR.INSTALL_FAILED);
   }
 
+  invalidateDeviceGuardState();
   activeWorkspace = { namespace, userId: strictId(userId), companyId: strictId(companyId), storage: realStorage, facade };
 
   // Only a verified, active workspace gets a cross-tab bridge.
@@ -671,6 +798,7 @@ export function activateAccountScopedLocalStorage({
 export function deactivateAccountScopedLocalStorage() {
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
+  invalidateDeviceGuardState();
   activeWorkspace = null;
   // The authoritative adapter is revoked with the workspace, so a switched or
   // signed-out identity can never leave a previous runtime reachable.

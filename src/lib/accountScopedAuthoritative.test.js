@@ -379,3 +379,165 @@ test("after lock or revocation no approved plaintext fallback is available", () 
   revokeAuthoritativeVaultRuntime();
   expect(isAuthoritativeVaultRuntimeInstalled(TAG)).toBe(false);
 });
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- authoritative routing is bound to the ACTIVE facade.
+//
+// Routing used to be decided from global state alone, so a facade retained from
+// workspace A could reach whatever runtime workspace B installed. And because
+// authoritative mode was inferred from adapter presence, revoking the adapter
+// reopened scoped plaintext for the current workspace.
+// ---------------------------------------------------------------------------
+
+const SECOND_USER = "22222222-3333-4444-8555-666666666666";
+const SECOND_COMPANY = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+const SECOND_TAG = "C".repeat(43);
+const SECOND_NAMESPACE = buildAccountWorkspaceNamespace({ userId: SECOND_USER, companyId: SECOND_COMPANY });
+
+function setDeviceGuard(state) {
+  // The compatibility guard is device-global: it is always read from the real
+  // window.localStorage, never from the memory storage the facade wraps. A write
+  // from OUTSIDE this module looks exactly like another tab's write, so the
+  // storage event is dispatched with it -- that is the real invalidation signal.
+  if (state === null) window.localStorage.removeItem("estipaid-vault-guard-v1");
+  else window.localStorage.setItem("estipaid-vault-guard-v1", `{"version":1,"state":"${state}"}`);
+  window.dispatchEvent(new StorageEvent("storage", { key: "estipaid-vault-guard-v1" }));
+}
+
+afterEach(() => {
+  window.localStorage.removeItem("estipaid-vault-guard-v1");
+});
+
+test("a facade retained from workspace A cannot reach workspace B's runtime", () => {
+  activate();
+  const facadeA = facade;
+  const storageA = storage;
+  // A's own scoped business value, written while A was active and legacy-safe.
+  expect(facadeA.getItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+
+  // Switch to workspace B and install B's authoritative runtime.
+  const activationB = activateAccountScopedLocalStorage({ storage: storageA, userId: SECOND_USER, companyId: SECOND_COMPANY });
+  expect(activationB.ok).toBe(true);
+  const facadeB = activationB.storage;
+  setActiveWorkspaceVaultCompatibility({ workspaceTag: SECOND_TAG, state: "legacy-safe", generation: 1 });
+  const adapterB = freezableAdapter({ seed: { "estipaid-customers-v1": "workspace-b-encrypted" } });
+  expect(installAuthoritativeVaultRuntime({ workspaceTag: SECOND_TAG, generation: 1, adapter: adapterB })).toBe(true);
+
+  // 4/5/6: the retained facade cannot read, mutate, or enumerate B.
+  expect(facadeA.getItem("estipaid-customers-v1")).toBeNull();
+  facadeA.setItem("estipaid-customers-v1", "written-by-stale-facade");
+  facadeA.removeItem("estipaid-customers-v1");
+  facadeA.clear();
+  expect(adapterB.cache.get("estipaid-customers-v1")).toBe("workspace-b-encrypted");
+  const staleKeys = [];
+  for (let index = 0; index < facadeA.length; index += 1) staleKeys.push(facadeA.key(index));
+  expect(staleKeys).not.toContain("estipaid-customers-v1");
+  expect(staleKeys).not.toContain("estipaid-vault-idle-lock-minutes");
+
+  // 7: nor its own old scoped business data, which is still physically present.
+  expect(storageA.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"stale-plaintext"}');
+  expect(facadeA.getItem("estipaid-customers-v1")).toBeNull();
+
+  // 8: the current facade keeps working normally.
+  expect(facadeB.getItem("estipaid-customers-v1")).toBe("workspace-b-encrypted");
+  facadeB.setItem("estipaid-projects-v1", "workspace-b-write");
+  expect(adapterB.cache.get("estipaid-projects-v1")).toBe("workspace-b-write");
+  expect(storageA.getItem(`${SECOND_NAMESPACE}:estipaid-projects-v1`)).toBeNull();
+
+  // Device-global and unrelated origin keys keep their native behaviour even on
+  // the retained facade.
+  expect(facadeA.getItem("estipaid-device-id-v1")).toBe("synthetic-device");
+  expect(facadeA.getItem("synthetic-third-party")).toBe("unrelated");
+  expect(staleKeys).toContain("estipaid-device-id-v1");
+});
+
+test("an authoritative workspace with no adapter never serves scoped plaintext", () => {
+  activate();
+  const adapter = freezableAdapter({ seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  // The workspace has settled into authority, and a conflicting scoped plaintext
+  // value for an approved key exists.
+  setDeviceGuard("authoritative");
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+  expect(facade.getItem("estipaid-customers-v1")).toBe("encrypted-value");
+
+  // The adapter is revoked -- a lock, or the window between two activations.
+  revokeAuthoritativeVaultRuntime();
+  expect(isAuthoritativeVaultRuntimeInstalled(TAG)).toBe(false);
+
+  // 12/13: absent, never plaintext, and not enumerated.
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+  const keys = [];
+  for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+  expect(keys).not.toContain("estipaid-customers-v1");
+
+  // 14: no mutation reaches scoped plaintext.
+  facade.setItem("estipaid-customers-v1", "written-without-adapter");
+  facade.removeItem("estipaid-customers-v1");
+  facade.clear();
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe("plaintext-value");
+  expect(storage.getItem(`${NAMESPACE}:estipaid-vault-idle-lock-minutes`)).toBe("30");
+
+  // Documented native exclusions still work, unknown keys stay absent, and
+  // quarantined/foreign values remain untouched.
+  expect(facade.getItem("estipaid-vault-idle-lock-minutes")).toBe("30");
+  expect(facade.getItem("estipaid-brand-new-key-v1")).toBeNull();
+  expect(facade.getItem("field-pocket-customers-v1")).toBeNull();
+  expect(storage.getItem("field-pocket-customers-v1")).toBe('{"note":"quarantined"}');
+  expect(storage.getItem(`${FOREIGN_NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"foreign"}');
+  expect(facade.getItem("estipaid-device-id-v1")).toBe("synthetic-device");
+});
+
+test("a stale-generation adapter under an authoritative guard still reads absent", () => {
+  activate();
+  setDeviceGuard("authoritative");
+  storage.setItem(`${NAMESPACE}:estipaid-customers-v1`, "plaintext-value");
+  const adapter = freezableAdapter({ generation: 2, seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter });
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+
+  // A frozen, matching adapter still reads its verified cache.
+  const live = freezableAdapter({ generation: 1, seed: { "estipaid-customers-v1": "encrypted-value" } });
+  installAuthoritativeVaultRuntime({ workspaceTag: TAG, generation: 1, adapter: live });
+  live.frozen = true;
+  expect(facade.getItem("estipaid-customers-v1")).toBe("encrypted-value");
+});
+
+test("the transition guard still permits the established migration source path", () => {
+  activate();
+  // Mid-migration: the guard is transition, not settled authority.
+  setDeviceGuard("transition");
+  // The orchestrator's established contract keeps reading the frozen plaintext.
+  expect(facade.getItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+  expect(facade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+
+  // Once authority settles, the application surface closes but the named
+  // migration accessor still tells the truth about the source.
+  setDeviceGuard("authoritative");
+  expect(facade.getItem("estipaid-customers-v1")).toBeNull();
+  expect(facade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+
+  // Cleanup still works, and afterwards the source really is gone.
+  expect(facade.removeVaultMigrationItem("estipaid-customers-v1")).toBe(true);
+  expect(facade.readVaultMigrationSourceItem("estipaid-customers-v1")).toBeNull();
+  expect(storage.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBeNull();
+});
+
+test("the migration source accessor is refused to a retained facade", () => {
+  activate();
+  const facadeA = facade;
+  const storageA = storage;
+  expect(facadeA.readVaultMigrationSourceItem("estipaid-customers-v1")).toBe('{"note":"stale-plaintext"}');
+  activateAccountScopedLocalStorage({ storage: storageA, userId: SECOND_USER, companyId: SECOND_COMPANY });
+  expect(facadeA.readVaultMigrationSourceItem("estipaid-customers-v1")).toBeNull();
+  expect(facadeA.removeVaultMigrationItem("estipaid-customers-v1")).toBe(false);
+  expect(storageA.getItem(`${NAMESPACE}:estipaid-customers-v1`)).toBe('{"note":"stale-plaintext"}');
+  // No physical namespace or workspace tag is exposed by any of it.
+  const serialized = JSON.stringify({
+    read: facadeA.readVaultMigrationSourceItem("estipaid-customers-v1"),
+    item: facadeA.getItem("estipaid-customers-v1"),
+    length: facadeA.length,
+  });
+  expect(serialized).not.toContain(NAMESPACE);
+  expect(serialized).not.toContain(TAG);
+});

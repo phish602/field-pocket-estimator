@@ -146,6 +146,7 @@ let logicalEventCapture = [];
 let logicalEventListener = null;
 let originalBroadcastChannel = null;
 const heldLeases = {};
+const retainedFacades = {};
 
 function realStorage() {
   if (!nativeStorage) {
@@ -1730,6 +1731,67 @@ export function createBrowserHarness() {
         cacheUnchanged: runtimeGetItem(logicalKey) === cacheBefore,
         plaintextUnchanged: realStorage().getItem(`${namespace}:${logicalKey}`) === plaintext,
         entryCount: runtimeLogicalKeys().length,
+      });
+    },
+
+    // ---- ISO-16 facade boundary probes ----------------------------------
+
+    // Retains the CURRENT active facade so a later workspace switch can prove
+    // the retained one is inert. The facade object itself never leaves here.
+    retainActiveFacade: ({ slot = "a" } = {}) => {
+      retainedFacades[slot] = getActiveAccountScopedStorage() || null;
+      return Object.freeze({ retained: Boolean(retainedFacades[slot]) });
+    },
+
+    // What a retained facade can still see or do. Values are never returned --
+    // only booleans and byte counts.
+    probeRetainedFacade: async ({ slot = "a", logicalKey, expectPresent = false } = {}) => {
+      const retained = retainedFacades[slot];
+      if (!retained) return Object.freeze({ attempted: false });
+      const current = getActiveAccountScopedStorage();
+      const beforeRead = retained.getItem(logicalKey);
+      const currentBefore = current ? current.getItem(logicalKey) : null;
+      retained.setItem(logicalKey, "written-by-retained-facade");
+      retained.removeItem(logicalKey);
+      retained.clear();
+      const keys = [];
+      for (let index = 0; index < retained.length; index += 1) keys.push(retained.key(index));
+      const currentAfter = current ? current.getItem(logicalKey) : null;
+      return Object.freeze({
+        attempted: true,
+        readPresent: beforeRead !== null,
+        readByteLength: beforeRead === null ? 0 : new TextEncoder().encode(beforeRead).length,
+        enumeratesKey: keys.includes(logicalKey),
+        enumeratesAnyWorkspaceKey: keys.some((key) => VAULT_MIGRATION_LOGICAL_KEYS.includes(key)),
+        deviceGlobalStillVisible: keys.includes("estipaid-device-id-v1"),
+        currentUnchanged: currentBefore === currentAfter,
+        currentPresent: currentAfter !== null,
+        currentByteLength: currentAfter === null ? 0 : new TextEncoder().encode(currentAfter).length,
+        expectPresent,
+      });
+    },
+
+    // The device-global compatibility guard as this tab currently reads it.
+    guardState: () => Object.freeze({ state: readVaultCompatibilityGuard()?.state || "" }),
+
+    // Reads an approved key through the CURRENT facade, reporting only whether
+    // the answer matches the encrypted runtime or the injected plaintext.
+    facadeSourceProbe: async ({ logicalKey, plaintext } = {}) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      const read = facade.getItem(logicalKey);
+      const migrationSource = typeof facade.readVaultMigrationSourceItem === "function"
+        ? facade.readVaultMigrationSourceItem(logicalKey)
+        : null;
+      const keys = [];
+      for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+      return Object.freeze({
+        attempted: true,
+        readPresent: read !== null,
+        readsPlaintext: read === plaintext,
+        readMatchesRuntime: read === runtimeGetItem(logicalKey),
+        enumeratesKey: keys.includes(logicalKey),
+        migrationSourceSeesPlaintext: migrationSource === plaintext,
       });
     },
 

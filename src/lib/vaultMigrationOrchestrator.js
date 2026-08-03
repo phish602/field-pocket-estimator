@@ -155,11 +155,20 @@ function assertFacade(storage) {
   return storage;
 }
 
+// The migration source is the frozen scoped PLAINTEXT. Once the guard is
+// authoritative the facade stops serving that through getItem, so the source
+// inventory and the completed-authority "sources are really gone" proof read it
+// through the facade's named migration accessor when one is available.
+function readMigrationSource(storage, key) {
+  if (typeof storage.readVaultMigrationSourceItem === "function") return storage.readVaultMigrationSourceItem(key);
+  return storage.getItem(key);
+}
+
 async function readEntry(storage, key, { blobId = null } = {}) {
   let rawValue = null;
   let bytes = null;
   try {
-    rawValue = storage.getItem(key);
+    rawValue = readMigrationSource(storage, key);
     if (rawValue === null) return Object.freeze({ key, present: false, byteLength: null, digest: null, blobId: null });
     if (typeof rawValue !== "string") throw new VaultMigrationError(VAULT_MIGRATION_ERROR_CODES.STORAGE_UNAVAILABLE);
     bytes = new Uint8Array(new TextEncoder().encode(rawValue));
@@ -268,7 +277,7 @@ async function writeRecords({ repository, storage, workspaceTag, dek, userId, co
     let rawValue = null;
     let plain = null;
     try {
-      rawValue = storage.getItem(entry.key);
+      rawValue = readMigrationSource(storage, entry.key);
       if (typeof rawValue !== "string") throw new VaultMigrationError(VAULT_MIGRATION_ERROR_CODES.SOURCE_CHANGED);
       plain = new Uint8Array(new TextEncoder().encode(rawValue));
       if (plain.length !== entry.byteLength || await digest(plain) !== entry.digest) throw new VaultMigrationError(VAULT_MIGRATION_ERROR_CODES.SOURCE_CHANGED);
