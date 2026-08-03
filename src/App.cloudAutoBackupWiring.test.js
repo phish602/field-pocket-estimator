@@ -27,6 +27,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({
   default: jest.fn(),
 }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
@@ -56,6 +57,7 @@ const useSupabaseAccount = require("./lib/useSupabaseAccount").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultRuntimeActivation = require("./lib/useVaultRuntimeActivation").default;
 const { checkSupabaseCloudOnboardingStatus } = require("./lib/supabaseCloudOnboarding");
 
 function buildAuthState(overrides = {}) {
@@ -129,6 +131,7 @@ test("worker is disabled when Supabase is not configured, regardless of session"
 });
 
 test("worker is enabled only once signed in and Supabase is configured, using account company/role", async () => {
+  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({
@@ -163,6 +166,7 @@ test("worker is enabled only once signed in and Supabase is configured, using ac
 });
 
 test("worker is disabled when the signed-in device is locked", async () => {
+  useVaultRuntimeActivation.mockReturnValue({ state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })) });
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
   const user = { id: "user_1", email: "owner@example.com" };
   useSupabaseAuth.mockReturnValue(buildAuthState({

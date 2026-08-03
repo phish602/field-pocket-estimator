@@ -134,6 +134,16 @@ export function migrationManifestAad(options) {
   const [user, company] = identities(userId, companyId);
   return concat(encodeText("estipaid-vault-migration-manifest-v1"), encodeUint32(vaultFormatVersion), encodeText(user), encodeText(company), encodeText(transitionId), encodeUint32(manifestSchemaVersion));
 }
+// ISO-16 -- the authoritative runtime catalog. Its domain separator differs from
+// every other envelope, so a runtime catalog can never be decrypted as a
+// migration manifest, a record, a sentinel, or a wrapped key, and vice versa.
+// The runtime generation is bound so a stale catalog cannot be replayed as a
+// newer one under the same workspace identity.
+export function runtimeCatalogAad(options) {
+  const { vaultFormatVersion, userId, companyId, runtimeSchemaVersion, runtimeGeneration } = assertOptions(options);
+  const [user, company] = identities(userId, companyId);
+  return concat(encodeText("estipaid-vault-runtime-catalog-v1"), encodeUint32(vaultFormatVersion), encodeText(user), encodeText(company), encodeUint32(runtimeSchemaVersion), encodeUint32(runtimeGeneration));
+}
 export function validateKdfParameters(params) {
   if (!params || params.algorithm !== "argon2id" || params.outputType !== "binary" || params.hashLength !== 32 || !Number.isInteger(params.memorySize) || !Number.isInteger(params.iterations) || params.parallelism !== 1 || params.memorySize < 65536 || params.memorySize > 131072 || params.iterations < MIN_KDF_ITERATIONS_V1 || params.iterations > MAX_KDF_ITERATIONS_V1) fail(VaultCryptoErrorCode.UNSUPPORTED_KDF_POLICY, "Unsupported KDF policy.");
   return Object.freeze({ algorithm: "argon2id", memorySize: params.memorySize, iterations: params.iterations, parallelism: params.parallelism, hashLength: 32, outputType: "binary" });

@@ -15,8 +15,15 @@
 import {
   activateAccountScopedLocalStorage,
   deactivateAccountScopedLocalStorage,
+  installAuthoritativeVaultRuntime,
+  isAuthoritativeVaultRuntimeInstalled,
+  revokeAuthoritativeVaultRuntime,
+  setActiveWorkspaceVaultCompatibility,
 } from "../lib/accountScopedLocalStorage";
+import { VAULT_MIGRATION_LOGICAL_KEYS } from "../lib/vaultIndexedDbRepository";
 import { screen } from "@testing-library/react";
+
+export const TEST_WORKSPACE_TAG = "A".repeat(43);
 
 export const TEST_USER = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -96,6 +103,25 @@ export function buildUnlockedVaultSessionResult() {
   };
 }
 
+// ISO-16 -- test-only public result for suites whose subject starts beyond the
+// authoritative encrypted runtime. Under the activation policy the shell mounts
+// only when the runtime for the exact workspace reports `ready`, so a suite that
+// exercises ordinary shell behavior must opt into this explicitly. It never
+// relaxes production behavior: the real activation contract is covered by
+// useVaultRuntimeActivation.test.js and the App activation suite.
+export function buildReadyVaultRuntimeResult(overrides = {}) {
+  return {
+    state: "ready",
+    checking: false,
+    pending: false,
+    code: "",
+    message: "",
+    refresh: jest.fn(),
+    flushAndLock: jest.fn(async () => ({ ok: true, code: "" })),
+    ...overrides,
+  };
+}
+
 export function buildLegacySafeVaultCompatibilityResult() {
   return {
     state: "legacy-safe",
@@ -143,6 +169,18 @@ export function primeConfiguredWorkspaceMocks(overrides = {}) {
   mockModuleDefault("../lib/useVaultCompatibilityBridge")?.mockReturnValue(
     overrides.vaultCompatibility || { state: "checking", checking: true, code: "", message: "", refresh: jest.fn() }
   );
+  mockModuleDefault("../lib/useVaultSession")?.mockReturnValue(
+    overrides.vaultSession || buildUnlockedVaultSessionResult()
+  );
+  // The mocked activation hook installs the authoritative adapter on every
+  // render, exactly as the production hook does once it reports ready.
+  const runtimeResult = overrides.vaultRuntime || buildReadyVaultRuntimeResult();
+  mockModuleDefault("../lib/useVaultRuntimeActivation")?.mockImplementation(() => {
+    if (runtimeResult.state === "ready" || runtimeResult.state === "pending-writes") {
+      ensureTestAuthoritativeRuntime(overrides.authoritativeRuntime || {});
+    }
+    return runtimeResult;
+  });
   primeVerifiedDeviceGuard(overrides.deviceGuard);
 }
 
@@ -199,17 +237,121 @@ export function activateConfiguredTestWorkspace({ userId = TEST_USER.id, company
   return activation;
 }
 
+// ISO-16 -- TEST-ONLY authoritative runtime.
+//
+// Under the activation policy the account-scoped facade serves approved business
+// keys from the encrypted runtime, and the legacy plaintext mutation path is
+// permanently closed. Suites whose subject is ordinary shell behavior (not the
+// vault) therefore need a working authoritative adapter, exactly as production
+// has one after hydration.
+//
+// This is an in-memory stand-in for the CACHE only. It never relaxes the
+// facade's classification: routing, quarantine, foreign-namespace invisibility,
+// and refusal of unclassified keys are all still the production code paths. The
+// real encrypted runtime is covered by vaultRuntimeStore.test.js and the
+// real-browser runtime matrix.
+const APPROVED_TEST_KEYS = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
+let testRuntimeCache = null;
+let testRuntimeWrites = [];
+let testRuntimeQuotaExceeded = false;
+
+// Simulates the encrypted runtime refusing a write because local storage is
+// full, so quota handling can be exercised at the vault boundary.
+export function setTestAuthoritativeRuntimeQuotaExceeded(value = true) {
+  testRuntimeQuotaExceeded = Boolean(value);
+}
+
+// Simulates ANOTHER TAB committing a verified change: the shared cache is
+// updated and the application is told which logical key changed, exactly as a
+// verified rehydration does in production.
+export function simulateAuthoritativeCrossTabUpdate({ logicalKey, value }) {
+  if (!testRuntimeCache) throw new Error("configuredWorkspaceTestHarness: no authoritative runtime installed");
+  const before = testRuntimeCache.has(logicalKey) ? testRuntimeCache.get(logicalKey) : null;
+  if (value === null) testRuntimeCache.delete(logicalKey);
+  else testRuntimeCache.set(logicalKey, String(value));
+  window.dispatchEvent(new CustomEvent("pe-localstorage", {
+    detail: { key: logicalKey, value: value === null ? null : String(value), oldValue: before, crossTab: true },
+  }));
+}
+
+// Every mutation that reaches the encrypted runtime, in application order. This
+// is the vault-boundary equivalent of spying on Storage.prototype: a vaulted key
+// never touches localStorage, so a suite that needs to assert "this value was
+// written at some point" observes it here.
+export function getTestAuthoritativeRuntimeWrites() {
+  return [...testRuntimeWrites];
+}
+
+export function clearTestAuthoritativeRuntimeWrites() {
+  testRuntimeWrites = [];
+}
+
+export function installTestAuthoritativeRuntime({ workspaceTag = TEST_WORKSPACE_TAG, generation = 1, preserveCache = false } = {}) {
+  if (!preserveCache || !testRuntimeCache) testRuntimeCache = new Map();
+  setActiveWorkspaceVaultCompatibility({ workspaceTag, state: "checking", generation });
+  const installed = installAuthoritativeVaultRuntime({
+    workspaceTag,
+    generation,
+    adapter: {
+      isReady: (requested) => requested === generation && testRuntimeCache !== null,
+      getItem: (logicalKey) => (testRuntimeCache.has(logicalKey) ? testRuntimeCache.get(logicalKey) : null),
+      setItem: (logicalKey, value) => {
+        if (!APPROVED_TEST_KEYS.has(logicalKey)) return false;
+        if (testRuntimeQuotaExceeded) {
+          const error = new Error("quota");
+          error.name = "QuotaExceededError";
+          throw error;
+        }
+        testRuntimeCache.set(logicalKey, String(value));
+        testRuntimeWrites.push({ kind: "set", key: logicalKey, value: String(value) });
+        return true;
+      },
+      removeItem: (logicalKey) => {
+        testRuntimeCache.delete(logicalKey);
+        testRuntimeWrites.push({ kind: "remove", key: logicalKey, value: null });
+        return true;
+      },
+      clear: () => { testRuntimeCache.clear(); return true; },
+      keys: () => [...testRuntimeCache.keys()],
+    },
+  });
+  if (!installed) throw new Error("configuredWorkspaceTestHarness: authoritative runtime installation failed");
+  return { workspaceTag, generation };
+}
+
+// Production re-installs the adapter through the activation hook whenever the
+// facade is re-activated (a remount, a StrictMode double-invoke, an identity
+// change). A suite that MOCKS the hook has to play that same role, so the mocked
+// hook calls this on every render. The cache is preserved across a re-install so
+// a remount does not lose the workspace's data -- exactly like a real hydrated
+// runtime.
+export function ensureTestAuthoritativeRuntime(options = {}) {
+  if (isAuthoritativeVaultRuntimeInstalled()) return false;
+  installTestAuthoritativeRuntime({ ...options, preserveCache: true });
+  return true;
+}
+
+export function revokeTestAuthoritativeRuntime() {
+  testRuntimeCache = null;
+  testRuntimeWrites = [];
+  testRuntimeQuotaExceeded = false;
+  revokeAuthoritativeVaultRuntime();
+}
+
 // One call for the common case: prime the mocked hooks, then open the scoped
 // fixture workspace. Call it before seeding any EstiPaid fixture data.
 export function setupConfiguredWorkspace(overrides = {}) {
   primeConfiguredWorkspaceMocks(overrides);
-  return activateConfiguredTestWorkspace(overrides.identity);
+  const activation = activateConfiguredTestWorkspace(overrides.identity);
+  if (overrides.authoritativeRuntime !== false) installTestAuthoritativeRuntime(overrides.authoritativeRuntime || {});
+  return activation;
 }
 
 // Cleanup order matters: drop the facade first so the real jsdom storage is
 // back in place, and only then clear it. Clearing through the facade would
 // (correctly) leave every other physical key untouched.
 export function resetConfiguredTestWorkspace() {
+  revokeTestAuthoritativeRuntime();
   deactivateAccountScopedLocalStorage();
   try {
     window.localStorage.clear();

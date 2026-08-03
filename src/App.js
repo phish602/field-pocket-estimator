@@ -35,6 +35,8 @@ import AuthScreen from "./screens/AuthScreen";
 import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
 import VaultAccessGate from "./screens/VaultAccessGate";
 import VaultCompatibilityGate from "./screens/VaultCompatibilityGate";
+import VaultRuntimeGate from "./screens/VaultRuntimeGate";
+import useVaultRuntimeActivation from "./lib/useVaultRuntimeActivation";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
 import useVaultCompatibilityBridge from "./lib/useVaultCompatibilityBridge";
@@ -4642,11 +4644,14 @@ export default function App() {
     && workspace.identity === workspaceIdentity
   );
 
-  // The bridge only accepts the pseudonymous vault tag. It is derived after
-  // the account-scoped facade is active and is discarded synchronously when
-  // the active identity changes.
+  // The pseudonymous vault tag. It is derived after the account-scoped facade is
+  // active and is discarded synchronously when the active identity changes.
+  //
+  // ISO-16: this is required under BOTH postures. The bridge consumed it, and
+  // the authoritative runtime adapter is matched against it -- without it, the
+  // facade would never honour the encrypted runtime.
   useEffect(() => {
-    if (!VAULT_BRIDGE_RELEASE || !workspaceReady || !workspaceIdentity) {
+    if (!workspaceReady || !workspaceIdentity) {
       setBridgeWorkspace((previous) => (previous === IDLE_BRIDGE_WORKSPACE ? previous : IDLE_BRIDGE_WORKSPACE));
       return undefined;
     }
@@ -4679,58 +4684,30 @@ export default function App() {
   // The App is the only production consumer of the hook result. Mirror that
   // narrow public state into the facade after each render so mocked/test hook
   // results cannot accidentally bypass the synchronous mutation barrier.
+  //
+  // ISO-16: under the activation policy `legacy-safe` is never reached, so the
+  // legacy plaintext mutation path stays permanently closed. The workspace tag
+  // is still published because the authoritative runtime adapter is matched
+  // against it.
   useEffect(() => {
+    if (!workspaceEligible) {
+      // Signed out, or no company: revoke outright.
+      setActiveWorkspaceVaultCompatibility();
+      return;
+    }
+    // While the tag is still deriving, leave the previously published value
+    // alone. Clearing here would transiently unpublish the tag on every render
+    // and detach the authoritative adapter mid-session. Identity changes are
+    // already revoked synchronously by the workspace activation effect, which
+    // calls setActiveWorkspaceVaultCompatibility() and revokes the adapter.
+    if (!bridgeWorkspaceReady) return;
     setActiveWorkspaceVaultCompatibility({
-      workspaceTag: bridgeWorkspaceReady ? bridgeWorkspace.workspaceTag : "",
+      workspaceTag: bridgeWorkspace.workspaceTag,
       state: legacyCompatibilitySafe ? "legacy-safe" : "checking",
       generation: 0,
     });
-  }, [bridgeWorkspace.workspaceTag, bridgeWorkspaceReady, legacyCompatibilitySafe]);
+  }, [bridgeWorkspace.workspaceTag, bridgeWorkspaceReady, legacyCompatibilitySafe, workspaceEligible]);
 
-  const workspaceCloudConfigured = Boolean(
-    operationalConfigured
-    && operationalSession
-    && account.hasCompany
-    && workspaceReady
-    && (!VAULT_BRIDGE_RELEASE || legacyCompatibilitySafe)
-  );
-  const cloudUser = workspaceCloudConfigured ? operationalUser : null;
-  const cloudCompany = workspaceCloudConfigured ? account.company : null;
-
-  const deviceLock = useDeviceLockStatus({
-    configured: workspaceCloudConfigured,
-    user: cloudUser,
-    company: cloudCompany,
-    enabled: workspaceCloudConfigured,
-  });
-
-  // Gate 13B: background automatic cloud backup worker. Called unconditionally
-  // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
-  // Supabase is configured, and a workspace exists.
-  useCloudAutoConvergence({
-    configured: workspaceCloudConfigured,
-    user: cloudUser,
-    company: cloudCompany,
-    deviceLock,
-  });
-
-  // Automatic backup requires a fully verified active device -- not merely an
-  // "unlocked" one. A ready-but-unverified/inactive device must not start a
-  // backup (cloud writes stay disabled until ownership is confirmed active).
-  useCloudAutoBackup({
-    enabled: Boolean(
-      workspaceCloudConfigured
-      && deviceLock.ready === true
-      && deviceLock.loading === false
-      && deviceLock.isActive === true
-      && deviceLock.isLocked === false
-    ),
-    configured: workspaceCloudConfigured,
-    user: cloudUser,
-    company: cloudCompany,
-    role: account.role,
-    deviceLocked: Boolean(deviceLock.isLocked),
-  });
 
   // Activation order: auth -> account/company -> activate the exact namespace ->
   // verify it -> only then may workers and the shell see an identity. The
@@ -4802,13 +4779,92 @@ export default function App() {
     return written;
   }, [workspaceIdentity, workspaceReady]);
 
+  // ISO-16: the single production owner of the encrypted runtime lifecycle.
+  // Called unconditionally (Rules of Hooks) and self-gates internally. It is the
+  // ONLY normal-runtime path that can invoke the migration orchestrator.
+  const vaultRuntime = useVaultRuntimeActivation({
+    enabled: Boolean(
+      !VAULT_BRIDGE_RELEASE
+      && workspaceReady
+      && auth.user?.id
+      && account.company?.id
+    ),
+    userId: auth.user?.id,
+    companyId: account.company?.id,
+    vaultUnlocked: vault?.capability?.state === "unlocked",
+  });
+
+  // The shell requires the exact workspace ready, the exact vault unlocked, AND
+  // a verified authoritative runtime installed for that same workspace. An
+  // "unlocked" capability alone is never sufficient.
+  const vaultRuntimeReady = Boolean(
+    VAULT_BRIDGE_RELEASE
+      ? legacyCompatibilitySafe
+      : (workspaceReady && vault?.capability?.state === "unlocked" && vaultRuntime?.state === "ready")
+  );
+
+  // A deliberate lock first flushes accepted writes. A failed flush keeps the
+  // runtime blocked rather than claiming a clean lock.
+  const lockVaultNow = useCallback(() => (
+    typeof vaultRuntime?.flushAndLock === "function" ? vaultRuntime.flushAndLock(vault?.lock) : vault?.lock?.()
+  ), [vaultRuntime, vault]);
+
+  // ISO-16 activation order: cloud workers may only see an identity once the
+  // AUTHORITATIVE runtime for this exact workspace is ready. `!VAULT_BRIDGE_RELEASE`
+  // alone is no longer treated as safe -- before the runtime verifies, local
+  // business state is not readable at all.
+  const workspaceCloudConfigured = Boolean(
+    operationalConfigured
+    && operationalSession
+    && account.hasCompany
+    && workspaceReady
+    && vaultRuntimeReady
+  );
+  const cloudUser = workspaceCloudConfigured ? operationalUser : null;
+  const cloudCompany = workspaceCloudConfigured ? account.company : null;
+
+  const deviceLock = useDeviceLockStatus({
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
+    enabled: workspaceCloudConfigured,
+  });
+
+  // Gate 13B: background automatic cloud backup worker. Called unconditionally
+  // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
+  // Supabase is configured, and a workspace exists.
+  useCloudAutoConvergence({
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
+    deviceLock,
+  });
+
+  // Automatic backup requires a fully verified active device -- not merely an
+  // "unlocked" one. A ready-but-unverified/inactive device must not start a
+  // backup (cloud writes stay disabled until ownership is confirmed active).
+  useCloudAutoBackup({
+    enabled: Boolean(
+      workspaceCloudConfigured
+      && deviceLock.ready === true
+      && deviceLock.loading === false
+      && deviceLock.isActive === true
+      && deviceLock.isLocked === false
+    ),
+    configured: workspaceCloudConfigured,
+    user: cloudUser,
+    company: cloudCompany,
+    role: account.role,
+    deviceLocked: Boolean(deviceLock.isLocked),
+  });
+
   useVaultIdleLock({
     enabled: Boolean(
       workspaceReady
-      && vault.capability?.state === "unlocked"
+      && vault?.capability?.state === "unlocked"
     ),
     minutes: vaultIdleLockMinutes,
-    onLock: vault?.lock,
+    onLock: VAULT_BRIDGE_RELEASE ? vault?.lock : lockVaultNow,
   });
 
   if (!auth.configured) {
@@ -4854,8 +4910,16 @@ export default function App() {
     return <VaultCompatibilityGate state={compatibility.state} />;
   }
 
-  if (!VAULT_BRIDGE_RELEASE && vault.capability?.state !== "unlocked") {
+  if (!VAULT_BRIDGE_RELEASE && vault?.capability?.state !== "unlocked") {
     return <VaultAccessGate {...vault} />;
+  }
+
+  // ISO-16: an unlocked vault is not enough. The shell waits behind a secure
+  // progress gate while migration, sealing, or hydration runs, and stays behind
+  // it if the authoritative runtime is blocked. There is no plaintext fallback
+  // and no route that skips this gate.
+  if (!VAULT_BRIDGE_RELEASE && vaultRuntime?.state !== "ready") {
+    return <VaultRuntimeGate state={vaultRuntime?.state} />;
   }
 
   return (
@@ -4871,7 +4935,7 @@ export default function App() {
         deviceLock={deviceLock}
         vaultIdleLockMinutes={vaultIdleLockMinutes}
         onVaultIdleLockMinutesChange={changeVaultIdleLockMinutes}
-        onVaultLockNow={vault?.lock}
+        onVaultLockNow={VAULT_BRIDGE_RELEASE ? vault?.lock : lockVaultNow}
       />
     </BusinessMutationGuardProvider>
   );

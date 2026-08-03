@@ -15,6 +15,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: jest.fn(() => Promise.resolve("A".repeat(43))) }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
@@ -28,6 +29,7 @@ const useDeviceLockStatus = require("./lib/useDeviceLockStatus").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultRuntimeActivation = require("./lib/useVaultRuntimeActivation").default;
 const useVaultCompatibilityBridge = require("./lib/useVaultCompatibilityBridge").default;
 const vaultCrypto = require("./lib/vaultCrypto");
 const { setActiveWorkspaceVaultCompatibility } = require("./lib/accountScopedLocalStorage");
@@ -99,6 +101,13 @@ beforeEach(() => {
   useVaultCompatibilityBridge.mockImplementation(() => {
     setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });
     return { state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() };
+  });
+  // ISO-16: the shell now requires a verified authoritative runtime. The core
+  // isolation cases below are about NAMESPACE isolation, so they start from a
+  // ready runtime; the runtime's own gating is asserted separately.
+  useVaultRuntimeActivation.mockReturnValue({
+    state: "ready", checking: false, pending: false, code: "", message: "",
+    refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })),
   });
   vaultCrypto.workspaceTag.mockResolvedValue("A".repeat(43));
   const realGetItem = Storage.prototype.getItem;
@@ -374,32 +383,38 @@ test("unconfigured account service fails closed without mounting the shell or wo
 });
 
 test.each([
-  ["checking", "checking"], ["transition", "transition-blocked"], ["authoritative", "authoritative-blocked"],
-  ["corrupt", "corrupt-blocked"], ["storage", "storage-blocked"], ["other workspace", "other-workspace-transition"],
-])("bridge %s state keeps the normal shell unmounted after workspace activation", async (_name, state) => {
-  useVaultCompatibilityBridge.mockReturnValue({ state, checking: state === "checking", code: "", message: "", refresh: jest.fn() });
+  ["checking"], ["migrating"], ["sealing"], ["hydrating"], ["pending-writes"], ["blocked"],
+])("runtime %s state keeps the normal shell unmounted after workspace activation", async (state) => {
+  useVaultRuntimeActivation.mockReturnValue({
+    state, checking: state !== "blocked" && state !== "pending-writes", pending: state === "pending-writes",
+    code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(),
+  });
   render(<App />);
-  await waitFor(() => expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, userId: USER_A.id, companyId: COMPANY_A.id })));
+  await waitFor(() => expect(screen.getByLabelText("Encrypted local data access")).toBeInTheDocument());
   expect(dashboard()).not.toBeInTheDocument();
-  expect(screen.getByLabelText("Local data compatibility access")).toBeInTheDocument();
   expect(useCloudAutoConvergence).toHaveBeenLastCalledWith(expect.objectContaining({ configured: false, user: null, company: null }));
   expect(useCloudAutoBackup).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, configured: false, user: null, company: null }));
 });
 
-test("legacy-safe compatibility is required to mount the existing shell while vault session remains disabled", async () => {
+test("a verified authoritative runtime is required to mount the shell, and the vault session is enabled", async () => {
   render(<App />);
   await waitFor(() => expect(dashboard()).toBeInTheDocument());
-  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false, userId: USER_A.id, companyId: COMPANY_A.id }));
+  // Under the activation policy the vault session is ENABLED for this identity.
+  expect(useVaultSession).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true, userId: USER_A.id, companyId: COMPANY_A.id }));
 });
 
-test("Lock Now delegates to the same tab-local vault lock without signing out, clearing storage, or deactivating the workspace", async () => {
+test("Lock Now flushes accepted writes and then locks, without signing out, clearing storage, or deactivating the workspace", async () => {
   const lock = jest.fn();
   const signOut = jest.fn();
+  const flushAndLock = jest.fn(async () => ({ ok: true, code: "" }));
   const clear = jest.spyOn(Storage.prototype, "clear");
   useSupabaseAuth.mockReturnValue(auth({ signOut }));
   useVaultSession.mockReturnValue({
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
     setup: jest.fn(), unlock: jest.fn(), lock, refresh: jest.fn(),
+  });
+  useVaultRuntimeActivation.mockReturnValue({
+    state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock,
   });
   try {
     render(<App />);
@@ -408,7 +423,10 @@ test("Lock Now delegates to the same tab-local vault lock without signing out, c
     fireEvent.click(screen.getByLabelText(/open menu/i));
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(await screen.findByRole("button", { name: "Lock Now" }));
-    expect(lock).toHaveBeenCalledTimes(1);
+    // ISO-16: a deliberate lock must flush already-accepted encrypted writes
+    // first, so it goes through the runtime rather than straight to the session.
+    expect(flushAndLock).toHaveBeenCalledTimes(1);
+    expect(flushAndLock).toHaveBeenCalledWith(lock);
     expect(signOut).not.toHaveBeenCalled();
     expect(clear).not.toHaveBeenCalled();
     expect(dashboard()).toBeInTheDocument(); // the mocked hook has not yet published locked

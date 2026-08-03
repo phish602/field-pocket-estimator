@@ -430,9 +430,15 @@ test("migration logical-key allowlist is immutable and covers every current scop
 
 test("repository constructor validates strict injections", () => {
   const factory = new IDBFactory();
+  // The surface is asserted EXACTLY. ISO-16 adds the authoritative runtime
+  // catalog read/create plus the three atomic runtime mutations.
   expect(Object.keys(repository(factory)).sort()).toEqual([
+    "commitRuntimeClear",
+    "commitRuntimeRecordRemove",
+    "commitRuntimeRecordSet",
     "createEncryptedRecord",
     "createMigrationManifest",
+    "createRuntimeCatalog",
     "createWorkspaceVaultMetadata",
     "deleteEncryptedRecord",
     "deleteMigrationManifest",
@@ -440,6 +446,7 @@ test("repository constructor validates strict injections", () => {
     "listEncryptedRecordKeys",
     "readEncryptedRecord",
     "readMigrationManifest",
+    "readRuntimeCatalog",
     "readWorkspaceVaultMetadata",
     "replaceEncryptedRecord",
     "replaceMigrationManifest",

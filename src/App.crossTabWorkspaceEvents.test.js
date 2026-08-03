@@ -8,6 +8,7 @@ import {
   TEST_COMPANY,
   TEST_USER,
   resetConfiguredTestWorkspace,
+  simulateAuthoritativeCrossTabUpdate,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
   buildLegacySafeVaultCompatibilityResult,
@@ -26,6 +27,7 @@ jest.mock("./lib/useDeviceLockStatus", () => ({ __esModule: true, default: jest.
 jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: jest.fn() }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
@@ -116,11 +118,12 @@ test("a cross-tab write to the active workspace reaches the mounted shell as a l
     ...seeded,
     estimate({ id: "est_bravo", projectName: CROSS_TAB_PROJECT, customerName: "Bravo Customer", estimateNumber: "EST-1002" }),
   ];
-  simulateOtherTabWrite({
-    namespace,
+  // ISO-16: estimates are an approved VAULT key, so another tab's change arrives
+  // as a verified authoritative commit that this tab re-reads, not as a raw
+  // physical localStorage event.
+  simulateAuthoritativeCrossTabUpdate({
     logicalKey: STORAGE_KEYS.ESTIMATES,
-    newValue: JSON.stringify(afterOtherTab),
-    oldValue: JSON.stringify(seeded),
+    value: JSON.stringify(afterOtherTab),
   });
 
   // The shell refreshed purely from the translated event.

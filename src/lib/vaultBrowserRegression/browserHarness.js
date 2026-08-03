@@ -45,6 +45,25 @@ import {
   unlockVault,
 } from "../vaultSession";
 import { createVaultMigrationOrchestrator } from "../vaultMigrationOrchestrator";
+import {
+  flushVaultRuntime,
+  getVaultRuntimeStatus,
+  hydrateVaultRuntime,
+  isVaultRuntimeReady,
+  revokeVaultRuntime,
+  runtimeClear as runtimeClearValue,
+  runtimeGetItem,
+  runtimeLogicalKeys,
+  runtimeRemoveItem,
+  runtimeSetItem,
+  sealVaultRuntime,
+  describeVaultRuntime,
+} from "../vaultRuntimeStore";
+import {
+  installAuthoritativeVaultRuntime,
+  isAuthoritativeVaultRuntimeInstalled,
+  revokeAuthoritativeVaultRuntime,
+} from "../accountScopedLocalStorage";
 import { decryptBytes, encryptBytes, migrationManifestAad, recordAad } from "../vaultCrypto";
 import { getVaultBridgeBuildPolicy } from "../vaultBridgeBuildPolicy";
 import {
@@ -59,6 +78,7 @@ import {
   compareCategories,
   describeValue,
   compareIndexedDbContentIntegrity,
+  digestBytes,
   snapshotIndexedDbContentIntegrity,
   snapshotIndexedDbNames,
   snapshotLocalStorage,
@@ -1062,6 +1082,132 @@ export function createBrowserHarness() {
         if (haystack.includes(identity.password)) found.password = true;
       }
       return Object.freeze({ ...found, any: Object.values(found).some(Boolean) });
+    },
+
+    // ---- ISO-16 authoritative runtime -----------------------------------
+    //
+    // These drive the REAL production runtime: real sealing, real hydration,
+    // the real synchronous facade adapter, and the real durability queue.
+
+    sealRuntime: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      return sealVaultRuntime({ userId, companyId });
+    },
+
+    hydrateRuntime: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      return hydrateVaultRuntime({ userId, companyId });
+    },
+
+    // Installs the authoritative adapter exactly as the activation hook does.
+    installRuntimeAdapter: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const status = getVaultRuntimeStatus();
+      const installed = installAuthoritativeVaultRuntime({
+        workspaceTag,
+        generation: status.generation,
+        adapter: {
+          isReady: (generation) => isVaultRuntimeReady(generation),
+          getItem: (logicalKey) => runtimeGetItem(logicalKey),
+          setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
+          removeItem: (logicalKey) => runtimeRemoveItem(logicalKey),
+          clear: () => runtimeClearValue(),
+          keys: () => runtimeLogicalKeys(),
+        },
+      });
+      return Object.freeze({ installed, generation: status.generation, state: status.state });
+    },
+
+    runtimeStatus: () => getVaultRuntimeStatus(),
+    runtimeDescribe: () => describeVaultRuntime(),
+    runtimeFlush: async () => flushVaultRuntime(),
+    runtimeRevoke: () => { revokeAuthoritativeVaultRuntime(); revokeVaultRuntime(); return { revoked: true }; },
+    runtimeAdapterInstalled: () => Object.freeze({ installed: isAuthoritativeVaultRuntimeInstalled() }),
+    runtimeKeys: () => [...runtimeLogicalKeys()].sort(),
+
+    // Reads/writes go through the ACTIVE FACADE, i.e. the same synchronous
+    // surface the application uses -- never the runtime module directly.
+    runtimeFacadeRead: async ({ logicalKey }) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      return Object.freeze({ attempted: true, ...(await describeValue(facade.getItem(logicalKey))) });
+    },
+    runtimeFacadeWrite: async ({ logicalKey, value }) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false, matches: false });
+      facade.setItem(logicalKey, value);
+      const readBack = facade.getItem(logicalKey);
+      return Object.freeze({ attempted: true, matches: readBack === value, immediate: readBack !== null });
+    },
+    runtimeFacadeRemove: async ({ logicalKey }) => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      facade.removeItem(logicalKey);
+      return Object.freeze({ attempted: true, absent: facade.getItem(logicalKey) === null });
+    },
+    runtimeFacadeClear: async () => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false });
+      facade.clear();
+      return Object.freeze({ attempted: true, remaining: runtimeLogicalKeys().length });
+    },
+    runtimeFacadeEnumerate: () => {
+      const facade = getActiveAccountScopedStorage();
+      if (!facade) return Object.freeze({ attempted: false, keys: [] });
+      const keys = [];
+      for (let index = 0; index < facade.length; index += 1) keys.push(facade.key(index));
+      return Object.freeze({ attempted: true, keys: keys.sort() });
+    },
+
+    // Proof that no approved plaintext exists at any scoped physical key.
+    approvedPlaintextPresent: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
+      const present = VAULT_MIGRATION_LOGICAL_KEYS.filter((key) => realStorage().getItem(`${namespace}:${key}`) !== null);
+      return Object.freeze({ count: present.length, keys: present.sort() });
+    },
+
+    // The frozen migration manifest must never change after runtime writes.
+    migrationManifestFingerprint: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const stored = await vaultRepository().readMigrationManifest({ workspaceTag });
+      if (!stored) return Object.freeze({ present: false, digest: "", revision: 0 });
+      return Object.freeze({
+        present: true,
+        revision: stored.revision,
+        digest: await digestBytes(new Uint8Array(stored.ciphertext)),
+      });
+    },
+
+    runtimeCatalogFingerprint: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      let stored = null;
+      try {
+        stored = await vaultRepository().readRuntimeCatalog({ workspaceTag });
+      } catch (error) {
+        return Object.freeze({ present: false, error: String(error?.code || "ERROR") });
+      }
+      if (!stored) return Object.freeze({ present: false, revision: 0, runtimeGeneration: 0 });
+      return Object.freeze({ present: true, revision: stored.revision, runtimeGeneration: stored.runtimeGeneration });
+    },
+
+    // Corrupts the persisted runtime catalog for the failure matrix.
+    corruptRuntimeCatalog: async ({ target, identity = "active" }) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        const current = await storeGet(store, "runtime");
+        if (!current) return Object.freeze({ corrupted: false });
+        if (target === "catalog-ciphertext") current.ciphertext[0] ^= 0xff;
+        else if (target === "catalog-iv") current.iv[0] ^= 0xff;
+        else if (target === "catalog-generation") current.runtimeGeneration += 1;
+        else if (target === "catalog-shape") delete current.runtimeSchemaVersion;
+        else return Object.freeze({ corrupted: false });
+        store.put(current, "runtime");
+        return Object.freeze({ corrupted: true, target });
+      });
     },
 
     runStateKey: RUN_STATE_KEY,

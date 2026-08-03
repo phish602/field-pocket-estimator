@@ -1,3 +1,5 @@
+/* global globalThis */
+
 // ISO-15H -- implementation-only, headless plaintext-to-vault migration.
 // This module is deliberately not imported by App, a hook, an event listener,
 // or any cloud worker. It may only operate on the active ISO-14D facade.

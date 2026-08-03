@@ -23,6 +23,8 @@
 // prevent.
 
 import { readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
+import { VAULT_MIGRATION_LOGICAL_KEYS } from "./vaultIndexedDbRepository";
+import { isDocumentedStorageExclusion } from "../constants/vaultStorageExclusions";
 
 export const WORKSPACE_NAMESPACE_PREFIX = "estipaid-workspace-v2";
 
@@ -72,6 +74,64 @@ export function setActiveWorkspaceVaultCompatibility({ workspaceTag = "", state 
     state: state === "legacy-safe" ? "legacy-safe" : "blocked",
     generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : 0,
   };
+}
+
+// ISO-16 -- the AUTHORITATIVE runtime adapter.
+//
+// After migration reaches authority the scoped plaintext no longer exists, so
+// approved business keys must be served from the verified encrypted runtime
+// instead. The adapter is installed by the runtime activation hook for one exact
+// workspace tag and one exact runtime generation; anything else is refused.
+//
+// This is a narrow, module-private handoff: it holds no identity, no namespace,
+// no key material, and it is revoked synchronously on lock, logout, identity
+// switch, workspace switch, and unmount.
+let authoritativeRuntime = null;
+
+export function installAuthoritativeVaultRuntime({ workspaceTag = "", generation = 0, adapter = null } = {}) {
+  if (typeof workspaceTag !== "string" || !workspaceTag || !Number.isSafeInteger(generation) || generation < 1) return false;
+  if (!adapter || typeof adapter.getItem !== "function" || typeof adapter.setItem !== "function"
+    || typeof adapter.removeItem !== "function" || typeof adapter.clear !== "function"
+    || typeof adapter.keys !== "function" || typeof adapter.isReady !== "function") return false;
+  authoritativeRuntime = { workspaceTag, generation, adapter };
+  return true;
+}
+
+export function revokeAuthoritativeVaultRuntime() {
+  authoritativeRuntime = null;
+}
+
+export function isAuthoritativeVaultRuntimeInstalled(workspaceTag) {
+  if (!authoritativeRuntime) return false;
+  return workspaceTag === undefined || authoritativeRuntime.workspaceTag === workspaceTag;
+}
+
+const APPROVED_VAULT_KEYS = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
+
+// Three-way classification while the authoritative runtime is installed:
+//
+//   "vault"     approved business data -> the encrypted runtime, never plaintext
+//   "native"    a documented, reviewed non-business exclusion -> its classified
+//               scoped/native location (e.g. the idle-lock preference, which must
+//               stay readable while the vault is LOCKED)
+//   "refused"   a workspace-shaped key that is in neither list. It has no
+//               authoritative home, so it fails closed rather than silently
+//               reopening a plaintext business channel.
+export function classifyAuthoritativeKey(logicalKey) {
+  if (!isWorkspaceScopedLogicalKey(logicalKey)) return "native";
+  if (APPROVED_VAULT_KEYS.has(logicalKey)) return "vault";
+  if (isDocumentedStorageExclusion(logicalKey)) return "native";
+  return "refused";
+}
+
+// The adapter is honoured only while it matches the workspace the facade was
+// activated for AND reports itself ready for its own generation.
+function activeAuthoritativeAdapter() {
+  if (!authoritativeRuntime) return null;
+  if (!activeVaultCompatibility.workspaceTag
+    || activeVaultCompatibility.workspaceTag !== authoritativeRuntime.workspaceTag) return null;
+  if (!authoritativeRuntime.adapter.isReady(authoritativeRuntime.generation)) return null;
+  return authoritativeRuntime.adapter;
 }
 
 function isQuarantinedLegacyKey(key) {
@@ -249,12 +309,38 @@ function createScopedStorageFacade({ storage, namespace }) {
     return visible;
   };
 
+  // Authoritative enumeration: approved business keys come from the encrypted
+  // runtime, everything else keeps its classified native location. Scoped
+  // plaintext business keys are never enumerated in authoritative mode.
+  const authoritativeLogicalKeys = (adapter) => {
+    const keys = realKeysOf(storage);
+    const visible = new Set(adapter.keys());
+    if (keys) {
+      keys.forEach((key) => {
+        if (key.startsWith(scopedPrefix)) {
+          // A scoped key is only visible when it is a documented non-business
+          // exclusion; scoped plaintext BUSINESS data stays invisible.
+          const logical = key.slice(scopedPrefix.length);
+          if (logical !== WORKSPACE_MARKER_LOGICAL_KEY && classifyAuthoritativeKey(logical) === "native") visible.add(logical);
+          return;
+        }
+        if (key.startsWith(NAMESPACE_PREFIX_WITH_SEPARATOR)) return; // another workspace
+        if (isWorkspaceScopedLogicalKey(key)) return;                // quarantined bare legacy
+        if (isQuarantinedLegacyKey(key)) return;
+        visible.add(key);
+      });
+    }
+    return [...visible];
+  };
+
   const facade = {
     get length() {
-      return visibleLogicalKeys().length;
+      const adapter = activeAuthoritativeAdapter();
+      return adapter ? authoritativeLogicalKeys(adapter).length : visibleLogicalKeys().length;
     },
     key(index) {
-      const keys = visibleLogicalKeys();
+      const adapter = activeAuthoritativeAdapter();
+      const keys = adapter ? authoritativeLogicalKeys(adapter) : visibleLogicalKeys();
       const position = Number(index);
       if (!Number.isInteger(position) || position < 0 || position >= keys.length) return null;
       return keys[position];
@@ -263,6 +349,15 @@ function createScopedStorageFacade({ storage, namespace }) {
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return null;
       if (isForeignPhysicalKey(normalizedKey)) return null;
+      const adapter = activeAuthoritativeAdapter();
+      if (adapter) {
+        const routing = classifyAuthoritativeKey(normalizedKey);
+        // Approved business data is served from the verified encrypted runtime.
+        if (routing === "vault") return adapter.getItem(normalizedKey);
+        // An unclassified workspace-shaped key has no authoritative home, so it
+        // reads as absent rather than reopening a plaintext business channel.
+        if (routing === "refused") return null;
+      }
       try {
         const value = storage.getItem(toPhysicalKey(normalizedKey));
         return value === undefined ? null : value;
@@ -271,17 +366,32 @@ function createScopedStorageFacade({ storage, namespace }) {
       }
     },
     setItem(key, value) {
-      if (!mayMutate()) return undefined;
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
+      const adapter = activeAuthoritativeAdapter();
+      if (adapter) {
+        const routing = classifyAuthoritativeKey(normalizedKey);
+        // Never writes scoped plaintext for business data.
+        if (routing === "vault") { adapter.setItem(normalizedKey, value); return undefined; }
+        if (routing === "refused") return undefined;
+        return storage.setItem(toPhysicalKey(normalizedKey), value);
+      }
+      if (!mayMutate()) return undefined;
       return storage.setItem(toPhysicalKey(normalizedKey), value);
     },
     removeItem(key) {
-      if (!mayMutate()) return undefined;
       const normalizedKey = normalizeStorageKey(key);
       if (isQuarantinedLegacyKey(normalizedKey)) return undefined;
       if (isForeignPhysicalKey(normalizedKey)) return undefined;
+      const adapter = activeAuthoritativeAdapter();
+      if (adapter) {
+        const routing = classifyAuthoritativeKey(normalizedKey);
+        if (routing === "vault") { adapter.removeItem(normalizedKey); return undefined; }
+        if (routing === "refused") return undefined;
+        return storage.removeItem(toPhysicalKey(normalizedKey));
+      }
+      if (!mayMutate()) return undefined;
       return storage.removeItem(toPhysicalKey(normalizedKey));
     },
     // ISO-15H -- these two narrowly scoped methods are the only migration
@@ -315,6 +425,14 @@ function createScopedStorageFacade({ storage, namespace }) {
     // keys are removed: other workspaces, legacy unscoped values, Supabase auth
     // keys, language, device id, and unrelated data all survive.
     clear() {
+      const adapter = activeAuthoritativeAdapter();
+      if (adapter) {
+        // Clears only approved encrypted business records. Vault metadata, the
+        // frozen migration manifest, other workspaces, device-global keys, and
+        // quarantined legacy values are all untouched.
+        adapter.clear();
+        return undefined;
+      }
       if (!mayMutate()) return undefined;
       const keys = realKeysOf(storage);
       if (!keys) return undefined;
@@ -454,12 +572,22 @@ export function activateAccountScopedLocalStorage({
   // Always start from a clean global so re-activation cannot stack facades or
   // cross-tab listeners. Doing this before the identity check also means a
   // failed activation leaves nothing installed.
+  const previousNamespace = activeWorkspace?.namespace || "";
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
   activeWorkspace = null;
-  setActiveWorkspaceVaultCompatibility();
 
   const namespace = buildAccountWorkspaceNamespace({ userId, companyId });
+  // The authoritative adapter is revoked whenever the workspace CHANGES, so a
+  // switched or signed-out identity can never leave a previous runtime
+  // reachable. Re-activating the SAME namespace (a re-render, a remount) leaves
+  // a valid adapter in place: tearing it down would strand the application with
+  // no readable business data until the runtime re-hydrated.
+  if (!namespace || namespace !== previousNamespace) {
+    revokeAuthoritativeVaultRuntime();
+    setActiveWorkspaceVaultCompatibility();
+  }
+
   if (!namespace) return failed(ACCOUNT_SCOPED_STORAGE_ERROR.INCOMPLETE_IDENTITY);
 
   const realStorage = unwrapRealStorage(storage);
@@ -496,6 +624,9 @@ export function deactivateAccountScopedLocalStorage() {
   restoreGlobalLocalStorage();
   removeCrossTabBridge();
   activeWorkspace = null;
+  // The authoritative adapter is revoked with the workspace, so a switched or
+  // signed-out identity can never leave a previous runtime reachable.
+  revokeAuthoritativeVaultRuntime();
   setActiveWorkspaceVaultCompatibility();
 }
 

@@ -5,12 +5,31 @@ import useVaultCompatibilityBridge from "./useVaultCompatibilityBridge";
 import { VAULT_COMPATIBILITY_GUARD_KEY, readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
 import { getVaultBridgeBuildPolicy } from "./vaultBridgeBuildPolicy";
 
+// ISO-16: with the shipped activation policy the bridge is retired. Every case
+// below describes bridge-release behaviour, so the posture is declared here.
+jest.mock("./vaultBridgeBuildPolicy", () => ({
+  VAULT_BRIDGE_RELEASE: true,
+  VAULT_CREATION_ENABLED: false,
+  VAULT_MIGRATION_ENABLED: false,
+  getVaultBridgeBuildPolicy: jest.fn(() => ({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false })),
+}));
+
 jest.mock("./accountScopedLocalStorage", () => ({
   isActiveAccountScopedNativeStorage: jest.fn(() => false),
   setActiveWorkspaceVaultCompatibility: jest.fn(),
 }));
 
 const scoped = require("./accountScopedLocalStorage");
+
+// This project runs with jest's `resetMocks`, which strips any implementation
+// passed to `jest.fn()` in a mock factory. The bridge-release posture is
+// therefore primed before every test rather than in the factory.
+beforeEach(() => {
+  require("./vaultBridgeBuildPolicy").getVaultBridgeBuildPolicy.mockReturnValue({
+    bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false,
+  });
+});
+
 const WORKSPACE_TAG = "A".repeat(43);
 let latest;
 let factory;
