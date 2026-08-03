@@ -21,22 +21,23 @@ test("bridge policy exposes only immutable compile-time values", () => {
   expect(Object.keys(policy).sort()).toEqual([
     "VAULT_BRIDGE_RELEASE", "VAULT_CREATION_ENABLED", "VAULT_MIGRATION_ENABLED", "getVaultBridgeBuildPolicy",
   ]);
-  // ISO-16 ACTIVATION posture.
-  expect(policy.VAULT_BRIDGE_RELEASE).toBe(false);
-  expect(policy.VAULT_CREATION_ENABLED).toBe(true);
-  expect(policy.VAULT_MIGRATION_ENABLED).toBe(true);
+  // PR19 containment posture: restore the normal bridge flow while the
+  // passwordless device-key design is built and reviewed.
+  expect(policy.VAULT_BRIDGE_RELEASE).toBe(true);
+  expect(policy.VAULT_CREATION_ENABLED).toBe(false);
+  expect(policy.VAULT_MIGRATION_ENABLED).toBe(false);
   const result = policy.getVaultBridgeBuildPolicy();
-  expect(result).toEqual({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
+  expect(result).toEqual({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false });
   expect(Object.isFrozen(result)).toBe(true);
   expect(JSON.parse(JSON.stringify(result))).toEqual(result);
 });
 
 test("bridge policy ignores storage, URL, messages, and runtime events", () => {
-  localStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ migrationEnabled: false }));
-  sessionStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ vaultCreationEnabled: false }));
-  window.history.pushState({}, "", "/?migrationEnabled=false#vaultCreationEnabled=false");
-  window.dispatchEvent(new MessageEvent("message", { data: { migrationEnabled: false } }));
-  expect(policy.getVaultBridgeBuildPolicy()).toEqual({ bridgeRelease: false, vaultCreationEnabled: true, migrationEnabled: true });
+  localStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ migrationEnabled: true }));
+  sessionStorage.setItem("estipaid-vault-bridge-policy", JSON.stringify({ vaultCreationEnabled: true }));
+  window.history.pushState({}, "", "/?migrationEnabled=true#vaultCreationEnabled=true");
+  window.dispatchEvent(new MessageEvent("message", { data: { migrationEnabled: true } }));
+  expect(policy.getVaultBridgeBuildPolicy()).toEqual({ bridgeRelease: true, vaultCreationEnabled: false, migrationEnabled: false });
 });
 
 // Comments are stripped first: the invariant is about what the module EXECUTES,
@@ -58,9 +59,9 @@ test("the policy module reads no environment variable, query string, storage key
     "hostname", "fetch(", "navigator",
   ].forEach((token) => expect(source).not.toContain(token));
   // Plain constants only: no call can produce a different posture.
-  expect(source).toMatch(/export const VAULT_BRIDGE_RELEASE = false;/);
-  expect(source).toMatch(/export const VAULT_CREATION_ENABLED = true;/);
-  expect(source).toMatch(/export const VAULT_MIGRATION_ENABLED = true;/);
+  expect(source).toMatch(/export const VAULT_BRIDGE_RELEASE = true;/);
+  expect(source).toMatch(/export const VAULT_CREATION_ENABLED = false;/);
+  expect(source).toMatch(/export const VAULT_MIGRATION_ENABLED = false;/);
 });
 
 test("no application source can override the build policy constants", () => {
