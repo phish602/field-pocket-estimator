@@ -44,7 +44,12 @@ import {
   setupVault,
   unlockVault,
 } from "../vaultSession";
-import { createVaultMigrationOrchestrator } from "../vaultMigrationOrchestrator";
+import {
+  createVaultMigrationOrchestrator,
+  verifyCompletedVaultMigrationAuthority,
+} from "../vaultMigrationOrchestrator";
+import { subscribeVaultRuntimeRevalidation } from "../vaultRuntimeStore";
+import { resolveVaultActivationPlan } from "../useVaultRuntimeActivation";
 import {
   flushVaultRuntime,
   getVaultRuntimeStatus,
@@ -117,6 +122,12 @@ const IDENTITIES = Object.freeze({
 // The real Storage object, captured before any facade installation so fixture
 // seeding and durable inspection never travel through the facade under test.
 let nativeStorage = null;
+
+// ISO-16 review fix -- module-private probe state for the cross-tab and
+// catalog-replay checks. Never exported, never placed on window.
+let revalidationCapture = null;
+let revalidationSignalCount = 0;
+let stashedCatalogEnvelope = null;
 
 function realStorage() {
   if (!nativeStorage) {
@@ -1208,6 +1219,216 @@ export function createBrowserHarness() {
         store.put(current, "runtime");
         return Object.freeze({ corrupted: true, target });
       });
+    },
+
+    // ---- ISO-16 review fix probes ---------------------------------------
+    //
+    // Drive the corrected behaviour in the real browser: completed-authority
+    // verification before the first seal, the activation state matrix, catalog
+    // revision binding, and the cross-tab transport.
+
+    verifyCompletedAuthority: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const outcome = await runWithActiveVaultDek({ workspaceTag, operation: async (dek) => {
+        const verified = await verifyCompletedVaultMigrationAuthority({
+          workspaceTag, dek, userId, companyId, vaultRepository: vaultRepository(),
+        });
+        // Sanitized: counts and a code only. No key names, digests, or blobs.
+        return Object.freeze({ ok: verified.ok, code: verified.code, entryCount: verified.entries.length });
+      } });
+      return outcome || Object.freeze({ ok: false, code: "VAULT_LOCKED", entryCount: 0 });
+    },
+
+    // The persisted runtime catalog is removed so the seal path can be
+    // re-exercised against a deliberately damaged completed migration.
+    deleteRuntimeCatalog: async ({ identity = "active" } = {}) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        store.delete("runtime");
+        return Object.freeze({ deleted: true });
+      });
+    },
+
+    corruptMigrationManifest: async ({ target, identity = "active" }) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        const current = await storeGet(store, "manifest");
+        if (!current) return Object.freeze({ corrupted: false });
+        if (target === "manifest-remove") store.delete("manifest");
+        else if (target === "manifest-ciphertext") { current.ciphertext[0] ^= 0xff; store.put(current, "manifest"); }
+        else if (target === "manifest-iv") { current.iv[0] ^= 0xff; store.put(current, "manifest"); }
+        else if (target === "manifest-transition") {
+          current.transitionId = "00000000-0000-4000-8000-000000000000";
+          store.put(current, "manifest");
+        } else return Object.freeze({ corrupted: false });
+        return Object.freeze({ corrupted: true, target });
+      });
+    },
+
+    // The pure activation decision, evaluated inside the real bundle.
+    activationPlan: ({ guardState = "absent", transition = "none", catalogPresent = false } = {}) => {
+      const workspaceTag = "A".repeat(43);
+      const transitionRecord = transition === "self"
+        ? { phase: "copying", workspaceTag }
+        : (transition === "other" ? { phase: "copying", workspaceTag: "B".repeat(43) } : null);
+      const plan = resolveVaultActivationPlan({
+        policy: getVaultBridgeBuildPolicy(),
+        guard: guardState === "missing" ? null : { state: guardState },
+        transition: transitionRecord,
+        catalogPresent,
+        workspaceTag,
+      });
+      return Object.freeze({ action: plan.action, code: plan.code, case: plan.case });
+    },
+
+    // Replays an older catalog envelope under a newer persisted wrapper
+    // revision. Only the ciphertext/IV are moved; the wrapper revision is left
+    // where the runtime advanced it.
+    stashRuntimeCatalogEnvelope: async ({ identity = "active" } = {}) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readonly", async (store) => {
+        const current = await storeGet(store, "runtime");
+        if (!current) return Object.freeze({ stashed: false });
+        stashedCatalogEnvelope = {
+          ciphertext: new Uint8Array(current.ciphertext),
+          iv: new Uint8Array(current.iv),
+          revision: current.revision,
+        };
+        return Object.freeze({ stashed: true, revision: current.revision });
+      });
+    },
+
+    replayStashedRuntimeCatalogEnvelope: async ({ identity = "active" } = {}) => {
+      if (!stashedCatalogEnvelope) return Object.freeze({ replayed: false });
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        const current = await storeGet(store, "runtime");
+        if (!current) return Object.freeze({ replayed: false });
+        const wrapperRevision = current.revision;
+        current.ciphertext = new Uint8Array(stashedCatalogEnvelope.ciphertext);
+        current.iv = new Uint8Array(stashedCatalogEnvelope.iv);
+        store.put(current, "runtime");
+        return Object.freeze({
+          replayed: true,
+          stashedRevision: stashedCatalogEnvelope.revision,
+          wrapperRevision,
+          newer: wrapperRevision > stashedCatalogEnvelope.revision,
+        });
+      });
+    },
+
+    // Rewinds ONLY the persisted wrapper revision, leaving the current envelope
+    // in place: the plaintext revision then disagrees with the wrapper.
+    rewindRuntimeCatalogWrapperRevision: async ({ identity = "active" } = {}) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        const current = await storeGet(store, "runtime");
+        if (!current || current.revision <= 1) return Object.freeze({ rewound: false });
+        const from = current.revision;
+        current.revision -= 1;
+        store.put(current, "runtime");
+        return Object.freeze({ rewound: true, from, to: current.revision });
+      });
+    },
+
+    // ---- cross-tab transport --------------------------------------------
+
+    startRevalidationCapture: () => {
+      if (revalidationCapture) revalidationCapture();
+      revalidationSignalCount = 0;
+      revalidationCapture = subscribeVaultRuntimeRevalidation(() => { revalidationSignalCount += 1; });
+      return Object.freeze({ capturing: true, broadcastChannel: typeof window.BroadcastChannel === "function" });
+    },
+    revalidationSignals: () => Object.freeze({ signals: revalidationSignalCount }),
+    stopRevalidationCapture: () => {
+      if (revalidationCapture) revalidationCapture();
+      revalidationCapture = null;
+      return Object.freeze({ capturing: false });
+    },
+
+    // Posts a message onto the REAL runtime channel from a separate channel
+    // instance, which is what another tab looks like from here.
+    postRuntimeChannelMessage: async ({ shape = "valid", identity = "active", revisionDelta = 1 } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
+      const described = describeVaultRuntime();
+      const base = {
+        type: "runtime-committed",
+        workspaceTag,
+        runtimeGeneration: described.runtimeGeneration || 1,
+        catalogRevision: (described.catalogRevision || 1) + revisionDelta,
+      };
+      const message = (() => {
+        if (shape === "valid") return base;
+        if (shape === "extra-property") return { ...base, extra: true };
+        if (shape === "missing-property") return { type: base.type, workspaceTag: base.workspaceTag };
+        if (shape === "wrong-type") return { ...base, type: "something-else" };
+        if (shape === "bad-tag") return { ...base, workspaceTag: "short" };
+        if (shape === "bad-generation") return { ...base, runtimeGeneration: 0 };
+        if (shape === "bad-revision") return { ...base, catalogRevision: "2" };
+        if (shape === "foreign-workspace") return { ...base, workspaceTag: "B".repeat(43) };
+        if (shape === "primitive") return "runtime-committed";
+        if (shape === "array") return [base];
+        return base;
+      })();
+      const bus = new window.BroadcastChannel("estipaid-vault-runtime-v1");
+      bus.postMessage(message);
+      await new Promise((resolve) => { window.setTimeout(resolve, 60); });
+      bus.close();
+      return Object.freeze({ posted: true, shape });
+    },
+
+    // Real focus / visibility events, dispatched exactly as the browser would.
+    dispatchVisibilityEvent: async ({ kind = "focus" } = {}) => {
+      if (kind === "focus") window.dispatchEvent(new Event("focus"));
+      else document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((resolve) => { window.setTimeout(resolve, 60); });
+      return Object.freeze({
+        dispatched: kind,
+        visibilityState: document.visibilityState,
+        broadcastChannel: typeof window.BroadcastChannel === "function",
+      });
+    },
+
+    // Forces the exact CAS loss another tab would cause, by advancing the
+    // persisted catalog revision behind this runtime's back.
+    advancePersistedCatalogRevision: async ({ identity = "active" } = {}) => {
+      const databaseName = await vaultDatabaseName(identity);
+      return withRawStore(databaseName, WORKSPACE_VAULT_MIGRATION_STORE, "readwrite", async (store) => {
+        const current = await storeGet(store, "runtime");
+        if (!current) return Object.freeze({ advanced: false });
+        current.revision += 1;
+        store.put(current, "runtime");
+        return Object.freeze({ advanced: true, revision: current.revision });
+      });
+    },
+
+    // An asynchronous failure must return a blocked result, never throw.
+    hydrateWithUnusableRepository: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const broken = {
+        readRuntimeCatalog: async () => { throw new Error("synthetic repository failure"); },
+        listEncryptedRecordKeys: async () => { throw new Error("synthetic repository failure"); },
+        readEncryptedRecord: async () => { throw new Error("synthetic repository failure"); },
+      };
+      try {
+        const outcome = await hydrateVaultRuntime({ userId, companyId, repository: broken });
+        return Object.freeze({ threw: false, ok: outcome.ok, code: outcome.code });
+      } catch (error) {
+        return Object.freeze({ threw: true, ok: false, code: String(error?.code || "THREW") });
+      }
+    },
+
+    sealWithUnusableRepository: async ({ identity = "active" } = {}) => {
+      const { userId, companyId } = identityFor(identity);
+      const broken = { readRuntimeCatalog: async () => { throw new Error("synthetic repository failure"); } };
+      try {
+        const outcome = await sealVaultRuntime({ userId, companyId, repository: broken });
+        return Object.freeze({ threw: false, ok: outcome.ok, code: outcome.code });
+      } catch (error) {
+        return Object.freeze({ threw: true, ok: false, code: String(error?.code || "THREW") });
+      }
     },
 
     runStateKey: RUN_STATE_KEY,

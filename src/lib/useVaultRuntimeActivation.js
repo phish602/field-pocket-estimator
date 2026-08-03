@@ -18,7 +18,6 @@ import { migrateActiveWorkspaceVault } from "./vaultMigrationOrchestrator";
 import { deriveWorkspaceVaultTag } from "./vaultSession";
 import {
   flushVaultRuntime,
-  getVaultRuntimeStatus,
   subscribeVaultRuntimeStatus,
   subscribeVaultRuntimeRevalidation,
   hydrateVaultRuntime,
@@ -55,6 +54,101 @@ const MIGRATION_MESSAGE = "Encrypting the data already on this device.";
 const SEALING_MESSAGE = "Finishing secure setup on this device.";
 const HYDRATING_MESSAGE = "Opening your encrypted local data.";
 
+const WORKSPACE_TAG = /^[A-Za-z0-9_-]{43}$/;
+
+// ---------------------------------------------------------------------------
+// Activation state matrix
+//
+// Review finding: the previous order read the runtime catalog FIRST and only
+// looked at the guard and the transition record when no catalog existed. That
+// made a catalog the sole proof of authority -- a catalog present next to a
+// non-authoritative guard, or next to a live transition record, was hydrated
+// without comment. Every input is now always inspected and every combination
+// has one explicit, enumerated outcome. Anything not enumerated fails closed.
+// ---------------------------------------------------------------------------
+
+export const VAULT_ACTIVATION_PLAN_ACTIONS = Object.freeze({
+  MIGRATE: "migrate",
+  SEAL: "seal",
+  HYDRATE: "hydrate",
+  BLOCK: "block",
+});
+
+export const VAULT_ACTIVATION_PLAN_CODES = Object.freeze({
+  BUILD_POLICY_INVALID: "BUILD_POLICY_INVALID",
+  GUARD_UNAVAILABLE: "GUARD_UNAVAILABLE",
+  GUARD_RECOVERY_REQUIRED: "GUARD_RECOVERY_REQUIRED",
+  OTHER_WORKSPACE_TRANSITION: "OTHER_WORKSPACE_TRANSITION",
+  RUNTIME_GUARD_MISMATCH: "RUNTIME_GUARD_MISMATCH",
+  RUNTIME_TRANSITION_CONFLICT: "RUNTIME_TRANSITION_CONFLICT",
+});
+
+const GUARD_STATES = Object.freeze(["absent", "transition", "authoritative"]);
+
+/**
+ * Pure, exhaustive activation decision. Every case is enumerated:
+ *
+ *   A  policy invalid, any input                     -> block BUILD_POLICY_INVALID
+ *   B  guard unreadable / blocked / unknown          -> block GUARD_UNAVAILABLE
+ *   C  transition belongs to another workspace       -> block OTHER_WORKSPACE_TRANSITION
+ *   D  catalog present, guard not authoritative      -> block RUNTIME_GUARD_MISMATCH
+ *   E  catalog present, transition still active      -> block RUNTIME_TRANSITION_CONFLICT
+ *   F  catalog present, guard authoritative, no txn  -> hydrate
+ *   G  no catalog, transition active                 -> migrate (resume)
+ *   H  no catalog, guard absent, no transition       -> migrate (first run)
+ *   I  no catalog, guard transition, no transition   -> block GUARD_RECOVERY_REQUIRED
+ *   J  no catalog, guard authoritative, no txn       -> seal
+ */
+export function resolveVaultActivationPlan({ policy, guard, transition, catalogPresent, workspaceTag } = {}) {
+  const block = (code) => Object.freeze({ action: VAULT_ACTIVATION_PLAN_ACTIONS.BLOCK, code, case: "" });
+  const plan = (action, planCase) => Object.freeze({ action, code: "", case: planCase });
+
+  // A -- the release policy is checked on every activation, not only on the
+  // paths that create a vault.
+  if (!policy || typeof policy !== "object"
+    || policy.bridgeRelease !== false
+    || policy.vaultCreationEnabled !== true
+    || policy.migrationEnabled !== true) {
+    return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.BUILD_POLICY_INVALID), case: "A" });
+  }
+
+  // B -- an unreadable, blocked, or unrecognized guard is never interpreted.
+  if (!guard || typeof guard !== "object" || !GUARD_STATES.includes(guard.state)) {
+    return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.GUARD_UNAVAILABLE), case: "B" });
+  }
+
+  const hasTransition = Boolean(transition);
+  // C -- a transition owned by a different workspace is never resumed, never
+  // ignored, and never hydrated past.
+  if (hasTransition && (!WORKSPACE_TAG.test(workspaceTag || "") || transition.workspaceTag !== workspaceTag)) {
+    return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.OTHER_WORKSPACE_TRANSITION), case: "C" });
+  }
+
+  if (catalogPresent) {
+    // D -- a runtime catalog can only exist for a workspace whose guard already
+    // claims authority. Anything else is inconsistent local state.
+    if (guard.state !== "authoritative") {
+      return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.RUNTIME_GUARD_MISMATCH), case: "D" });
+    }
+    // E -- an active transition alongside an existing runtime means an
+    // interrupted or concurrent migration; hydrating over it could publish a
+    // cache that a resuming migration is about to invalidate.
+    if (hasTransition) {
+      return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.RUNTIME_TRANSITION_CONFLICT), case: "E" });
+    }
+    return plan(VAULT_ACTIVATION_PLAN_ACTIONS.HYDRATE, "F");                     // F
+  }
+
+  if (hasTransition) return plan(VAULT_ACTIVATION_PLAN_ACTIONS.MIGRATE, "G");    // G
+  if (guard.state === "absent") return plan(VAULT_ACTIVATION_PLAN_ACTIONS.MIGRATE, "H"); // H
+  // I -- the guard says a transition is in progress but no transition record
+  // exists. The orchestrator refuses this too; it is surfaced here explicitly.
+  if (guard.state === "transition") {
+    return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.GUARD_RECOVERY_REQUIRED), case: "I" });
+  }
+  return plan(VAULT_ACTIVATION_PLAN_ACTIONS.SEAL, "J");                          // J
+}
+
 export default function useVaultRuntimeActivation({
   enabled = false,
   userId = "",
@@ -63,6 +157,9 @@ export default function useVaultRuntimeActivation({
 } = {}) {
   const [result, setResult] = useState(DISABLED);
   const current = useRef({ generation: 0, mounted: true, identity: "" });
+  // Revalidation is serialized and coalesced: overlapping signals from several
+  // tabs must never run two hydrations against the same identity at once.
+  const revalidation = useRef({ running: false, queued: false });
   const identity = enabled && userId && companyId ? `${userId}:${companyId}` : "";
 
   const revoke = useCallback(() => {
@@ -70,26 +167,41 @@ export default function useVaultRuntimeActivation({
     revokeVaultRuntime();
   }, []);
 
-  const activate = useCallback(async (activeIdentity, activeUserId, activeCompanyId) => {
+  const installAdapter = useCallback((workspaceTag, generation) => installAuthoritativeVaultRuntime({
+    workspaceTag,
+    generation,
+    adapter: {
+      isReady: (adapterGeneration) => isVaultRuntimeReady(adapterGeneration),
+      getItem: (logicalKey) => runtimeGetItem(logicalKey),
+      setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
+      removeItem: (logicalKey) => runtimeRemoveItem(logicalKey),
+      clear: () => runtimeClear(),
+      keys: () => runtimeLogicalKeys(),
+    },
+  }), []);
+
+  // -------------------------------------------------------------------------
+  // Initial activation / identity replacement.
+  //
+  // This path OWNS revocation: the previous workspace's cache must be gone
+  // before the new identity does any work. Same-identity refreshes go through
+  // `revalidate` instead, which never tears down a healthy runtime.
+  // -------------------------------------------------------------------------
+  const runActivation = useCallback(async (activeIdentity, activeUserId, activeCompanyId) => {
     const generation = ++current.current.generation;
     current.current.identity = activeIdentity;
-    // Any previous runtime is revoked BEFORE the new identity does any work, so
-    // no cache from the old workspace can ever be visible during the new render.
     revoke();
     setResult(CHECKING);
 
+    const stale = () => !current.current.mounted
+      || current.current.generation !== generation
+      || current.current.identity !== activeIdentity;
+
     const settle = (next) => {
-      if (!current.current.mounted || current.current.generation !== generation || current.current.identity !== activeIdentity) {
-        return DISABLED;
-      }
+      if (stale()) return DISABLED;
       setResult(next);
       return next;
     };
-
-    const policy = getVaultBridgeBuildPolicy();
-    if (policy.bridgeRelease || !policy.vaultCreationEnabled || !policy.migrationEnabled) {
-      return settle(publicResult("blocked", "BUILD_POLICY_INVALID", BLOCKED_MESSAGE));
-    }
 
     let workspaceTag;
     try {
@@ -99,10 +211,10 @@ export default function useVaultRuntimeActivation({
     }
     // The tag is the only thing binding this runtime to one workspace. Anything
     // other than an exact tag fails closed here rather than being handed on.
-    if (typeof workspaceTag !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(workspaceTag)) {
+    if (typeof workspaceTag !== "string" || !WORKSPACE_TAG.test(workspaceTag)) {
       return settle(publicResult("blocked", "IDENTITY_UNAVAILABLE", BLOCKED_MESSAGE));
     }
-    if (current.current.generation !== generation) return DISABLED;
+    if (stale()) return DISABLED;
 
     // A browser without usable IndexedDB must fail closed with a stable public
     // code, never throw out of activation.
@@ -113,7 +225,29 @@ export default function useVaultRuntimeActivation({
       return settle(publicResult("blocked", "UNSUPPORTED_ENVIRONMENT", BLOCKED_MESSAGE));
     }
 
-    // 1. Is there already an authoritative runtime for this workspace?
+    // 1. Inspect EVERY input before deciding anything: build policy, the
+    //    compatibility guard, the transition-control record, and the runtime
+    //    catalog. None of them alone is proof of authority.
+    const policy = getVaultBridgeBuildPolicy();
+
+    let guard = null;
+    try {
+      guard = readVaultCompatibilityGuard();
+    } catch {
+      guard = null;
+    }
+
+    let transition = null;
+    try {
+      transition = await createVaultTransitionControlRepository({
+        indexedDB: typeof window === "undefined" ? null : window.indexedDB,
+        clock: Date.now,
+      }).readActiveTransition({});
+    } catch {
+      return settle(publicResult("blocked", "TRANSITION_UNAVAILABLE", BLOCKED_MESSAGE));
+    }
+    if (stale()) return DISABLED;
+
     let catalog = null;
     try {
       catalog = await vaultRepository.readRuntimeCatalog({ workspaceTag });
@@ -122,72 +256,160 @@ export default function useVaultRuntimeActivation({
         return settle(publicResult("blocked", "RUNTIME_UNAVAILABLE", BLOCKED_MESSAGE));
       }
     }
-    if (current.current.generation !== generation) return DISABLED;
+    if (stale()) return DISABLED;
 
-    // 2. No runtime yet: inspect migration state and resume or run it.
-    if (!catalog) {
-      const guard = readVaultCompatibilityGuard();
-      if (guard.state === "blocked") return settle(publicResult("blocked", "GUARD_UNAVAILABLE", BLOCKED_MESSAGE));
+    // 2. One exhaustive decision over the complete state.
+    const plan = resolveVaultActivationPlan({
+      policy, guard, transition, catalogPresent: Boolean(catalog), workspaceTag,
+    });
+    if (plan.action === VAULT_ACTIVATION_PLAN_ACTIONS.BLOCK) {
+      return settle(publicResult("blocked", plan.code, BLOCKED_MESSAGE));
+    }
 
-      let transition = null;
-      try {
-        transition = await createVaultTransitionControlRepository({
-          indexedDB: typeof window === "undefined" ? null : window.indexedDB,
-          clock: Date.now,
-        }).readActiveTransition({});
-      } catch {
-        return settle(publicResult("blocked", "TRANSITION_UNAVAILABLE", BLOCKED_MESSAGE));
+    if (plan.action === VAULT_ACTIVATION_PLAN_ACTIONS.MIGRATE) {
+      // Resume an existing transition, or start the first one. The orchestrator
+      // itself refuses to create a second transition and refuses to reinventory
+      // after the point of no return.
+      settle(publicResult("migrating", "", MIGRATION_MESSAGE));
+      const migration = await migrateActiveWorkspaceVault({ userId: activeUserId, companyId: activeCompanyId });
+      if (stale()) return DISABLED;
+      if (migration.state !== "authoritative") {
+        return settle(publicResult("blocked", migration.code || "MIGRATION_BLOCKED", BLOCKED_MESSAGE));
       }
-      if (current.current.generation !== generation) return DISABLED;
+    }
 
-      if (guard.state !== "authoritative" || transition) {
-        // Resume an existing transition, or start the first one. The
-        // orchestrator itself refuses to create a second transition and refuses
-        // to reinventory after the point of no return.
-        settle(publicResult("migrating", "", MIGRATION_MESSAGE));
-        const migration = await migrateActiveWorkspaceVault({ userId: activeUserId, companyId: activeCompanyId });
-        if (current.current.generation !== generation) return DISABLED;
-        if (migration.state !== "authoritative") {
-          return settle(publicResult("blocked", migration.code || "MIGRATION_BLOCKED", BLOCKED_MESSAGE));
-        }
-      }
-
+    if (plan.action === VAULT_ACTIVATION_PLAN_ACTIONS.MIGRATE || plan.action === VAULT_ACTIVATION_PLAN_ACTIONS.SEAL) {
       // 3. Authority is complete but no runtime catalog exists: seal the
-      //    verified encrypted record set into the first catalog. The frozen
+      //    verified completed migration into the first catalog. The frozen
       //    migration manifest is read, never rewritten.
       settle(publicResult("sealing", "", SEALING_MESSAGE));
       const sealed = await sealVaultRuntime({ userId: activeUserId, companyId: activeCompanyId, repository: vaultRepository });
-      if (current.current.generation !== generation) return DISABLED;
+      if (stale()) return DISABLED;
       if (!sealed.ok) return settle(publicResult("blocked", sealed.code || "SEAL_FAILED", BLOCKED_MESSAGE));
     }
 
     // 4. Hydrate and verify the runtime catalog and every record it names.
     settle(publicResult("hydrating", "", HYDRATING_MESSAGE));
     const hydrated = await hydrateVaultRuntime({ userId: activeUserId, companyId: activeCompanyId, repository: vaultRepository });
-    if (current.current.generation !== generation) return DISABLED;
+    if (stale()) return DISABLED;
     if (!hydrated.ok) return settle(publicResult("blocked", hydrated.code || "HYDRATION_FAILED", BLOCKED_MESSAGE));
 
     // 5. Install the authoritative synchronous adapter for this exact workspace
     //    and this exact runtime generation.
-    const installed = installAuthoritativeVaultRuntime({
-      workspaceTag,
-      generation: hydrated.generation,
-      adapter: {
-        isReady: (adapterGeneration) => isVaultRuntimeReady(adapterGeneration),
-        getItem: (logicalKey) => runtimeGetItem(logicalKey),
-        setItem: (logicalKey, value) => runtimeSetItem(logicalKey, value),
-        removeItem: (logicalKey) => runtimeRemoveItem(logicalKey),
-        clear: () => runtimeClear(),
-        keys: () => runtimeLogicalKeys(),
-      },
-    });
-    if (!installed) return settle(publicResult("blocked", "ADAPTER_UNAVAILABLE", BLOCKED_MESSAGE));
-    if (current.current.generation !== generation) {
+    if (!installAdapter(workspaceTag, hydrated.generation)) {
+      return settle(publicResult("blocked", "ADAPTER_UNAVAILABLE", BLOCKED_MESSAGE));
+    }
+    if (stale()) {
       revoke();
       return DISABLED;
     }
     return settle(publicResult("ready"));
+  }, [revoke, installAdapter]);
+
+  // -------------------------------------------------------------------------
+  // Same-identity revalidation.
+  //
+  // Review finding: this used to call the full activation path, which revoked
+  // the runtime immediately -- so a message from another tab tore down a
+  // perfectly healthy local runtime and discarded queued writes before they
+  // were durable. Revalidation now flushes first, re-hydrates in place, and
+  // only replaces the cache once the new state verifies.
+  // -------------------------------------------------------------------------
+  const revalidate = useCallback(async (activeIdentity, activeUserId, activeCompanyId) => {
+    if (current.current.identity !== activeIdentity) return DISABLED;
+    if (revalidation.current.running) {
+      // Coalesce: one more pass will run after the in-flight one, so a burst of
+      // cross-tab messages produces at most one extra hydration.
+      revalidation.current.queued = true;
+      return DISABLED;
+    }
+    revalidation.current.running = true;
+    let outcome = DISABLED;
+    try {
+      do {
+        revalidation.current.queued = false;
+        const generation = current.current.generation;
+        const stale = () => !current.current.mounted
+          || current.current.generation !== generation
+          || current.current.identity !== activeIdentity;
+
+        let workspaceTag;
+        try {
+          workspaceTag = await deriveWorkspaceVaultTag(activeUserId, activeCompanyId);
+        } catch {
+          workspaceTag = "";
+        }
+        if (stale()) return DISABLED;
+        if (!WORKSPACE_TAG.test(workspaceTag || "")) {
+          revoke();
+          setResult(publicResult("blocked", "IDENTITY_UNAVAILABLE", BLOCKED_MESSAGE));
+          return publicResult("blocked", "IDENTITY_UNAVAILABLE", BLOCKED_MESSAGE);
+        }
+
+        // Queued local mutations must reach durability BEFORE the cache is
+        // replaced, otherwise re-hydration would silently discard them.
+        const flushed = await flushVaultRuntime();
+        if (stale()) return DISABLED;
+        if (flushed.state === "blocked") {
+          // A conflict here means another tab already committed over this one's
+          // expected revision. That is a hard block, never a silent overwrite.
+          const code = flushed.code || "DURABILITY_FAILED";
+          revoke();
+          outcome = publicResult("blocked", code, BLOCKED_MESSAGE);
+          setResult(outcome);
+          return outcome;
+        }
+
+        const hydrated = await hydrateVaultRuntime({ userId: activeUserId, companyId: activeCompanyId });
+        if (stale()) return DISABLED;
+        if (!hydrated.ok) {
+          revoke();
+          outcome = publicResult("blocked", hydrated.code || "HYDRATION_FAILED", BLOCKED_MESSAGE);
+          setResult(outcome);
+          return outcome;
+        }
+        if (!installAdapter(workspaceTag, hydrated.generation)) {
+          revoke();
+          outcome = publicResult("blocked", "ADAPTER_UNAVAILABLE", BLOCKED_MESSAGE);
+          setResult(outcome);
+          return outcome;
+        }
+        if (stale()) {
+          revoke();
+          return DISABLED;
+        }
+        outcome = publicResult("ready");
+        setResult(outcome);
+      } while (revalidation.current.queued);
+    } finally {
+      revalidation.current.running = false;
+      revalidation.current.queued = false;
+    }
+    return outcome;
+  }, [revoke, installAdapter]);
+
+  // -------------------------------------------------------------------------
+  // Fail-closed exception boundary.
+  //
+  // Review finding: an unexpected throw anywhere in the async lifecycle escaped
+  // as an unhandled rejection, leaving the hook stuck in `checking` with no
+  // published state. Every lifecycle entry point now terminates in one place:
+  // the runtime is revoked and the hook reports `blocked`.
+  // -------------------------------------------------------------------------
+  const guarded = useCallback(async (run) => {
+    try {
+      return await run();
+    } catch {
+      revoke();
+      const blocked = publicResult("blocked", "ACTIVATION_FAILED", BLOCKED_MESSAGE);
+      if (current.current.mounted) setResult(blocked);
+      return blocked;
+    }
   }, [revoke]);
+
+  const activate = useCallback((activeIdentity, activeUserId, activeCompanyId) => guarded(
+    () => runActivation(activeIdentity, activeUserId, activeCompanyId),
+  ), [guarded, runActivation]);
 
   useEffect(() => {
     const inspection = current.current;
@@ -231,13 +453,14 @@ export default function useVaultRuntimeActivation({
   }, []);
 
   // Another tab committed a newer catalog (or this tab regained focus): re-read
-  // and re-verify rather than trusting a possibly stale cache.
+  // and re-verify in place rather than trusting a possibly stale cache.
   useEffect(() => {
     if (!identity || !vaultUnlocked) return undefined;
     return subscribeVaultRuntimeRevalidation(() => {
-      if (current.current.identity === identity) activate(identity, userId, companyId);
+      if (current.current.identity !== identity) return;
+      guarded(() => revalidate(identity, userId, companyId));
     });
-  }, [identity, vaultUnlocked, userId, companyId, activate]);
+  }, [identity, vaultUnlocked, userId, companyId, guarded, revalidate]);
 
   const refresh = useCallback(() => {
     if (!identity || !vaultUnlocked) return Promise.resolve(DISABLED);
@@ -246,7 +469,7 @@ export default function useVaultRuntimeActivation({
 
   // Bounded flush before a deliberate lock. A failed flush never claims a clean
   // lock: the runtime stays blocked and the shell stays unmounted.
-  const flushAndLock = useCallback(async (lock) => {
+  const flushAndLock = useCallback(async (lock) => guarded(async () => {
     const status = await flushVaultRuntime();
     if (status.state === "blocked") {
       setResult(publicResult("blocked", status.code || "DURABILITY_FAILED", BLOCKED_MESSAGE));
@@ -256,7 +479,10 @@ export default function useVaultRuntimeActivation({
     if (typeof lock === "function") lock();
     setResult(DISABLED);
     return Object.freeze({ ok: true, code: "" });
-  }, [revoke]);
+  }).then((value) => (value && value.ok !== undefined
+    ? value
+    : Object.freeze({ ok: false, code: value?.code || "ACTIVATION_FAILED" }))),
+  [guarded, revoke]);
 
   return Object.freeze({
     state: result.state,

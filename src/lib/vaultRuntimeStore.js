@@ -25,6 +25,7 @@ import {
 } from "./vaultIndexedDbRepository";
 import { decryptBytes, encryptBytes, recordAad } from "./vaultCrypto";
 import { deriveWorkspaceVaultTag, runWithActiveVaultDek } from "./vaultSession";
+import { VAULT_MIGRATION_ERROR_CODES, verifyCompletedVaultMigrationAuthority } from "./vaultMigrationOrchestrator";
 import {
   RUNTIME_SCHEMA_VERSION,
   VAULT_FORMAT_VERSION,
@@ -43,6 +44,7 @@ export const VAULT_RUNTIME_ERROR_CODES = Object.freeze({
   CATALOG_ABSENT: "CATALOG_ABSENT",
   CATALOG_INVALID: "CATALOG_INVALID",
   RECORD_INVALID: "RECORD_INVALID",
+  MIGRATION_UNVERIFIED: "MIGRATION_UNVERIFIED",
   RECORD_MISSING: "RECORD_MISSING",
   RECORD_UNEXPECTED: "RECORD_UNEXPECTED",
   VAULT_LOCKED: "VAULT_LOCKED",
@@ -103,20 +105,47 @@ export function subscribeVaultRuntimeStatus(listener) {
 // ---------------------------------------------------------------------------
 
 const RUNTIME_CHANNEL_NAME = "estipaid-vault-runtime-v1";
+const REVALIDATION_MESSAGE_FIELDS = ["catalogRevision", "runtimeGeneration", "type", "workspaceTag"];
+const WORKSPACE_TAG = /^[A-Za-z0-9_-]{43}$/;
 let channel = null;
 let revalidationListener = null;
+
+// A channel message is attacker-influenced input: any page on this origin can
+// post to a named BroadcastChannel. It is accepted only as an EXACT shape, and
+// even then it can do nothing but ask this tab to re-read and re-verify.
+function exactRevalidationMessage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  if (Object.getOwnPropertySymbols(value).length > 0) return null;
+  // getOwnPropertyNames, not keys: a non-enumerable own property is still an
+  // own property, and every field must be a plain DATA property -- an accessor
+  // could return a different value on each read.
+  const names = Object.getOwnPropertyNames(value).sort();
+  if (names.join(",") !== REVALIDATION_MESSAGE_FIELDS.join(",")) return null;
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (!descriptor || typeof descriptor.get === "function" || typeof descriptor.set === "function") return null;
+    if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) return null;
+  }
+  if (value.type !== "runtime-committed") return null;
+  if (typeof value.workspaceTag !== "string" || !WORKSPACE_TAG.test(value.workspaceTag)) return null;
+  if (!Number.isSafeInteger(value.runtimeGeneration) || value.runtimeGeneration < 1) return null;
+  if (!Number.isSafeInteger(value.catalogRevision) || value.catalogRevision < 1) return null;
+  return value;
+}
 
 function openChannel() {
   if (channel || typeof globalThis.BroadcastChannel !== "function") return channel;
   try {
     channel = new globalThis.BroadcastChannel(RUNTIME_CHANNEL_NAME);
     channel.onmessage = (event) => {
-      const message = event?.data;
-      if (!message || typeof message !== "object") return;
-      if (message.type !== "runtime-committed") return;
-      if (!active || message.workspaceTag !== active.workspaceTag) return;      // another workspace
+      const message = exactRevalidationMessage(event?.data);
+      if (!message) return;
+      if (!active || active.blocked) return;                                   // nothing to revalidate
+      if (message.workspaceTag !== active.workspaceTag) return;                // another workspace
       if (message.runtimeGeneration !== active.runtimeGeneration) return;
-      if (message.catalogRevision <= active.catalogRevision) return;            // not newer
+      if (message.catalogRevision <= active.catalogRevision) return;           // not newer
       // Another tab committed a newer catalog. This tab must re-read and
       // re-verify rather than trust its cache.
       if (typeof revalidationListener === "function") revalidationListener();
@@ -155,7 +184,12 @@ export function subscribeVaultRuntimeRevalidation(listener) {
   openChannel();
   // Where BroadcastChannel is unavailable, focus and visibility are the
   // fallback revalidation signals. Revision CAS still rejects stale writes.
-  const onFocus = () => { if (typeof revalidationListener === "function") revalidationListener(); };
+  // A visibilitychange that HIDES the tab is not a freshness signal: revalidating
+  // a backgrounded tab churns the runtime for a view nobody is looking at.
+  const onFocus = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (typeof revalidationListener === "function") revalidationListener();
+  };
   if (typeof window !== "undefined" && typeof window.addEventListener === "function"
     && typeof globalThis.BroadcastChannel !== "function") {
     window.addEventListener("focus", onFocus);
@@ -328,7 +362,7 @@ export async function hydrateVaultRuntime({ userId, companyId, repository = null
  * Seal a verified completed migration into the FIRST runtime catalog. The frozen
  * migration manifest is read but never modified.
  */
-export async function sealVaultRuntime({ userId, companyId, repository = null } = {}) {
+export async function sealVaultRuntime({ userId, companyId, repository = null, storage = undefined, readGuard = undefined } = {}) {
   let workspaceTag;
   try {
     workspaceTag = await deriveWorkspaceVaultTag(userId, companyId);
@@ -348,46 +382,38 @@ export async function sealVaultRuntime({ userId, companyId, repository = null } 
       }
       if (existing) return Object.freeze({ ok: true, state: "already-sealed", code: "", entryCount: 0, generation: 0 });
 
-      let recordKeys;
-      try {
-        recordKeys = await vaultRepository.listEncryptedRecordKeys({ workspaceTag });
-      } catch {
-        return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
+      // The seal adopts ONLY what the completed migration proved. Enumerating
+      // the record store here instead would let a record injected into
+      // IndexedDB before the first seal become authoritative content, because
+      // nothing else in the runtime ever re-checks the migration manifest.
+      const authority = await verifyCompletedVaultMigrationAuthority({
+        workspaceTag, dek, userId, companyId, vaultRepository, storage, readGuard,
+      });
+      if (!authority.ok) {
+        return hydrationFailure(authority.code === VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED
+          ? VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED
+          : VAULT_RUNTIME_ERROR_CODES.MIGRATION_UNVERIFIED);
       }
 
-      // The seal derives its entries from the ACTUAL verified encrypted records,
-      // decrypting each one to recompute its exact byte length and digest.
+      // The manifest is authenticated but the runtime catalog is a separate
+      // contract, so each verified entry is re-checked against the approved
+      // key list before it can enter the catalog.
       const entries = [];
-      for (const logicalKey of [...recordKeys].sort()) {
-        if (!APPROVED.has(logicalKey)) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_UNEXPECTED);
-        let record;
-        try {
-          record = await vaultRepository.readEncryptedRecord({ workspaceTag, logicalKey });
-        } catch {
-          return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
-        }
-        if (!record) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_MISSING);
-        let bytes = null;
-        try {
-          bytes = await decryptBytes(dek, record.ciphertext, record.iv,
-            recordAadFor({ userId, companyId, logicalKey, blobId: record.blobId }));
-          entries.push({
-            key: logicalKey,
-            blobId: record.blobId,
-            byteLength: bytes.length,
-            digest: await digestBytes(bytes),
-            revision: record.revision,
-          });
-        } catch {
-          return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_INVALID);
-        } finally {
-          if (bytes) bytes.fill(0);
-          bytes = null;
-        }
+      for (const entry of authority.entries) {
+        if (!APPROVED.has(entry.key)) return hydrationFailure(VAULT_RUNTIME_ERROR_CODES.RECORD_UNEXPECTED);
+        entries.push({
+          key: entry.key,
+          blobId: entry.blobId,
+          byteLength: entry.byteLength,
+          digest: entry.digest,
+          revision: entry.revision,
+        });
       }
 
       try {
-        const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries });
+        // A freshly created catalog is persisted at wrapper revision 1, so the
+        // authenticated plaintext must claim exactly 1.
+        const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries });
         const envelope = await encryptRuntimeCatalog({ dek, userId, companyId, catalog });
         const created = await vaultRepository.createRuntimeCatalog({
           workspaceTag,
@@ -489,7 +515,11 @@ async function commitSet(session, dek, operation) {
       digest: await digestBytes(plain),
       revision: previous ? previous.revision + 1 : 1,
     });
-    const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, entries: nextEntries });
+    // Every commit CASes on session.catalogRevision, so the revision the store
+    // will observe after a successful commit is exactly one higher. Binding it
+    // into the plaintext before encryption means an envelope written for one
+    // revision can never be replayed under another.
+    const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, catalogRevision: session.catalogRevision + 1, entries: nextEntries });
     const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: session.userId, companyId: session.companyId, catalog });
     const committed = await session.repository.commitRuntimeRecordSet({
       workspaceTag: session.workspaceTag,
@@ -524,7 +554,7 @@ async function commitRemove(session, dek, operation) {
   const nextEntries = [...session.meta.entries()]
     .filter(([key]) => key !== operation.logicalKey)
     .map(([key, value]) => ({ key, ...value }));
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, entries: nextEntries });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, catalogRevision: session.catalogRevision + 1, entries: nextEntries });
   const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: session.userId, companyId: session.companyId, catalog });
   const committed = await session.repository.commitRuntimeRecordRemove({
     workspaceTag: session.workspaceTag,
@@ -542,7 +572,7 @@ async function commitRemove(session, dek, operation) {
 }
 
 async function commitClear(session, dek) {
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, entries: [] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, catalogRevision: session.catalogRevision + 1, entries: [] });
   const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: session.userId, companyId: session.companyId, catalog });
   const committed = await session.repository.commitRuntimeClear({
     workspaceTag: session.workspaceTag,
@@ -620,7 +650,8 @@ export function revokeVaultRuntime() {
   session.blocked = true;
   session.blockedCode = "REVOKED";
   active = null;
-  closeChannel();
+  // The channel deliberately stays open: it belongs to the subscription, and a
+  // still-mounted subscriber must keep hearing other tabs after a revocation.
   notifyStatus();
 }
 

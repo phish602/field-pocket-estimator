@@ -19,6 +19,7 @@ import { readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
 import { writeVaultCompatibilityGuard } from "./vaultCompatibilityGuardWriter";
 import { createVaultTransitionControlRepository } from "./vaultTransitionControlRepository";
 import { deriveWorkspaceVaultTag, runWithActiveVaultDek } from "./vaultSession";
+import { base64url, digestBytes } from "./vaultRuntimeCatalog";
 
 const MANIFEST_VERSION = 1;
 const RECORD_SCHEMA_VERSION = 1;
@@ -72,33 +73,14 @@ function completed() {
   return result({ state: "authoritative", phase: "", code: "", resumable: false, authoritative: true, cleanupPending: false });
 }
 
-function bytesEqual(left, right) {
-  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array) || left.length !== right.length) return false;
-  let different = 0;
-  for (let index = 0; index < left.length; index += 1) different |= left[index] ^ right[index];
-  return different === 0;
-}
-
-function base64url(bytes) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-  let value = "";
-  for (let index = 0; index < bytes.length; index += 3) {
-    const a = bytes[index];
-    const b = index + 1 < bytes.length ? bytes[index + 1] : 0;
-    const c = index + 2 < bytes.length ? bytes[index + 2] : 0;
-    value += alphabet[a >> 2];
-    value += alphabet[((a & 15) << 2) | (b >> 4)];
-    if (index + 1 < bytes.length) value += alphabet[((b & 15) << 2) | (c >> 6)];
-    if (index + 2 < bytes.length) value += alphabet[c & 63];
-  }
-  return value;
-}
-
+// ISO-16 review fix -- the manifest digest is encoded with the SAME base64url
+// implementation the runtime catalog uses. The local copy this replaced mixed
+// overlapping bits when packing the second character, so two different SHA-256
+// digests could encode to the same string, and a manifest digest could not be
+// compared against a catalog digest at all. There is now one encoder.
 async function digest(bytes) {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle || typeof subtle.digest !== "function") throw new VaultMigrationError(VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED);
   try {
-    return base64url(new Uint8Array(await subtle.digest("SHA-256", bytes)));
+    return await digestBytes(bytes);
   } catch {
     throw new VaultMigrationError(VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED);
   }
@@ -248,23 +230,34 @@ function recordAssociatedData({ userId, companyId, entry }) {
 async function verifyRecords({ repository, workspaceTag, dek, userId, companyId, manifest }) {
   const expected = manifest.entries.filter((entry) => entry.present).map((entry) => entry.key).sort();
   const actual = await repository.listEncryptedRecordKeys({ workspaceTag });
-  if (expected.length !== actual.length || expected.some((key, index) => key !== actual[index])) return false;
+  if (expected.length !== actual.length || expected.some((key, index) => key !== actual[index])) return null;
+  const verified = [];
   for (const entry of manifest.entries) {
     if (!entry.present) continue;
     const record = await repository.readEncryptedRecord({ workspaceTag, logicalKey: entry.key });
-    if (!record || record.blobId !== entry.blobId || record.recordSchemaVersion !== RECORD_SCHEMA_VERSION) return false;
+    if (!record || record.blobId !== entry.blobId || record.recordSchemaVersion !== RECORD_SCHEMA_VERSION) return null;
+    if (record.logicalKey !== entry.key) return null;
+    if (!Number.isSafeInteger(record.revision) || record.revision < 1) return null;
     let bytes = null;
     try {
       bytes = await decryptBytes(dek, record.ciphertext, record.iv, recordAssociatedData({ userId, companyId, entry }));
-      if (bytes.length !== entry.byteLength || await digest(bytes) !== entry.digest) return false;
+      if (bytes.length !== entry.byteLength || await digest(bytes) !== entry.digest) return null;
+      verified.push(Object.freeze({
+        key: entry.key,
+        blobId: entry.blobId,
+        byteLength: entry.byteLength,
+        digest: entry.digest,
+        revision: record.revision,
+      }));
     } catch {
-      return false;
+      return null;
     } finally {
       if (bytes) bytes.fill(0);
       bytes = null;
     }
   }
-  return true;
+  verified.sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0));
+  return Object.freeze(verified);
 }
 
 async function writeRecords({ repository, storage, workspaceTag, dek, userId, companyId, manifest }) {
@@ -305,6 +298,74 @@ async function sourcesAreAbsent(storage, manifest) {
     }))),
   });
   return sourceMatches(storage, absentManifest);
+}
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- completed-migration authority
+//
+// Sealing the first runtime catalog is the moment the runtime decides what the
+// workspace CONTAINS. Deriving that from a raw enumeration of the record store
+// would mean a record injected into IndexedDB before the seal is adopted as
+// authoritative content. The seal therefore must consume the SAME verified
+// authority the orchestrator itself accepts: the guard, the frozen migration
+// manifest, every record it names decrypted under its own AAD, and the proof
+// that the plaintext sources are gone. This function is that single source of
+// truth -- there is no second, weaker manifest reader.
+// ---------------------------------------------------------------------------
+
+export async function verifyCompletedVaultMigrationAuthority({
+  workspaceTag,
+  dek,
+  userId,
+  companyId,
+  vaultRepository = createVaultIndexedDbRepository(),
+  storage = getActiveAccountScopedStorage(),
+  readGuard = readVaultCompatibilityGuard,
+} = {}) {
+  const unverified = Object.freeze({ ok: false, code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED, transitionId: "", entries: Object.freeze([]) });
+  if (typeof userId !== "string" || !userId || typeof companyId !== "string" || !companyId) {
+    return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST });
+  }
+  if (!validWorkspaceTag(workspaceTag)) return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.INVALID_REQUEST });
+  if (!dek) return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.VAULT_LOCKED });
+
+  let facade;
+  try {
+    facade = assertFacade(storage);
+  } catch {
+    return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.STORAGE_UNAVAILABLE });
+  }
+
+  let guard;
+  try {
+    guard = readGuard();
+  } catch {
+    guard = null;
+  }
+  // Anything other than a settled authoritative guard means this workspace has
+  // not finished migrating, so nothing here may be treated as authority.
+  if (!guard || guard.state !== "authoritative") return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE });
+
+  try {
+    const stored = await vaultRepository.readMigrationManifest({ workspaceTag });
+    if (!stored || !validTransitionId(stored.transitionId)) return unverified;
+    const manifest = await decodeManifest({ repository: vaultRepository, workspaceTag, transitionId: stored.transitionId, dek, userId, companyId });
+    const entries = await verifyRecords({ repository: vaultRepository, workspaceTag, dek, userId, companyId, manifest });
+    if (!entries) return unverified;
+    if (!await sourcesAreAbsent(facade, manifest)) return unverified;
+    // Belt and braces: every verified key must be on the approved migration
+    // list, which exactManifest already enforced. Re-assert it here so the
+    // caller can never be handed an off-list key.
+    for (const entry of entries) {
+      if (!VAULT_MIGRATION_LOGICAL_KEYS.includes(entry.key)) return unverified;
+    }
+    return Object.freeze({ ok: true, code: "", transitionId: stored.transitionId, entries });
+  } catch (error) {
+    if (error instanceof VaultMigrationError && error.code === VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID) {
+      return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID });
+    }
+    return Object.freeze({ ...unverified, code: VAULT_MIGRATION_ERROR_CODES.STORAGE_OPERATION_FAILED });
+  }
 }
 
 export function createVaultMigrationOrchestrator({

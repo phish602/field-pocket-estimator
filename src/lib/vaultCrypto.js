@@ -139,10 +139,15 @@ export function migrationManifestAad(options) {
 // migration manifest, a record, a sentinel, or a wrapped key, and vice versa.
 // The runtime generation is bound so a stale catalog cannot be replayed as a
 // newer one under the same workspace identity.
+// The catalog REVISION is bound alongside the generation. Without it an older
+// valid catalog envelope could be placed under a newer persisted wrapper
+// revision and still decrypt. This does NOT claim resistance to a complete
+// local storage rollback -- that needs an external monotonic trust anchor.
 export function runtimeCatalogAad(options) {
-  const { vaultFormatVersion, userId, companyId, runtimeSchemaVersion, runtimeGeneration } = assertOptions(options);
+  const { vaultFormatVersion, userId, companyId, runtimeSchemaVersion, runtimeGeneration, catalogRevision } = assertOptions(options);
+  if (!Number.isSafeInteger(catalogRevision) || catalogRevision < 1) fail(VaultCryptoErrorCode.INVALID_INPUT, "Invalid catalog revision.");
   const [user, company] = identities(userId, companyId);
-  return concat(encodeText("estipaid-vault-runtime-catalog-v1"), encodeUint32(vaultFormatVersion), encodeText(user), encodeText(company), encodeUint32(runtimeSchemaVersion), encodeUint32(runtimeGeneration));
+  return concat(encodeText("estipaid-vault-runtime-catalog-v1"), encodeUint32(vaultFormatVersion), encodeText(user), encodeText(company), encodeUint32(runtimeSchemaVersion), encodeUint32(runtimeGeneration), encodeUint32(catalogRevision));
 }
 export function validateKdfParameters(params) {
   if (!params || params.algorithm !== "argon2id" || params.outputType !== "binary" || params.hashLength !== 32 || !Number.isInteger(params.memorySize) || !Number.isInteger(params.iterations) || params.parallelism !== 1 || params.memorySize < 65536 || params.memorySize > 131072 || params.iterations < MIN_KDF_ITERATIONS_V1 || params.iterations > MAX_KDF_ITERATIONS_V1) fail(VaultCryptoErrorCode.UNSUPPORTED_KDF_POLICY, "Unsupported KDF policy.");

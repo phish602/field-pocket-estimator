@@ -31,7 +31,7 @@ async function entry(key, value, revision = 1) {
 
 test("a catalog round-trips through real AES-GCM under the runtime AAD", async () => {
   const dek = await testDek();
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
   const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
   expect(envelope.iv).toHaveLength(12);
   const decoded = await decryptRuntimeCatalog({
@@ -42,14 +42,14 @@ test("a catalog round-trips through real AES-GCM under the runtime AAD", async (
 });
 
 test("the runtime AAD is distinct from the migration manifest AAD", () => {
-  const runtime = runtimeCatalogAad({ vaultFormatVersion: 1, userId: USER, companyId: COMPANY, runtimeSchemaVersion: 1, runtimeGeneration: 1 });
+  const runtime = runtimeCatalogAad({ vaultFormatVersion: 1, userId: USER, companyId: COMPANY, runtimeSchemaVersion: 1, runtimeGeneration: 1, catalogRevision: 1 });
   const manifest = migrationManifestAad({ vaultFormatVersion: 1, userId: USER, companyId: COMPANY, transitionId: "123e4567-e89b-42d3-a456-426614174000", manifestSchemaVersion: 1 });
   expect(Array.from(runtime)).not.toEqual(Array.from(manifest));
 });
 
 test("a catalog encrypted for one workspace cannot be decrypted for another", async () => {
   const dek = await testDek();
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
   const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
   await expect(decryptRuntimeCatalog({
     dek, userId: "99999999-8888-4777-8666-555555555555", companyId: COMPANY,
@@ -59,7 +59,7 @@ test("a catalog encrypted for one workspace cannot be decrypted for another", as
 
 test("a catalog bound to one runtime generation cannot be replayed under another", async () => {
   const dek = await testDek();
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "synthetic")] });
   const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
   await expect(decryptRuntimeCatalog({
     dek, userId: USER, companyId: COMPANY,
@@ -68,10 +68,10 @@ test("a catalog bound to one runtime generation cannot be replayed under another
 });
 
 test("entries are deterministically ordered regardless of mutation order", async () => {
-  const forward = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [
+  const forward = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [
     await entry("estipaid-customers-v1", "a"), await entry("estipaid-projects-v1", "b"),
   ] });
-  const reverse = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [
+  const reverse = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [
     { ...forward.entries.find((e) => e.key === "estipaid-projects-v1") },
     { ...forward.entries.find((e) => e.key === "estipaid-customers-v1") },
   ] });
@@ -79,7 +79,7 @@ test("entries are deterministically ordered regardless of mutation order", async
 });
 
 test("exact-shape validation rejects every malformed catalog", async () => {
-  const good = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [await entry("estipaid-customers-v1", "x")] });
+  const good = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "x")] });
   expect(exactRuntimeCatalog(JSON.parse(JSON.stringify(good)))).not.toBeNull();
 
   const mutate = (fn) => { const copy = JSON.parse(JSON.stringify(good)); fn(copy); return exactRuntimeCatalog(copy); };
@@ -88,6 +88,10 @@ test("exact-shape validation rejects every malformed catalog", async () => {
   expect(mutate((c) => { c.extra = 1; })).toBeNull();
   expect(mutate((c) => { c.entries = {}; })).toBeNull();
   expect(mutate((c) => { c.runtimeGeneration = 0; })).toBeNull();
+  expect(mutate((c) => { c.catalogRevision = 0; })).toBeNull();
+  expect(mutate((c) => { delete c.catalogRevision; })).toBeNull();
+  expect(mutate((c) => { c.catalogRevision = 1.5; })).toBeNull();
+  expect(mutate((c) => { c.catalogRevision = "1"; })).toBeNull();
   expect(mutate((c) => { c.entries[0].key = "estipaid-not-approved-v1"; })).toBeNull();
   expect(mutate((c) => { c.entries.push({ ...c.entries[0] }); })).toBeNull();
   expect(mutate((c) => { c.entries[0].digest = "short"; })).toBeNull();
@@ -103,7 +107,7 @@ test("exact-shape validation rejects every malformed catalog", async () => {
 test("every approved logical key is representable in a catalog", async () => {
   const entries = [];
   for (const key of VAULT_MIGRATION_LOGICAL_KEYS) entries.push(await entry(key, `synthetic-${key}`));
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries });
   expect(catalog.entries).toHaveLength(VAULT_MIGRATION_LOGICAL_KEYS.length);
   expect(catalog.version).toBe(RUNTIME_CATALOG_VERSION);
 });
@@ -111,15 +115,15 @@ test("every approved logical key is representable in a catalog", async () => {
 test("a present-empty value is representable and distinct from an absent key", async () => {
   const empty = await entry("estipaid-settings-v1", "");
   expect(empty.byteLength).toBe(0);
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [empty] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [empty] });
   expect(catalog.entries[0].byteLength).toBe(0);
   expect(catalog.entries.some((e) => e.key === "estipaid-customers-v1")).toBe(false);
 });
 
 test("the sanitized description exposes no key name, digest source, or identity", async () => {
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 3, entries: [await entry("estipaid-customers-v1", "synthetic-secret-value")] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 3, catalogRevision: 7, entries: [await entry("estipaid-customers-v1", "synthetic-secret-value")] });
   const described = describeRuntimeCatalog(catalog);
-  expect(Object.keys(described).sort()).toEqual(["entryCount", "runtimeGeneration", "totalByteLength", "version"]);
+  expect(Object.keys(described).sort()).toEqual(["catalogRevision", "entryCount", "runtimeGeneration", "totalByteLength", "version"]);
   const serialized = JSON.stringify(described);
   expect(serialized).not.toContain("synthetic-secret-value");
   expect(serialized).not.toContain(USER);
@@ -128,12 +132,151 @@ test("the sanitized description exposes no key name, digest source, or identity"
 
 test("a corrupted catalog envelope never decodes", async () => {
   const dek = await testDek();
-  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, entries: [await entry("estipaid-customers-v1", "x")] });
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "x")] });
   const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
   const damaged = new Uint8Array(envelope.ciphertext);
   damaged[0] ^= 0xff;
   await expect(decryptRuntimeCatalog({
     dek, userId: USER, companyId: COMPANY,
     stored: { ciphertext: damaged, iv: envelope.iv, runtimeGeneration: 1, revision: 1 },
+  })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+});
+
+// ---------------------------------------------------------------------------
+// ISO-16 review fix -- catalog revision binding.
+//
+// The catalog's revision is now authenticated in TWO independent places: inside
+// the encrypted plaintext, and in the AAD. Decryption requires the plaintext
+// revision, the AAD revision, and the PERSISTED wrapper revision to agree
+// exactly, so a valid older envelope cannot be replayed under a newer wrapper.
+//
+// This is explicitly NOT a claim of resistance to a complete local storage
+// rollback: an attacker who restores the entire IndexedDB database to a
+// consistent earlier state is not detectable without an external monotonic
+// trust anchor, which the local vault does not have.
+// ---------------------------------------------------------------------------
+
+test("the catalog revision is part of the authenticated plaintext", async () => {
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 4, entries: [await entry("estipaid-customers-v1", "x")] });
+  expect(catalog.catalogRevision).toBe(4);
+  expect(Object.keys(catalog).sort()).toEqual(["catalogRevision", "entries", "runtimeGeneration", "version"]);
+});
+
+test("the runtime AAD changes when only the catalog revision changes", () => {
+  const base = { vaultFormatVersion: 1, userId: USER, companyId: COMPANY, runtimeSchemaVersion: 1, runtimeGeneration: 1 };
+  const first = runtimeCatalogAad({ ...base, catalogRevision: 1 });
+  const second = runtimeCatalogAad({ ...base, catalogRevision: 2 });
+  expect(Array.from(first)).not.toEqual(Array.from(second));
+});
+
+test("the runtime AAD refuses an invalid catalog revision", () => {
+  const base = { vaultFormatVersion: 1, userId: USER, companyId: COMPANY, runtimeSchemaVersion: 1, runtimeGeneration: 1 };
+  expect(() => runtimeCatalogAad({ ...base, catalogRevision: 0 })).toThrow();
+  expect(() => runtimeCatalogAad({ ...base, catalogRevision: -1 })).toThrow();
+  expect(() => runtimeCatalogAad({ ...base, catalogRevision: 1.5 })).toThrow();
+  expect(() => runtimeCatalogAad({ ...base, catalogRevision: "1" })).toThrow();
+  expect(() => runtimeCatalogAad({ ...base })).toThrow();
+});
+
+test("building a catalog refuses an invalid revision", async () => {
+  const entries = [await entry("estipaid-customers-v1", "x")];
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 0, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: -3, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 2.5, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: Number.MAX_SAFE_INTEGER, entries })).toThrow(VaultRuntimeCatalogError);
+  // The AAD encodes the revision as uint32, so that is the exact ceiling.
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 0xffffffff, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(() => buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 0x100000000, entries })).toThrow(VaultRuntimeCatalogError);
+  expect(buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 0xfffffffe, entries }).catalogRevision).toBe(0xfffffffe);
+});
+
+test("a catalog round-trips at a revision above the first", async () => {
+  const dek = await testDek();
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 2, catalogRevision: 9, entries: [await entry("estipaid-customers-v1", "x", 3)] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
+  const decoded = await decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 2, revision: 9 },
+  });
+  expect(decoded).toEqual(catalog);
+});
+
+test("an older catalog envelope cannot be replayed under a newer wrapper revision", async () => {
+  const dek = await testDek();
+  const old = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "old")] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog: old });
+  await expect(decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 1, revision: 2 },
+  })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+});
+
+test("a newer catalog envelope cannot be replayed under an older wrapper revision", async () => {
+  const dek = await testDek();
+  const newer = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 5, entries: [await entry("estipaid-customers-v1", "new")] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog: newer });
+  await expect(decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 1, revision: 4 },
+  })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+});
+
+test("a wrapper revision of zero or a non-integer never decodes", async () => {
+  const dek = await testDek();
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "x")] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
+  for (const revision of [0, -1, 1.5, "1", null, undefined]) {
+    // eslint-disable-next-line no-await-in-loop
+    await expect(decryptRuntimeCatalog({
+      dek, userId: USER, companyId: COMPANY,
+      stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 1, revision },
+    })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+  }
+});
+
+test("revision and generation are bound independently", async () => {
+  const dek = await testDek();
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 2, catalogRevision: 2, entries: [await entry("estipaid-customers-v1", "x")] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
+  // Right revision, wrong generation.
+  await expect(decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 3, revision: 2 },
+  })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+  // Right generation, wrong revision.
+  await expect(decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 2, revision: 3 },
+  })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
+});
+
+test("the sanitized description reports the revision and still leaks nothing", async () => {
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 12, entries: [await entry("estipaid-customers-v1", "synthetic-secret-value")] });
+  const described = describeRuntimeCatalog(catalog);
+  expect(described.catalogRevision).toBe(12);
+  const serialized = JSON.stringify(described);
+  expect(serialized).not.toContain("synthetic-secret-value");
+  expect(serialized).not.toContain(USER);
+  expect(serialized).not.toContain(COMPANY);
+  expect(serialized).not.toContain("estipaid-customers-v1");
+});
+
+test("an exact-shape check can pin the expected revision", async () => {
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 6, entries: [await entry("estipaid-customers-v1", "x")] });
+  const plain = JSON.parse(JSON.stringify(catalog));
+  expect(exactRuntimeCatalog(plain, { catalogRevision: 6 })).not.toBeNull();
+  expect(exactRuntimeCatalog(plain, { catalogRevision: 5 })).toBeNull();
+  expect(exactRuntimeCatalog(plain, { runtimeGeneration: 1, catalogRevision: 6 })).not.toBeNull();
+  expect(exactRuntimeCatalog(plain, { runtimeGeneration: 2, catalogRevision: 6 })).toBeNull();
+});
+
+test("a catalog revision beyond the bound ceiling never decodes", async () => {
+  const dek = await testDek();
+  const catalog = buildRuntimeCatalog({ runtimeGeneration: 1, catalogRevision: 1, entries: [await entry("estipaid-customers-v1", "x")] });
+  const envelope = await encryptRuntimeCatalog({ dek, userId: USER, companyId: COMPANY, catalog });
+  await expect(decryptRuntimeCatalog({
+    dek, userId: USER, companyId: COMPANY,
+    stored: { ciphertext: envelope.ciphertext, iv: envelope.iv, runtimeGeneration: 1, revision: 0x100000000 },
   })).rejects.toBeInstanceOf(VaultRuntimeCatalogError);
 });

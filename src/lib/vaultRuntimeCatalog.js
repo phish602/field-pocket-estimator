@@ -23,7 +23,10 @@ export const VAULT_FORMAT_VERSION = 1;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const BLOB_ID = /^[A-Za-z0-9_-]{22}$/;
 const ENTRY_FIELDS = ["blobId", "byteLength", "digest", "key", "revision"];
-const CATALOG_FIELDS = ["entries", "runtimeGeneration", "version"];
+const CATALOG_FIELDS = ["catalogRevision", "entries", "runtimeGeneration", "version"];
+// The revision is bound into the AAD as an unsigned 32-bit integer, so that is
+// the exact ceiling. Reaching it blocks with a stable code instead of wrapping.
+const MAX_CATALOG_REVISION = 0xffffffff;
 const APPROVED = new Set(VAULT_MIGRATION_LOGICAL_KEYS);
 
 export class VaultRuntimeCatalogError extends Error {
@@ -70,12 +73,16 @@ export function randomBlobId() {
 
 // Exact-shape validation. Anything unexpected is a hard failure: a runtime that
 // cannot be verified exactly must never be hydrated.
-export function exactRuntimeCatalog(value, { runtimeGeneration } = {}) {
+export function exactRuntimeCatalog(value, { runtimeGeneration, catalogRevision } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
   if (Object.keys(value).sort().join(",") !== CATALOG_FIELDS.join(",")) return null;
   if (value.version !== RUNTIME_CATALOG_VERSION) return null;
   if (!Number.isSafeInteger(value.runtimeGeneration) || value.runtimeGeneration < 1) return null;
   if (runtimeGeneration !== undefined && value.runtimeGeneration !== runtimeGeneration) return null;
+  // The catalog's own revision is part of its authenticated plaintext, so an
+  // older envelope cannot be replayed under a newer persisted wrapper revision.
+  if (!Number.isSafeInteger(value.catalogRevision) || value.catalogRevision < 1 || value.catalogRevision > MAX_CATALOG_REVISION) return null;
+  if (catalogRevision !== undefined && value.catalogRevision !== catalogRevision) return null;
   if (!Array.isArray(value.entries)) return null;
 
   const seen = new Set();
@@ -94,13 +101,22 @@ export function exactRuntimeCatalog(value, { runtimeGeneration } = {}) {
   // Deterministic ordering so two byte-identical catalogs always serialize the
   // same way regardless of mutation history.
   entries.sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0));
-  return Object.freeze({ version: RUNTIME_CATALOG_VERSION, runtimeGeneration: value.runtimeGeneration, entries: Object.freeze(entries) });
+  return Object.freeze({
+    version: RUNTIME_CATALOG_VERSION,
+    runtimeGeneration: value.runtimeGeneration,
+    catalogRevision: value.catalogRevision,
+    entries: Object.freeze(entries),
+  });
 }
 
-export function buildRuntimeCatalog({ runtimeGeneration, entries }) {
+export function buildRuntimeCatalog({ runtimeGeneration, catalogRevision, entries }) {
+  if (!Number.isSafeInteger(catalogRevision) || catalogRevision < 1 || catalogRevision >= MAX_CATALOG_REVISION) {
+    throw new VaultRuntimeCatalogError("CATALOG_REVISION_INVALID");
+  }
   const catalog = exactRuntimeCatalog({
     version: RUNTIME_CATALOG_VERSION,
     runtimeGeneration,
+    catalogRevision,
     entries: entries.map((entry) => ({
       key: entry.key,
       blobId: entry.blobId,
@@ -108,18 +124,19 @@ export function buildRuntimeCatalog({ runtimeGeneration, entries }) {
       digest: entry.digest,
       revision: entry.revision,
     })),
-  }, { runtimeGeneration });
+  }, { runtimeGeneration, catalogRevision });
   if (!catalog) throw new VaultRuntimeCatalogError("CATALOG_INVALID");
   return catalog;
 }
 
-function aadFor({ userId, companyId, runtimeGeneration }) {
+function aadFor({ userId, companyId, runtimeGeneration, catalogRevision }) {
   return runtimeCatalogAad({
     vaultFormatVersion: VAULT_FORMAT_VERSION,
     userId,
     companyId,
     runtimeSchemaVersion: RUNTIME_SCHEMA_VERSION,
     runtimeGeneration,
+    catalogRevision,
   });
 }
 
@@ -127,7 +144,11 @@ export async function encryptRuntimeCatalog({ dek, userId, companyId, catalog })
   let plain = null;
   try {
     plain = utf8Bytes(JSON.stringify(catalog));
-    return await encryptBytes(dek, plain, aadFor({ userId, companyId, runtimeGeneration: catalog.runtimeGeneration }));
+    return await encryptBytes(dek, plain, aadFor({
+      userId, companyId,
+      runtimeGeneration: catalog.runtimeGeneration,
+      catalogRevision: catalog.catalogRevision,
+    }));
   } catch (error) {
     if (error instanceof VaultRuntimeCatalogError) throw error;
     throw new VaultRuntimeCatalogError("CATALOG_ENCRYPT_FAILED");
@@ -141,9 +162,19 @@ export async function decryptRuntimeCatalog({ dek, userId, companyId, stored }) 
   if (!stored) throw new VaultRuntimeCatalogError("CATALOG_ABSENT");
   let plain = null;
   try {
-    plain = await decryptBytes(dek, stored.ciphertext, stored.iv, aadFor({ userId, companyId, runtimeGeneration: stored.runtimeGeneration }));
+    // The AAD binds the PERSISTED wrapper revision, and the exact-shape check
+    // binds the plaintext revision to it. Plaintext revision, AAD revision, and
+    // persisted wrapper revision must all agree exactly.
+    plain = await decryptBytes(dek, stored.ciphertext, stored.iv, aadFor({
+      userId, companyId,
+      runtimeGeneration: stored.runtimeGeneration,
+      catalogRevision: stored.revision,
+    }));
     const parsed = JSON.parse(new TextDecoder().decode(plain));
-    const catalog = exactRuntimeCatalog(parsed, { runtimeGeneration: stored.runtimeGeneration });
+    const catalog = exactRuntimeCatalog(parsed, {
+      runtimeGeneration: stored.runtimeGeneration,
+      catalogRevision: stored.revision,
+    });
     if (!catalog) throw new VaultRuntimeCatalogError("CATALOG_INVALID");
     return catalog;
   } catch (error) {
@@ -161,6 +192,7 @@ export function describeRuntimeCatalog(catalog) {
   return Object.freeze({
     version: catalog.version,
     runtimeGeneration: catalog.runtimeGeneration,
+    catalogRevision: catalog.catalogRevision,
     entryCount: catalog.entries.length,
     totalByteLength: catalog.entries.reduce((total, entry) => total + entry.byteLength, 0),
   });
