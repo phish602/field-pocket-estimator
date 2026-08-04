@@ -28,6 +28,33 @@ function buildNotice(level, code, message, details = {}) {
   return { level, code, message, details };
 }
 
+/**
+ * The single derivation of the contractor-safe app restore bundle summary.
+ *
+ * Both the read-only recovery review and the final convergence comparison call
+ * this, so an unchanged backup can never be reported as a changed one. A second
+ * independent copy of these rules is what previously made recovery unreachable
+ * for any contractor with a saved logo or zero scope templates.
+ *
+ * An empty scope-template array means the bundle captured the contractor's
+ * template state correctly -- it is never treated as a missing bundle.
+ *
+ * Accepts either a captured/validated bundle or a mapped restore payload: both
+ * carry the same companyProfile/settings/scopeTemplates fields. Returns only
+ * booleans, so no profile, logo, settings, or template contents can escape.
+ */
+export function summarizeAppRestoreBundleCapture(payload) {
+  const source = isPlainObject(payload) ? payload : {};
+  const companyProfile = source.companyProfile;
+
+  return {
+    companyProfileCaptured: isPlainObject(companyProfile),
+    logoDataUrlCaptured: Boolean(asText(companyProfile?.logoDataUrl)),
+    settingsCaptured: isPlainObject(source.settings),
+    scopeTemplatesCaptured: Array.isArray(source.scopeTemplates),
+  };
+}
+
 function readFromSnapshot(snapshot, key) {
   if (!snapshot || typeof snapshot !== "object") return null;
   if (typeof snapshot.getItem === "function") {
@@ -141,12 +168,7 @@ export function buildSupabaseAppRestoreBundle(storageSnapshot) {
   return {
     bundle,
     notices,
-    captureSummary: {
-      companyProfileCaptured: isPlainObject(companyProfile),
-      logoDataUrlCaptured: Boolean(asText(companyProfile?.logoDataUrl)),
-      settingsCaptured: isPlainObject(settings),
-      scopeTemplatesCaptured: Array.isArray(scopeTemplates),
-    },
+    captureSummary: summarizeAppRestoreBundleCapture(bundle),
     readKeys: [
       STORAGE_KEYS.COMPANY_PROFILE,
       STORAGE_KEYS.SETTINGS,
@@ -242,12 +264,11 @@ export function validateSupabaseAppRestoreBundle(bundle) {
   return {
     valid: true,
     reason: "",
-    captureSummary: {
-      companyProfileCaptured: isPlainObject(companyProfile),
-      logoDataUrlCaptured: Boolean(asText(companyProfile?.logoDataUrl)),
-      settingsCaptured: isPlainObject(settings),
-      scopeTemplatesCaptured: Array.isArray(scopeTemplates),
-    },
+    captureSummary: summarizeAppRestoreBundleCapture({
+      companyProfile,
+      settings,
+      scopeTemplates,
+    }),
   };
 }
 

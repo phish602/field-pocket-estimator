@@ -36,7 +36,9 @@ import WorkspaceAccessGate from "./screens/WorkspaceAccessGate";
 import VaultAccessGate from "./screens/VaultAccessGate";
 import VaultCompatibilityGate from "./screens/VaultCompatibilityGate";
 import VaultRuntimeGate from "./screens/VaultRuntimeGate";
+import VaultRecoveryGate from "./screens/VaultRecoveryGate";
 import useVaultRuntimeActivation from "./lib/useVaultRuntimeActivation";
+import useVaultDeviceRecovery from "./lib/useVaultDeviceRecovery";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
 import useVaultCompatibilityBridge from "./lib/useVaultCompatibilityBridge";
@@ -4750,6 +4752,20 @@ export default function App() {
     ),
   });
 
+  const vaultRecovery = useVaultDeviceRecovery({
+    enabled: Boolean(
+      !VAULT_BRIDGE_RELEASE
+      && workspaceReady
+      && auth.user?.id
+      && account.company?.id
+    ),
+    configured: operationalConfigured,
+    user: operationalUser,
+    company: account.company,
+    capability: vault?.capability,
+    refresh: vault?.refresh,
+  });
+
   // The preference is read only after the exact account-scoped facade is
   // active. Keeping its identity alongside the value prevents workspace A's
   // duration from ever being used for workspace B during an identity switch.
@@ -4788,6 +4804,7 @@ export default function App() {
       && workspaceReady
       && auth.user?.id
       && account.company?.id
+      && vaultRecovery.state === "idle"
     ),
     userId: auth.user?.id,
     companyId: account.company?.id,
@@ -4800,7 +4817,10 @@ export default function App() {
   const vaultRuntimeReady = Boolean(
     VAULT_BRIDGE_RELEASE
       ? legacyCompatibilitySafe
-      : (workspaceReady && vault?.capability?.state === "unlocked" && vaultRuntime?.state === "ready")
+      : (workspaceReady
+        && vaultRecovery.state === "idle"
+        && vault?.capability?.state === "unlocked"
+        && vaultRuntime?.state === "ready")
   );
 
   // A deliberate lock first flushes accepted writes. A failed flush keeps the
@@ -4908,6 +4928,10 @@ export default function App() {
 
   if (VAULT_BRIDGE_RELEASE && !legacyCompatibilitySafe) {
     return <VaultCompatibilityGate state={compatibility.state} />;
+  }
+
+  if (!VAULT_BRIDGE_RELEASE && vaultRecovery.state !== "idle") {
+    return <VaultRecoveryGate recovery={vaultRecovery} onSignOut={auth.signOut} />;
   }
 
   if (!VAULT_BRIDGE_RELEASE && vault?.capability?.state !== "unlocked") {

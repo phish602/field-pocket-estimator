@@ -54,3 +54,26 @@ test("rejects malformed, forged, unknown, and prototype-polluting checkpoints", 
       .toBe(VAULT_DEVICE_RECOVERY_CHECKPOINT_CODES.INVALID);
   });
 });
+
+test("retains the empty-runtime checkpoint until cloud restore is durably committed", () => {
+  const local = storage();
+  for (const phase of [
+    "vault_deleted",
+    "device_key_removed",
+    "replacement_vault_provisioned",
+    "runtime_initialized",
+  ]) {
+    expect(writeVaultDeviceRecoveryCheckpoint({
+      storage: local, workspaceTag: TAG, phase,
+    }).ok).toBe(true);
+  }
+  expect(readVaultDeviceRecoveryCheckpoint({
+    storage: local, workspaceTag: TAG,
+  }).checkpoint?.phase).toBe("runtime_initialized");
+  expect(writeVaultDeviceRecoveryCheckpoint({
+    storage: local, workspaceTag: TAG, phase: "cloud_restore_committed",
+  }).ok).toBe(true);
+  expect(clearVaultDeviceRecoveryCheckpoint({
+    storage: local, workspaceTag: TAG,
+  }).ok).toBe(true);
+});

@@ -13,10 +13,18 @@ jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.f
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultDeviceRecovery", () => ({
+  __esModule: true,
+  default: jest.fn(() => ({
+    state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+    confirm: jest.fn(), retry: jest.fn(),
+  })),
+}));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }) }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".repeat(43)) }));
 
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultDeviceRecovery = require("./lib/useVaultDeviceRecovery").default;
 
 const COMPLETE_COMPANY_PROFILE = {
   companyName: "Acme Field Services",
@@ -37,6 +45,10 @@ beforeEach(() => {
   // in the TEST_USER/TEST_COMPANY namespace rather than as unscoped values.
   setupConfiguredWorkspace();
   useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
+  useVaultDeviceRecovery.mockReturnValue({
+    state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+    confirm: jest.fn(), retry: jest.fn(),
+  });
   seedCompanyProfile();
 
   try {

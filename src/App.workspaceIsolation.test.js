@@ -16,6 +16,13 @@ jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.f
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultDeviceRecovery", () => ({
+  __esModule: true,
+  default: jest.fn(() => ({
+    state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+    confirm: jest.fn(), retry: jest.fn(),
+  })),
+}));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: jest.fn(() => Promise.resolve("A".repeat(43))) }));
 jest.mock("./components/CloudHeaderStatusChip", () => ({ __esModule: true, default: () => null }));
@@ -30,6 +37,7 @@ const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
 const useVaultSession = require("./lib/useVaultSession").default;
 const useVaultRuntimeActivation = require("./lib/useVaultRuntimeActivation").default;
+const useVaultDeviceRecovery = require("./lib/useVaultDeviceRecovery").default;
 const useVaultCompatibilityBridge = require("./lib/useVaultCompatibilityBridge").default;
 const vaultCrypto = require("./lib/vaultCrypto");
 const { setActiveWorkspaceVaultCompatibility } = require("./lib/accountScopedLocalStorage");
@@ -97,6 +105,10 @@ beforeEach(() => {
   useVaultSession.mockReturnValue({
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
     setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(),
+  });
+  useVaultDeviceRecovery.mockReturnValue({
+    state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+    confirm: jest.fn(), retry: jest.fn(),
   });
   useVaultCompatibilityBridge.mockImplementation(() => {
     setActiveWorkspaceVaultCompatibility({ workspaceTag: "A".repeat(43), state: "legacy-safe", generation: 1 });

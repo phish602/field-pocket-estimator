@@ -6,6 +6,7 @@ const PHASES = Object.freeze([
   "device_key_removed",
   "replacement_vault_provisioned",
   "runtime_initialized",
+  "cloud_restore_committed",
 ]);
 const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
 

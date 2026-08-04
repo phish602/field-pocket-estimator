@@ -25,7 +25,7 @@ function unavailable() {
 export async function withVaultDeviceRecoveryLease({
   workspaceTag = "",
   operation = null,
-  lockManager = globalThis?.navigator?.locks,
+  lockManager = typeof navigator !== "undefined" ? navigator.locks : null,
 } = {}) {
   if (!WORKSPACE_TAG.test(workspaceTag) || typeof operation !== "function") {
     return unavailable();

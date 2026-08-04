@@ -1721,3 +1721,89 @@ export async function commitVaultDeviceRecoveryRestoreSnapshot({
     generation: session.generation,
   });
 }
+
+/**
+ * Opens the replacement runtime and atomically commits the compiler-owned
+ * recovery batch. Keeping this sequence in the runtime module prevents a UI
+ * lifecycle hook from becoming an alternate runtime owner.
+ */
+export async function completeVaultDeviceRecoveryRestore({
+  userId,
+  companyId,
+  snapshot,
+} = {}) {
+  const repository = createVaultIndexedDbRepository();
+  const hydration = await hydrateVaultRuntime({
+    userId,
+    companyId,
+    repository,
+    activation: beginVaultRuntimeActivation(),
+  });
+
+  if (!hydration?.ok) {
+    return recoveryRestoreResult({
+      code: VAULT_RUNTIME_ERROR_CODES.NOT_READY,
+    });
+  }
+
+  const prepared = validateRecoveryRestoreSnapshot(snapshot);
+  if (!prepared) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES.RECOVERY_RESTORE_INVALID
+    );
+  }
+
+  if (recoverySnapshotMatchesActive(prepared)) {
+    return recoveryRestoreResult({
+      ok: true,
+      state: "already-restored",
+      committed: true,
+      entryCount: prepared.length,
+      generation: active.generation,
+    });
+  }
+
+  if (active?.cache?.size > 0) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES.RECOVERY_RESTORE_NOT_EMPTY
+    );
+  }
+
+  return commitVaultDeviceRecoveryRestoreSnapshot({
+    userId,
+    companyId,
+    snapshot,
+  });
+}
+
+export async function verifyVaultDeviceRecoveryRestore({
+  userId,
+  companyId,
+  snapshot,
+} = {}) {
+  const hydrated = await hydrateVaultRuntime({
+    userId,
+    companyId,
+    repository: createVaultIndexedDbRepository(),
+    activation: beginVaultRuntimeActivation(),
+  });
+  const prepared = validateRecoveryRestoreSnapshot(snapshot);
+  return Object.freeze({
+    ok: hydrated?.ok === true && Boolean(prepared)
+      && recoverySnapshotMatchesActive(prepared),
+    state: hydrated?.ok === true ? "verified" : "blocked",
+  });
+}
+
+function recoverySnapshotMatchesActive(prepared) {
+  if (
+    !active
+    || active.blocked
+    || active.queue.length !== 0
+    || active.runtimeGeneration !== 1
+    || active.catalogRevision !== 2
+    || active.cache.size !== prepared.length
+  ) return false;
+
+  return prepared.every((entry) => active.cache.get(entry.logicalKey) === entry.value);
+}
