@@ -138,3 +138,43 @@ test("a different device key cannot open the vault and never falls back to plain
   );
   expect(session.getVaultCapability().state).toBe("locked");
 });
+
+
+test("recovery replacement provisioning remains passwordless and session-owned", async () => {
+  const store = memoryRepository();
+  const keys = deviceStore();
+  const restore = setTestArgon2Adapter(async () => {
+    throw new Error("Recovery provisioning must not run Argon2.");
+  });
+
+  try {
+    await expect(
+      session.provisionReplacementVaultSession(
+        { userId, companyId },
+        overrides(store, keys)
+      )
+    ).resolves.toEqual({
+      state: "unlocked",
+      code: "",
+      message: "",
+    });
+  } finally {
+    restore();
+  }
+
+  const tag = await workspaceTag(userId, companyId);
+
+  expect(keys.getOrCreate).toHaveBeenCalledWith({
+    workspaceTag: tag,
+  });
+
+  expect(
+    store.repository.createWorkspaceVaultMetadata
+  ).toHaveBeenCalledTimes(1);
+
+  expect(session.getVaultCapability()).toEqual({
+    state: "unlocked",
+    code: "",
+    message: "",
+  });
+});

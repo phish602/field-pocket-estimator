@@ -5,7 +5,10 @@
  * never be persisted without its catalog, a catalog must never be persisted
  * without its record, and a stale revision must never win.
  */
-import { IDBFactory } from "fake-indexeddb";
+import {
+  IDBFactory,
+  IDBObjectStore,
+} from "fake-indexeddb";
 import {
   VAULT_REPOSITORY_ERROR_CODES,
   createVaultIndexedDbRepository,
@@ -290,3 +293,322 @@ test("a corrupted persisted catalog is reported as corrupt rather than parsed", 
   await expect(repository.readRuntimeCatalog({ workspaceTag: TAG }))
     .rejects.toMatchObject({ code: VAULT_REPOSITORY_ERROR_CODES.RECORD_CORRUPT });
 });
+
+
+function restoreBatchInput(overrides = {}) {
+  return {
+    workspaceTag: TAG,
+    expectedCatalogRevision: 1,
+    runtimeGeneration: 1,
+    runtimeSchemaVersion: 1,
+    records: [
+      {
+        logicalKey: "estipaid-customers-v1",
+        blobId: "R".repeat(22),
+        recordSchemaVersion: 1,
+        ciphertext: bytes(32, 21),
+        iv: bytes(12, 22),
+      },
+      {
+        logicalKey: "estipaid-projects-v1",
+        blobId: "S".repeat(22),
+        recordSchemaVersion: 1,
+        ciphertext: bytes(32, 23),
+        iv: bytes(12, 24),
+      },
+      {
+        logicalKey: "estipaid-invoices-v1",
+        blobId: "T".repeat(22),
+        recordSchemaVersion: 1,
+        ciphertext: bytes(32, 25),
+        iv: bytes(12, 26),
+      },
+    ],
+    catalogCiphertext: bytes(96, 27),
+    catalogIv: bytes(12, 28),
+    ...overrides,
+  };
+}
+
+test(
+  "a recovery batch commits every record and catalog together",
+  async () => {
+    await seedCatalog();
+
+    const committed =
+      await repository.commitRuntimeRestoreBatch(
+        restoreBatchInput()
+      );
+
+    expect(committed.catalog.revision).toBe(2);
+    expect(committed.catalog.runtimeGeneration).toBe(1);
+    expect(committed.records).toHaveLength(3);
+
+    expect(Object.isFrozen(committed)).toBe(true);
+    expect(Object.isFrozen(committed.records)).toBe(true);
+    expect(Object.isFrozen(committed.catalog)).toBe(true);
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([
+      "estipaid-customers-v1",
+      "estipaid-invoices-v1",
+      "estipaid-projects-v1",
+    ]);
+
+    for (const record of committed.records) {
+      expect(record.revision).toBe(1);
+      expect(record.createdAt).toBe(record.updatedAt);
+
+      const stored =
+        await repository.readEncryptedRecord({
+          workspaceTag: TAG,
+          logicalKey: record.logicalKey,
+        });
+
+      expect(stored).toEqual(record);
+    }
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(2);
+  }
+);
+
+test(
+  "a stale recovery catalog revision writes no record",
+  async () => {
+    await seedCatalog();
+
+    await expect(
+      repository.commitRuntimeRestoreBatch(
+        restoreBatchInput({
+          expectedCatalogRevision: 2,
+        })
+      )
+    ).rejects.toMatchObject({
+      code: VAULT_REPOSITORY_ERROR_CODES.CONFLICT,
+    });
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([]);
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(1);
+  }
+);
+
+test(
+  "a recovery batch refuses every nonempty record store",
+  async () => {
+    await seedCatalog();
+
+    await repository.commitRuntimeRecordSet(
+      setInput()
+    );
+
+    await expect(
+      repository.commitRuntimeRestoreBatch(
+        restoreBatchInput({
+          expectedCatalogRevision: 2,
+          records: [
+            {
+              logicalKey: "estipaid-projects-v1",
+              blobId: "U".repeat(22),
+              recordSchemaVersion: 1,
+              ciphertext: bytes(32, 29),
+              iv: bytes(12, 30),
+            },
+          ],
+        })
+      )
+    ).rejects.toMatchObject({
+      code: VAULT_REPOSITORY_ERROR_CODES.CONFLICT,
+    });
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([
+      "estipaid-customers-v1",
+    ]);
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(2);
+  }
+);
+
+test(
+  "duplicate recovery logical keys fail before persistence",
+  async () => {
+    await seedCatalog();
+
+    const duplicate = restoreBatchInput();
+    duplicate.records[1] = {
+      ...duplicate.records[0],
+      blobId: "V".repeat(22),
+    };
+
+    await expect(
+      repository.commitRuntimeRestoreBatch(duplicate)
+    ).rejects.toMatchObject({
+      code:
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT,
+    });
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([]);
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(1);
+  }
+);
+
+test(
+  "one malformed recovery envelope rejects the entire batch",
+  async () => {
+    await seedCatalog();
+
+    const malformed = restoreBatchInput();
+    malformed.records[1] = {
+      ...malformed.records[1],
+      iv: bytes(11, 31),
+    };
+
+    await expect(
+      repository.commitRuntimeRestoreBatch(malformed)
+    ).rejects.toMatchObject({
+      code:
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA,
+    });
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([]);
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(1);
+  }
+);
+
+test(
+  "a native catalog-write failure rolls back all added recovery records",
+  async () => {
+    await seedCatalog();
+
+    const originalPut =
+      IDBObjectStore.prototype.put;
+
+    const putSpy = jest
+      .spyOn(IDBObjectStore.prototype, "put")
+      .mockImplementation(function patchedPut(
+        value,
+        key
+      ) {
+        if (
+          this.name === "migration"
+          && key === "runtime"
+        ) {
+          throw new Error(
+            "synthetic catalog write failure"
+          );
+        }
+
+        return originalPut.call(this, value, key);
+      });
+
+    try {
+      await expect(
+        repository.commitRuntimeRestoreBatch(
+          restoreBatchInput()
+        )
+      ).rejects.toMatchObject({
+        code:
+          VAULT_REPOSITORY_ERROR_CODES
+            .TRANSACTION_ABORTED,
+      });
+    } finally {
+      putSpy.mockRestore();
+    }
+
+    expect(
+      await repository.listEncryptedRecordKeys({
+        workspaceTag: TAG,
+      })
+    ).toEqual([]);
+
+    expect(
+      (
+        await repository.readRuntimeCatalog({
+          workspaceTag: TAG,
+        })
+      ).revision
+    ).toBe(1);
+  }
+);
+
+test(
+  "recovery batch inputs and returned byte arrays are cloned",
+  async () => {
+    await seedCatalog();
+
+    const input = restoreBatchInput();
+
+    const committed =
+      await repository.commitRuntimeRestoreBatch(input);
+
+    input.records[0].ciphertext[0] = 99;
+    input.catalogCiphertext[0] = 98;
+    committed.records[0].ciphertext[0] = 97;
+    committed.catalog.ciphertext[0] = 96;
+
+    const storedRecord =
+      await repository.readEncryptedRecord({
+        workspaceTag: TAG,
+        logicalKey: "estipaid-customers-v1",
+      });
+
+    const storedCatalog =
+      await repository.readRuntimeCatalog({
+        workspaceTag: TAG,
+      });
+
+    expect(storedRecord.ciphertext[0]).toBe(21);
+    expect(storedCatalog.ciphertext[0]).toBe(27);
+  }
+);

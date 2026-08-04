@@ -290,6 +290,20 @@ export async function setupVault({ userId, companyId, password } = {}, overrides
   }
 }
 
+/**
+ * Recovery-only creation entry point.
+ *
+ * The destructive recovery service may request a replacement vault, but the
+ * actual creation primitive remains owned by this session module. Normal
+ * runtime setup continues to flow through useVaultSession.
+ */
+export async function provisionReplacementVaultSession(
+  { userId, companyId } = {},
+  overrides
+) {
+  return setupVault({ userId, companyId }, overrides);
+}
+
 export async function unlockVault({ userId, companyId, password } = {}, overrides) {
   lockPrivateSession();
   const passwordMode = typeof password === "string";
