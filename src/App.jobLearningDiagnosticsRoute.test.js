@@ -18,6 +18,13 @@ jest.mock("./lib/useCloudAutoBackup", () => ({ __esModule: true, default: jest.f
 jest.mock("./lib/useCloudAutoConvergence", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultSession", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("./lib/useVaultRuntimeActivation", () => ({ __esModule: true, default: jest.fn() }));
+jest.mock("./lib/useVaultDeviceRecovery", () => ({
+  __esModule: true,
+  default: jest.fn(() => ({
+    state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+    confirm: jest.fn(), retry: jest.fn(),
+  })),
+}));
 jest.mock("./lib/useVaultCompatibilityBridge", () => ({
   __esModule: true,
   default: () => ({ state: "legacy-safe", checking: false, code: "", message: "", refresh: jest.fn() }),
@@ -27,6 +34,7 @@ jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const APP_MODULE_PATH = require.resolve("./App");
 const useVaultSession = require("./lib/useVaultSession").default;
+const useVaultDeviceRecovery = require("./lib/useVaultDeviceRecovery").default;
 
 async function renderAppAtRoute(route, nodeEnv = "test") {
   const previousNodeEnv = process.env.NODE_ENV;
@@ -74,6 +82,10 @@ describe("App job learning diagnostics route gating", () => {
     resetConfiguredTestWorkspace();
     setupConfiguredWorkspace();
     useVaultSession.mockReturnValue(buildUnlockedVaultSessionResult());
+    useVaultDeviceRecovery.mockReturnValue({
+      state: "idle", checking: false, pending: false, retryable: false, code: "", counts: null,
+      confirm: jest.fn(), retry: jest.fn(),
+    });
   });
 
   afterEach(() => {

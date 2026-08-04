@@ -451,7 +451,7 @@ test.each([
       .forEach((name) => {
         expect(deps[name]).toHaveBeenCalledTimes(expectedCalls.includes(name) ? 1 : 0);
       });
-    expect(deps.clearCheckpoint).toHaveBeenCalledTimes(1);
+    expect(deps.clearCheckpoint).not.toHaveBeenCalled();
   }
 );
 

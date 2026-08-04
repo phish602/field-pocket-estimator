@@ -91,6 +91,7 @@ const PHASES = Object.freeze([
   "device_key_removed",
   "replacement_vault_provisioned",
   "runtime_initialized",
+  "cloud_restore_committed",
 ]);
 
 function progressFor(index) {
@@ -113,6 +114,8 @@ function localPhase(state) {
   if (state.vaultExists && state.deviceKeyPresent && !state.runtimeCatalogExists) return 2;
   if (state.vaultExists && state.deviceKeyPresent && state.runtimeCatalogExists
     && state.encryptedRecordCount === 0) return 3;
+  if (state.vaultExists && state.deviceKeyPresent && state.runtimeCatalogExists
+    && state.encryptedRecordCount > 0) return 4;
   return -2;
 }
 
@@ -148,7 +151,14 @@ export async function executeVaultDeviceRecoveryReset({
     confirmation,
   });
 
-  if (plan.action !== VAULT_DEVICE_RECOVERY_ACTIONS.RESET_LOCAL_VAULT) {
+  const checkpointContinuation = continuation === true
+    && plan.action === VAULT_DEVICE_RECOVERY_ACTIONS.BLOCK
+    && plan.code === "RECOVERY_NOT_REQUIRED";
+
+  if (
+    plan.action !== VAULT_DEVICE_RECOVERY_ACTIONS.RESET_LOCAL_VAULT
+    && !checkpointContinuation
+  ) {
     return blocked(plan.code);
   }
 
@@ -309,21 +319,6 @@ export async function executeVaultDeviceRecoveryReset({
     } catch {
       return incomplete(VAULT_DEVICE_RECOVERY_EXECUTION_CODES.RUNTIME_BOOTSTRAP_FAILED, progressFor(phaseIndex));
     }
-  }
-
-  try {
-    if (await dependencies.verifyRecoveryReady({
-      workspaceTag: derivedWorkspaceTag,
-      userId: asText(identity?.userId),
-      companyId: asText(identity?.companyId),
-    }) !== true) {
-      return incomplete(VAULT_DEVICE_RECOVERY_EXECUTION_CODES.RECOVERY_VERIFICATION_FAILED, progressFor(phaseIndex));
-    }
-    if ((await dependencies.clearCheckpoint({ workspaceTag: derivedWorkspaceTag }))?.ok !== true) {
-      return incomplete(VAULT_DEVICE_RECOVERY_EXECUTION_CODES.CHECKPOINT_WRITE_FAILED, progressFor(phaseIndex));
-    }
-  } catch {
-    return incomplete(VAULT_DEVICE_RECOVERY_EXECUTION_CODES.RECOVERY_VERIFICATION_FAILED, progressFor(phaseIndex));
   }
 
   return frozenResult({

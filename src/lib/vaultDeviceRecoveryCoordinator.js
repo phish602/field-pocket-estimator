@@ -69,6 +69,7 @@ function frozenPreparation({
   proof = "",
   expiresAt = "",
   cloudCounts = null,
+  appBundleAvailable = false,
   appBundleSummary = null,
 } = {}) {
   return Object.freeze({
@@ -79,6 +80,7 @@ function frozenPreparation({
     cloudCounts: cloudCounts
       ? Object.freeze({ ...cloudCounts })
       : null,
+    appBundleAvailable: appBundleAvailable === true,
     appBundleSummary: appBundleSummary
       ? Object.freeze({ ...appBundleSummary })
       : null,
@@ -437,6 +439,8 @@ export async function prepareCurrentDeviceRecovery({
     capabilityFingerprint: capabilityFingerprint(capability),
     previewFingerprint: previewFingerprint(preview),
     ownershipFingerprint: ownershipFingerprint(deviceOwnership),
+    appBundleAvailable: preview?.appBundleAvailable === true,
+    appBundleSummary: preview?.appBundleSummary || null,
     expiresAtMs,
   }));
 
@@ -446,6 +450,7 @@ export async function prepareCurrentDeviceRecovery({
     proof,
     expiresAt: new Date(expiresAtMs).toISOString(),
     cloudCounts: preview?.cloudCounts || null,
+    appBundleAvailable: preview?.appBundleAvailable === true,
     appBundleSummary: preview?.appBundleSummary || null,
   });
 }
@@ -458,6 +463,8 @@ export async function executePreparedCurrentDeviceRecoveryReset({
   company = null,
   capability = null,
   storage = defaultStorage(),
+  prepareFinalSnapshot = null,
+  finalizeRecovery = null,
 } = {}, overrides) {
   const dependencies = buildDependencies(overrides);
   const normalizedProof = asText(proof);
@@ -492,9 +499,6 @@ export async function executePreparedCurrentDeviceRecoveryReset({
   }
 
   if (Number(intent.expiresAtMs || 0) <= now) {
-    preparedIntents.delete(normalizedProof);
-    consumedProofs.set(normalizedProof, now + PREPARATION_TTL_MS);
-
     return blockedExecution(
       VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.PREPARATION_EXPIRED
     );
@@ -514,9 +518,6 @@ export async function executePreparedCurrentDeviceRecoveryReset({
     || userId !== intent.userId
     || companyId !== intent.companyId
   ) {
-    preparedIntents.delete(normalizedProof);
-    consumedProofs.set(normalizedProof, intent.expiresAtMs);
-
     return blockedExecution(
       VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.IDENTITY_CHANGED
     );
@@ -526,9 +527,6 @@ export async function executePreparedCurrentDeviceRecoveryReset({
     capabilityFingerprint(capability)
       !== intent.capabilityFingerprint
   ) {
-    preparedIntents.delete(normalizedProof);
-    consumedProofs.set(normalizedProof, intent.expiresAtMs);
-
     return blockedExecution(
       VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.CAPABILITY_CHANGED
     );
@@ -566,6 +564,7 @@ export async function executePreparedCurrentDeviceRecoveryReset({
         let workspaceTag;
         let preview;
         let verification;
+        let preparedSnapshot = null;
 
         try {
           // Every authorization fact is refreshed after the exclusive lease is
@@ -574,13 +573,6 @@ export async function executePreparedCurrentDeviceRecoveryReset({
             userId,
             companyId,
           }));
-          preview = await dependencies.preview({
-            storageSnapshot: storage,
-            configured,
-            user,
-            company,
-            allowPartialLocalSnapshot: false,
-          });
           verification = await dependencies.verifyDevice({
             configured,
             user,
@@ -600,18 +592,59 @@ export async function executePreparedCurrentDeviceRecoveryReset({
           );
         }
 
-        if (previewFingerprint(preview) !== intent.previewFingerprint) {
-          return blockedExecution(
-            VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.PREVIEW_CHANGED
-          );
-        }
-
         const identity = { userId, companyId, workspaceTag };
         const deviceOwnership = buildDeviceOwnership(identity, verification);
         if (ownershipFingerprint(deviceOwnership) !== intent.ownershipFingerprint) {
           return blockedExecution(
             VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED
           );
+        }
+
+        if (typeof prepareFinalSnapshot === "function") {
+          try {
+            preparedSnapshot = await prepareFinalSnapshot({
+              configured,
+              user,
+              company,
+              capability,
+              identity,
+              deviceOwnership,
+            });
+          } catch {
+            return blockedExecution(
+              VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED
+            );
+          }
+          if (
+            !preparedSnapshot
+            || preparedSnapshot.ok !== true
+            || !preparedSnapshot.authorizationPreview
+          ) {
+            return blockedExecution(
+              asText(preparedSnapshot?.code)
+                || VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED
+            );
+          }
+          preview = preparedSnapshot.authorizationPreview;
+        } else {
+          try {
+            preview = await dependencies.preview({
+              storageSnapshot: storage,
+              configured,
+              user,
+              company,
+              allowPartialLocalSnapshot: false,
+            });
+          } catch {
+            return blockedExecution(
+              VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED
+            );
+          }
+          if (previewFingerprint(preview) !== intent.previewFingerprint) {
+            return blockedExecution(
+              VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.PREVIEW_CHANGED
+            );
+          }
         }
 
         const cloudPreview = {
@@ -648,8 +681,24 @@ export async function executePreparedCurrentDeviceRecoveryReset({
             deviceOwnership,
             confirmation,
           });
-          return result && typeof result === "object"
-            ? result
+          if (!result || typeof result !== "object") {
+            return blockedExecution(
+              VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED
+            );
+          }
+          if (typeof finalizeRecovery !== "function") return result;
+          const finalized = await finalizeRecovery({
+            configured,
+            user,
+            company,
+            capability,
+            identity,
+            deviceOwnership,
+            reset: result,
+            preparedSnapshot,
+          });
+          return finalized && typeof finalized === "object"
+            ? finalized
             : blockedExecution(
               VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED
             );
@@ -681,6 +730,71 @@ export async function executePreparedCurrentDeviceRecoveryReset({
   }
 }
 
+export async function finalizeCurrentDeviceRecoveryCheckpoint({
+  configured = false,
+  user = null,
+  company = null,
+  storage = defaultStorage(),
+  finalizeRecovery = null,
+} = {}, overrides) {
+  const dependencies = buildDependencies(overrides);
+  const userId = asText(user?.id);
+  const companyId = asText(company?.id);
+  if (!configured || !userId || !companyId || typeof finalizeRecovery !== "function") {
+    return blockedExecution(VAULT_DEVICE_RECOVERY_CODES.IDENTITY_UNAVAILABLE);
+  }
+  let requestedWorkspaceTag;
+  try {
+    requestedWorkspaceTag = asText(await dependencies.deriveWorkspaceTag({ userId, companyId }));
+  } catch {
+    return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED);
+  }
+  if (!WORKSPACE_TAG.test(requestedWorkspaceTag)) {
+    return blockedExecution(VAULT_DEVICE_RECOVERY_CODES.IDENTITY_UNAVAILABLE);
+  }
+  const lease = await dependencies.withRecoveryLease({
+    workspaceTag: requestedWorkspaceTag,
+    operation: async () => {
+      let workspaceTag;
+      let verification;
+      try {
+        workspaceTag = asText(await dependencies.deriveWorkspaceTag({ userId, companyId }));
+        verification = await dependencies.verifyDevice({
+          configured,
+          user,
+          company,
+          storage,
+          reason: "finalize_device_key_recovery",
+        });
+      } catch {
+        return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED);
+      }
+      if (workspaceTag !== requestedWorkspaceTag || !WORKSPACE_TAG.test(workspaceTag)) {
+        return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.IDENTITY_CHANGED);
+      }
+      const identity = { userId, companyId, workspaceTag };
+      const deviceOwnership = buildDeviceOwnership(identity, verification);
+      if (!deviceOwnership.ok || !deviceOwnership.active) {
+        return blockedExecution(VAULT_DEVICE_RECOVERY_CODES.DEVICE_NOT_ACTIVE);
+      }
+      const finalized = await finalizeRecovery({ identity, deviceOwnership });
+      return finalized && typeof finalized === "object"
+        ? finalized
+        : blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED);
+    },
+  });
+  if (!lease || lease.acquired !== true) {
+    return blockedExecution(
+      lease?.code === VAULT_DEVICE_RECOVERY_LEASE_CODES.BUSY
+        ? VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RECOVERY_BUSY
+        : VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RECOVERY_LOCK_UNAVAILABLE
+    );
+  }
+  return lease.value && typeof lease.value === "object"
+    ? lease.value
+    : blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED);
+}
+
 /**
  * Continues only an already-checkpointed local reset. It never creates an
  * initial destructive authorization: the executor rejects this path unless a
@@ -692,6 +806,8 @@ export async function resumeCurrentDeviceRecoveryReset({
   company = null,
   capability = null,
   storage = defaultStorage(),
+  prepareFinalSnapshot = null,
+  finalizeRecovery = null,
 } = {}, overrides) {
   const dependencies = buildDependencies(overrides);
   const userId = asText(user?.id);
@@ -720,15 +836,9 @@ export async function resumeCurrentDeviceRecoveryReset({
       let preview;
       let verification;
       let proof;
+      let preparedSnapshot = null;
       try {
         workspaceTag = asText(await dependencies.deriveWorkspaceTag({ userId, companyId }));
-        preview = await dependencies.preview({
-          storageSnapshot: storage,
-          configured,
-          user,
-          company,
-          allowPartialLocalSnapshot: false,
-        });
         verification = await dependencies.verifyDevice({
           configured,
           user,
@@ -745,6 +855,44 @@ export async function resumeCurrentDeviceRecoveryReset({
       }
       const identity = { userId, companyId, workspaceTag };
       const deviceOwnership = buildDeviceOwnership(identity, verification);
+      if (typeof prepareFinalSnapshot === "function") {
+        try {
+          preparedSnapshot = await prepareFinalSnapshot({
+            configured,
+            user,
+            company,
+            capability,
+            identity,
+            deviceOwnership,
+            proof,
+          });
+        } catch {
+          return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED);
+        }
+        if (
+          !preparedSnapshot
+          || preparedSnapshot.ok !== true
+          || !preparedSnapshot.authorizationPreview
+        ) {
+          return blockedExecution(
+            asText(preparedSnapshot?.code)
+              || VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED
+          );
+        }
+        preview = preparedSnapshot.authorizationPreview;
+      } else {
+        try {
+          preview = await dependencies.preview({
+            storageSnapshot: storage,
+            configured,
+            user,
+            company,
+            allowPartialLocalSnapshot: false,
+          });
+        } catch {
+          return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.EVIDENCE_REFRESH_FAILED);
+        }
+      }
       const cloudPreview = {
         ...(preview && typeof preview === "object" ? preview : {}),
         proof,
@@ -757,7 +905,12 @@ export async function resumeCurrentDeviceRecoveryReset({
         deviceOwnership,
         confirmation,
       });
-      if (plan.action !== VAULT_DEVICE_RECOVERY_ACTIONS.RESET_LOCAL_VAULT) {
+      const checkpointContinuation = plan.action === VAULT_DEVICE_RECOVERY_ACTIONS.BLOCK
+        && plan.code === VAULT_DEVICE_RECOVERY_CODES.RECOVERY_NOT_REQUIRED;
+      if (
+        plan.action !== VAULT_DEVICE_RECOVERY_ACTIONS.RESET_LOCAL_VAULT
+        && !checkpointContinuation
+      ) {
         return blockedExecution(plan.code);
       }
       try {
@@ -769,8 +922,22 @@ export async function resumeCurrentDeviceRecoveryReset({
           confirmation,
           continuation: true,
         });
-        return result && typeof result === "object"
-          ? result
+        if (!result || typeof result !== "object") {
+          return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED);
+        }
+        if (typeof finalizeRecovery !== "function") return result;
+        const finalized = await finalizeRecovery({
+          configured,
+          user,
+          company,
+          capability,
+          identity,
+          deviceOwnership,
+          reset: result,
+          preparedSnapshot,
+        });
+        return finalized && typeof finalized === "object"
+          ? finalized
           : blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED);
       } catch {
         return blockedExecution(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.RESET_EXECUTION_FAILED);

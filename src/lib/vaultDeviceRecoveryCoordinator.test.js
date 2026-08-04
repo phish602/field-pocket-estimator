@@ -406,6 +406,44 @@ test("blocks when the authenticated workspace changes", async () => {
   expect(local.executeReset).not.toHaveBeenCalled();
 });
 
+test("identity and capability revalidation failures retain the prepared proof", async () => {
+  const local = dependencies();
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+
+  expect((await executePreparedCurrentDeviceRecoveryReset(
+    executeInput(prepared.proof, { company: { id: "company-2" } }),
+    local
+  )).code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.IDENTITY_CHANGED);
+
+  expect((await executePreparedCurrentDeviceRecoveryReset(
+    executeInput(prepared.proof, { capability: { state: "unlocked", code: "" } }),
+    local
+  )).code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.CAPABILITY_CHANGED);
+
+  expect(await executePreparedCurrentDeviceRecoveryReset(
+    executeInput(prepared.proof),
+    local
+  )).toEqual(resetSuccess());
+});
+
+test("device verification failure retains the prepared proof", async () => {
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerification("device-1"))
+      .mockResolvedValueOnce(deviceVerification("device-2"))
+      .mockResolvedValueOnce(deviceVerification("device-1")),
+  });
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+  expect((await executePreparedCurrentDeviceRecoveryReset(
+    executeInput(prepared.proof),
+    local
+  )).code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(await executePreparedCurrentDeviceRecoveryReset(
+    executeInput(prepared.proof),
+    local
+  )).toEqual(resetSuccess());
+});
+
 test("an unaccepted review remains available for a later accepted click", async () => {
   const local = dependencies();
 
