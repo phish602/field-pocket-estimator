@@ -67,9 +67,16 @@ async function fastKdf(callback, capture = null) {
   try { return await callback(); } finally { restore(); }
 }
 
-test("exports exactly the seven non-secret vault-session operations", () => {
+test("exports exactly the eight non-secret vault-session operations", () => {
   expect(Object.keys(session).sort()).toEqual([
-    "deriveWorkspaceVaultTag", "getVaultCapability", "lockVault", "readVaultCapability", "runWithActiveVaultDek", "setupVault", "unlockVault",
+    "deriveWorkspaceVaultTag",
+    "getVaultCapability",
+    "lockVault",
+    "provisionReplacementVaultSession",
+    "readVaultCapability",
+    "runWithActiveVaultDek",
+    "setupVault",
+    "unlockVault",
   ]);
 });
 

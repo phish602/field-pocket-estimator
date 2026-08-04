@@ -93,6 +93,117 @@ test("vault creation remains reachable only from the session hook and session mo
   expect(referrers.sort()).toEqual(["lib/useVaultSession.js", "lib/vaultSession.js"]);
 });
 
+test("replacement-vault provisioning remains reachable only from the session module and recovery service", () => {
+  const referrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+
+    if (/\bprovisionReplacementVaultSession\b/.test(source)) {
+      referrers.push(path.relative(SRC, file));
+    }
+  });
+
+  expect(referrers.sort()).toEqual([
+    "lib/vaultDeviceRecoveryService.js",
+    "lib/vaultSession.js",
+  ]);
+});
+
+test("device recovery deletion remains reachable only through the coordinator and local service", () => {
+  const localServiceReferrers = [];
+  const executorReferrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+    const relative = path.relative(SRC, file);
+
+    if (/\bexecuteCurrentDeviceRecoveryReset\b/.test(source)) {
+      localServiceReferrers.push(relative);
+    }
+
+    if (/\bexecuteVaultDeviceRecoveryReset\b/.test(source)) {
+      executorReferrers.push(relative);
+    }
+  });
+
+  expect(localServiceReferrers.sort()).toEqual([
+    "lib/vaultDeviceRecoveryCoordinator.js",
+    "lib/vaultDeviceRecoveryService.js",
+  ]);
+
+  expect(executorReferrers.sort()).toEqual([
+    "lib/vaultDeviceRecoveryExecutor.js",
+    "lib/vaultDeviceRecoveryService.js",
+  ]);
+});
+
+test("recovery runtime bootstrap remains reachable only from the runtime module and recovery service", () => {
+  const referrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+
+    if (/\binitializeEmptyRecoveryRuntimeCatalog\b/.test(source)) {
+      referrers.push(path.relative(SRC, file));
+    }
+  });
+
+  expect(referrers.sort()).toEqual([
+    "lib/vaultDeviceRecoveryService.js",
+    "lib/vaultRuntimeStore.js",
+  ]);
+});
+
+test("atomic recovery restore batch remains owned by the repository and runtime", () => {
+  const referrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+
+    if (/\bcommitRuntimeRestoreBatch\b/.test(source)) {
+      referrers.push(path.relative(SRC, file));
+    }
+  });
+
+  expect(referrers.sort()).toEqual([
+    "lib/vaultIndexedDbRepository.js",
+    "lib/vaultRuntimeStore.js",
+  ]);
+});
+
+test("atomic encrypted recovery restore remains runtime-owned until service wiring", () => {
+  const referrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+
+    if (/\bcommitVaultDeviceRecoveryRestoreSnapshot\b/.test(source)) {
+      referrers.push(path.relative(SRC, file));
+    }
+  });
+
+  expect(referrers.sort()).toEqual([
+    "lib/vaultRuntimeStore.js",
+  ]);
+});
+
+test("snapshot compiler provenance verifier is reachable only by the runtime", () => {
+  const referrers = [];
+
+  collectSources(SRC).forEach((file) => {
+    const source = fs.readFileSync(file, "utf8");
+    if (/\bisCompiledVaultDeviceRecoveryRestoreSnapshot\b/.test(source)) {
+      referrers.push(path.relative(SRC, file));
+    }
+  });
+
+  expect(referrers.sort()).toEqual([
+    "lib/vaultDeviceRecoveryRestoreSnapshot.js",
+    "lib/vaultRuntimeStore.js",
+  ]);
+});
+
 test("runtime sealing and hydration are reachable only from the runtime module and the activation hook", () => {
   const referrers = [];
   collectSources(SRC).forEach((file) => {

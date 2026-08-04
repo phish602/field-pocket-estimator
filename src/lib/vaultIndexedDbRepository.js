@@ -169,6 +169,22 @@ const RUNTIME_CLEAR_FIELDS = Object.freeze([
   "runtimeGeneration",
   "runtimeSchemaVersion",
 ]);
+const RUNTIME_RESTORE_BATCH_FIELDS = Object.freeze([
+  "workspaceTag",
+  "expectedCatalogRevision",
+  "runtimeGeneration",
+  "runtimeSchemaVersion",
+  "records",
+  "catalogCiphertext",
+  "catalogIv",
+]);
+const RUNTIME_RESTORE_RECORD_FIELDS = Object.freeze([
+  "logicalKey",
+  "blobId",
+  "recordSchemaVersion",
+  "ciphertext",
+  "iv",
+]);
 const MANIFEST_FIELDS = Object.freeze([
   "version",
   "transitionId",
@@ -528,6 +544,151 @@ function requireRuntimeEnvelope(value, code) {
   return {
     ciphertext: new Uint8Array(ciphertext),
     iv: requireUint8Array(value.catalogIv ?? value.iv, 12, code),
+  };
+}
+
+function requireRuntimeRestoreBatch(input) {
+  requireExactShape(
+    input,
+    RUNTIME_RESTORE_BATCH_FIELDS,
+    VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+  );
+
+  const workspaceTag = requireWorkspaceTag(
+    input.workspaceTag,
+    VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+  );
+
+  if (
+    !isSafeInteger(
+      input.expectedCatalogRevision,
+      1,
+      MAX_REVISION
+    )
+  ) {
+    throw repositoryError(
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+  }
+
+  if (
+    !isSafeInteger(input.runtimeGeneration, 1, MAX_REVISION)
+    || !isSafeInteger(input.runtimeSchemaVersion, 1, 1)
+  ) {
+    throw repositoryError(
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA
+    );
+  }
+
+  const records = input.records;
+
+  if (
+    !Array.isArray(records)
+    || Object.getPrototypeOf(records) !== Array.prototype
+    || Object.getOwnPropertySymbols(records).length !== 0
+    || records.length < 1
+    || records.length > LOGICAL_KEYS.size
+  ) {
+    throw repositoryError(
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+  }
+
+  const expectedArrayNames = new Set([
+    "length",
+    ...records.map((unused, index) => String(index)),
+  ]);
+
+  const arrayNames = Object.getOwnPropertyNames(records);
+
+  if (
+    arrayNames.length !== expectedArrayNames.size
+    || arrayNames.some(
+      (name) => !expectedArrayNames.has(name)
+    )
+  ) {
+    throw repositoryError(
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+  }
+
+  const seen = new Set();
+
+  const validatedRecords = records.map((record) => {
+    requireExactShape(
+      record,
+      RUNTIME_RESTORE_RECORD_FIELDS,
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+
+    const logicalKey = requireLogicalKey(
+      record.logicalKey,
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+
+    if (
+      !LOGICAL_KEYS.has(logicalKey)
+      || seen.has(logicalKey)
+    ) {
+      throw repositoryError(
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+      );
+    }
+
+    seen.add(logicalKey);
+
+    const blobId = requireBlobId(
+      record.blobId,
+      VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT
+    );
+
+    if (
+      !isSafeInteger(record.recordSchemaVersion, 1, 1)
+    ) {
+      throw repositoryError(
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA
+      );
+    }
+
+    if (
+      !(record.ciphertext instanceof Uint8Array)
+      || Object.getPrototypeOf(record.ciphertext)
+        !== Uint8Array.prototype
+      || record.ciphertext.length < 16
+      || record.ciphertext.length > 1048576
+    ) {
+      throw repositoryError(
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA
+      );
+    }
+
+    return {
+      logicalKey,
+      blobId,
+      recordSchemaVersion: 1,
+      ciphertext: new Uint8Array(record.ciphertext),
+      iv: requireUint8Array(
+        record.iv,
+        12,
+        VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA
+      ),
+    };
+  });
+
+  const catalogEnvelope = requireRuntimeEnvelope(
+    input,
+    VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA
+  );
+
+  return {
+    workspaceTag,
+    expectedCatalogRevision:
+      input.expectedCatalogRevision,
+    runtimeGeneration: input.runtimeGeneration,
+    runtimeSchemaVersion: 1,
+    records: validatedRecords,
+    catalogCiphertext: catalogEnvelope.ciphertext,
+    catalogIv: catalogEnvelope.iv,
   };
 }
 
@@ -1260,6 +1421,243 @@ export function createVaultIndexedDbRepository(options = {}) {
         }
         await completed;
         return result === null ? null : cloneRuntimeCatalog(result);
+      } finally {
+        if (database) database.close();
+      }
+    },
+
+    /**
+     * Atomically installs the first recovered encrypted record set into an
+     * already-created empty runtime catalog.
+     *
+     * One transaction covers every record and the replacement catalog.
+     * Existing records, stale catalog revisions, duplicate keys, malformed
+     * envelopes, and runtime-generation drift all fail closed.
+     */
+    async commitRuntimeRestoreBatch(input) {
+      const caller = requireRuntimeRestoreBatch(input);
+      let database;
+
+      try {
+        database = await openExisting(
+          caller.workspaceTag
+        );
+
+        const transaction = database.transaction(
+          [
+            WORKSPACE_VAULT_RECORDS_STORE,
+            WORKSPACE_VAULT_MIGRATION_STORE,
+          ],
+          "readwrite"
+        );
+
+        const state = { error: null };
+        const completed = transactionCompletion(
+          transaction,
+          state
+        );
+
+        let result = null;
+
+        try {
+          const recordsStore = transaction.objectStore(
+            WORKSPACE_VAULT_RECORDS_STORE
+          );
+
+          const migrationStore = transaction.objectStore(
+            WORKSPACE_VAULT_MIGRATION_STORE
+          );
+
+          const catalogRequest = migrationStore.get(
+            RUNTIME_CATALOG_KEY
+          );
+
+          catalogRequest.onsuccess = () => {
+            try {
+              if (catalogRequest.result === undefined) {
+                throw repositoryError(
+                  VAULT_REPOSITORY_ERROR_CODES
+                    .DATABASE_NOT_FOUND
+                );
+              }
+
+              const currentCatalog =
+                requirePersistedRuntimeCatalog(
+                  catalogRequest.result
+                );
+
+              if (
+                currentCatalog.revision
+                  !== caller.expectedCatalogRevision
+                || currentCatalog.runtimeGeneration
+                  !== caller.runtimeGeneration
+              ) {
+                throw repositoryError(
+                  VAULT_REPOSITORY_ERROR_CODES.CONFLICT
+                );
+              }
+
+              if (
+                currentCatalog.revision === MAX_REVISION
+              ) {
+                throw repositoryError(
+                  VAULT_REPOSITORY_ERROR_CODES
+                    .REVISION_OVERFLOW
+                );
+              }
+
+              const keysRequest =
+                recordsStore.getAllKeys();
+
+              keysRequest.onsuccess = () => {
+                try {
+                  const existingKeys =
+                    keysRequest.result;
+
+                  if (
+                    !Array.isArray(existingKeys)
+                    || existingKeys.length !== 0
+                  ) {
+                    throw repositoryError(
+                      VAULT_REPOSITORY_ERROR_CODES
+                        .CONFLICT
+                    );
+                  }
+
+                  const timestamp = clockTimestamp(
+                    clock,
+                    Date.parse(
+                      currentCatalog.updatedAt
+                    ) + 1
+                  );
+
+                  const nextRecords =
+                    caller.records.map((record) => ({
+                      version: 1,
+                      logicalKey: record.logicalKey,
+                      blobId: record.blobId,
+                      revision: 1,
+                      recordSchemaVersion: 1,
+                      ciphertext:
+                        new Uint8Array(
+                          record.ciphertext
+                        ),
+                      iv:
+                        new Uint8Array(record.iv),
+                      createdAt: timestamp,
+                      updatedAt: timestamp,
+                    }));
+
+                  const nextCatalog = {
+                    version: 1,
+                    runtimeGeneration:
+                      currentCatalog.runtimeGeneration,
+                    revision:
+                      currentCatalog.revision + 1,
+                    runtimeSchemaVersion: 1,
+                    ciphertext:
+                      new Uint8Array(
+                        caller.catalogCiphertext
+                      ),
+                    iv:
+                      new Uint8Array(
+                        caller.catalogIv
+                      ),
+                    createdAt:
+                      currentCatalog.createdAt,
+                    updatedAt: timestamp,
+                  };
+
+                  nextRecords.forEach((record) => {
+                    const addRequest =
+                      recordsStore.add(record);
+
+                    addRequest.onerror = () => {
+                      abortWith(
+                        transaction,
+                        state,
+                        addRequest.error
+                      );
+                    };
+                  });
+
+                  const putCatalog =
+                    migrationStore.put(
+                      nextCatalog,
+                      RUNTIME_CATALOG_KEY
+                    );
+
+                  putCatalog.onerror = () => {
+                    abortWith(
+                      transaction,
+                      state,
+                      putCatalog.error
+                    );
+                  };
+
+                  result = {
+                    records: nextRecords,
+                    catalog: nextCatalog,
+                  };
+                } catch (error) {
+                  abortWith(
+                    transaction,
+                    state,
+                    error
+                  );
+                }
+              };
+
+              keysRequest.onerror = () => {
+                abortWith(
+                  transaction,
+                  state,
+                  keysRequest.error
+                );
+              };
+            } catch (error) {
+              abortWith(
+                transaction,
+                state,
+                error
+              );
+            }
+          };
+
+          catalogRequest.onerror = () => {
+            abortWith(
+              transaction,
+              state,
+              catalogRequest.error
+            );
+          };
+        } catch (error) {
+          abortWith(
+            transaction,
+            state,
+            error
+          );
+        }
+
+        await completed;
+
+        if (!result) {
+          throw repositoryError(
+            VAULT_REPOSITORY_ERROR_CODES
+              .STORAGE_OPERATION_FAILED
+          );
+        }
+
+        return Object.freeze({
+          records: Object.freeze(
+            result.records.map((record) =>
+              Object.freeze(cloneRecord(record))
+            )
+          ),
+          catalog: Object.freeze(
+            cloneRuntimeCatalog(result.catalog)
+          ),
+        });
       } finally {
         if (database) database.close();
       }

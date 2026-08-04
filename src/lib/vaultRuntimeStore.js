@@ -25,6 +25,11 @@ import {
 } from "./vaultIndexedDbRepository";
 import { decryptBytes, encryptBytes, recordAad } from "./vaultCrypto";
 import { deriveWorkspaceVaultTag, runWithActiveVaultDek } from "./vaultSession";
+import { readVaultCompatibilityGuard } from "./vaultCompatibilityGuard";
+import {
+  isCompiledVaultDeviceRecoveryRestoreSnapshot,
+  VAULT_DEVICE_RECOVERY_SNAPSHOT_STATES,
+} from "./vaultDeviceRecoveryRestoreSnapshot";
 import { VAULT_MIGRATION_ERROR_CODES, verifyCompletedVaultMigrationAuthority } from "./vaultMigrationOrchestrator";
 import {
   RUNTIME_SCHEMA_VERSION,
@@ -46,6 +51,10 @@ export const VAULT_RUNTIME_ERROR_CODES = Object.freeze({
   RECORD_INVALID: "RECORD_INVALID",
   STALE_SESSION: "STALE_SESSION",
   MIGRATION_UNVERIFIED: "MIGRATION_UNVERIFIED",
+  RECOVERY_BOOTSTRAP_INVALID: "RECOVERY_BOOTSTRAP_INVALID",
+  RECOVERY_RESTORE_INVALID: "RECOVERY_RESTORE_INVALID",
+  RECOVERY_RESTORE_BUSY: "RECOVERY_RESTORE_BUSY",
+  RECOVERY_RESTORE_NOT_EMPTY: "RECOVERY_RESTORE_NOT_EMPTY",
   RECORD_MISSING: "RECORD_MISSING",
   RECORD_UNEXPECTED: "RECORD_UNEXPECTED",
   VAULT_LOCKED: "VAULT_LOCKED",
@@ -860,5 +869,855 @@ export function describeVaultRuntime() {
     pending: active.queue.length,
     blocked: active.blocked,
     code: active.blockedCode || "",
+  });
+}
+
+
+/**
+ * Creates the first empty encrypted runtime catalog for a replacement vault
+ * whose previous browser-bound device key was lost.
+ *
+ * This is deliberately narrower than normal sealing:
+ * - the device-global guard must already remain authoritative;
+ * - the replacement workspace must contain no migration manifest;
+ * - the replacement workspace must contain no encrypted business records;
+ * - no existing non-empty catalog is accepted;
+ * - no plaintext source is read or migrated;
+ * - no authoritative adapter is installed here.
+ *
+ * Normal useVaultRuntimeActivation owns subsequent hydration and adapter
+ * installation. The only production caller is the guarded recovery service.
+ */
+export async function initializeEmptyRecoveryRuntimeCatalog({
+  userId,
+  companyId,
+  repository = null,
+  readGuard = undefined,
+} = {}) {
+  let workspaceTag;
+
+  try {
+    workspaceTag = await deriveWorkspaceVaultTag(
+      userId,
+      companyId
+    );
+  } catch {
+    return failureResult(
+      VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED
+    );
+  }
+
+  let guard;
+
+  try {
+    const reader = typeof readGuard === "function"
+      ? readGuard
+      : readVaultCompatibilityGuard;
+
+    guard = reader();
+  } catch {
+    guard = null;
+  }
+
+  if (guard?.state !== "authoritative") {
+    return failureResult(
+      VAULT_RUNTIME_ERROR_CODES.RECOVERY_BOOTSTRAP_INVALID
+    );
+  }
+
+  let vaultRepository;
+
+  try {
+    vaultRepository = repository
+      || createVaultIndexedDbRepository();
+  } catch {
+    return failureResult(
+      VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED
+    );
+  }
+
+  const outcome = await runWithActiveVaultDek({
+    workspaceTag,
+
+    operation: async (dek) => {
+      let existingCatalog;
+      let recordKeys;
+      let migrationManifest;
+
+      try {
+        [
+          existingCatalog,
+          recordKeys,
+          migrationManifest,
+        ] = await Promise.all([
+          vaultRepository.readRuntimeCatalog({
+            workspaceTag,
+          }),
+
+          vaultRepository.listEncryptedRecordKeys({
+            workspaceTag,
+          }),
+
+          vaultRepository.readMigrationManifest({
+            workspaceTag,
+          }),
+        ]);
+      } catch {
+        return failureResult(
+          VAULT_RUNTIME_ERROR_CODES
+            .STORAGE_OPERATION_FAILED
+        );
+      }
+
+      if (
+        migrationManifest
+        || !Array.isArray(recordKeys)
+        || recordKeys.length !== 0
+      ) {
+        return failureResult(
+          VAULT_RUNTIME_ERROR_CODES
+            .RECOVERY_BOOTSTRAP_INVALID
+        );
+      }
+
+      if (existingCatalog) {
+        let catalog;
+
+        try {
+          catalog = await decryptRuntimeCatalog({
+            dek,
+            userId,
+            companyId,
+            stored: existingCatalog,
+          });
+        } catch {
+          return failureResult(
+            VAULT_RUNTIME_ERROR_CODES.CATALOG_INVALID
+          );
+        }
+
+        if (
+          !Array.isArray(catalog?.entries)
+          || catalog.entries.length !== 0
+          || Number(existingCatalog.runtimeGeneration) !== 1
+        ) {
+          return failureResult(
+            VAULT_RUNTIME_ERROR_CODES
+              .RECOVERY_BOOTSTRAP_INVALID
+          );
+        }
+
+        return Object.freeze({
+          ok: true,
+          state: "already-initialized",
+          code: "",
+          entryCount: 0,
+          generation: 0,
+        });
+      }
+
+      try {
+        const catalog = buildRuntimeCatalog({
+          runtimeGeneration: 1,
+          catalogRevision: 1,
+          entries: [],
+        });
+
+        const envelope = await encryptRuntimeCatalog({
+          dek,
+          userId,
+          companyId,
+          catalog,
+        });
+
+        const created = await vaultRepository
+          .createRuntimeCatalog({
+            workspaceTag,
+            expectedRevision: null,
+            runtimeGeneration: 1,
+            runtimeSchemaVersion:
+              RUNTIME_SCHEMA_VERSION,
+            ciphertext: envelope.ciphertext,
+            iv: envelope.iv,
+          });
+
+        if (!created) {
+          return failureResult(
+            VAULT_RUNTIME_ERROR_CODES.CONFLICT
+          );
+        }
+
+        return Object.freeze({
+          ok: true,
+          state: "recovery-initialized",
+          code: "",
+          entryCount: 0,
+          generation: 0,
+        });
+      } catch (error) {
+        return failureResult(
+          error?.code === "CONFLICT"
+            ? VAULT_RUNTIME_ERROR_CODES.CONFLICT
+            : VAULT_RUNTIME_ERROR_CODES
+              .STORAGE_OPERATION_FAILED
+        );
+      }
+    },
+  });
+
+  return outcome || failureResult(
+    VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED
+  );
+}
+
+const RECOVERY_RESTORE_SNAPSHOT_FIELDS = Object.freeze([
+  "state",
+  "code",
+  "entryCount",
+  "totalBytes",
+  "entries",
+  "noWritesPerformed",
+]);
+
+const RECOVERY_RESTORE_ENTRY_FIELDS = Object.freeze([
+  "logicalKey",
+  "value",
+  "byteLength",
+]);
+
+const RECOVERY_RESTORE_MAX_ENTRY_BYTES =
+  1048576 - 16;
+
+const RECOVERY_RESTORE_MAX_TOTAL_BYTES =
+  16 * 1024 * 1024;
+
+function exactRecoveryRestoreDataShape(
+  value,
+  fields
+) {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.getPrototypeOf(value)
+      !== Object.prototype
+    || Object.getOwnPropertySymbols(value).length !== 0
+  ) {
+    return false;
+  }
+
+  const names =
+    Object.getOwnPropertyNames(value).sort();
+
+  const expected = [...fields].sort();
+
+  if (names.join(",") !== expected.join(",")) {
+    return false;
+  }
+
+  return names.every((name) => {
+    const descriptor =
+      Object.getOwnPropertyDescriptor(value, name);
+
+    return Boolean(
+      descriptor
+      && descriptor.enumerable === true
+      && Object.prototype.hasOwnProperty.call(
+        descriptor,
+        "value"
+      )
+      && typeof descriptor.get !== "function"
+      && typeof descriptor.set !== "function"
+    );
+  });
+}
+
+function exactRecoveryRestoreArray(value) {
+  if (
+    !Array.isArray(value)
+    || Object.getPrototypeOf(value)
+      !== Array.prototype
+    || Object.getOwnPropertySymbols(value).length !== 0
+  ) {
+    return false;
+  }
+
+  const expectedNames = new Set([
+    "length",
+    ...value.map(
+      (unused, index) => String(index)
+    ),
+  ]);
+
+  const names =
+    Object.getOwnPropertyNames(value);
+
+  if (
+    names.length !== expectedNames.size
+    || names.some(
+      (name) => !expectedNames.has(name)
+    )
+  ) {
+    return false;
+  }
+
+  for (
+    let index = 0;
+    index < value.length;
+    index += 1
+  ) {
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        value,
+        index
+      )
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function validateRecoveryRestoreSnapshot(snapshot) {
+  if (
+    !isCompiledVaultDeviceRecoveryRestoreSnapshot(snapshot)
+    ||
+    !exactRecoveryRestoreDataShape(
+      snapshot,
+      RECOVERY_RESTORE_SNAPSHOT_FIELDS
+    )
+    || !Object.isFrozen(snapshot)
+    || snapshot.state
+      !== VAULT_DEVICE_RECOVERY_SNAPSHOT_STATES.READY
+    || snapshot.code !== ""
+    || snapshot.noWritesPerformed !== true
+    || !Number.isSafeInteger(snapshot.entryCount)
+    || snapshot.entryCount < 1
+    || !Number.isSafeInteger(snapshot.totalBytes)
+    || snapshot.totalBytes < 1
+    || snapshot.totalBytes
+      > RECOVERY_RESTORE_MAX_TOTAL_BYTES
+    || !exactRecoveryRestoreArray(snapshot.entries)
+    || !Object.isFrozen(snapshot.entries)
+    || snapshot.entries.length
+      !== snapshot.entryCount
+  ) {
+    return null;
+  }
+
+  const entries = [];
+  const seen = new Set();
+  let totalBytes = 0;
+  let previousKey = "";
+
+  for (const supplied of snapshot.entries) {
+    if (
+      !exactRecoveryRestoreDataShape(
+        supplied,
+        RECOVERY_RESTORE_ENTRY_FIELDS
+      )
+      || !Object.isFrozen(supplied)
+      || typeof supplied.logicalKey !== "string"
+      || !APPROVED.has(supplied.logicalKey)
+      || seen.has(supplied.logicalKey)
+      || (
+        previousKey
+        && supplied.logicalKey <= previousKey
+      )
+      || typeof supplied.value !== "string"
+      || !Number.isSafeInteger(
+        supplied.byteLength
+      )
+      || supplied.byteLength < 0
+      || supplied.byteLength
+        > RECOVERY_RESTORE_MAX_ENTRY_BYTES
+    ) {
+      return null;
+    }
+
+    const bytes = utf8Bytes(supplied.value);
+
+    try {
+      if (
+        bytes.length !== supplied.byteLength
+        || bytes.length
+          > RECOVERY_RESTORE_MAX_ENTRY_BYTES
+      ) {
+        return null;
+      }
+    } finally {
+      bytes.fill(0);
+    }
+
+    totalBytes += supplied.byteLength;
+
+    if (
+      totalBytes
+      > RECOVERY_RESTORE_MAX_TOTAL_BYTES
+    ) {
+      return null;
+    }
+
+    seen.add(supplied.logicalKey);
+    previousKey = supplied.logicalKey;
+
+    entries.push(Object.freeze({
+      logicalKey: supplied.logicalKey,
+      value: supplied.value,
+      byteLength: supplied.byteLength,
+    }));
+  }
+
+  if (totalBytes !== snapshot.totalBytes) {
+    return null;
+  }
+
+  return Object.freeze(entries);
+}
+
+function recoveryRestoreResult({
+  ok = false,
+  state = "blocked",
+  code = "",
+  committed = false,
+  entryCount = 0,
+  generation = 0,
+} = {}) {
+  return Object.freeze({
+    ok,
+    state,
+    code,
+    committed,
+    entryCount,
+    generation,
+  });
+}
+
+function blockedRecoveryRestore(code) {
+  return recoveryRestoreResult({
+    code,
+  });
+}
+
+function committedBatchMatches({
+  committed,
+  encryptedRecords,
+  previousCatalogRevision,
+  runtimeGeneration,
+} = {}) {
+  if (
+    !committed
+    || typeof committed !== "object"
+    || !Array.isArray(committed.records)
+    || committed.records.length
+      !== encryptedRecords.length
+    || committed.catalog?.revision
+      !== previousCatalogRevision + 1
+    || committed.catalog?.runtimeGeneration
+      !== runtimeGeneration
+  ) {
+    return false;
+  }
+
+  const expectedByKey = new Map(
+    encryptedRecords.map((record) => [
+      record.logicalKey,
+      record,
+    ])
+  );
+
+  return committed.records.every((record) => {
+    const expected =
+      expectedByKey.get(record?.logicalKey);
+
+    return Boolean(
+      expected
+      && record.revision === 1
+      && record.blobId === expected.blobId
+      && record.recordSchemaVersion
+        === RECORD_SCHEMA_VERSION
+    );
+  });
+}
+
+/**
+ * Atomically encrypts and installs a compiled recovery snapshot into the exact
+ * active replacement runtime.
+ *
+ * Requirements:
+ * - the runtime belongs to the supplied authenticated identity;
+ * - the empty recovery catalog is the only durable runtime state;
+ * - no ordinary write or revalidation is pending;
+ * - the supplied snapshot is the exact frozen output of the snapshot compiler;
+ * - every record and the catalog commit through one IndexedDB transaction.
+ *
+ * Cache publication occurs only after the repository transaction succeeds.
+ * This function performs no cloud read, cloud write, navigation, or UI action.
+ */
+export async function commitVaultDeviceRecoveryRestoreSnapshot({
+  userId,
+  companyId,
+  snapshot,
+} = {}) {
+  const prepared =
+    validateRecoveryRestoreSnapshot(snapshot);
+
+  if (!prepared) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES
+        .RECOVERY_RESTORE_INVALID
+    );
+  }
+
+  let workspaceTag;
+
+  try {
+    workspaceTag =
+      await deriveWorkspaceVaultTag(
+        userId,
+        companyId
+      );
+  } catch {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES
+        .RECOVERY_RESTORE_INVALID
+    );
+  }
+
+  const session = active;
+
+  if (
+    !session
+    || session.blocked
+    || session.userId !== userId
+    || session.companyId !== companyId
+    || session.workspaceTag !== workspaceTag
+  ) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES.NOT_READY
+    );
+  }
+
+  if (
+    session.frozen
+    || session.draining
+    || session.queue.length !== 0
+  ) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES
+        .RECOVERY_RESTORE_BUSY
+    );
+  }
+
+  if (
+    session.cache.size !== 0
+    || session.meta.size !== 0
+    || session.catalogRevision !== 1
+    || session.runtimeGeneration !== 1
+  ) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES
+        .RECOVERY_RESTORE_NOT_EMPTY
+    );
+  }
+
+  const frozen =
+    freezeVaultRuntimeMutations();
+
+  const lease = frozen.lease;
+
+  if (
+    !lease
+    || !leaseOwnsActiveSession(lease)
+    || active !== session
+  ) {
+    return blockedRecoveryRestore(
+      VAULT_RUNTIME_ERROR_CODES
+        .RECOVERY_RESTORE_BUSY
+    );
+  }
+
+  const previousCatalogRevision =
+    session.catalogRevision;
+
+  const encryptedRecords = [];
+  const catalogEntries = [];
+  let committed = null;
+
+  try {
+    const applied =
+      await runWithActiveVaultDek({
+        workspaceTag,
+
+        operation: async (dek) => {
+          if (
+            active !== session
+            || !leaseOwnsActiveSession(lease)
+          ) {
+            return false;
+          }
+
+          for (const entry of prepared) {
+            let plain = utf8Bytes(entry.value);
+
+            try {
+              if (
+                plain.length !== entry.byteLength
+                || plain.length
+                  > RECOVERY_RESTORE_MAX_ENTRY_BYTES
+              ) {
+                throw new Error(
+                  "RECOVERY_ENTRY_LENGTH_CHANGED"
+                );
+              }
+
+              const blobId = randomBlobId();
+
+              const [
+                envelope,
+                digest,
+              ] = await Promise.all([
+                encryptBytes(
+                  dek,
+                  plain,
+                  recordAadFor({
+                    userId,
+                    companyId,
+                    logicalKey:
+                      entry.logicalKey,
+                    blobId,
+                  })
+                ),
+
+                digestBytes(plain),
+              ]);
+
+              encryptedRecords.push({
+                logicalKey:
+                  entry.logicalKey,
+                blobId,
+                recordSchemaVersion:
+                  RECORD_SCHEMA_VERSION,
+                ciphertext:
+                  envelope.ciphertext,
+                iv: envelope.iv,
+              });
+
+              catalogEntries.push({
+                key: entry.logicalKey,
+                blobId,
+                byteLength:
+                  entry.byteLength,
+                digest,
+                revision: 1,
+              });
+            } finally {
+              plain.fill(0);
+              plain = null;
+            }
+          }
+
+          if (
+            active !== session
+            || !leaseOwnsActiveSession(lease)
+          ) {
+            return false;
+          }
+
+          const catalog =
+            buildRuntimeCatalog({
+              runtimeGeneration:
+                session.runtimeGeneration,
+              catalogRevision:
+                previousCatalogRevision + 1,
+              entries: catalogEntries,
+            });
+
+          const catalogEnvelope =
+            await encryptRuntimeCatalog({
+              dek,
+              userId,
+              companyId,
+              catalog,
+            });
+
+          if (
+            active !== session
+            || !leaseOwnsActiveSession(lease)
+          ) {
+            return false;
+          }
+
+          committed =
+            await session.repository
+              .commitRuntimeRestoreBatch({
+                workspaceTag,
+                expectedCatalogRevision:
+                  previousCatalogRevision,
+                runtimeGeneration:
+                  session.runtimeGeneration,
+                runtimeSchemaVersion:
+                  RUNTIME_SCHEMA_VERSION,
+                records: encryptedRecords,
+                catalogCiphertext:
+                  catalogEnvelope.ciphertext,
+                catalogIv:
+                  catalogEnvelope.iv,
+              });
+
+          return true;
+        },
+      });
+
+    if (applied !== true) {
+      if (leaseOwnsActiveSession(lease)) {
+        unfreezeVaultRuntimeMutations(lease);
+      }
+
+      return blockedRecoveryRestore(
+        active === session
+          ? VAULT_RUNTIME_ERROR_CODES
+            .VAULT_LOCKED
+          : VAULT_RUNTIME_ERROR_CODES
+            .STALE_SESSION
+      );
+    }
+  } catch (error) {
+    if (leaseOwnsActiveSession(lease)) {
+      unfreezeVaultRuntimeMutations(lease);
+    }
+
+    return blockedRecoveryRestore(
+      error?.code === "CONFLICT"
+        ? VAULT_RUNTIME_ERROR_CODES.CONFLICT
+        : VAULT_RUNTIME_ERROR_CODES
+          .DURABILITY_FAILED
+    );
+  }
+
+  const matched = committedBatchMatches({
+    committed,
+    encryptedRecords,
+    previousCatalogRevision,
+    runtimeGeneration:
+      session.runtimeGeneration,
+  });
+
+  if (!matched) {
+    if (active === session) {
+      revokeVaultRuntime();
+    }
+
+    return recoveryRestoreResult({
+      state: "committed-unverified",
+      code:
+        VAULT_RUNTIME_ERROR_CODES
+          .DURABILITY_FAILED,
+      committed: true,
+      entryCount: prepared.length,
+    });
+  }
+
+  if (
+    active !== session
+    || !leaseOwnsActiveSession(lease)
+  ) {
+    return recoveryRestoreResult({
+      ok: true,
+      state: "committed-stale",
+      code:
+        VAULT_RUNTIME_ERROR_CODES
+          .STALE_SESSION,
+      committed: true,
+      entryCount: prepared.length,
+    });
+  }
+
+  const vaultStillUnlocked =
+    await runWithActiveVaultDek({
+      workspaceTag,
+      operation: () => true,
+    });
+
+  if (vaultStillUnlocked !== true) {
+    revokeVaultRuntime();
+
+    return recoveryRestoreResult({
+      ok: true,
+      state: "committed-stale",
+      code:
+        VAULT_RUNTIME_ERROR_CODES.VAULT_LOCKED,
+      committed: true,
+      entryCount: prepared.length,
+    });
+  }
+
+  const committedByKey = new Map(
+    committed.records.map((record) => [
+      record.logicalKey,
+      record,
+    ])
+  );
+
+  const catalogByKey = new Map(
+    catalogEntries.map((entry) => [
+      entry.key,
+      entry,
+    ])
+  );
+
+  const previousCache =
+    new Map(session.cache);
+
+  const nextCache = new Map();
+  const nextMeta = new Map();
+
+  prepared.forEach((entry) => {
+    const persisted =
+      committedByKey.get(entry.logicalKey);
+
+    const catalogEntry =
+      catalogByKey.get(entry.logicalKey);
+
+    nextCache.set(
+      entry.logicalKey,
+      entry.value
+    );
+
+    nextMeta.set(
+      entry.logicalKey,
+      {
+        blobId: persisted.blobId,
+        revision: persisted.revision,
+        byteLength:
+          catalogEntry.byteLength,
+        digest: catalogEntry.digest,
+      }
+    );
+  });
+
+  session.cache = nextCache;
+  session.meta = nextMeta;
+  session.catalogRevision =
+    committed.catalog.revision;
+
+  unfreezeVaultRuntimeMutations(lease);
+
+  dispatchChangedLogicalKeys(
+    previousCache,
+    session.cache
+  );
+
+  previousCache.clear();
+
+  publishCommit(session);
+
+  return recoveryRestoreResult({
+    ok: true,
+    state: "restored",
+    committed: true,
+    entryCount: prepared.length,
+    generation: session.generation,
   });
 }
