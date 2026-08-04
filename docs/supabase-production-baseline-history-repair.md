@@ -191,16 +191,25 @@ enabled. The baseline file checksum was unchanged.
 
 ## Supabase integration check
 
-- The `Supabase Preview` check on the merged commit remains **historically failed**.
-  Completed check runs are immutable, so the recorded failure does not clear
-  retroactively.
-- Per-PR branch creation is disabled at the integration level, so **no new check was
-  triggered** by the repair.
-- End-to-end confirmation that a future migration run now succeeds has **not** been
-  performed. It requires re-enabling or rerunning the Supabase integration, which was
-  outside the authorization for this work. Until then, the repair's effect is
-  evidenced by the dry run reporting the remote database up to date, not by a green
-  integration check.
+- The `Supabase Preview` check on commit
+  `1a281abba1680e179df462736031fac6f19347fe` remains **historically failed** with the
+  original `42P16` error. Completed check runs are immutable, so that recorded failure
+  does not clear retroactively and was not rewritten.
+- The repair itself triggered no check, because per-PR branch creation is disabled at
+  the integration level.
+- A **separate, later** `Supabase Preview` run executed on merge commit
+  `5b76238e42e85d68f79dec156ceb066fab67c7a9` (started `2026-08-04T20:20:54Z`,
+  completed `2026-08-04T20:21:01Z`) and concluded **`success`**. `42P16` did not
+  recur, and no other migration error appeared.
+- That run provides end-to-end integration confirmation that the repaired migration
+  history prevented the Production baseline from being replayed. The check emitted no
+  migration log, so this is not quoted from its output; the conclusion is supported by
+  the successful new run, the absence of `42P16`, the absence of any other migration
+  error, the previously verified remote migration history, and the previously verified
+  dry run reporting no pending migration.
+- The successful run confirms migration-history behavior only. It does **not** prove
+  Production application functionality, contractor recovery behavior, or Stripe
+  behavior, none of which were tested.
 
 ## Operational rules
 
