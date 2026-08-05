@@ -3275,3 +3275,77 @@ describe("AdvancedSettingsScreen automatic sync bootstrap diagnostic", () => {
     expect(screen.queryByTestId("automatic-sync-state")).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 -- account/auth presentation is separated from Cloud Backup.
+// Presentation only: no handler, cloud, backup, or recovery behavior changed.
+// ---------------------------------------------------------------------------
+describe("AdvancedSettingsScreen account section", () => {
+  beforeEach(() => {
+    // A signed-in workspace: the account identity and cloud sections both render.
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_1", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1" },
+      companyUser: { user_id: "user_1", company_id: "company_1", role: "owner" },
+      membership: { user_id: "user_1", company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Synthetic Co" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
+    // A signed-in render kicks off cloud status probes. These are stubbed only
+    // so the screen can mount; no cloud behavior is asserted or altered here.
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.READY_TO_BACKUP,
+      preview: null,
+      verification: null,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({ status: "unavailable", eligible: false });
+    runSupabaseCloudVerification.mockResolvedValue({ ok: true, status: "verified" });
+    isSupabaseMigrationPreviewReady.mockReturnValue(false);
+  });
+
+  test("shows the signed-in account identity and a Sign Out control", () => {
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText("Account")).toBeInTheDocument();
+    expect(screen.getByText(/Signed in as:/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Sign Out$/i })).toBeInTheDocument();
+  });
+
+  test("the Account section describes identity rather than cloud backup", () => {
+    render(<AdvancedSettingsScreen />);
+
+    // The account blurb is about who is signed in and what signing out does.
+    expect(
+      screen.getByText(/The EstiPaid account signed in on this device/i)
+    ).toBeInTheDocument();
+    // The old cloud-framed account blurb must be gone.
+    expect(
+      screen.queryByText(/Cloud backup uses your signed-in EstiPaid account/i)
+    ).not.toBeInTheDocument();
+  });
+
+  test("Cloud Backup remains its own section and still owns cloud status copy", () => {
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByText("Cloud Backup")).toBeInTheDocument();
+    expect(screen.getByText("Cloud account connected.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Backup and restore are available for this workspace.")
+    ).toBeInTheDocument();
+  });
+
+  test("device lock controls stay available alongside account controls", () => {
+    render(<AdvancedSettingsScreen />);
+
+    expect(screen.getByRole("button", { name: /^Lock Now$/i })).toBeInTheDocument();
+  });
+});

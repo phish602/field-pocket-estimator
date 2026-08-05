@@ -1723,9 +1723,13 @@ export default function AdvancedSettingsScreen({
 
           <div style={shortcutGridStyle}>
             <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={panelStyle}>
+              {/* Phase 2 -- this section is about WHO is signed in: identity,
+                  session, and sign out. Cloud backup state lives in its own
+                  section below the divider. Presentation only: every handler,
+                  condition, and cloud behavior is unchanged. */}
               <div className="pe-field-label" style={{ marginBottom: 2 }}>Account</div>
               <div className="pe-field-helper" style={{ marginTop: -4 }}>
-                Cloud backup uses your signed-in EstiPaid account. Customer, project, estimate, and invoice storage still remains local in this lane.
+                The EstiPaid account signed in on this device. Signing out returns you to the sign-in screen and leaves your local records on this device untouched.
               </div>
               {!isSupabaseReady ? (
                 <>
@@ -1791,12 +1795,6 @@ export default function AdvancedSettingsScreen({
                   {!accountLoading && !accountError && companyUser && !hasCompany ? (
                     <div className="pe-field-helper">Company record not found for this membership yet.</div>
                   ) : null}
-                  <div className="pe-field-helper">
-                    Cloud account connected.
-                  </div>
-                  <div className="pe-field-helper">
-                    Backup and restore are available for this workspace.
-                  </div>
                   <div>
                     <button
                       type="button"
@@ -1841,6 +1839,18 @@ export default function AdvancedSettingsScreen({
                 }}
               >
                 <div className="pe-field-label" style={{ marginBottom: 0 }}>Cloud Backup</div>
+                {/* Cloud connection status belongs with cloud backup, not with
+                    the account identity section above. Moved, not changed. */}
+                {isSupabaseReady && userEmail ? (
+                  <>
+                    <div className="pe-field-helper">
+                      Cloud account connected.
+                    </div>
+                    <div className="pe-field-helper">
+                      Backup and restore are available for this workspace.
+                    </div>
+                  </>
+                ) : null}
                 {isSupabaseReady && userEmail && hasCompany && autoBackupDisplayState !== "none" ? (
                   <div style={{ display: "grid", gap: 2 }}>
                     {autoBackupDisplayState === "running" ? (

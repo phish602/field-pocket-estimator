@@ -160,7 +160,17 @@ site_url = "http://127.0.0.1:3000"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+# The app sends its own origin as `redirectTo`, so every local origin it can be
+# served from must be listed here -- an unlisted origin is silently replaced with
+# `site_url`, which sends recovery and magic links to a port nothing is serving.
+# 3000 is the default `npm start` port; 3100 is used when a lane runs an isolated
+# dev server alongside another checkout.
+additional_redirect_urls = [
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+  "http://127.0.0.1:3100",
+  "http://localhost:3100",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.

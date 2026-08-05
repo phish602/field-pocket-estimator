@@ -2,9 +2,57 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseClient, isSupabaseConfigured, supabaseEnv } from "./supabaseClient";
 import { getEnabledSocialProviders } from "./authSocialProviders";
 
+// Phase 2 -- the single choke point that decides what auth error text a user is
+// allowed to see. Every auth action routes its failure through here.
+//
+// Supabase auth returns genuinely readable messages ("Invalid login
+// credentials", "Unknown email address") that are more helpful than any generic
+// fallback, so those are preserved. What must never reach a contractor is
+// implementation detail: PostgREST/PGRST codes, Postgres constraint or
+// null-column text, SQLSTATE, JavaScript TypeError/stack output, HTML/JSON
+// bodies, or multi-line dumps. Anything carrying one of those markers -- or
+// that is simply too long or multi-line to be intended for a person -- is
+// replaced with the caller's plain-language fallback.
+const UNSAFE_MESSAGE_MARKERS = new RegExp(
+  [
+    "PGRST",
+    "SQLSTATE",
+    "postgres",
+    "\\bpg_",
+    "\\brelation\\b",
+    "\\bcolumn\\b",
+    "\\bconstraint\\b",
+    "violates",
+    "null value",
+    "duplicate key",
+    "syntax error",
+    "TypeError",
+    "ReferenceError",
+    "SyntaxError",
+    "undefined is not",
+    "Cannot read",
+    "\\bat\\s+\\w+\\s*\\(", // stack frame
+    "<[a-z!/]", // HTML
+    '^\\s*[[{]', // raw JSON body
+  ].join("|"),
+  "i"
+);
+
+// Longer than any human-facing provider message we expect; treat as a dump.
+const MAX_SAFE_MESSAGE_LENGTH = 160;
+
+export function toSafeAuthMessage(error, fallback) {
+  const safeFallback = String(fallback || "Something went wrong. Please try again.").trim();
+  const raw = String(error?.message || "").trim();
+  if (!raw) return safeFallback;
+  if (raw.length > MAX_SAFE_MESSAGE_LENGTH) return safeFallback;
+  if (/[\r\n]/.test(raw)) return safeFallback;
+  if (UNSAFE_MESSAGE_MARKERS.test(raw)) return safeFallback;
+  return raw;
+}
+
 function asMessage(error, fallback) {
-  const message = String(error?.message || "").trim();
-  return message || fallback;
+  return toSafeAuthMessage(error, fallback);
 }
 
 function getRedirectUrl() {
@@ -664,6 +712,14 @@ export default function useSupabaseAuth() {
     setInfoMessage("");
   }, []);
 
+  // Lets the sign-in surface drop a message that belongs to the view the person
+  // just left. Without this, a failure from one mode keeps showing after a
+  // switch to another mode, where it no longer describes anything they did.
+  const clearAuthMessages = useCallback(() => {
+    setErrorMessage("");
+    setInfoMessage("");
+  }, []);
+
   const user = session?.user || null;
   const userEmail = normalizeEmail(user?.email);
 
@@ -686,6 +742,7 @@ export default function useSupabaseAuth() {
     resetPasswordForEmail,
     signOut,
     clearRememberedAccount,
+    clearAuthMessages,
     passwordRecoveryPending,
     passwordRecoveryReady,
     passwordRecoveryComplete,
