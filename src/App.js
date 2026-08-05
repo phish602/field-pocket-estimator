@@ -4566,16 +4566,42 @@ const authLoadingWrapStyle = {
   boxSizing: "border-box",
 };
 
+// Matches the branded progress dots used by WorkspaceAccessGate so the session
+// hand-off reads as one continuous loading state rather than two screens.
+const authLoadingDotStyle = {
+  width: 7,
+  height: 7,
+  borderRadius: "50%",
+  background: "linear-gradient(135deg, #6fd3ba, #3b78ba)",
+};
+
+// Phase 2 -- the stable surface shown while the session resolves. It is
+// deliberately the same dark canvas, logo size, and vertical centring as the
+// signed-out and workspace gates, so a returning contractor sees one continuous
+// branded frame instead of a flash between login and dashboard. This screen
+// only changes what session resolution *looks* like; the routing that decides
+// when it renders, and every gate after it, are untouched.
 function AuthLoadingScreen() {
   return (
     <div style={authLoadingWrapStyle}>
-      <div style={{ display: "grid", gap: 12, justifyItems: "center" }}>
+      <div
+        style={{ display: "grid", gap: 14, justifyItems: "center" }}
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="Checking your session"
+      >
         <img
           src={DEFAULT_LOGO}
           alt="EstiPaid"
           style={{ height: 64, width: "auto", display: "block" }}
           draggable={false}
         />
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", opacity: 0.85 }} aria-hidden="true">
+          <span style={authLoadingDotStyle} />
+          <span style={{ ...authLoadingDotStyle, opacity: 0.65 }} />
+          <span style={{ ...authLoadingDotStyle, opacity: 0.35 }} />
+        </div>
         <div
           className="pe-field-helper"
           style={{ fontSize: 12.5, letterSpacing: "0.5px", opacity: 0.8 }}

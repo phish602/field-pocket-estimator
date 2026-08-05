@@ -358,6 +358,39 @@ describe("AuthScreen standalone", () => {
     expect(screen.queryByText(/Last used account:/i)).not.toBeInTheDocument();
   });
 
+  test("the remembered account is withheld from the create-account view", () => {
+    render(<AuthScreen auth={buildAuthProp({ rememberedEmail: "owner@example.com" })} />);
+
+    expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create Account$/i }));
+
+    // "Last used account" contradicts a view whose whole purpose is a new one.
+    expect(screen.queryByText(/Welcome back/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Last used account:/i)).not.toBeInTheDocument();
+  });
+
+  test("a failure message is announced assertively, not as a polite status", () => {
+    render(<AuthScreen auth={buildAuthProp({ errorMessage: "Unknown email address" })} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Unknown email address");
+  });
+
+  test("switching modes drops a message raised in the previous mode", () => {
+    const clearAuthMessages = jest.fn();
+    render(
+      <AuthScreen
+        auth={buildAuthProp({ errorMessage: "Invalid login credentials", clearAuthMessages })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Me a Sign-In Link" }));
+
+    // The sign-in failure describes an action taken in a view the person has
+    // now left, so it must not follow them into the magic-link view.
+    expect(clearAuthMessages).toHaveBeenCalledTimes(1);
+  });
+
   test("hides Create Account and Forgot Password when not supported", () => {
     render(
       <AuthScreen
@@ -391,7 +424,10 @@ describe("AuthScreen standalone", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Create Account/i }));
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
-    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "short" } });
+    // Phase 2: client-side validation now blocks a too-short password before it
+    // becomes a network call, so this uses a locally valid password. The test's
+    // subject is unchanged -- a provider-returned failure must render readably.
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "longenough" } });
     fireEvent.click(screen.getByRole("button", { name: /^Create Account$/i }));
 
     await waitFor(() => expect(signUpWithPassword).toHaveBeenCalled());
@@ -933,5 +969,107 @@ describe("AuthScreen social providers", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Forgot Password\?/i }));
     expect(providerButtons()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 -- signed-out hierarchy, validation, password visibility, bilingual.
+// ---------------------------------------------------------------------------
+describe("AuthScreen Phase 2 experience", () => {
+  test("sign-in is the single primary submit and Create Account is a separate secondary action", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    // Exactly one submit control: password sign-in owns the primary slot.
+    const submits = screen
+      .getAllByRole("button")
+      .filter((btn) => btn.getAttribute("type") === "submit");
+    expect(submits).toHaveLength(1);
+    expect(submits[0]).toHaveTextContent("Sign In");
+
+    // Create Account exists but is a non-submit (secondary) control.
+    const createAccount = screen.getByRole("button", { name: /^Create Account$/i });
+    expect(createAccount.getAttribute("type")).toBe("button");
+    expect(createAccount).not.toBe(submits[0]);
+  });
+
+  test("blocks submission and reports inline errors when email and password are missing", async () => {
+    const signInWithPassword = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildAuthProp({ signInWithPassword })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+
+    expect(await screen.findByText("Enter your email address.")).toBeInTheDocument();
+    expect(screen.getByText("Enter your password.")).toBeInTheDocument();
+    // No pointless network round trip for an obviously incomplete form.
+    expect(signInWithPassword).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Email")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  test("rejects a malformed email before calling the provider", async () => {
+    const signInWithPassword = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildAuthProp({ signInWithPassword })} />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "not-an-email" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "secret123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+
+    expect(await screen.findByText("Enter a valid email address.")).toBeInTheDocument();
+    expect(signInWithPassword).not.toHaveBeenCalled();
+  });
+
+  test("a valid submission still reaches the provider exactly once", async () => {
+    const signInWithPassword = jest.fn(async () => ({ ok: true }));
+    render(<AuthScreen auth={buildAuthProp({ signInWithPassword })} />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "person@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "secret123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+
+    await waitFor(() => expect(signInWithPassword).toHaveBeenCalledTimes(1));
+    expect(signInWithPassword).toHaveBeenCalledWith("person@example.com", "secret123");
+  });
+
+  test("password visibility can be toggled without losing the typed value", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    const password = screen.getByLabelText("Password");
+    fireEvent.change(password, { target: { value: "secret123" } });
+    expect(password).toHaveAttribute("type", "password");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
+    expect(screen.getByLabelText("Password")).toHaveValue("secret123");
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("Password")).toHaveValue("secret123");
+  });
+
+  test("Spanish copy replaces the signed-out surface without persisting a preference", () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change language" }));
+
+    expect(screen.getByRole("button", { name: "Iniciar Sesión" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Correo electrónico")).toBeInTheDocument();
+    expect(screen.getByLabelText("Contraseña")).toBeInTheDocument();
+    // Memory-only: nothing about the choice is written to storage.
+    expect(window.localStorage.getItem("estipaid-auth-language")).toBeNull();
+  });
+
+  test("validation messages follow the selected language", async () => {
+    render(<AuthScreen auth={buildAuthProp()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change language" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar Sesión" }));
+
+    expect(await screen.findByText("Ingresa tu correo electrónico.")).toBeInTheDocument();
+  });
+
+  test("busy state disables the primary submit and the secondary account action", () => {
+    render(<AuthScreen auth={buildAuthProp({ authBusy: true })} />);
+
+    expect(screen.getByRole("button", { name: "Signing In..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Create Account$/i })).toBeDisabled();
   });
 });
