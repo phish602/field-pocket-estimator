@@ -37,6 +37,7 @@ jest.mock("./lib/supabaseDeviceLock", () => ({
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { advanceToWizardStep, goToWizardStep } from "./testUtils/wizardTestNavigation";
 
 const useVaultSession = require("./lib/useVaultSession").default;
 
@@ -197,6 +198,8 @@ async function openEstimateBuilderViaCreate() {
   const launcher = await screen.findByRole("dialog", { name: /Start New/i });
   fireEvent.click(within(launcher).getByRole("button", { name: /^Estimate$|^New Estimate$|^Resume Estimate Draft$/i }));
   await screen.findByText(/Estimate Builder/i);
+  // Saved scope templates live on the Scope of Work step of the builder wizard.
+  advanceToWizardStep("scope");
   await screen.findByText(/Your saved templates/i);
 }
 
@@ -342,6 +345,9 @@ test("2. Saving a template from builder stays in place, shows success, and store
   expect(storedTemplates[0].savedDocId).toBeUndefined();
 
   expect(getScopeEditor().textContent).toContain("Repair the leaking roof curb and reseal all flashing.");
+
+  // Applying a template must not disturb the customer selected on step 1.
+  goToWizardStep("customer");
   expect(screen.getByPlaceholderText(CUSTOMER_SEARCH_PLACEHOLDER)).toHaveValue("Customer A");
 
   await openTemplatesFromMenu();

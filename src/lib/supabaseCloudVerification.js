@@ -3,7 +3,14 @@ import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 import { readCloudAssetBindings } from "./cloudAssetBindings";
-import { buildParentLineItemContract } from "./cloudLineItemContract";
+import { buildParentLineItemContract, sanitizeLineItemParentSegment } from "./cloudLineItemContract";
+import { isProvenEmptyInvoiceLineItemPlaceholder } from "./staleInvoiceLineItemProof";
+
+// Repair class this verifier can prove: obsolete blank invoice children left in
+// the cloud by an older writer that persisted the estimator's empty placeholder
+// rows. The corrected mapper no longer emits them, so they are extra in the
+// cloud and carry no business content.
+export const STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR = "stale_invoice_line_item_empty_placeholders";
 
 export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v1";
 
@@ -160,6 +167,44 @@ function findResult(tableResults, table) {
   return tableResults.find((result) => result.table === table) || null;
 }
 
+// READ-ONLY classification of the cloud-only invoice children. A row is a proven
+// repair candidate only when it is attached to a CURRENT invoice, deterministically
+// identified under that invoice's own canonical parent segment, and carries no
+// business content at all (see staleInvoiceLineItemProof). Anything else -- an
+// unknown parent, an unparsable id, an ambiguous parent, or any real content --
+// stays unresolved and keeps the mismatch un-repairable.
+function classifyExtraInvoiceLineItems(extraRows, parentCloudRows, localParentLegacyIds) {
+  const parentLegacyByCloudId = new Map(); const ambiguousCloudIds = new Set();
+  (Array.isArray(parentCloudRows) ? parentCloudRows : []).forEach((row) => {
+    const cloudId = asText(row?.id); const legacyId = asText(row?.legacy_local_id);
+    if (!cloudId || !legacyId) return;
+    if (parentLegacyByCloudId.has(cloudId) && parentLegacyByCloudId.get(cloudId) !== legacyId) ambiguousCloudIds.add(cloudId);
+    else parentLegacyByCloudId.set(cloudId, legacyId);
+  });
+
+  const repairable = []; const unresolved = [];
+  (Array.isArray(extraRows) ? extraRows : []).forEach((row) => {
+    const rowId = asText(row?.id);
+    const legacyId = asText(row?.legacy_local_id);
+    const parsed = /^invoice:([^:]+):line:(\d+)$/.exec(legacyId);
+    const cloudParentId = asText(row?.invoice_id);
+    const parentLegacyId = ambiguousCloudIds.has(cloudParentId) ? "" : asText(parentLegacyByCloudId.get(cloudParentId));
+    if (
+      rowId
+      && parsed
+      && parentLegacyId
+      && localParentLegacyIds.has(parentLegacyId)
+      && parsed[1] === sanitizeLineItemParentSegment(parentLegacyId)
+      && isProvenEmptyInvoiceLineItemPlaceholder(row)
+    ) {
+      repairable.push({ rowId, legacyId });
+      return;
+    }
+    unresolved.push(legacyId || "missing");
+  });
+  return { repairable, unresolved };
+}
+
 function buildBindingDiagnostics(companyId, draft, cloudRowsByTable) {
   const state = readCloudAssetBindings(companyId);
   const entityConfig = [
@@ -280,6 +325,8 @@ export async function runSupabaseCloudVerification({
 
   const tableResults = [];
   const cloudRowsByTable = {};
+  const availableRepairs = [];
+  let invoiceLineItemRepairableOnly = false;
   let preservedSkippedCloudEstimateRowIds = new Set();
   let preservedOlderEstimatesMatched = false;
 
@@ -413,7 +460,15 @@ export async function runSupabaseCloudVerification({
     });
     const expectedByLegacyId = new Map(expected.rows.map((row) => [row.legacy_local_id, row]));
     const missing = expected.rows.filter((row) => !cloudByLegacyId.has(row.legacy_local_id)).map((row) => row.legacy_local_id).sort();
-    const extra = comparableRows.filter((row) => !expectedByLegacyId.has(asText(row?.legacy_local_id))).map((row) => asText(row?.legacy_local_id)).filter(Boolean).sort();
+    const extraRows = comparableRows.filter((row) => !expectedByLegacyId.has(asText(row?.legacy_local_id)));
+    const extra = extraRows.map((row) => asText(row?.legacy_local_id)).filter(Boolean).sort();
+    const extraClassification = table === "invoice_line_items"
+      ? classifyExtraInvoiceLineItems(
+        extraRows,
+        cloudRowsByTable[parentTable],
+        new Set((Array.isArray(draft?.[parentKey]) ? draft[parentKey] : []).map((parent) => asText(parent?.legacy_local_id)).filter(Boolean))
+      )
+      : null;
     const semanticMismatchCount = expected.rows.filter((row) => {
       const cloud = cloudByLegacyId.get(row.legacy_local_id);
       return cloud && !sameChildContract(row, cloud, { parentColumn, includeLineRole });
@@ -431,13 +486,50 @@ export async function runSupabaseCloudVerification({
       duplicateIdentityCount: expected.duplicateIds.length + duplicateCloudIds.length,
       semanticMismatchCount,
       preservedExtraLegacyIds: preservedEstimateLineItemsMatched ? preservedSkippedIds : [],
+      ...(extraClassification
+        ? {
+          repairableExtraCount: extraClassification.repairable.length,
+          unresolvedExtraCount: extraClassification.unresolved.length,
+        }
+        : {}),
     });
+
+    if (extraClassification && extraClassification.repairable.length > 0) {
+      availableRepairs.push({
+        type: STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR,
+        table,
+        count: extraClassification.repairable.length,
+        rowIds: extraClassification.repairable.map((entry) => entry.rowId).sort(),
+        legacyIds: extraClassification.repairable.map((entry) => entry.legacyId).sort(),
+      });
+    }
+    // A table is repairable-only when its ENTIRE mismatch is the proven blank
+    // placeholder class: nothing missing, no duplicate identities, no semantic
+    // drift among expected rows, and every cloud-only extra proven repairable.
+    if (extraClassification) {
+      invoiceLineItemRepairableOnly = !matched
+        && missing.length === 0
+        && expected.duplicateIds.length === 0
+        && duplicateCloudIds.length === 0
+        && semanticMismatchCount === 0
+        && extraClassification.unresolved.length === 0
+        && extraClassification.repairable.length > 0;
+    }
   }
 
   notices.push(...collectRelationshipNotices(tableResults));
   const bindingDiagnostics = buildBindingDiagnostics(companyId, draft, cloudRowsByTable);
 
   const allMatched = tableResults.length > 0 && tableResults.every((result) => result.status === "matched");
+
+  // repairableMismatchOnly is the narrow verdict the automatic recovery flow acts
+  // on: EVERY other table is matched, and the only thing wrong is the proven
+  // blank invoice-child class. It never means "ignore the mismatch" -- allMatched
+  // stays false until the repair has actually run and verification re-passes.
+  const repairableMismatchOnly = !allMatched
+    && invoiceLineItemRepairableOnly
+    && availableRepairs.length > 0
+    && tableResults.every((result) => result.table === "invoice_line_items" || result.status === "matched");
 
   if (preservedOlderEstimatesMatched) {
     notices.push(buildNotice(
@@ -474,6 +566,8 @@ export async function runSupabaseCloudVerification({
     localCounts,
     tableResults,
     allMatched,
+    availableRepairs,
+    repairableMismatchOnly,
     notices,
     bindingDiagnostics,
     noWritesPerformed: true,

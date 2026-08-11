@@ -3,6 +3,10 @@ import { readStoredAuditEvents } from "./auditStore";
 import {
   appendStripeInvoicePayment,
   addManualInvoicePayment,
+  buildEstimateInvoiceSummary,
+  createInvoiceBuilderDraftFromEstimate,
+  createManualInvoiceDraft,
+  duplicateInvoiceDraft,
   normalizeInvoiceRecord,
   updateInvoiceLifecycleStatus,
   validateInvoiceAgainstEstimate,
@@ -186,6 +190,133 @@ describe("validateInvoiceAgainstEstimate void invoice exclusion", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/remaining/i);
+  });
+});
+
+describe("optional invoice Scope preference", () => {
+  test("a new manual invoice defaults the persisted Scope preference off", () => {
+    const draft = createManualInvoiceDraft([], { nowTs: 1770000000000 });
+    expect(draft.ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      includeInvoiceScopeOnPdf: false,
+    }));
+    expect(draft.scopeNotes).toBe("");
+  });
+
+  test("an approved estimate conversion includes and preserves meaningful shared Scope", () => {
+    const estimate = {
+      id: "est_scope_conversion",
+      status: "approved",
+      estimateNumber: "EST-SCOPE-1",
+      total: 500,
+      approvedTotal: 500,
+      scopeNotes: "Converted estimate scope.",
+      scopeImages: [{ id: "scope-image-1", dataUrl: "data:image/jpeg;base64,scope" }],
+      customer: { id: "cust_scope", name: "Scope Customer", projectName: "Scope Project" },
+      job: { docNumber: "EST-SCOPE-1", date: "2026-08-09" },
+      ui: { docType: "estimate", materialsMode: "itemized" },
+    };
+
+    const result = createInvoiceBuilderDraftFromEstimate(estimate, [], {
+      nowTs: 1770000000000,
+      invoiceNumber: "INV-SCOPE-1",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.draft.scopeNotes).toBe("Converted estimate scope.");
+    expect(result.draft.scopeImages).toEqual(estimate.scopeImages);
+    expect(result.draft.ui).toEqual(expect.objectContaining({ includeInvoiceScopeOnPdf: false }));
+  });
+
+  test("an id-less legacy estimate converts with its stable document identity and remains independently linked", () => {
+    const estimate = {
+      id: "",
+      status: "approved",
+      estimateNumber: "EST-LEGACY-CONVERT",
+      total: 980,
+      approvedTotal: 980,
+      customerId: "cust_legacy",
+      customerName: "Legacy Customer",
+      projectId: "proj_legacy",
+      projectName: "Legacy Project",
+      scopeNotes: "Preserve the legacy estimate scope.",
+      scopeImages: [{ id: "legacy-scope-image", dataUrl: "data:image/jpeg;base64,legacy" }],
+      tradeInsert: { key: "painting", text: "Protect finishes and apply two coats." },
+      additionalNotes: "Net 15. Night work only.",
+      customer: { id: "cust_legacy", name: "Legacy Customer", projectName: "Legacy Project" },
+      job: { docNumber: "EST-LEGACY-CONVERT", date: "2026-08-09", poNumber: "PO-LEGACY" },
+      ui: { docType: "estimate", materialsMode: "itemized" },
+      labor: { lines: [{ id: "labor_legacy", role: "painter", hours: "8", rate: "85" }] },
+      materials: { items: [{ id: "material_legacy", desc: "Paint", qty: "2", priceEach: "150" }] },
+      additionalCharges: { items: [{ id: "charge_legacy", desc: "Night work", qty: "1", priceEach: "120" }] },
+    };
+
+    const result = createInvoiceBuilderDraftFromEstimate(estimate, [], {
+      nowTs: 1770000000000,
+      invoiceNumber: "INV-LEGACY-CONVERT",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.draft).toEqual(expect.objectContaining({
+      sourceEstimateId: "EST-LEGACY-CONVERT",
+      customerId: "cust_legacy",
+      projectId: "proj_legacy",
+      scopeNotes: estimate.scopeNotes,
+      scopeImages: estimate.scopeImages,
+      tradeInsert: estimate.tradeInsert,
+      additionalNotes: estimate.additionalNotes,
+    }));
+    expect(result.draft.labor.lines).toEqual([
+      expect.objectContaining(estimate.labor.lines[0]),
+    ]);
+    expect(result.draft.materials.items).toEqual([
+      expect.objectContaining(estimate.materials.items[0]),
+    ]);
+    expect(result.draft.additionalCharges.items).toEqual([
+      expect.objectContaining(estimate.additionalCharges.items[0]),
+    ]);
+    expect(result.draft.sourceEstimateSnapshot).toEqual(expect.objectContaining({
+      estimateId: "EST-LEGACY-CONVERT",
+      estimateNumber: "EST-LEGACY-CONVERT",
+    }));
+    expect(result.draft.ui.includeInvoiceScopeOnPdf).toBe(false);
+
+    const linkedSummary = buildEstimateInvoiceSummary(estimate, [result.draft]);
+    expect(linkedSummary).toEqual(expect.objectContaining({
+      linkedInvoiceCount: 1,
+      activeInvoiceCount: 1,
+      remainingToInvoice: 0,
+    }));
+
+    result.draft.scopeNotes = "Invoice-only edit";
+    result.draft.labor.lines[0].hours = "12";
+    expect(estimate.scopeNotes).toBe("Preserve the legacy estimate scope.");
+    expect(estimate.labor.lines[0].hours).toBe("8");
+  });
+
+  test("invoice duplication preserves explicit Scope exclusion without deleting content", () => {
+    const source = {
+      id: "inv_scope_source",
+      docType: "invoice",
+      invoiceNumber: "INV-1001",
+      invoiceTotal: 300,
+      total: 300,
+      status: "draft",
+      scopeNotes: "Retained duplicate scope.",
+      scopeImages: [{ id: "scope-image-1", dataUrl: "data:image/jpeg;base64,scope" }],
+      ui: {
+        docType: "invoice",
+        materialsMode: "blanket",
+        includeInvoiceScopeOnPdf: false,
+      },
+    };
+
+    const result = duplicateInvoiceDraft(source, [source], { nowTs: 1770000000000 });
+
+    expect(result.ok).toBe(true);
+    expect(result.draft.ui.includeInvoiceScopeOnPdf).toBe(false);
+    expect(result.draft.scopeNotes).toBe("Retained duplicate scope.");
+    expect(result.draft.scopeImages).toEqual(source.scopeImages);
   });
 });
 

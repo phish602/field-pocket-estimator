@@ -312,6 +312,7 @@ import App from "./App";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { ROUTES } from "./constants/routes";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { advanceToWizardStep } from "./testUtils/wizardTestNavigation";
 
 const projectDetailScreenModule = require("./screens/ProjectDetailScreen");
 
@@ -518,13 +519,21 @@ function expectResetStorage(staleMaterialDesc) {
 async function expectSeededBuilderUi({ builderTitle, staleMaterialDesc }) {
   await screen.findByText(builderTitle);
 
+  // The seeded values span several wizard steps; walk them in order.
+  advanceToWizardStep("customer");
   await waitFor(() => {
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(mockProjectSeed.customerName);
-    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(mockProjectSeed.projectName);
-    expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
-    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
-    expect(screen.queryByText(staleMaterialDesc)).not.toBeInTheDocument();
   });
+
+  advanceToWizardStep("project");
+  expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(mockProjectSeed.projectName);
+
+  advanceToWizardStep("labor");
+  expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
+  expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
+
+  advanceToWizardStep("materials");
+  expect(screen.queryByText(staleMaterialDesc)).not.toBeInTheDocument();
 
   expect(mockPatch).toHaveBeenCalledWith("customer.name", mockProjectSeed.customerName);
   expect(mockPatch).toHaveBeenCalledWith("customer.id", mockProjectSeed.customerId);
@@ -803,20 +812,25 @@ function readLastMountedBuilderState() {
 }
 
 async function expectBuilderFieldValues({ customerName, projectName, laborHours, laborRate }) {
+  advanceToWizardStep("customer");
   await waitFor(() => {
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customerName);
-    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(projectName);
-    expect(screen.getByPlaceholderText("Hours")).toHaveValue(laborHours);
-    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue(laborRate);
   });
+
+  advanceToWizardStep("project");
+  expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(projectName);
+
+  advanceToWizardStep("labor");
+  expect(screen.getByPlaceholderText("Hours")).toHaveValue(laborHours);
+  expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue(laborRate);
 }
 
 async function expectBlankBuilderFields() {
-  await waitFor(() => {
-    expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
-    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("");
-    expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
-    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
+  await expectBuilderFieldValues({
+    customerName: "",
+    projectName: "",
+    laborHours: "",
+    laborRate: "",
   });
 }
 
@@ -889,6 +903,7 @@ describe("App Project Detail seeded new-document launches", () => {
     // and it is not an edit-session route.
     await screen.findByText("Estimate Builder");
     expect(screen.queryByText("Invoice Builder")).not.toBeInTheDocument();
+    advanceToWizardStep("materials");
     expect(screen.getByText("Stale estimate material")).toBeInTheDocument();
 
     const storedState = readStoredEstimatorState();
@@ -956,6 +971,7 @@ describe("App Project Detail seeded new-document launches", () => {
     // and it is not an edit-session route.
     await screen.findByText("Invoice Builder");
     expect(screen.queryByText("Estimate Builder")).not.toBeInTheDocument();
+    advanceToWizardStep("materials");
     expect(screen.getByText("Stale invoice material")).toBeInTheDocument();
 
     const storedState = readStoredEstimatorState();
@@ -1011,6 +1027,7 @@ describe("App Continue Create draft handoff", () => {
       laborRate: "88",
     });
 
+    advanceToWizardStep("materials");
     expect(screen.getByText("Estimate continue material")).toBeInTheDocument();
 
     const storedState = readStoredEstimatorState();
@@ -1171,12 +1188,17 @@ describe("App Continue Create draft handoff", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^open$/i }));
 
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Open Existing Customer");
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Open Existing Project");
-      expect(screen.queryByText("Stale blank invoice material")).not.toBeInTheDocument();
-      expect(screen.getByText("Open existing material")).toBeInTheDocument();
     });
+
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Open Existing Project");
+
+    advanceToWizardStep("materials");
+    expect(screen.queryByText("Stale blank invoice material")).not.toBeInTheDocument();
+    expect(screen.getByText("Open existing material")).toBeInTheDocument();
 
     expect(mockReplaceState).toHaveBeenCalledWith(
       expect.objectContaining({

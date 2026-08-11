@@ -10,7 +10,7 @@ import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
-import PdfPromptModal from "./components/estimator/PdfPromptModal";
+import DocumentFinalizeModal from "./components/estimator/DocumentFinalizeModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
 import CloudBackupInlineStatus from "./components/CloudBackupInlineStatus";
 import { useAiAssist } from "./estimator/aiAssist/useAiAssist";
@@ -67,6 +67,7 @@ import { DEFAULT_SETTINGS, loadSettings } from "./utils/settings";
 import {
   allocateFinancialSummaryFromSource,
   buildFinancialSummaryFromComputed,
+  createInvoiceBuilderDraftFromEstimate,
   generateNextInvoiceNumber,
   normalizeInvoiceRecord,
   readStoredInvoices,
@@ -85,6 +86,10 @@ import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
 import { markCloudBackupDirty } from "./lib/cloudBackupQueue";
 import { useBusinessMutationGuard } from "./lib/BusinessMutationGuardContext";
+import {
+  resolveDocumentEditTarget,
+  updateResolvedDocumentEditTarget,
+} from "./lib/documentEditTarget";
 import useGuidedBuild, {
   buildCanonicalBlankDisplayState,
   hasCoreGuidedDraftState,
@@ -92,6 +97,12 @@ import useGuidedBuild, {
 } from "./estimator/guided/useGuidedBuild";
 import { buildEstimateCockpitSnapshot } from "./components/cockpit/estimateCockpitTotals";
 import CustomerPortalSharePanel from "./components/portal/CustomerPortalSharePanel";
+import useBuilderWizard from "./estimator/wizard/useBuilderWizard";
+import { WIZARD_STEP_IDS, resolveStepTitle } from "./estimator/wizard/steps";
+import BuilderWizardShell from "./components/estimator/BuilderWizardShell";
+import BuilderWizardStep from "./components/estimator/BuilderWizardStep";
+import BuilderReviewStep from "./components/estimator/BuilderReviewStep";
+import BuilderCommandBar from "./components/estimator/BuilderCommandBar";
 import {
   estimateDataUrlBytes,
   isStorageQuotaExceededError,
@@ -151,6 +162,35 @@ const I18N = {
     hours: "Hours",
     rate: "Rate ($/hr)",
     selectRole: "Select role…",
+    documentFinalization: "Document finalization",
+    closeFinalization: "Close finalization",
+    reviewSaveEstimate: "Review & Save Estimate",
+    reviewSaveInvoice: "Review & Save Invoice",
+    finalizeEstimateIntro: "Review the customer-facing estimate PDF before approving the final document.",
+    finalizeInvoiceIntro: "Review the customer-facing invoice PDF before approving the final document.",
+    viewPdf: "View PDF",
+    downloadPreview: "Download Preview",
+    backToEditing: "Back to Editing",
+    approveAndSave: "Approve & Save",
+    saveEstimate: "Save Estimate",
+    approveConvertInvoice: "Approve & Convert to Invoice",
+    markAsSent: "Mark as Sent",
+    markApproved: "Mark Approved",
+    convertToInvoice: "Convert to Invoice",
+    nextActions: "Next actions",
+    savingEstimate: "Saving estimate…",
+    savingInvoice: "Saving invoice…",
+    estimateSaved: "Estimate Saved",
+    invoiceSaved: "Invoice Saved",
+    estimateSavedIntro: "Your estimate is saved and ready for its next step.",
+    invoiceSavedIntro: "Your invoice is saved and ready for its next step.",
+    documentActions: "Document",
+    downloadPdf: "Download PDF",
+    sharePdf: "Share PDF",
+    continueEditing: "Continue Editing",
+    exitBuilder: "Exit Builder",
+    finalizeSaveFailed: "The document could not be saved. Review the details and try again.",
+    invoiceTotal: "Invoice Total",
   },
   es: {
     standard: "Estándar (1.00×)",
@@ -193,6 +233,35 @@ const I18N = {
     hours: "Horas",
     rate: "Tarifa ($/hr)",
     selectRole: "Seleccionar rol…",
+    documentFinalization: "Finalización del documento",
+    closeFinalization: "Cerrar finalización",
+    reviewSaveEstimate: "Revisar y guardar estimado",
+    reviewSaveInvoice: "Revisar y guardar factura",
+    finalizeEstimateIntro: "Revisa el PDF del estimado para el cliente antes de aprobar el documento final.",
+    finalizeInvoiceIntro: "Revisa el PDF de la factura para el cliente antes de aprobar el documento final.",
+    viewPdf: "Ver PDF",
+    downloadPreview: "Descargar vista previa",
+    backToEditing: "Volver a editar",
+    approveAndSave: "Aprobar y guardar",
+    saveEstimate: "Guardar estimación",
+    approveConvertInvoice: "Aprobar y convertir en factura",
+    markAsSent: "Marcar como enviada",
+    markApproved: "Marcar aprobado",
+    convertToInvoice: "Convertir en factura",
+    nextActions: "Siguientes acciones",
+    savingEstimate: "Guardando estimado…",
+    savingInvoice: "Guardando factura…",
+    estimateSaved: "Estimado guardado",
+    invoiceSaved: "Factura guardada",
+    estimateSavedIntro: "Tu estimado está guardado y listo para el siguiente paso.",
+    invoiceSavedIntro: "Tu factura está guardada y lista para el siguiente paso.",
+    documentActions: "Documento",
+    downloadPdf: "Descargar PDF",
+    sharePdf: "Compartir PDF",
+    continueEditing: "Continuar editando",
+    exitBuilder: "Salir del generador",
+    finalizeSaveFailed: "No se pudo guardar el documento. Revisa los detalles e inténtalo de nuevo.",
+    invoiceTotal: "Total de la factura",
   },
 };
 
@@ -879,8 +948,8 @@ function buildCleanBuilderState(docType = "estimate") {
     ...(next.ui || {}),
     docType: normalizedDocType,
     materialsMode: normalizedDocType === "invoice" ? "blanket" : "itemized",
-    includeInvoiceScopeNotes: normalizedDocType === "invoice"
-      ? Boolean(next?.ui?.includeInvoiceScopeNotes)
+    includeInvoiceScopeOnPdf: normalizedDocType === "invoice"
+      ? Boolean(next?.ui?.includeInvoiceScopeOnPdf)
       : false,
   };
   next.scopeNotes = String(next.scopeNotes || "");
@@ -888,6 +957,10 @@ function buildCleanBuilderState(docType = "estimate") {
   next.meta = { lastSavedAt: 0 };
 
   return next;
+}
+
+function resolveInvoiceScopeOnPdfPreference(record) {
+  return record?.ui?.includeInvoiceScopeOnPdf === true;
 }
 
 function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
@@ -900,7 +973,14 @@ function upsertSavedDoc(list, nextRecord, fallbackNumberKey = "") {
     const sameId = recordId && String(item?.id || "").trim() === recordId;
     if (sameId) return true;
     if (!fallbackNumberKey || !fallbackValue) return false;
-    return String(item?.[fallbackNumberKey] || "").trim() === fallbackValue;
+    return [
+      item?.[fallbackNumberKey],
+      item?.job?.docNumber,
+      item?.docNumber,
+      item?.documentNumber,
+      item?.documentNo,
+      item?.number,
+    ].some((value) => String(value || "").trim() === fallbackValue);
   });
 
   if (matchIndex < 0) return [record, ...arr];
@@ -1249,14 +1329,14 @@ function IconTrash() {
   );
 }
 
-function SectionTitleWithIcon({ icon, title, styles, stackStyle }) {
+// The wizard header owns the one semantic step title. Inside the workspace,
+// this smaller task label provides context without repeating that heading or
+// adding a second accessible title.
+function SectionTitleWithIcon({ icon, title }) {
   return (
-    <div style={styles.sectionTitleWithIcon}>
-      <span style={styles.sectionTitleIcon} aria-hidden="true">{icon}</span>
-      <div style={{ ...styles.sectionTitleStack, ...(stackStyle || {}) }}>
-        <div className="pe-section-title" style={styles.sectionTitleText}>{title}</div>
-        <div style={styles.sectionAccentLine} />
-      </div>
+    <div className="pe-task-kicker">
+      {icon ? <span className="pe-task-kicker-icon" aria-hidden="true">{icon}</span> : null}
+      <span className="pe-task-kicker-label">{title}</span>
     </div>
   );
 }
@@ -1265,7 +1345,6 @@ const MAX_SEARCH_RESULTS = 10;
 const DROPDOWN_BLUR_DELAY = 150;
 const SHELL_DOCK_HEIGHT = 98;
 const SHELL_DOCK_HEIGHT_MOBILE = 70;
-const ACTION_BAR_MIN_HEIGHT = 72;
 const ACTION_BAR_GAP = 16;
 const MOBILE_ACTION_BAR_BREAKPOINT = 820;
 const SCOPE_NOTES_MIN_HEIGHT = 170;
@@ -1490,6 +1569,13 @@ export default function EstimateForm(props) {
   const openedDocNumberRef = useRef("");
   const stashedLiveDraftForEditIdRef = useRef("");
   const editSessionCleanupTimerRef = useRef(0);
+  const finalizationPromiseRef = useRef(null);
+  const finalizedEstimateTargetRef = useRef("");
+  // Invoices this builder session itself saved (id and document number). A
+  // stored invoice that this session just authored is a SUCCESSFUL save, not a
+  // stale retained draft, so it must never take the "not found / switch to new
+  // mode" recovery path.
+  const sessionSavedInvoiceKeysRef = useRef(new Set());
   const initialDraftDocType = useMemo(() => {
     if (isEditMode) return "estimate";
     try {
@@ -1502,14 +1588,51 @@ export default function EstimateForm(props) {
     }
   }, [isEditMode]);
   const [suppressDraftPersistenceUntilUnmount, setSuppressDraftPersistenceUntilUnmount] = useState(false);
-  const lang = useMemo(() => {
+  // The builder reads and writes the same global language preference as the
+  // rest of EstiPaid (STORAGE_KEYS.LANG). It is reactive state -- not a
+  // builder-owned copy -- so the in-builder EN/ES control updates the chrome and
+  // section copy in place without recreating the estimator or touching document
+  // state. Cross-surface changes arrive through the storage / pe-localstorage
+  // events every other screen already emits.
+  const readSavedLang = useCallback(() => {
     try {
-      const saved = localStorage.getItem(LANG_KEY);
-      return saved === "es" ? "es" : "en";
+      return localStorage.getItem(LANG_KEY) === "es" ? "es" : "en";
     } catch {
       return "en";
     }
   }, []);
+  const [lang, setLang] = useState(readSavedLang);
+  useEffect(() => {
+    const sync = () => setLang(readSavedLang());
+    const onLocal = (event) => {
+      if (!event?.detail || event.detail.key === LANG_KEY) sync();
+    };
+    window.addEventListener("storage", sync);
+    window.addEventListener("pe-localstorage", onLocal);
+    window.addEventListener("estipaid:lang", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("pe-localstorage", onLocal);
+      window.removeEventListener("estipaid:lang", sync);
+    };
+  }, [readSavedLang]);
+  const applyLang = useCallback((requested) => {
+    const next = requested === "es" ? "es" : "en";
+    if (next === readSavedLang()) {
+      setLang(next);
+      return;
+    }
+    try {
+      localStorage.setItem(LANG_KEY, next);
+    } catch {}
+    setLang(next);
+    // Notify the rest of the app through the existing local-change channels so
+    // any other mounted surface follows the same global preference.
+    dispatchLocalStorageUpdate(LANG_KEY, next);
+    try {
+      window.dispatchEvent(new Event("estipaid:lang"));
+    } catch {}
+  }, [readSavedLang]);
   const t = useMemo(
     () => (key) => I18N[lang]?.[key] || I18N.en?.[key] || key,
     [lang]
@@ -1518,10 +1641,14 @@ export default function EstimateForm(props) {
   const customerNameRef = useRef(null);
   const customerDropdownPortalRef = useRef(null);
   const scopeNotesRef = useRef(null);
+  const [scopeEditorMountVersion, setScopeEditorMountVersion] = useState(0);
+  const setScopeNotesNode = useCallback((node) => {
+    scopeNotesRef.current = node;
+    if (node) setScopeEditorMountVersion((version) => version + 1);
+  }, []);
   const scopeImageInputRef = useRef(null);
   const scopeImageSelectionRef = useRef(null);
   const additionalNotesRef = useRef(null);
-  const actionBarRef = useRef(null);
   const didNormalizeLaborRef = useRef(false);
   const rowEnterTimerRef = useRef([]);
   const totalPulseTimerRef = useRef({ labor: null, materials: null, estimate: null });
@@ -1565,8 +1692,7 @@ export default function EstimateForm(props) {
   const additionalNotes = String(state?.additionalNotes || "");
   const [scopeFormatState, setScopeFormatState] = useState({ bold: false, italic: false, underline: false, bullet: false, numbered: false, heading: false });
   const guidedDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
-  const invoiceScopeNotesEnabled = guidedDocType === "invoice" && Boolean(state?.ui?.includeInvoiceScopeNotes);
-  const showScopeNotesEditor = guidedDocType === "estimate" || invoiceScopeNotesEnabled;
+  const invoiceScopeOnPdfEnabled = guidedDocType === "invoice" && resolveInvoiceScopeOnPdfPreference(state);
 
   // ── Section AI Assist ──────────────────────────────────────────────────────
   const laborAssist = useAiAssist("labor", state);
@@ -1798,13 +1924,7 @@ export default function EstimateForm(props) {
   const [dropdownHoverKey, setDropdownHoverKey] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
-  const [actionBarHeight, setActionBarHeight] = useState(ACTION_BAR_MIN_HEIGHT);
-  const [specialConditionsOpen, setSpecialConditionsOpen] = useState(() => !isSpecialConditionsSectionComplete(
-    deriveSteppedPercentSelection(state?.labor?.hazardPct),
-    state?.labor?.hazardPct,
-    deriveSteppedPercentSelection(state?.labor?.riskPct),
-    state?.labor?.riskPct
-  ));
+  const [specialConditionsOpen, setSpecialConditionsOpen] = useState(true);
   const [activeSpecialConditionsCustomField, setActiveSpecialConditionsCustomField] = useState("");
   const [specialConditionsPendingCommitByField, setSpecialConditionsPendingCommitByField] = useState(SPECIAL_CONDITIONS_PENDING_DEFAULT);
   const [isMobileActionBarViewport, setIsMobileActionBarViewport] = useState(() => {
@@ -1821,7 +1941,7 @@ export default function EstimateForm(props) {
   const [laborOpen, setLaborOpen] = useState(true);
   const [materialsOpen, setMaterialsOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(true);
-  const [pdfPromptOpen, setPdfPromptOpen] = useState(false);
+  const [finalizationOpen, setFinalizationOpen] = useState(false);
   const [savePrompt, setSavePrompt] = useState(null);
   const [saveNeedsAttention, setSaveNeedsAttention] = useState(false);
   const [savePulse, setSavePulse] = useState(false);
@@ -2060,7 +2180,11 @@ export default function EstimateForm(props) {
       stashedLiveDraftForEditIdRef.current = editingRecordId;
     }
     const list = isInvoiceEditMode ? readStoredInvoices() : readSavedDocList(ESTIMATES_KEY);
-    const match = list.find((x) => String(x?.id || "").trim() === String(editingRecordId || "").trim());
+    const match = resolveDocumentEditTarget(
+      list,
+      editingRecordId,
+      isInvoiceEditMode ? "invoice" : "estimate"
+    );
     const applyHydratedState = replaceStateRef.current;
     if (!match || typeof applyHydratedState !== "function") {
       if (isInvoiceEditMode && typeof applyHydratedState === "function") {
@@ -2076,7 +2200,7 @@ export default function EstimateForm(props) {
         setCustomerSearchQuery("");
         setProjectSeedSummary(null);
         applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
-        setSpecialConditionsOpen(false);
+        setSpecialConditionsOpen(true);
         setActiveSpecialConditionsCustomField("");
         setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
         pendingSpecialConditionsAutoCollapseRef.current = false;
@@ -2115,6 +2239,9 @@ export default function EstimateForm(props) {
         }
       : null;
     const createdAt = Number(match?.createdAt || Date.now()) || Date.now();
+    const authoritativeSavedDocId = isInvoiceEditMode
+      ? String(match?.id || match?.meta?.savedDocId || "").trim()
+      : String(editingRecordId || "").trim();
     const hydrated = {
       ...match,
       ui: {
@@ -2123,19 +2250,14 @@ export default function EstimateForm(props) {
       },
       meta: {
         ...(match?.meta || {}),
-        savedDocId: String(match?.id || editingRecordId),
+        // A legacy Invoice number can locate an id-less record, but it is not
+        // promoted into authoritative identity merely by opening the editor.
+        savedDocId: authoritativeSavedDocId,
         savedDocCreatedAt: createdAt,
       },
     };
     applyHydratedState(hydrated, { persistNow: false, persistDraft: false });
-    const hydratedHazardSelection = deriveSteppedPercentSelection(hydrated?.labor?.hazardPct);
-    const hydratedRiskSelection = deriveSteppedPercentSelection(hydrated?.labor?.riskPct);
-    setSpecialConditionsOpen(!isSpecialConditionsSectionComplete(
-      hydratedHazardSelection,
-      hydrated?.labor?.hazardPct,
-      hydratedRiskSelection,
-      hydrated?.labor?.riskPct
-    ));
+    setSpecialConditionsOpen(true);
     setActiveSpecialConditionsCustomField("");
     setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
     pendingSpecialConditionsAutoCollapseRef.current = false;
@@ -2163,9 +2285,7 @@ export default function EstimateForm(props) {
     const liveLines = Array.isArray(state?.labor?.lines) ? state.labor.lines : [];
     if (liveLines.some((line) => isMeaningfulLaborLine(line))) return;
 
-    const storedInvoice = readStoredInvoices().find(
-      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
-    );
+    const storedInvoice = resolveDocumentEditTarget(readStoredInvoices(), editingRecordId, "invoice");
     const storedLabor = storedInvoice?.labor && typeof storedInvoice.labor === "object"
       ? storedInvoice.labor
       : null;
@@ -2186,8 +2306,10 @@ export default function EstimateForm(props) {
   useEffect(() => {
     if (!isEditMode || isInvoiceEditMode || !editingRecordId) return;
 
-    const storedEstimate = readSavedDocList(ESTIMATES_KEY).find(
-      (entry) => String(entry?.id || "").trim() === String(editingRecordId || "").trim()
+    const storedEstimate = resolveDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      editingRecordId,
+      "estimate"
     );
     if (!storedEstimate || typeof storedEstimate !== "object") return;
 
@@ -2305,6 +2427,19 @@ export default function EstimateForm(props) {
     const invoiceNumber = String(state?.invoiceNumber || state?.job?.docNumber || "").trim();
     if (!savedDocId && !invoiceNumber) return;
 
+    // This recovery exists for ONE case: the shared live draft still holds a
+    // copy of an invoice that was already saved elsewhere, and the builder is
+    // being opened fresh in new-invoice mode. It must not fire for an invoice
+    // THIS session just saved -- that is a successful finalization, and wiping
+    // it here is what turned "Approve & Save" into an empty builder while
+    // reporting a false "Invoice not found".
+    if (
+      sessionSavedInvoiceKeysRef.current.has(savedDocId)
+      || sessionSavedInvoiceKeysRef.current.has(invoiceNumber)
+    ) {
+      return;
+    }
+
     const invoices = readStoredInvoices();
     const matchesSavedInvoice = invoices.some((entry) => {
       const entryId = String(entry?.id || "").trim();
@@ -2330,7 +2465,7 @@ export default function EstimateForm(props) {
     setCustomerSearchQuery("");
     setProjectSeedSummary(null);
     applyHydratedState(buildCleanBuilderState("invoice"), { persistNow: false, persistDraft: false });
-    setSpecialConditionsOpen(false);
+    setSpecialConditionsOpen(true);
     setActiveSpecialConditionsCustomField("");
     setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
     pendingSpecialConditionsAutoCollapseRef.current = false;
@@ -3309,17 +3444,6 @@ export default function EstimateForm(props) {
     };
   }, [dropdownOpen]);
 
-  useEffect(() => {
-    const updateActionBarHeight = () => {
-      const h = actionBarRef.current?.getBoundingClientRect?.().height;
-      if (!h) return;
-      const next = Math.max(ACTION_BAR_MIN_HEIGHT, Math.ceil(h));
-      setActionBarHeight((prev) => (prev === next ? prev : next));
-    };
-    updateActionBarHeight();
-    window.addEventListener("resize", updateActionBarHeight);
-    return () => window.removeEventListener("resize", updateActionBarHeight);
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -3334,15 +3458,12 @@ export default function EstimateForm(props) {
     return () => mobileQuery.removeEventListener("change", syncViewportMode);
   }, []);
 
-  const actionBarChromeVisible = typeof shellBottomChromeVisible === "boolean"
-    ? shellBottomChromeVisible
-    : mobileBottomChromeVisible;
-  // embeddedInShell is never passed true by the real app shell — the actual
-  // signal that we're paired with shell bottom chrome (mobile bottom nav) is
-  // shellBottomChromeVisible being supplied at all. Without this, the action
-  // bar's scroll-reactive hide/reveal transform never applied.
+  // The App shell owns scroll-direction detection and passes its established
+  // bottom-chrome visibility signal here. The builder consumes that signal
+  // directly; it never installs a competing scroll listener or timing model.
   const shouldSyncActionBarWithBottomChrome =
     embeddedInShell || typeof shellBottomChromeVisible === "boolean";
+  const commandDockVisible = shellBottomChromeVisible !== false && !shellOverlayOpen;
   const scopeTemplateSourceId = String(state?.meta?.savedDocId || editingRecordId || "").trim();
   const scopeTemplateSourceNumber = String(
     state?.job?.docNumber
@@ -3381,13 +3502,16 @@ export default function EstimateForm(props) {
     if (!el || el.tagName === "TEXTAREA") return;
     const current = extractScopeTextFromElement(el).replace(/\n+$/, "");
     if (current === scopeNotes) return;
-    el.innerText = scopeNotes;
+    el.textContent = scopeNotes;
     if (!scopeNotes.trim()) {
       el.setAttribute("data-empty", "true");
     } else {
       el.removeAttribute("data-empty");
     }
-  }, [scopeNotes]);
+  // The builder unmounts inactive steps. Include the mount version so a newly
+  // mounted Scope editor is hydrated from the unchanged in-memory record when
+  // a contractor returns via Back or Review's Edit action.
+  }, [scopeNotes, scopeEditorMountVersion]);
 
   useLayoutEffect(() => {
     const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
@@ -4955,7 +5079,7 @@ export default function EstimateForm(props) {
       localStorage.removeItem(PENDING_CUSTOMER_CREATE_KEY);
       localStorage.removeItem(PROJECT_CREATE_SEED_KEY);
     } catch {}
-    setSpecialConditionsOpen(false);
+    setSpecialConditionsOpen(true);
     setActiveSpecialConditionsCustomField("");
     setSpecialConditionsPendingCommitByField(SPECIAL_CONDITIONS_PENDING_DEFAULT);
     pendingSpecialConditionsAutoCollapseRef.current = false;
@@ -5056,8 +5180,42 @@ export default function EstimateForm(props) {
     pendingSpecialConditionsAutoCollapseRef.current = hasValidCommit;
   };
 
-  const onSaveNow = async () => {
-    if (guided?.enabled) return;
+  const exitBuilderAfterSave = ({ saveDocType, shouldClearCreateDraftAfterSave = false } = {}) => {
+    try {
+      const resolvedSaveDocType = saveDocType === "invoice" ? "invoice" : "estimate";
+      const navEvent = isEditMode
+        ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
+        : (resolvedSaveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
+      if (isEditMode) {
+        clearPendingEditTarget(editingTargetType);
+        // Preserve the existing edit-session boundary: the shared Create draft
+        // is restored only when the user deliberately exits the saved record.
+        restoreLiveDraftFromEditSessionStash();
+        stashedLiveDraftForEditIdRef.current = "";
+        openedEditIdRef.current = "";
+        openedDocNumberRef.current = "";
+        setEditTarget(null);
+      }
+      if (shouldClearCreateDraftAfterSave) {
+        setSuppressDraftPersistenceUntilUnmount(true);
+        clearSuccessfulCreateDraftChamber();
+      }
+      window.dispatchEvent(new CustomEvent(navEvent, {
+        detail: { skipCreateDraftSave: shouldClearCreateDraftAfterSave },
+      }));
+    } catch {}
+  };
+
+  const onSaveNow = async (options = {}) => {
+    const exitAfterSave = options?.exitAfterSave !== false;
+    const showPrompt = options?.showPrompt !== false;
+    const stopSave = (tone, message, details = {}) => {
+      if (showPrompt) setSavePrompt({ tone, message });
+      return { ok: false, tone, message, ...details };
+    };
+    if (guided?.enabled) {
+      return stopSave("warn", "Finish or close Guided Build before saving this document.");
+    }
     try {
       triggerHaptic();
       const customerName = String(state?.customer?.name || selectedProfile?.displayName || "").trim();
@@ -5067,11 +5225,7 @@ export default function EstimateForm(props) {
 
       if (missing.length > 0) {
         const missingLabel = missing.map((it) => (it === "customer" ? "Customer" : "Date")).join(", ");
-        setSavePrompt({
-          tone: "warn",
-          message: `Cannot save yet. Missing: ${missingLabel}.`,
-        });
-        return;
+        return stopSave("warn", `Cannot save yet. Missing: ${missingLabel}.`);
       }
 
       const now = Date.now();
@@ -5082,9 +5236,12 @@ export default function EstimateForm(props) {
         return String(editorText || state?.scopeNotes || "");
       })();
       const forcedEditId = isEditMode ? String(editingRecordId || "").trim() : "";
-      const savedDocId = forcedEditId || String(state?.meta?.savedDocId || "").trim();
       const openedEditId = String(openedEditIdRef.current || "").trim();
       const currentMetaSavedDocId = String(state?.meta?.savedDocId || "").trim();
+      const savedDocId = isInvoiceEditMode && isEditMode
+        ? currentMetaSavedDocId
+        : (forcedEditId || currentMetaSavedDocId);
+      const editLookupTarget = forcedEditId || savedDocId;
       if (
         isEditMode
         && openedEditId
@@ -5093,8 +5250,7 @@ export default function EstimateForm(props) {
           || (currentMetaSavedDocId && currentMetaSavedDocId !== openedEditId)
         )
       ) {
-        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
-        return;
+        return stopSave("error", "Edit session mismatch. Please reopen the estimate.");
       }
       const savedDocCreatedAt = Number(state?.meta?.savedDocCreatedAt || 0);
       const existingEstimates = readSavedDocList(ESTIMATES_KEY);
@@ -5110,16 +5266,18 @@ export default function EstimateForm(props) {
         ? (docNumberRaw || generateNextInvoiceNumber(existingInvoices))
         : (docNumberRaw || generateNextEstimateNumber(existingEstimates));
 
-      const findById = (arr) => arr.find((x) => String(x?.id || "").trim() === savedDocId);
-      const existingById = savedDocId
+      const existingById = editLookupTarget
         ? (
           isInvoiceEditMode
-            ? findById(existingInvoices)
-            : (findById(existingEstimates) || findById(existingInvoices))
+            ? resolveDocumentEditTarget(existingInvoices, editLookupTarget, "invoice")
+            : (
+              resolveDocumentEditTarget(existingEstimates, editLookupTarget, "estimate")
+              || resolveDocumentEditTarget(existingInvoices, editLookupTarget, "estimate")
+            )
         )
         : null;
 
-      const matchedByNumber = !savedDocId && docNumber
+      const matchedByNumber = !editLookupTarget && docNumber
         ? (
           uiDocType === "invoice"
             ? (
@@ -5131,27 +5289,32 @@ export default function EstimateForm(props) {
         : null;
 
       if (isEditMode && !existingById) {
-        setSavePrompt({ tone: "error", message: `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Unable to update.` });
-        return;
+        return stopSave("error", `${isInvoiceEditMode ? "Invoice" : "Estimate"} not found. Unable to update.`);
       }
 
       const existingMatch = existingById || matchedByNumber;
-      const recordId = savedDocId || String(existingMatch?.id || "").trim() || createSavedDocId();
-      if (isEditMode && openedEditId && recordId !== openedEditId) {
-        setSavePrompt({ tone: "error", message: "Edit session mismatch. Please reopen the estimate." });
-        return;
-      }
+      const existingCanonicalId = String(
+        existingMatch?.id || existingMatch?.meta?.savedDocId || ""
+      ).trim();
+      const shouldPromoteIdlessLegacyInvoice = Boolean(
+        isInvoiceEditMode
+        && isEditMode
+        && existingMatch
+        && !existingCanonicalId
+      );
+      const recordId = existingCanonicalId
+        || (shouldPromoteIdlessLegacyInvoice ? "" : savedDocId)
+        || createSavedDocId();
       const createdAt = savedDocCreatedAt > 0
         ? savedDocCreatedAt
         : Number(existingMatch?.createdAt || now) || now;
 
       const mutationAccess = await ensureCanMutateBusinessData("local_save");
       if (!mutationAccess?.ok) {
-        setSavePrompt({
-          tone: "error",
-          message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.",
-        });
-        return;
+        return stopSave(
+          "error",
+          mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device."
+        );
       }
 
       const persistedDraft = saveNow?.(
@@ -5163,7 +5326,24 @@ export default function EstimateForm(props) {
         const raw = localStorage.getItem(STORAGE_KEY);
         persistedState = raw ? JSON.parse(raw) : null;
       }
-      if (saveDocType === "invoice" && persistedState && typeof persistedState === "object") {
+      if (!persistedState || typeof persistedState !== "object") {
+        return stopSave("error", "Save failed. Please try again.");
+      }
+      if (!isEditMode) {
+        let persistedDraftRaw = "";
+        try {
+          persistedDraftRaw = String(localStorage.getItem(STORAGE_KEY) || "");
+        } catch {
+          persistedDraftRaw = "";
+        }
+        if (persistedDraftRaw !== JSON.stringify(persistedState)) {
+          return stopSave("error", "Save failed. Please try again.");
+        }
+      }
+      // Verify the exact draft bytes before adding invoice-only record fields.
+      // Those fields intentionally enrich the saved invoice and are not part of
+      // the authoritative draft write performed by saveNow().
+      if (saveDocType === "invoice") {
         persistedState = {
           ...persistedState,
           scopeNotes: liveScopeNotes,
@@ -5175,30 +5355,13 @@ export default function EstimateForm(props) {
             ...(persistedState?.ui || {}),
             ...(state?.ui || {}),
             docType: "invoice",
-            includeInvoiceScopeNotes: Boolean(state?.ui?.includeInvoiceScopeNotes),
+            includeInvoiceScopeOnPdf: resolveInvoiceScopeOnPdfPreference(state),
           },
         };
       }
-      if (!persistedState || typeof persistedState !== "object") {
-        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
-        return;
-      }
-      if (!isEditMode) {
-        let persistedDraftRaw = "";
-        try {
-          persistedDraftRaw = String(localStorage.getItem(STORAGE_KEY) || "");
-        } catch {
-          persistedDraftRaw = "";
-        }
-        if (persistedDraftRaw !== JSON.stringify(persistedState)) {
-          setSavePrompt({ tone: "error", message: STORAGE_FULL_MESSAGE });
-          return;
-        }
-      }
 
       if (saveDocType === "invoice" && Number(totalRevenue || 0) <= 0) {
-        setSavePrompt({ tone: "warn", message: "Cannot save invoice yet. Invoice total must be greater than $0.00." });
-        return;
+        return stopSave("warn", "Cannot save invoice yet. Invoice total must be greater than $0.00.");
       }
 
       const updatedAt = Date.now();
@@ -5357,8 +5520,7 @@ export default function EstimateForm(props) {
         : resolveProjectPersistenceTarget(projectContext, currentProjects, { nowTs: updatedAt });
       const projectRecord = resolvedProject && typeof resolvedProject === "object" ? resolvedProject : null;
       if (!projectRecord || !String(projectRecord.id || "").trim()) {
-        setSavePrompt({ tone: "error", message: "Save failed. Please try again." });
-        return;
+        return stopSave("error", "Save failed. Please try again.");
       }
       const resolvedCustomerId = liveCustomerId;
       const previousEstimateProjectId = saveDocType === "estimate"
@@ -5378,7 +5540,7 @@ export default function EstimateForm(props) {
           const confirmed = window.confirm(
             "Move this estimate to an existing project?\n\nEmpty auto-created project will be removed.\nOriginal project will remain."
           );
-          if (!confirmed) return;
+          if (!confirmed) return stopSave("warn", "Save canceled.", { canceled: true });
         }
       }
       const nextProjects = existingExplicitProject
@@ -5469,7 +5631,7 @@ export default function EstimateForm(props) {
           date: String(state?.job?.date || "").trim(),
         });
         const linkedEstimate = savedInvoice.sourceEstimateId
-          ? existingEstimates.find((entry) => String(entry?.id || "").trim() === savedInvoice.sourceEstimateId)
+          ? resolveDocumentEditTarget(existingEstimates, savedInvoice.sourceEstimateId, "estimate")
           : null;
         const invoiceValidation = validateInvoiceAgainstEstimate({
           invoice: savedInvoice,
@@ -5478,13 +5640,27 @@ export default function EstimateForm(props) {
           ignoreInvoiceId: recordId,
         });
         if (!invoiceValidation.ok) {
-          setSavePrompt({ tone: "error", message: invoiceValidation.message || "Invoice exceeds the remaining amount to invoice." });
-          return;
+          return stopSave(
+            "error",
+            invoiceValidation.message || "Invoice exceeds the remaining amount to invoice."
+          );
         }
 
         writeStoredProjects(nextProjects);
-        const nextInvoices = upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
+        // The resolver already identified the exact existing object. Replace
+        // that object directly so editing its display number cannot append a
+        // second Invoice or overwrite a different same-number record.
+        const nextInvoices = existingMatch
+          ? [savedInvoice, ...existingInvoices.filter((entry) => entry !== existingMatch)]
+          : upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
         writeStoredInvoices(nextInvoices);
+        // Claim this invoice for the session BEFORE anything can react to the
+        // new stored record, so the retained-draft recovery can tell a
+        // successful save apart from a stale ghost draft.
+        [savedInvoice?.id, recordId, savedInvoice?.invoiceNumber, invoiceNumber].forEach((key) => {
+          const next = String(key || "").trim();
+          if (next) sessionSavedInvoiceKeysRef.current.add(next);
+        });
         captureDocumentSave({
           docType: "invoice",
           mode: isEditMode ? "edit" : "create",
@@ -5525,7 +5701,9 @@ export default function EstimateForm(props) {
           // New saved estimates start their lifecycle as Draft so they remain
           // safely deletable until the user marks them Awaiting Response / sent.
           // Editing an existing estimate preserves whatever status it already had.
-          status: isEditMode ? String(baseRecord?.status || "").trim() : "draft",
+          status: existingMatch
+            ? String(baseRecord?.status || existingMatch?.status || "draft").trim().toLowerCase()
+            : "draft",
         };
         const nextEstimates = upsertSavedDoc(existingEstimates, savedEstimate, "estimateNumber");
         const reassignmentCleanup = {
@@ -5571,51 +5749,270 @@ export default function EstimateForm(props) {
       const savedLabel = docNumber
         ? `${saveDocType === "invoice" ? "Invoice" : "Estimate"} #${docNumber}`
         : (projectName || customerName);
-      setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
+      if (showPrompt) {
+        setSavePrompt({ tone: "success", message: `${isEditMode ? "Updated" : "Saved"}${savedLabel ? `: ${savedLabel}` : ""}` });
+      }
       const shouldClearCreateDraftAfterSave = !isEditMode && saveDocType === "estimate";
-      if (shouldClearCreateDraftAfterSave) {
+      const saveResult = {
+        ok: true,
+        saveDocType,
+        documentId: recordId,
+        documentNumber: docNumber,
+        lifecycleStatus: saveDocType === "estimate"
+          ? String(
+            resolveDocumentEditTarget(readSavedDocList(ESTIMATES_KEY), recordId, "estimate")?.status
+            || "draft"
+          ).trim().toLowerCase()
+          : "",
+        shouldClearCreateDraftAfterSave,
+      };
+      if (exitAfterSave && shouldClearCreateDraftAfterSave) {
         setSuppressDraftPersistenceUntilUnmount(true);
         clearSuccessfulCreateDraftChamber();
       }
 
-      // Keep the edit-session target (and persistDraft:false) active for the
-      // entire success-toast delay below. Clearing it earlier flips this
-      // component's live-draft autosave back on while it is still mounted and
-      // still holding the just-saved record's data, racing the deferred
-      // navigate-away below and risking clobbering the shared live Create
-      // draft with the saved record. Clearing it in the same tick as the
-      // navigate dispatch (like onCancelEdit does) removes that window.
-      setTimeout(() => {
-        try {
-          const navEvent = isEditMode
-            ? (isInvoiceEditMode ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates")
-            : (saveDocType === "invoice" ? "estipaid:navigate-invoices" : "estipaid:navigate-estimates");
-          if (isEditMode) {
-            clearPendingEditTarget(editingTargetType);
-            // Authoritative restore: force the live Create draft slot back to
-            // whatever it held before this edit session opened, regardless of
-            // any autosave/timing path that may have touched it in between.
-            restoreLiveDraftFromEditSessionStash();
-            stashedLiveDraftForEditIdRef.current = "";
-            openedEditIdRef.current = "";
-            openedDocNumberRef.current = "";
-            setEditTarget(null);
-          }
-          if (shouldClearCreateDraftAfterSave) {
-            clearSuccessfulCreateDraftChamber();
-          }
-          window.dispatchEvent(new CustomEvent(navEvent, {
-            detail: { skipCreateDraftSave: shouldClearCreateDraftAfterSave },
-          }));
-        } catch {}
-      }, 180);
+      // Legacy direct callers still receive the existing save-then-exit path.
+      // Finalization approval opts out so the same modal can show Saved state;
+      // its Exit Builder action invokes this exact extracted navigation path.
+      if (exitAfterSave) {
+        setTimeout(() => exitBuilderAfterSave(saveResult), 180);
+      }
+      return saveResult;
     } catch (error) {
-      setSavePrompt({
-        tone: "error",
-        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again.",
-      });
+      return stopSave(
+        "error",
+        isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Save failed. Please try again."
+      );
     }
   };
+
+  const finalizedEstimateTarget = (candidate = "") => String(
+    candidate
+    || finalizedEstimateTargetRef.current
+    || state?.meta?.savedDocId
+    || editingRecordId
+    || state?.job?.docNumber
+    || state?.estimateNumber
+    || ""
+  ).trim();
+
+  const convertApprovedEstimate = async (candidate, options = {}) => {
+    const estimateTarget = finalizedEstimateTarget(candidate);
+    if (!estimateTarget) {
+      return { ok: false, message: "The saved estimate identity could not be verified." };
+    }
+
+    if (options?.mutationAccessChecked !== true) {
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        return {
+          ok: false,
+          message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.",
+        };
+      }
+    }
+
+    const durableEstimate = resolveDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      estimateTarget,
+      "estimate"
+    );
+    if (!durableEstimate || String(durableEstimate?.status || "").trim().toLowerCase() !== "approved") {
+      return { ok: false, message: "The approved estimate could not be verified." };
+    }
+
+    const currentInvoices = readStoredInvoices();
+    const conversion = createInvoiceBuilderDraftFromEstimate(durableEstimate, currentInvoices);
+    if (!conversion?.ok || !conversion?.draft) {
+      return {
+        ok: false,
+        message: conversion?.message || "Unable to create an invoice from the approved estimate.",
+      };
+    }
+
+    let nextInvoices;
+    try {
+      nextInvoices = writeStoredInvoices([conversion.draft, ...currentInvoices]);
+    } catch (error) {
+      return {
+        ok: false,
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Unable to save the invoice.",
+      };
+    }
+
+    const durableInvoice = resolveDocumentEditTarget(
+      nextInvoices,
+      conversion.draft.id,
+      "invoice"
+    );
+    if (
+      !durableInvoice
+      || String(durableInvoice?.sourceEstimateId || "").trim() !== estimateTarget
+    ) {
+      return { ok: false, message: "The converted invoice could not be verified." };
+    }
+
+    try {
+      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(durableInvoice.id || ""));
+      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+    } catch {
+      return {
+        ok: false,
+        message: "The invoice was created, but EstiPaid could not open it automatically.",
+      };
+    }
+
+    try {
+      window.dispatchEvent(new Event("estipaid:invoices-changed"));
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+    } catch {}
+
+    return {
+      ok: true,
+      saveDocType: "invoice",
+      documentId: durableInvoice.id,
+      documentNumber: durableInvoice.invoiceNumber,
+      sourceEstimateId: estimateTarget,
+    };
+  };
+
+  const updateFinalizedEstimateStatus = async (nextStatus) => {
+    const normalizedStatus = nextStatus === "pending" ? "pending" : "approved";
+    const estimateTarget = finalizedEstimateTarget();
+    if (!estimateTarget) {
+      return { ok: false, message: "The saved estimate identity could not be verified." };
+    }
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      return {
+        ok: false,
+        message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.",
+      };
+    }
+
+    const update = updateResolvedDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      estimateTarget,
+      "estimate",
+      (estimate) => ({ ...estimate, status: normalizedStatus })
+    );
+    if (!update) {
+      return { ok: false, message: "Unable to update this estimate because its identity is missing or ambiguous." };
+    }
+
+    try {
+      writeStoredEstimatesLocal(update.records);
+    } catch (error) {
+      return {
+        ok: false,
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Unable to save the estimate status.",
+      };
+    }
+
+    const durableEstimate = resolveDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      estimateTarget,
+      "estimate"
+    );
+    if (!durableEstimate || String(durableEstimate?.status || "").trim().toLowerCase() !== normalizedStatus) {
+      return { ok: false, message: "The estimate status update could not be verified." };
+    }
+
+    patch("status", normalizedStatus);
+    return {
+      ok: true,
+      lifecycleStatus: normalizedStatus,
+      message: normalizedStatus === "pending" ? "Estimate marked as sent." : "Estimate marked approved.",
+    };
+  };
+
+  const completeEstimateApprovalAndConversion = async (saveResult) => {
+    const estimateTarget = finalizedEstimateTarget(
+      saveResult?.documentId || saveResult?.documentNumber
+    );
+    if (!estimateTarget) {
+      return { ok: false, message: "The saved estimate identity could not be verified." };
+    }
+
+    const mutationAccess = await ensureCanMutateBusinessData("local_save");
+    if (!mutationAccess?.ok) {
+      return {
+        ok: false,
+        message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.",
+      };
+    }
+
+    const approval = updateResolvedDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      estimateTarget,
+      "estimate",
+      (estimate) => ({ ...estimate, status: "approved" })
+    );
+    if (!approval) {
+      return { ok: false, message: "Unable to approve this estimate because its identity is missing or ambiguous." };
+    }
+
+    try {
+      writeStoredEstimatesLocal(approval.records);
+    } catch (error) {
+      return {
+        ok: false,
+        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Unable to save the approved estimate.",
+      };
+    }
+
+    const durableEstimate = resolveDocumentEditTarget(
+      readSavedDocList(ESTIMATES_KEY),
+      estimateTarget,
+      "estimate"
+    );
+    if (!durableEstimate || String(durableEstimate?.status || "").trim().toLowerCase() !== "approved") {
+      return { ok: false, message: "The approved estimate could not be verified." };
+    }
+    patch("status", "approved");
+    return convertApprovedEstimate(estimateTarget, { mutationAccessChecked: true });
+  };
+
+  const runFinalizationTask = (createTask) => {
+    if (finalizationPromiseRef.current) return finalizationPromiseRef.current;
+
+    const task = Promise.resolve().then(createTask);
+    finalizationPromiseRef.current = task;
+    task.finally(() => {
+      if (finalizationPromiseRef.current === task) finalizationPromiseRef.current = null;
+    });
+    return task;
+  };
+
+  const onFinalizeSave = () => runFinalizationTask(async () => {
+    const saveResult = await onSaveNow({ exitAfterSave: false, showPrompt: false });
+    if (saveResult?.ok && saveResult?.saveDocType === "estimate") {
+      finalizedEstimateTargetRef.current = String(
+        saveResult?.documentId || saveResult?.documentNumber || ""
+      ).trim();
+    }
+    return saveResult;
+  });
+
+  const onFinalizeApproveConvert = () => runFinalizationTask(async () => {
+    const saveResult = await onSaveNow({ exitAfterSave: false, showPrompt: false });
+    if (!saveResult?.ok || saveResult?.saveDocType === "invoice") return saveResult;
+    finalizedEstimateTargetRef.current = String(
+      saveResult?.documentId || saveResult?.documentNumber || ""
+    ).trim();
+    return completeEstimateApprovalAndConversion(saveResult);
+  });
+
+  const onFinalizeConvertInvoice = () => runFinalizationTask(
+    () => convertApprovedEstimate(finalizedEstimateTarget())
+  );
 
   const exportPDF = async (mode = "download") => {
     triggerHaptic();
@@ -5688,8 +6085,8 @@ export default function EstimateForm(props) {
       const projectNumber = String(exportState?.customer?.projectNumber || "").trim();
       const poNumber = String(exportState?.job?.poNumber || "").trim();
       const docDate = String(exportState?.job?.date || "").trim();
-      const invoiceScopeNotesEnabled = uiDocType === "invoice" && Boolean(exportState?.ui?.includeInvoiceScopeNotes);
-      const includeNotes = uiDocType === "estimate" || invoiceScopeNotesEnabled;
+      const exportInvoiceScopeOnPdfEnabled = uiDocType === "invoice" && resolveInvoiceScopeOnPdfPreference(exportState);
+      const includeNotes = uiDocType === "estimate" || exportInvoiceScopeOnPdfEnabled;
       const additionalNotesText = String(exportState?.additionalNotes || "").trim();
       const materialsBlanketDescription = String(exportState?.materials?.materialsBlanketDescription || "").trim();
       const tradeBlocks = uiDocType === "estimate"
@@ -5830,7 +6227,7 @@ export default function EstimateForm(props) {
           ["Project Address", resolvedProject || customerAddress || "-"],
           ["PO #", poNumber || "-"],
         ],
-        scopeImages: Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
+        scopeImages: includeNotes && Array.isArray(exportState?.scopeImages) ? exportState.scopeImages : [],
         laborRows,
         materialRows: materialsRows,
         additionalChargeRows,
@@ -5840,18 +6237,13 @@ export default function EstimateForm(props) {
         paymentStatus: uiDocType === "invoice" ? String(exportState?.paymentStatus || "").trim() : "",
         summaryRows,
         scopeNotes: printableScopeNotes,
-        includeInvoiceScopeNotes: invoiceScopeNotesEnabled,
+        includeInvoiceScopeOnPdf: exportInvoiceScopeOnPdfEnabled,
         additionalNotes: additionalNotesText,
       }, mode);
     } catch (err) {
       try { console.error(err); } catch {}
       window.alert("PDF export failed.");
     }
-  };
-
-  const onPdf = () => {
-    triggerHaptic();
-    setPdfPromptOpen(true);
   };
 
   const uiDocType = state?.ui?.docType === "invoice" ? "invoice" : "estimate";
@@ -5871,7 +6263,7 @@ export default function EstimateForm(props) {
   const editSecondaryTitle = `#${editDocNumberRaw || "(no number)"}`;
   const editUpdatedTs = getMostRecentSavedTimestamp(state);
   const editUpdatedLabel = editUpdatedTs > 0 ? `Last updated ${formatSavedTimestamp(editUpdatedTs)}` : "";
-  const totalLabel = uiDocType === "invoice" ? "Invoice Total" : "Estimate Total";
+  const totalLabel = uiDocType === "invoice" ? t("invoiceTotal") : t("estimateTotal");
   const materialsAssistMode = resolveMaterialsAssistMode(state?.ui?.materialsMode);
   const materialsMode = state?.ui?.materialsMode === "itemized" ? "itemized" : "blanket";
   const setMaterialsMode = (mode) => {
@@ -6102,31 +6494,17 @@ export default function EstimateForm(props) {
   }, [activeSpecialConditionsCustomField, specialConditionsComplete, specialConditionsHasPendingCommit]);
 
   const dockHeight = shouldSyncActionBarWithBottomChrome ? (isMobileActionBarViewport ? SHELL_DOCK_HEIGHT_MOBILE : SHELL_DOCK_HEIGHT) : 0;
-  const actionBarBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px))`;
-  const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP}px)`;
-  const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + ${actionBarHeight}px + ${ACTION_BAR_GAP + 10}px)`;
+  // The app/page is now the builder's one primary scroll surface. Reserve a
+  // fixed, predictable page tail for the compact command dock instead of
+  // shrinking the active step into a measured inner viewport.
+  const scrollPaddingBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + var(--pe-builder-command-clearance, 92px))`;
+  const saveToastBottom = `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + var(--pe-builder-command-clearance, 92px) + ${ACTION_BAR_GAP}px)`;
   const saveToastToneStyle = savePrompt?.tone === "error"
     ? styles.saveToastError
     : (savePrompt?.tone === "warn" ? styles.saveToastWarn : styles.saveToastSuccess);
   const actionButtonsStyle = isEditMode ? styles.estimatorActionButtonsEdit : styles.estimatorActionButtons;
-  const actionBarHiddenTransform = `translateY(calc(100% + ${dockHeight}px + env(safe-area-inset-bottom, 0px) + 24px))`;
-  const actionBarStyle = shouldSyncActionBarWithBottomChrome
-    ? {
-        ...styles.estimatorActionBar,
-        bottom: actionBarBottom,
-        paddingLeft: "max(10px, env(safe-area-inset-left, 0px))",
-        paddingRight: "max(10px, env(safe-area-inset-right, 0px))",
-        transform: actionBarChromeVisible ? "translateY(0)" : actionBarHiddenTransform,
-        opacity: actionBarChromeVisible ? 1 : 0,
-        transition: "transform 320ms cubic-bezier(0.22, 0.86, 0.24, 1), opacity 260ms cubic-bezier(0.22, 0.76, 0.24, 1)",
-        willChange: "transform, opacity",
-      }
-    : { ...styles.estimatorActionBar, bottom: actionBarBottom };
-  const actionBarInnerStyle = shouldSyncActionBarWithBottomChrome && !actionBarChromeVisible
-    ? { ...styles.estimatorActionBarInner, pointerEvents: "none" }
-    : styles.estimatorActionBarInner;
   const sectionBottomActionsStyle = styles.sectionFooterActions;
-  const builderOverlayOpen = shellOverlayOpen || !!guided?.enabled;
+  const builderOverlayOpen = shellOverlayOpen || !!guided?.enabled || finalizationOpen;
   const canonicalBlankGuidedDisplay = useMemo(() => {
     if (!estimatorCoreIsBlank) return null;
     return buildCanonicalBlankDisplayState({
@@ -6235,48 +6613,200 @@ export default function EstimateForm(props) {
       onGuidedOverlayOpenChange(false);
     };
   }, [guided?.enabled, onGuidedOverlayOpenChange]);
-  const actionBarNode = (
-    <div style={actionBarStyle}>
-      <div ref={actionBarRef} style={actionBarInnerStyle}>
-        <div style={actionButtonsStyle} className="pe-estimator-sticky-actions">
-          <button
-            className="pe-btn pe-shortcut-tip"
-            data-shortcut="Ctrl + S"
-            type="button"
-            onClick={onSaveNow}
-            style={{
-              ...styles.estimatorActionButton,
-              transition: "box-shadow 180ms ease-out, border-color 180ms ease-out, transform 220ms ease-out",
-              ...(saveNeedsAttention
-                ? {
-                    borderColor: "rgba(74,222,128,0.5)",
-                    boxShadow: "0 0 0 1px rgba(34,197,94,0.22), 0 0 16px rgba(34,197,94,0.22)",
-                  }
-                : null),
-              ...(savePulse ? { transform: "scale(1.02)" } : null),
-            }}
-          >
-            {isEditMode ? (isInvoiceEditMode ? "Update Invoice" : "Update Estimate") : "Save Estimate"}
-          </button>
-          <div style={styles.estimatorActionSecondary}>
-            {isEditMode ? (
-              <button className="pe-btn pe-btn-ghost" type="button" onClick={onCancelEdit} style={{ ...styles.estimatorActionButton, ...styles.estimatorActionButtonCompact }}>
-                Cancel Edit
-              </button>
-            ) : (
-              <button className="pe-btn pe-btn-ghost pe-estimator-action-clear" type="button" onClick={onClearAll} style={styles.estimatorActionButton}>
-                Clear
-              </button>
-            )}
-            <button className="pe-btn pe-estimator-action-export" type="button" onClick={onPdf} style={styles.estimatorActionButton}>
-              Export PDF
-            </button>
-          </div>
-        </div>
-        <CloudBackupInlineStatus style={{ marginTop: 6, textAlign: "center" }} />
-      </div>
-    </div>
-  );
+  // ---------------------------------------------------------------------
+  // Builder wizard -- presentation only.
+  //
+  // The wizard decides which existing section is on screen. It owns no record
+  // state, runs no arithmetic, and never saves: the single estimator instance
+  // above stays the only source of truth, which is why Back/Next keep unsaved
+  // edits without any rehydration.
+  // ---------------------------------------------------------------------
+  const wizard = useBuilderWizard({
+    docType: uiDocType,
+    initialStepId: isEditMode ? WIZARD_STEP_IDS.REVIEW : WIZARD_STEP_IDS.CUSTOMER,
+  });
+  const wizardStepId = wizard.activeStepId;
+  const isReviewStepActive = wizardStepId === WIZARD_STEP_IDS.REVIEW;
+
+  const wizardTitleFor = useCallback((stepId) => {
+    const step = (wizard.steps || []).find((entry) => entry && entry.id === stepId);
+    return resolveStepTitle(step, { lang, docType: uiDocType });
+  }, [wizard.steps, lang, uiDocType]);
+
+  // Command-dock metadata is formatted from the same current record and
+  // authoritative computed totals already used by the active Estimate/Invoice
+  // mode. BuilderCommandBar only renders these values; it owns no arithmetic.
+  const commandCustomerName = String(
+    selectedProfile?.displayName
+    || state?.customer?.name
+    || ""
+  ).trim();
+  const commandProjectName = String(
+    state?.customer?.projectName
+    || projectSeedSummary?.projectName
+    || state?.projectName
+    || state?.job?.projectName
+    || resolvedProjectAddress
+    || ""
+  ).trim();
+  const commandSaveStatus = saveNeedsAttention
+    ? (lang === "es" ? "Cambios sin guardar" : "Unsaved changes")
+    : (Number(state?.meta?.lastSavedAt || 0) > 0
+      ? (lang === "es" ? "Guardado" : "Saved")
+      : (lang === "es" ? "Aún sin guardar" : "Not saved yet"));
+  const commandFinancialItems = [
+    {
+      id: "labor",
+      label: lang === "es" ? "Mano de obra" : "Labor",
+      value: money.format(fallbackLaborRevenue),
+    },
+    {
+      id: "materials",
+      label: lang === "es" ? "Materiales" : "Materials",
+      value: money.format(displayedMaterialsTotal),
+    },
+    {
+      id: "charges",
+      label: lang === "es" ? "Cargos" : "Charges",
+      value: money.format(additionalChargesSubtotal),
+    },
+  ];
+
+  const finalizationCopy = useMemo(() => ({
+    dialogLabel: t("documentFinalization"),
+    close: t("closeFinalization"),
+    reviewTitle: uiDocType === "invoice" ? t("reviewSaveInvoice") : t("reviewSaveEstimate"),
+    reviewIntro: uiDocType === "invoice" ? t("finalizeInvoiceIntro") : t("finalizeEstimateIntro"),
+    viewPdf: t("viewPdf"),
+    downloadPreview: t("downloadPreview"),
+    backToEditing: t("backToEditing"),
+    approveSave: uiDocType === "invoice" ? t("approveAndSave") : t("saveEstimate"),
+    approveConvert: t("approveConvertInvoice"),
+    markSent: t("markAsSent"),
+    markApproved: t("markApproved"),
+    convertInvoice: t("convertToInvoice"),
+    nextActions: t("nextActions"),
+    saving: uiDocType === "invoice" ? t("savingInvoice") : t("savingEstimate"),
+    savedTitle: uiDocType === "invoice" ? t("invoiceSaved") : t("estimateSaved"),
+    savedIntro: uiDocType === "invoice" ? t("invoiceSavedIntro") : t("estimateSavedIntro"),
+    documentActions: t("documentActions"),
+    downloadPdf: t("downloadPdf"),
+    sharePdf: t("sharePdf"),
+    continueEditing: t("continueEditing"),
+    exitBuilder: t("exitBuilder"),
+    saveFailed: t("finalizeSaveFailed"),
+  }), [t, uiDocType]);
+
+  const wizardReviewSections = useMemo(() => {
+    const es = lang === "es";
+    const dash = "";
+    const customerName = String(state?.customer?.name || "").trim();
+    const projectName = String(state?.customer?.projectName || "").trim();
+    const projectAddress = String(
+      state?.customer?.projectSameAsCustomer
+        ? (state?.customer?.address || "")
+        : (state?.customer?.projectAddress || "")
+    ).trim();
+    const scopeText = String(state?.scopeNotes || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    const termsText = String(state?.additionalNotes || "").trim();
+
+    const sections = [
+      {
+        stepId: WIZARD_STEP_IDS.CUSTOMER,
+        title: wizardTitleFor(WIZARD_STEP_IDS.CUSTOMER),
+        rows: [
+          { label: es ? "Cliente" : "Customer", value: customerName || dash },
+          { label: es ? "Teléfono" : "Phone", value: String(state?.customer?.phone || "").trim() || dash },
+          { label: es ? "Correo" : "Email", value: String(state?.customer?.email || "").trim() || dash },
+        ],
+      },
+      {
+        stepId: WIZARD_STEP_IDS.PROJECT,
+        title: wizardTitleFor(WIZARD_STEP_IDS.PROJECT),
+        rows: [
+          { label: es ? "Proyecto" : "Project", value: projectName || dash },
+          { label: es ? "Dirección" : "Address", value: projectAddress || dash },
+          { label: es ? "Fecha" : "Date", value: String(state?.job?.date || "").trim() || dash },
+        ],
+      },
+    ];
+
+    sections.push({
+      stepId: WIZARD_STEP_IDS.SCOPE,
+      title: wizardTitleFor(WIZARD_STEP_IDS.SCOPE),
+      rows: [
+        {
+          label: es ? "Alcance" : "Scope",
+          value: scopeText ? (scopeText.length > 160 ? `${scopeText.slice(0, 160)}…` : scopeText) : dash,
+        },
+      ],
+    });
+
+    sections.push(
+      {
+        stepId: WIZARD_STEP_IDS.LABOR,
+        title: wizardTitleFor(WIZARD_STEP_IDS.LABOR),
+        rows: [
+          { label: es ? "Líneas" : "Lines", value: String(laborLineCount) },
+          { label: es ? "Mano de obra base" : "Base labor", value: money.format(laborBase) },
+        ],
+      },
+      {
+        stepId: WIZARD_STEP_IDS.CONDITIONS,
+        title: wizardTitleFor(WIZARD_STEP_IDS.CONDITIONS),
+        rows: [
+          { label: es ? "Peligro" : "Hazard", value: `${Number.isFinite(hazardPctNormalized) ? hazardPctNormalized : 0}%` },
+          { label: es ? "Riesgo" : "Risk", value: `${Number.isFinite(riskPctNormalized) ? riskPctNormalized : 0}%` },
+        ],
+      },
+      {
+        stepId: WIZARD_STEP_IDS.MATERIALS,
+        title: wizardTitleFor(WIZARD_STEP_IDS.MATERIALS),
+        rows: [
+          {
+            label: es ? "Tipo de entrada" : "Entry type",
+            value: materialsMode === "itemized"
+              ? (es ? "Detallado" : "Itemized")
+              : (es ? "Global" : "Blanket"),
+          },
+          { label: es ? "Total" : "Total", value: money.format(displayedMaterialsTotal) },
+        ],
+      },
+      {
+        stepId: WIZARD_STEP_IDS.CHARGES,
+        title: wizardTitleFor(WIZARD_STEP_IDS.CHARGES),
+        rows: [
+          { label: es ? "Líneas" : "Lines", value: String(additionalChargesCount) },
+          { label: es ? "Subtotal" : "Subtotal", value: money.format(additionalChargesSubtotal) },
+        ],
+      },
+      {
+        stepId: WIZARD_STEP_IDS.TERMS,
+        title: wizardTitleFor(WIZARD_STEP_IDS.TERMS),
+        rows: [
+          {
+            label: es ? "Términos y notas" : "Terms & notes",
+            value: termsText ? (termsText.length > 160 ? `${termsText.slice(0, 160)}…` : termsText) : dash,
+          },
+        ],
+      }
+    );
+
+    return sections;
+  }, [
+    lang,
+    state,
+    wizardTitleFor,
+    laborLineCount,
+    laborBase,
+    hazardPctNormalized,
+    riskPctNormalized,
+    materialsMode,
+    displayedMaterialsTotal,
+    additionalChargesCount,
+    additionalChargesSubtotal,
+  ]);
+
 
   const scopeAssistDisplayError = scopeAssistState.phase === "error"
     ? resolveScopeAssistDisplayError(
@@ -6322,12 +6852,49 @@ export default function EstimateForm(props) {
     };
   }, [scopeAssistState.phase, scopeAssistState.runtime?.build, scopeAssistState.runtime?.path, scopeAssistState.runtime?.parseSource]);
 
+  // Compact EN / ES control living in the builder's own header. It drives the
+  // existing global language preference (the same store the rest of EstiPaid
+  // reads), so switching updates the builder chrome and section copy in place
+  // without recreating the estimator or resetting any document state.
+  const builderLanguageToggle = (
+    <div
+      className="pe-builder-lang"
+      role="group"
+      aria-label={lang === "es" ? "Idioma del generador" : "Builder language"}
+    >
+      <button
+        type="button"
+        className={`pe-builder-lang-btn ${lang === "en" ? "is-active" : ""}`}
+        aria-pressed={lang === "en"}
+        onClick={() => applyLang("en")}
+      >
+        EN
+      </button>
+      <button
+        type="button"
+        className={`pe-builder-lang-btn ${lang === "es" ? "is-active" : ""}`}
+        aria-pressed={lang === "es"}
+        onClick={() => applyLang("es")}
+      >
+        ES
+      </button>
+    </div>
+  );
+
   return (
-    <div className="pe-wrap ep-estimator" style={{ paddingTop: embeddedInShell ? 8 : undefined, paddingBottom: scrollPaddingBottom }}>
+    <div
+      className="pe-wrap ep-estimator"
+      style={{
+        paddingTop: embeddedInShell ? 8 : undefined,
+        paddingBottom: scrollPaddingBottom,
+        "--pe-builder-command-bottom": `calc(${dockHeight}px + env(safe-area-inset-bottom, 0px) + 8px)`,
+        "--pe-builder-command-hide-distance": `calc(100% + ${dockHeight}px + env(safe-area-inset-bottom, 0px) + 24px)`,
+      }}
+    >
       {/* Builder bar */}
       <div className="estimatorPageContainer">
         <div className="tileWidthWrapper">
-          <div className="pe-builder-bar estimatorHeaderRow">
+          <div className={`pe-builder-bar estimatorHeaderRow ${isEditMode ? "is-edit" : "is-create"}`}>
             {isEditMode ? (
               <>
                 <div style={styles.editHeaderStack}>
@@ -6338,13 +6905,17 @@ export default function EstimateForm(props) {
                   {editUpdatedLabel ? <div style={styles.editHeaderMeta}>{editUpdatedLabel}</div> : null}
                 </div>
                 <div style={styles.builderHeaderActionGroup}>
+                  {builderLanguageToggle}
                   <div style={styles.editModeBadge}>EDIT MODE</div>
                 </div>
               </>
             ) : (
-              <h1 className="pe-title pe-builder-title screenTitle">
-                <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
-              </h1>
+              <>
+                <h1 className="pe-title pe-builder-title screenTitle">
+                  <span className="titleShineText" data-title={builderTitle}>{builderTitle}</span>
+                </h1>
+                {builderLanguageToggle}
+              </>
             )}
           </div>
 
@@ -6361,7 +6932,7 @@ export default function EstimateForm(props) {
             ) : null}
           </div>
         ) : null}
-        {((!isInvoiceEditMode) && (!projectSeedSummary || uiDocType === "estimate")) ? (() => {
+        {((!isInvoiceEditMode) && (!projectSeedSummary || uiDocType === "estimate") && wizardStepId === WIZARD_STEP_IDS.CUSTOMER) ? (() => {
           const hasCustomer = Boolean(selectedCustomerId || String(state?.customer?.name || "").trim());
           const hasProject = Boolean(String(state?.projectId || "").trim());
           const hasProjectOrJobContext = hasProject || Boolean(
@@ -6436,39 +7007,59 @@ export default function EstimateForm(props) {
                 ),
               ];
           return (
-            <div style={{ margin: "0 0 14px", padding: "12px 14px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
-              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(229,231,235,0.28)", marginBottom: 9 }}>
-                {lang === "es" ? "Por dónde empezar" : "Start here"}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <div
+              className="pe-builder-readiness"
+              aria-label={lang === "es" ? "Estado de preparación" : "Builder readiness"}
+            >
+              <div className="pe-builder-readiness-row">
                 {chips.map(({ label, status, color, bg, border }) => (
-                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 999, background: bg, border: `1px solid ${border}` }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(229,231,235,0.55)" }}>{label}</span>
-                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", color }}>{status}</span>
+                  <div key={label} className="pe-builder-readiness-chip" style={{ "--pe-status-bg": bg, "--pe-status-border": border }}>
+                    <span>{label}</span>
+                    <strong style={{ color }}>{status}</strong>
                   </div>
                 ))}
               </div>
             </div>
           );
         })() : null}
+        <div className="pe-builder-frame" data-builder-scroll="page">
+        <BuilderWizardShell
+          lang={lang}
+          docType={uiDocType}
+          steps={wizard.steps}
+          activeStep={wizard.activeStep}
+          stepNumber={wizard.stepNumber}
+          totalSteps={wizard.totalSteps}
+          direction={wizard.direction}
+          stepError={wizard.stepError}
+          onStepSelect={wizard.goToStep}
+        >
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.CUSTOMER} activeStepId={wizardStepId}>
         {/* Customer */}
-        <section className="pe-card" style={styles.sectionBlock}>
+        <section className="pe-card pe-workspace pe-workspace-customer" style={styles.sectionBlock}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-          <SectionTitleWithIcon icon={<IconCustomer />} title="Customer" styles={styles} stackStyle={{ marginBottom: 0 }} />
+          <SectionTitleWithIcon
+            icon={<IconCustomer />}
+            title={lang === "es" ? "Identidad del cliente" : "Customer identity"}
+            styles={styles}
+            stackStyle={{ marginBottom: 0 }}
+          />
           {projectSeedSummary ? (
             <span style={{ marginTop: 4, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "rgba(99,179,237,0.8)", background: "rgba(99,179,237,0.10)", borderRadius: 999, padding: "2px 8px", border: "1px solid rgba(99,179,237,0.22)", whiteSpace: "nowrap" }}>
               Linked
             </span>
           ) : null}
         </div>
-        <div style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
+        <div className="pe-task-description" style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
           {lang === "es"
             ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Proyecto."
             : "Who you're billing — select an existing customer or create one. Job site details go in Project Info."}
         </div>
 
+        <div className="pe-customer-layout">
+        <div className="pe-customer-picker">
         {/* Combo search/dropdown + Edit button */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="pe-customer-search-row" style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ flex: 1, position: "relative" }}>
             <input
               className="pe-input"
@@ -6555,8 +7146,9 @@ export default function EstimateForm(props) {
             </>
           ) : "None"}
         </div>
+        </div>
         {selectedCustomerId && selectedProfile && (
-          <div style={styles.customerProfilePanel}>
+          <div className="pe-customer-context" style={styles.customerProfilePanel}>
             <div style={styles.customerProfileTitle}>Customer Profile</div>
             <div style={styles.customerProfileGrid}>
               {selectedProfile.fullName ? (
@@ -6612,12 +7204,31 @@ export default function EstimateForm(props) {
             </div>
           </div>
         )}
+        {!(selectedCustomerId && selectedProfile) ? (
+          <div className="pe-context-empty">
+            <span className="pe-context-empty-mark" aria-hidden="true">C</span>
+            <strong>{lang === "es" ? "Selecciona un cliente" : "Select a customer"}</strong>
+            <span>
+              {lang === "es"
+                ? "El contacto, tipo de cliente y términos aparecerán aquí."
+                : "Contact details, customer type, and payment terms will appear here."}
+            </span>
+          </div>
+        ) : null}
+        </div>
         </section>
+        </BuilderWizardStep>
 
-        <section className="pe-card" style={styles.sectionBlock}>
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.PROJECT} activeStepId={wizardStepId}>
+        <section className="pe-card pe-workspace pe-workspace-project" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconJobInfo />} title="Project Info" styles={styles} stackStyle={{ marginBottom: 0 }} />
-        <div style={styles.scopeSubtitle}>
+        <SectionTitleWithIcon
+          icon={<IconJobInfo />}
+          title={lang === "es" ? "Definición del trabajo" : "Job definition"}
+          styles={styles}
+          stackStyle={{ marginBottom: 0 }}
+        />
+        <div className="pe-task-description" style={styles.scopeSubtitle}>
           {lang === "es"
             ? "Nombre del trabajo, dirección del sitio y fecha — aparece en el encabezado del estimado, por separado del cliente."
             : "Job name, site address, and date — goes on your estimate header, separate from who you're billing."}
@@ -6630,7 +7241,7 @@ export default function EstimateForm(props) {
           </div>
         ) : null}
 
-        <div style={{ ...styles.cardShell, marginTop: 6 }}>
+        <div className="pe-project-editor" style={{ ...styles.cardShell, marginTop: 6 }}>
           <div style={styles.jobInfoContentWrap}>
             {showExistingProjectSelector ? (
               <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
@@ -6812,19 +7423,21 @@ export default function EstimateForm(props) {
           </div>
         </div>
         </section>
+        </BuilderWizardStep>
 
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.SCOPE} activeStepId={wizardStepId}>
         {uiDocType === "estimate" || uiDocType === "invoice" ? (
-        <section className="pe-card" style={styles.sectionBlock}>
+        <section className="pe-card pe-workspace pe-workspace-scope" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.scopeHeaderRow}>
+        <div className="pe-workspace-header pe-scope-workspace-header" style={styles.scopeHeaderRow}>
           <div style={{ display: "grid", gap: 2 }}>
             <SectionTitleWithIcon
               icon={<IconSpecialConditions />}
-              title={uiDocType === "invoice" ? "Scope Notes" : "Scope of Work"}
+              title={lang === "es" ? "Espacio de alcance" : "Scope workspace"}
               styles={styles}
               stackStyle={{ marginBottom: 0 }}
             />
-            <div style={styles.scopeSubtitle}>
+            <div className="pe-task-description" style={styles.scopeSubtitle}>
               {uiDocType === "invoice"
                 ? "Optional work notes."
                 : "Describe the job — what you're doing, where, and roughly how much."}
@@ -6833,53 +7446,55 @@ export default function EstimateForm(props) {
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {uiDocType === "invoice" ? (
               <label
+                className="pe-invoice-scope-pdf-option"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: "10px 12px",
-                  borderRadius: 999,
+                  padding: "8px 10px",
+                  borderRadius: 8,
                   border: "1px solid rgba(148,163,184,0.2)",
-                  background: invoiceScopeNotesEnabled ? "rgba(59,130,246,0.14)" : "rgba(15,23,42,0.32)",
+                  background: invoiceScopeOnPdfEnabled ? "rgba(59,130,246,0.14)" : "rgba(15,23,42,0.28)",
                   color: "rgba(230,241,248,0.92)",
                   fontSize: 12,
                   fontWeight: 700,
-                  letterSpacing: "0.02em",
                   cursor: "pointer",
                 }}
               >
                 <input
                   type="checkbox"
-                  checked={invoiceScopeNotesEnabled}
-                  onChange={(e) => {
-                    const checked = Boolean(e.target.checked);
-                    patch("ui.includeInvoiceScopeNotes", checked);
-                    if (checked) setNotesOpen(true);
-                  }}
+                  checked={invoiceScopeOnPdfEnabled}
+                  onChange={(event) => patch("ui.includeInvoiceScopeOnPdf", Boolean(event.target.checked))}
                 />
-                Include on Invoice
+                <span>{lang === "es" ? "Incluir alcance del trabajo en el PDF" : "Include Scope of Work on PDF"}</span>
               </label>
             ) : null}
-            {showScopeNotesEditor ? (
-              <button
-                type="button"
-                className="pe-btn pe-btn-ghost"
-                style={styles.aiAssistBtn}
-                onClick={openScopeAssist}
-                title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
-              >
-                ✦ AI Assist
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="pe-btn pe-btn-ghost pe-ai-primary"
+              style={styles.aiAssistBtn}
+              onClick={openScopeAssist}
+              title="Describe the work in plain terms — AI drafts scope text you review and edit before accepting"
+            >
+              ✦ AI Assist
+            </button>
           </div>
         </div>
-        {showScopeNotesEditor ? (
+        <div className="pe-scope-flow" aria-hidden="true">
+          <span>{lang === "es" ? "Describir" : "Describe"}</span>
+          <i>→</i>
+          <span>{lang === "es" ? "Asistir" : "Assist"}</span>
+          <i>→</i>
+          <span>{lang === "es" ? "Refinar" : "Refine"}</span>
+          <i>→</i>
+          <span>{lang === "es" ? "Alcance final" : "Final scope"}</span>
+        </div>
         <>
         <div
           className={`pe-collapse ${notesOpen ? "pe-open" : ""}`}
           style={{ ...styles.notesCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
-          <div className="pe-scope-insert-grid">
+          <div className="pe-scope-insert-grid pe-scope-template-rail">
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
                 {lang === "es" ? "Mis plantillas" : "Your saved templates"}
@@ -6904,7 +7519,7 @@ export default function EstimateForm(props) {
               </select>
             </div>
           </div>
-          <div className="pe-scope-editor">
+          <div className="pe-scope-editor pe-scope-editor-main">
             <div className="pe-scope-toolbar" role="toolbar" aria-label="Scope text formatting">
               <button
                 type="button"
@@ -6997,7 +7612,7 @@ export default function EstimateForm(props) {
               />
             </div>
             <div
-              ref={scopeNotesRef}
+              ref={setScopeNotesNode}
               contentEditable
               suppressContentEditableWarning
               className="pe-input pe-textarea pe-scope-textarea"
@@ -7208,15 +7823,21 @@ export default function EstimateForm(props) {
           )}
         </div>
         </>
-        ) : null}
         </section>
         ) : null}
+        </BuilderWizardStep>
 
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.LABOR} activeStepId={wizardStepId}>
       {/* LABOR */}
-      <section className="pe-section">
+      <section className="pe-section pe-workspace pe-workspace-labor">
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionHeaderRow}>
-          <SectionTitleWithIcon icon={<IconLabor />} title={t("labor")} styles={styles} stackStyle={{ marginBottom: 0 }} />
+        <div className="pe-workspace-header pe-labor-header" style={styles.sectionHeaderRow}>
+          <SectionTitleWithIcon
+            icon={<IconLabor />}
+            title={lang === "es" ? "Plan de cuadrilla" : "Crew plan"}
+            styles={styles}
+            stackStyle={{ marginBottom: 0 }}
+          />
 
           {!laborOpen && (
             <div className="pe-muted" style={styles.laborCollapsedMeta}>
@@ -7230,7 +7851,7 @@ export default function EstimateForm(props) {
           <div style={styles.sectionHeaderControls}>
             <button
               type="button"
-              className="pe-btn pe-btn-ghost"
+              className="pe-btn pe-btn-ghost pe-ai-primary"
               style={styles.aiAssistBtn}
               onClick={handleSuggestLaborFromScope}
               title="Suggest labor lines from the current scope and job context"
@@ -7255,7 +7876,7 @@ export default function EstimateForm(props) {
           className={`pe-collapse ${laborOpen ? "pe-open" : ""}`}
           style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
-          <div className="pe-muted" style={{ marginTop: 10, marginBottom: 6 }}>
+          <div className="pe-muted pe-task-description pe-labor-guidance" style={{ marginTop: 10, marginBottom: 6 }}>
             {lang === "es"
               ? "Usa \"AI Assist\" para generar líneas automáticamente desde tu alcance. También puedes agregar líneas manualmente: selecciona un rol para cargar tarifas de referencia, luego ingresa las horas."
               : "Use \"AI Assist\" to auto-draft rows from your current scope. You can also add lines manually: select a preset to load reference rates, then enter hours."}
@@ -7267,7 +7888,7 @@ export default function EstimateForm(props) {
               return (
                 <div
                   key={l.id || i}
-                  className={newLaborLineIds?.[String(l.id)] ? "pe-anim-enter" : ""}
+                  className={`pe-labor-line-editor${newLaborLineIds?.[String(l.id)] ? " pe-anim-enter" : ""}`}
                   style={{ ...styles.cardShell, marginTop: 6 }}
                 >
                   <div className="pe-grid pe-labor-grid" style={styles.laborLineGrid}>
@@ -7368,7 +7989,7 @@ export default function EstimateForm(props) {
                   ) : null}
                 </div>
 
-                  <div style={styles.laborLineActions}>
+                  <div className="pe-labor-line-footer" style={styles.laborLineActions}>
                   <div
                     className="pe-muted"
                     title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
@@ -7416,7 +8037,7 @@ export default function EstimateForm(props) {
               );
           })}
 
-          <div className="pe-row pe-row-slim" style={styles.laborBaseRow}>
+          <div className="pe-row pe-row-slim pe-calculated-total" style={styles.laborBaseRow}>
             <div className="pe-muted">{lang === "es" ? "Mano de obra base" : "Base labor"}</div>
             <div className={`pe-value ${animateLaborBaseTotal ? "value-pulse" : ""}`}>{money.format(laborBase)}</div>
           </div>
@@ -7445,13 +8066,20 @@ export default function EstimateForm(props) {
           </div>
         )}
       </section>
+        </BuilderWizardStep>
 
-      <section className="pe-card" style={styles.sectionBlock}>
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.CONDITIONS} activeStepId={wizardStepId}>
+      <section className="pe-card pe-workspace pe-workspace-conditions" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div style={styles.sectionHeaderRow}>
+        <div className="pe-workspace-header pe-conditions-header" style={styles.sectionHeaderRow}>
           <div style={{ display: "grid", gap: 2 }}>
-            <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Job Conditions" styles={styles} stackStyle={{ marginBottom: 0 }} />
-            <div style={styles.scopeSubtitle}>
+            <SectionTitleWithIcon
+              icon={<IconSpecialConditions />}
+              title={lang === "es" ? "Ajustes activos" : "Active adjustments"}
+              styles={styles}
+              stackStyle={{ marginBottom: 0 }}
+            />
+            <div className="pe-task-description" style={styles.scopeSubtitle}>
               {lang === "es"
                 ? "Costo adicional de mano de obra por condiciones del sitio o riesgos del trabajo — se aplica sobre el total de mano de obra, no sobre el alcance ni los materiales."
                 : "Extra labor cost driven by site conditions or job risk — applies on top of your base labor total. Not scope, not materials, not crew hours."}
@@ -7474,9 +8102,9 @@ export default function EstimateForm(props) {
           className={`pe-collapse ${specialConditionsOpen ? "pe-open" : ""}`}
           style={{ ...styles.specialConditionsCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
-          <div style={styles.specialConditionsCardShell}>
+          <div className="pe-conditions-editor" style={styles.specialConditionsCardShell}>
             <div className="pe-special-conditions-grid" style={styles.specialConditionsGrid}>
-              <div style={styles.fieldStack}>
+              <div className="pe-adjustment-card" style={styles.fieldStack}>
                 <div style={styles.label}>Hazard / Site Conditions</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
                   {lang === "es"
@@ -7513,7 +8141,7 @@ export default function EstimateForm(props) {
                 />
               </div>
 
-              <div style={styles.fieldStack}>
+              <div className="pe-adjustment-card" style={styles.fieldStack}>
                 <div style={styles.label}>Risk / Uncertainty Buffer</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
                   {lang === "es"
@@ -7551,20 +8179,20 @@ export default function EstimateForm(props) {
               </div>
             </div>
 
-            <div className="pe-row pe-row-slim">
+            <div className="pe-row pe-row-slim pe-impact-row pe-impact-row-base">
               <div className="pe-muted">Your labor total</div>
               <div className="pe-value">{money.format(adjustedLabor)}</div>
             </div>
 
             {hazardEnabled && (
-              <div className="pe-row pe-row-slim">
+              <div className="pe-row pe-row-slim pe-impact-row">
                 <div className="pe-muted">{`Hazard add-on (${hazardPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(hazardFee)}</div>
               </div>
             )}
 
             {riskEnabled && (
-              <div className="pe-row pe-row-slim">
+              <div className="pe-row pe-row-slim pe-impact-row">
                 <div className="pe-muted">{`Risk buffer (${riskPctNormalized}% of labor)`}</div>
                 <div className="pe-value">{money.format(riskFee)}</div>
               </div>
@@ -7593,7 +8221,9 @@ export default function EstimateForm(props) {
           </div>
         ) : null}
       </section>
+        </BuilderWizardStep>
 
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.MATERIALS} activeStepId={wizardStepId}>
       {/* MATERIALS */}
       <SectionMaterials
         t={t}
@@ -7637,15 +8267,17 @@ export default function EstimateForm(props) {
         trashIcon={<IconTrash />}
         requireExplicitPickerCommit={isMobileActionBarViewport}
       />
+        </BuilderWizardStep>
 
-      <section className="pe-card" style={styles.sectionBlock}>
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.CHARGES} activeStepId={wizardStepId}>
+      <section className="pe-card pe-workspace pe-workspace-charges" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon
           icon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M6 6.5h12M6 12h12M6 17.5h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><path d="M16.5 4.8v14.4M12 9.6v7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>}
-          title={t("additionalCharges")}
+          title={lang === "es" ? "Ajustes financieros" : "Financial adjustments"}
           styles={styles}
         />
-        <div style={styles.scopeSubtitle}>
+        <div className="pe-task-description" style={styles.scopeSubtitle}>
           {t("additionalChargesHelp")}
         </div>
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
@@ -7654,6 +8286,7 @@ export default function EstimateForm(props) {
             return (
               <div
                 key={String(item?.id || `charge_${index}`)}
+                className="pe-charge-line-editor"
                 style={{
                   border: "1px solid rgba(255,255,255,0.08)",
                   borderRadius: 14,
@@ -7723,7 +8356,7 @@ export default function EstimateForm(props) {
             </div>
           )}
         </div>
-        <div className="pe-row pe-row-slim" style={{ marginTop: 12 }}>
+        <div className="pe-row pe-row-slim pe-calculated-total" style={{ marginTop: 12 }}>
           <div className="pe-muted">{t("additionalChargesSubtotal")}</div>
           <div className="pe-value">{money.format(additionalChargesSubtotal)}</div>
         </div>
@@ -7738,41 +8371,27 @@ export default function EstimateForm(props) {
           </button>
         </div>
       </section>
-
-      {/* TOTAL */}
-      <section className="pe-section">
-        <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <div className="pe-total">
-          <div>
-            <div className="pe-total-label" style={styles.totalLabelWithIcon}>
-              <span style={styles.sectionTitleIcon} aria-hidden="true"><IconTotals /></span>
-              <span>{totalLabel}</span>
-            </div>
-            <div className="pe-total-meta">
-              {lastSavedLabel ? `${totalTallyLine} • ${lastSavedLabel}` : totalTallyLine}
-            </div>
-          </div>
-          <div className={`pe-total-right ${animateEstimateTotal ? "value-pulse" : ""}`}>
-            {money.format(totalRevenue)}
-          </div>
-        </div>
-        <div style={{ ...styles.scopeSubtitle, marginTop: 6 }}>
-          {lang === "es"
-            ? "Mano de obra, condiciones del trabajo y materiales — revisa antes de agregar términos o exportar."
-            : "Labor, job conditions, and materials — review before adding terms or exporting."}
-        </div>
-      </section>
-
+        </BuilderWizardStep>
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.TERMS} activeStepId={wizardStepId}>
       {/* Terms & Notes */}
-      <section className="pe-card" style={styles.sectionBlock}>
+      <section className="pe-card pe-workspace pe-workspace-terms" style={styles.sectionBlock}>
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
-        <SectionTitleWithIcon icon={<IconSpecialConditions />} title="Terms & Notes" styles={styles} stackStyle={{ marginBottom: 0 }} />
-        <div style={styles.scopeSubtitle}>
+        <SectionTitleWithIcon
+          icon={<IconSpecialConditions />}
+          title={lang === "es" ? "Detalles para el cliente" : "Customer-facing details"}
+          styles={styles}
+          stackStyle={{ marginBottom: 0 }}
+        />
+        <div className="pe-task-description" style={styles.scopeSubtitle}>
           {lang === "es"
             ? "Exclusiones, condiciones de pago y términos de cronograma — aparecen al final de tu estimado. Usa los accesos rápidos o escribe los tuyos."
             : "Exclusions, payment terms, and schedule conditions — these print at the bottom of your estimate. Use the quick-inserts or write your own."}
         </div>
-        <div className="pe-additional-notes-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
+        <div className="pe-terms-layout">
+        <div className="pe-additional-notes-actions pe-terms-presets" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
+          <div className="pe-terms-presets-label">
+            {lang === "es" ? "Inserciones rápidas" : "Quick inserts"}
+          </div>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
               key={s.key}
@@ -7799,7 +8418,7 @@ export default function EstimateForm(props) {
         </div>
         <textarea
           ref={additionalNotesRef}
-          className="pe-input pe-textarea"
+          className="pe-input pe-textarea pe-terms-editor"
           value={additionalNotes}
           onChange={(e) => {
             patch("additionalNotes", e.target.value);
@@ -7808,12 +8427,48 @@ export default function EstimateForm(props) {
           placeholder="Payment terms, exclusions, schedule conditions, warranty — anything the client needs to know about how this job runs…"
           style={{ minHeight: SCOPE_NOTES_MIN_HEIGHT, resize: "none" }}
         />
+        </div>
       </section>
-      <CustomerPortalSharePanel documentType={uiDocType} />
-
-      </div>
+        </BuilderWizardStep>
+        <BuilderWizardStep stepId={WIZARD_STEP_IDS.REVIEW} activeStepId={wizardStepId}>
+          <BuilderReviewStep
+            lang={lang}
+            sections={wizardReviewSections}
+            onEditStep={wizard.goToStep}
+            totalLabel={totalLabel}
+            totalValue={money.format(totalRevenue)}
+            actions={<CustomerPortalSharePanel documentType={uiDocType} />}
+          />
+        </BuilderWizardStep>
+        </BuilderWizardShell>
         </div>
       </div>
+        <BuilderCommandBar
+          lang={lang}
+          docType={uiDocType}
+          totalLabel={totalLabel}
+          totalValue={money.format(totalRevenue)}
+          customerName={commandCustomerName}
+          projectName={commandProjectName}
+          saveStatus={commandSaveStatus}
+          financialItems={commandFinancialItems}
+          showTotal={!isReviewStepActive}
+          isFirstStep={wizard.isFirstStep}
+          isLastStep={wizard.isLastStep}
+          onBack={wizard.goBack}
+          onNext={wizard.goNext}
+          onReviewSave={() => {
+            triggerHaptic();
+            setFinalizationOpen(true);
+          }}
+          onClear={isEditMode ? onCancelEdit : onClearAll}
+          clearLabel={isEditMode ? (lang === "es" ? "Cancelar edición" : "Cancel Edit") : undefined}
+          shellChromeVisible={commandDockVisible}
+          statusSlot={<CloudBackupInlineStatus style={{ margin: 0, textAlign: "center" }} />}
+        />
+        </div>
+      </div>
+
 
       {savePrompt && !builderOverlayOpen ? (
         <div style={{ ...styles.saveToastWrap, bottom: saveToastBottom }}>
@@ -7822,8 +8477,6 @@ export default function EstimateForm(props) {
           </div>
         </div>
       ) : null}
-
-      {!builderOverlayOpen ? actionBarNode : null}
 
       {scopeAssistState.phase !== "idle" && scopeAssistConfig && (
         <SectionAssistPanel
@@ -7942,27 +8595,34 @@ export default function EstimateForm(props) {
       )}
 
 
-      <PdfPromptModal
-        open={pdfPromptOpen}
+      <DocumentFinalizeModal
+        open={finalizationOpen}
+        lang={lang}
         docType={uiDocType}
+        customerName={commandCustomerName}
+        projectName={commandProjectName}
+        totalLabel={totalLabel}
+        totalValue={money.format(totalRevenue)}
+        copy={finalizationCopy}
         onClose={() => {
           triggerHaptic();
-          setPdfPromptOpen(false);
+          setFinalizationOpen(false);
         }}
-        onView={() => {
+        onViewPdf={() => exportPDF("view")}
+        onDownloadPdf={() => exportPDF("download")}
+        onSharePdf={() => exportPDF("share")}
+        onApproveSave={onFinalizeSave}
+        onApproveConvert={uiDocType === "estimate" ? onFinalizeApproveConvert : undefined}
+        onMarkSent={uiDocType === "estimate" ? () => updateFinalizedEstimateStatus("pending") : undefined}
+        onMarkApproved={uiDocType === "estimate" ? () => updateFinalizedEstimateStatus("approved") : undefined}
+        onConvertInvoice={uiDocType === "estimate" ? onFinalizeConvertInvoice : undefined}
+        onExitBuilder={() => {
           triggerHaptic();
-          setPdfPromptOpen(false);
-          exportPDF("view");
-        }}
-        onDownload={() => {
-          triggerHaptic();
-          setPdfPromptOpen(false);
-          exportPDF("download");
-        }}
-        onShare={() => {
-          triggerHaptic();
-          setPdfPromptOpen(false);
-          exportPDF("share");
+          setFinalizationOpen(false);
+          exitBuilderAfterSave({
+            saveDocType: uiDocType,
+            shouldClearCreateDraftAfterSave: !isEditMode && uiDocType === "estimate",
+          });
         }}
       />
 

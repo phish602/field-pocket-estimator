@@ -15,7 +15,8 @@ import {
   hasPermanentCloudIdentityConflict,
 } from "./cloudIdentityReconciliation";
 import { setCloudAssetBindingsBatch, getCloudAssetBindingUuidMap } from "./cloudAssetBindings";
-import { buildParentLineItemContract } from "./cloudLineItemContract";
+import { buildParentLineItemContract, sanitizeLineItemParentSegment } from "./cloudLineItemContract";
+import { isProvenEmptyInvoiceLineItemPlaceholder } from "./staleInvoiceLineItemProof";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
 
@@ -867,7 +868,10 @@ function sameInvoiceLineItemContent(left, right) {
     === JSON.stringify(["invoice_id", "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"].map((key) => normalizedValue(right?.[key])));
 }
 
-function planProvenStaleInvoiceLineItems(existingRows, currentPayloads, confirmedInvoiceIds) {
+// Exported for focused proof tests. Pure: takes cloud rows + the current
+// canonical payload + the confirmed invoice identity map, returns a
+// classification. Performs no I/O and mutates nothing.
+export function planProvenStaleInvoiceLineItems(existingRows, currentPayloads, confirmedInvoiceIds) {
   const canonicalIds = new Set((currentPayloads || []).map((row) => asText(row?.legacy_local_id)));
   const confirmed = new Set([...confirmedInvoiceIds.values()].map(asText));
   const rows = Array.isArray(existingRows) ? existingRows : [];
@@ -880,19 +884,54 @@ function planProvenStaleInvoiceLineItems(existingRows, currentPayloads, confirme
       list.push(row); canonicalByKey.set(key, list);
     }
   });
-  const provenStaleRows = []; const unresolvedExtraRows = []; const canonicalRows = [];
+  // Invert legacyId -> cloudUuid so a stale row's deterministic parent segment can
+  // be checked against its parent invoice's canonical identity. A cloud id claimed
+  // by more than one legacy id is ambiguous and disqualifies every proof for it.
+  const legacyByCloudId = new Map(); const ambiguousCloudIds = new Set();
+  [...(confirmedInvoiceIds instanceof Map ? confirmedInvoiceIds.entries() : [])].forEach(([legacyId, cloudId]) => {
+    const cloud = asText(cloudId); const legacy = asText(legacyId);
+    if (!cloud || !legacy) return;
+    if (legacyByCloudId.has(cloud) && legacyByCloudId.get(cloud) !== legacy) ambiguousCloudIds.add(cloud);
+    else legacyByCloudId.set(cloud, legacy);
+  });
+  const provenStaleRows = []; const provenStaleDuplicateRows = []; const provenStalePlaceholderRows = [];
+  const unresolvedExtraRows = []; const canonicalRows = [];
   rows.forEach((row) => {
     if (canonicalIds.has(asText(row?.legacy_local_id))) return;
     const parsed = parseInvoiceLineItemLegacyId(row?.legacy_local_id);
     if (!parsed || !asText(row?.id) || !confirmed.has(asText(row?.invoice_id))) { unresolvedExtraRows.push(row); return; }
+    // PROOF CLASS A (unchanged): a wrong-parent deterministic duplicate whose
+    // exact canonical twin still exists at the same stable index.
     const candidates = canonicalByKey.get(`${asText(row.invoice_id)}:${parsed.stableIndex}`) || [];
-    if (candidates.length !== 1) { unresolvedExtraRows.push(row); return; }
-    const canonical = candidates[0];
-    const canonicalParsed = parseInvoiceLineItemLegacyId(canonical?.legacy_local_id);
-    if (!canonicalParsed || canonicalParsed.parentSegment === parsed.parentSegment || !asText(canonical?.id) || !sameInvoiceLineItemContent(row, canonical)) { unresolvedExtraRows.push(row); return; }
-    provenStaleRows.push(row); canonicalRows.push(canonical);
+    if (candidates.length === 1) {
+      const canonical = candidates[0];
+      const canonicalParsed = parseInvoiceLineItemLegacyId(canonical?.legacy_local_id);
+      if (canonicalParsed && canonicalParsed.parentSegment !== parsed.parentSegment && asText(canonical?.id) && sameInvoiceLineItemContent(row, canonical)) {
+        provenStaleRows.push(row); provenStaleDuplicateRows.push(row); canonicalRows.push(canonical); return;
+      }
+    }
+    // PROOF CLASS B (new): a SAME-parent obsolete blank placeholder. It has a
+    // valid parent, a valid deterministic id under that parent's own canonical
+    // identity, no presence in the current canonical payload, and no business or
+    // economic content whatsoever. No canonical twin is required or possible --
+    // the corrected mapper simply stopped emitting rows of this shape.
+    const cloudInvoiceId = asText(row?.invoice_id);
+    const parentLegacyId = ambiguousCloudIds.has(cloudInvoiceId) ? "" : asText(legacyByCloudId.get(cloudInvoiceId));
+    if (parentLegacyId
+      && parsed.parentSegment === sanitizeLineItemParentSegment(parentLegacyId)
+      && isProvenEmptyInvoiceLineItemPlaceholder(row)) {
+      provenStaleRows.push(row); provenStalePlaceholderRows.push(row); return;
+    }
+    unresolvedExtraRows.push(row);
   });
-  return { provenStaleRows, unresolvedExtraRows, canonicalRows, counts: { existing: rows.length, canonical: canonicalIds.size, provenStale: provenStaleRows.length, unresolvedExtra: unresolvedExtraRows.length } };
+  return {
+    provenStaleRows, provenStaleDuplicateRows, provenStalePlaceholderRows, unresolvedExtraRows, canonicalRows,
+    counts: {
+      existing: rows.length, canonical: canonicalIds.size, provenStale: provenStaleRows.length,
+      provenStaleDuplicate: provenStaleDuplicateRows.length, provenStalePlaceholder: provenStalePlaceholderRows.length,
+      unresolvedExtra: unresolvedExtraRows.length,
+    },
+  };
 }
 
 async function migrateLineItemTable({
@@ -1658,7 +1697,11 @@ export async function runSupabaseMigrationWrite({
     if (staleIds.some((id) => remainingIds.has(id)) || staleInvoiceLineItemPlan.canonicalRows.some((row) => !remainingIds.has(asText(row?.id)))) {
       return { ok: false, blocked: false, reason: "Proven stale invoice line-item cleanup could not be verified.", notices: [buildNotice("error", "stale_invoice_line_item_duplicate_cleanup_unverified", "Proven stale invoice line-item cleanup could not be verified.")], cloudCountsBefore: cloudCounts, tableResults, noLocalDeletes: true };
     }
-    notices.push(buildNotice("info", "stale_invoice_line_item_duplicates_removed", "Removed proven stale duplicate invoice line items.", { count: staleIds.length }));
+    notices.push(buildNotice("info", "stale_invoice_line_item_duplicates_removed", "Removed proven stale duplicate invoice line items.", {
+      count: staleIds.length,
+      duplicates: staleInvoiceLineItemPlan.provenStaleDuplicateRows.length,
+      placeholders: staleInvoiceLineItemPlan.provenStalePlaceholderRows.length,
+    }));
   }
   const invoiceLineItemMutationAccess = await ensureFreshMutationAccess();
   if (!invoiceLineItemMutationAccess.ok) return buildMutationLockResult(invoiceLineItemMutationAccess, { cloudCountsBefore: cloudCounts });

@@ -23,6 +23,7 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
+import { getDocumentEditTarget } from "../lib/documentEditTarget";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -1629,7 +1630,14 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
   };
 
   const openInvoice = (invoice) => {
-    const id = String(invoice?.id || "").trim();
+    const editTarget = getDocumentEditTarget(invoice, "invoice");
+    if (!editTarget) {
+      setToastMessage(lang === "es"
+        ? "Esta factura no se puede abrir porque falta su identidad guardada."
+        : "This invoice cannot be opened because its saved identity is missing.");
+      setShowToast(true);
+      return;
+    }
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
@@ -1638,8 +1646,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
         localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
         localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
       }
-      if (id) localStorage.setItem(EDIT_INVOICE_TARGET_KEY, id);
-      else localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
+      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, editTarget);
     } catch {}
     try {
       window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));

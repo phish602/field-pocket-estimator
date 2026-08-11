@@ -5,6 +5,8 @@ describe("supabaseClient", () => {
   const VALID_KEY = "sb_publishable_fake_test_key";
   const LOCAL_URL = "http://127.0.0.1:54321";
   const LOCAL_KEY = "sb_publishable_fake_local_test_key";
+  const APP_TUNNEL_ORIGIN = "https://phone-app.trycloudflare.com";
+  const SUPABASE_TUNNEL_URL = "https://local-supabase.trycloudflare.com";
   const AUTH_OPTIONS = {
     auth: {
       autoRefreshToken: true,
@@ -21,9 +23,12 @@ describe("supabaseClient", () => {
     // Gate P1 runtime-policy inputs -- cleared so each case is explicit.
     delete process.env.REACT_APP_ESTIPAID_CLOUD_ENABLED;
     delete process.env.REACT_APP_ESTIPAID_LOCAL_SUPABASE_ENABLED;
+    delete process.env.REACT_APP_ESTIPAID_MOBILE_TEST_MODE;
+    delete process.env.REACT_APP_MOBILE_TEST_SUPABASE_URL;
     delete process.env.REACT_APP_VERCEL_ENV;
     delete process.env.REACT_APP_VERCEL_TARGET_ENV;
     jest.dontMock("@supabase/supabase-js");
+    jest.dontMock("./supabaseRuntimePolicy");
   });
 
   afterEach(() => {
@@ -31,20 +36,46 @@ describe("supabaseClient", () => {
     jest.clearAllMocks();
   });
 
-  function setEnv({ url, key, enabled, localEnabled, vercelEnv, targetEnv } = {}) {
+  function setEnv({
+    url,
+    key,
+    enabled,
+    localEnabled,
+    mobileEnabled,
+    mobileUrl,
+    nodeEnv,
+    vercelEnv,
+    targetEnv,
+  } = {}) {
     if (url !== undefined) process.env.REACT_APP_SUPABASE_URL = url;
     if (key !== undefined) process.env.REACT_APP_SUPABASE_ANON_KEY = key;
     if (enabled !== undefined) process.env.REACT_APP_ESTIPAID_CLOUD_ENABLED = enabled;
     if (localEnabled !== undefined) {
       process.env.REACT_APP_ESTIPAID_LOCAL_SUPABASE_ENABLED = localEnabled;
     }
+    if (mobileEnabled !== undefined) process.env.REACT_APP_ESTIPAID_MOBILE_TEST_MODE = mobileEnabled;
+    if (mobileUrl !== undefined) process.env.REACT_APP_MOBILE_TEST_SUPABASE_URL = mobileUrl;
+    if (nodeEnv !== undefined) process.env.NODE_ENV = nodeEnv;
     if (vercelEnv !== undefined) process.env.REACT_APP_VERCEL_ENV = vercelEnv;
     if (targetEnv !== undefined) process.env.REACT_APP_VERCEL_TARGET_ENV = targetEnv;
   }
 
   // Loads the module with a mocked createClient so we can assert whether it was
   // ever called -- the core Gate P1 guarantee.
-  function loadWithMockedCreateClient() {
+  function loadWithMockedCreateClient({ currentOrigin } = {}) {
+    if (currentOrigin) {
+      jest.doMock("./supabaseRuntimePolicy", () => {
+        const actual = jest.requireActual("./supabaseRuntimePolicy");
+        return {
+          ...actual,
+          resolveSupabaseRuntimeUrl: (options) => actual.resolveSupabaseRuntimeUrl({
+            ...(options || {}),
+            currentOrigin,
+          }),
+          evaluateSupabaseRuntimePolicy: (env) => actual.evaluateSupabaseRuntimePolicy(env, { currentOrigin }),
+        };
+      });
+    }
     const createClient = jest.fn(() => ({ __mockSupabaseClient: true }));
     jest.doMock("@supabase/supabase-js", () => ({ createClient }));
     const module = require("./supabaseClient");
@@ -184,6 +215,44 @@ describe("supabaseClient", () => {
     expect(createClient).toHaveBeenCalledWith(LOCAL_URL, LOCAL_KEY, AUTH_OPTIONS);
     expect(module.supabase).toEqual({ __mockSupabaseClient: true });
     expect(module.getSupabaseClient()).toEqual({ __mockSupabaseClient: true });
+  });
+
+  test("development mobile mode constructs the one existing client exactly once from the resolved tunnel URL", () => {
+    setEnv({
+      url: LOCAL_URL,
+      key: LOCAL_KEY,
+      localEnabled: "true",
+      mobileEnabled: "true",
+      mobileUrl: SUPABASE_TUNNEL_URL,
+      nodeEnv: "development",
+    });
+    const { module, createClient } = loadWithMockedCreateClient({ currentOrigin: APP_TUNNEL_ORIGIN });
+
+    expect(module.supabaseRuntimePolicy.allowed).toBe(true);
+    expect(module.supabaseRuntimePolicy.runtimeMode).toBe("mobile_test");
+    expect(module.supabaseRuntimePolicy.usesMobileTunnel).toBe(true);
+    expect(module.isSupabaseConfigured).toBe(true);
+    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenCalledWith(SUPABASE_TUNNEL_URL, LOCAL_KEY, AUTH_OPTIONS);
+    expect(module.getSupabaseClient()).toEqual({ __mockSupabaseClient: true });
+  });
+
+  test("production rejects mobile mode and never constructs a tunnel client", () => {
+    setEnv({
+      url: LOCAL_URL,
+      key: LOCAL_KEY,
+      localEnabled: "true",
+      mobileEnabled: "true",
+      mobileUrl: SUPABASE_TUNNEL_URL,
+      nodeEnv: "production",
+    });
+    const { module, createClient } = loadWithMockedCreateClient({ currentOrigin: APP_TUNNEL_ORIGIN });
+
+    expect(module.supabaseRuntimePolicy.allowed).toBe(false);
+    expect(module.supabaseRuntimePolicy.reason).toBe("mobile_test_non_development");
+    expect(module.isSupabaseConfigured).toBe(false);
+    expect(module.supabase).toBeNull();
+    expect(createClient).not.toHaveBeenCalled();
   });
 
   // 10. The local opt-in must never unlock HOSTED Supabase.

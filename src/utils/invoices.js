@@ -4,6 +4,7 @@
 import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { getDocumentEditTarget, resolveDocumentEditTarget } from "../lib/documentEditTarget";
 import { appendAuditEvents, createStoredAuditEvent } from "./auditStore";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import {
@@ -525,8 +526,12 @@ export function sortInvoicesByDateDesc(a, b) {
 function dedupeInvoices(records) {
   const seen = new Set();
   return records.filter((invoice) => {
-    const key = asText(invoice?.invoiceNumber || invoice?.id);
-    if (!key) return true;
+    const id = asText(invoice?.id || invoice?.meta?.savedDocId);
+    // A document number is editable business metadata, not a safe primary
+    // identity. Keep unresolved id-less legacy records distinct so the edit
+    // resolver can fail closed if their number is ambiguous.
+    if (!id) return true;
+    const key = `id:${id}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -587,47 +592,163 @@ function readThinInvoiceLineItems(source) {
   return [];
 }
 
-function mapThinInvoiceLineItemsToMaterials(source) {
-  if (hasStructuredInvoiceSections(source)) return [];
-  const lineItems = readThinInvoiceLineItems(source);
-  return lineItems
-    .filter(Boolean)
-    .map((item, index) => {
-      const qty = Math.max(
-        1,
-        toCurrencyNumber(
-          item?.qty
-          ?? item?.quantity
-          ?? 1
-        )
-      );
-      const explicitPrice = firstFiniteNumber(
-        item?.priceEach,
-        item?.price,
-        item?.unitPrice,
-        item?.unit_price
-      );
-      const explicitTotal = firstFiniteNumber(
-        item?.total,
-        item?.totalPrice,
-        item?.total_price
-      );
-      const priceEach = explicitPrice !== null
-        ? roundCurrency(explicitPrice)
-        : roundCurrency((explicitTotal ?? 0) / (qty || 1));
+const THIN_LABOR_KINDS = new Set(["labor", "labour"]);
+const THIN_MATERIAL_KINDS = new Set(["material", "materials"]);
 
-      return {
-        id: asText(item?.id) || `invoice_line_${index}`,
-        desc: asText(item?.desc || item?.description || item?.label || item?.name),
-        qty,
-        priceEach,
-        markupPct: toCurrencyNumber(item?.markupPct),
-        unitCostInternal: item?.unitCostInternal ?? item?.costInternal ?? "",
-        costInternal: item?.costInternal ?? "",
-        note: asText(item?.note || item?.unit),
-      };
-    })
-    .filter((item) => item.desc || item.priceEach || item.qty);
+function readThinItemKind(item) {
+  return asText(item?.kind).toLowerCase();
+}
+
+// Restores a persisted numeric back to the estimator's own convention: a real
+// number when the child carried one (including an explicit 0), otherwise the
+// empty string the estimator uses for "not entered". Never invents a value --
+// inventing one is what makes a round trip drift between cycles.
+function thinNumericField(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const next = Number(value);
+    if (Number.isFinite(next)) return next;
+  }
+  return "";
+}
+
+function thinDescription(item) {
+  return asText(item?.desc || item?.description || item?.role || item?.label || item?.name);
+}
+
+function thinSortOrder(item) {
+  const raw = item?.sort_order ?? item?.sortOrder;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const next = Number(raw);
+  return Number.isFinite(next) ? next : null;
+}
+
+function withThinIdentity(row, item, index, prefix) {
+  const next = {
+    ...row,
+    id: asText(item?.id) || `${prefix}_${index}`,
+  };
+  const sortOrder = thinSortOrder(item);
+  if (sortOrder !== null) next.sort_order = sortOrder;
+  return next;
+}
+
+// A restored labor child rebuilt into the estimator's labor line shape. The
+// engine computes qty x hours x rate, so all three must come back or the row
+// silently reprices.
+function buildThinLaborLine(item, index) {
+  return withThinIdentity({
+    kind: "labor",
+    role: thinDescription(item),
+    qty: thinNumericField(item?.qty, item?.quantity),
+    hours: thinNumericField(item?.hours),
+    rate: thinNumericField(item?.rate, item?.unitPrice, item?.price, item?.unit_price),
+    trueRateInternal: thinNumericField(item?.trueRateInternal, item?.unitCost, item?.unit_cost),
+  }, item, index, "invoice_labor");
+}
+
+// A restored material child rebuilt into the estimator's material item shape.
+// `unit` is kept as its own field (not folded into `note`) because the shared
+// line-item contract persists it in its own column -- folding it away would drop
+// it on the next serialization.
+function buildThinMaterialItem(item, index, kindOverride = "material") {
+  return withThinIdentity({
+    kind: kindOverride,
+    desc: thinDescription(item),
+    qty: thinNumericField(item?.qty, item?.quantity),
+    priceEach: thinNumericField(item?.priceEach, item?.price, item?.unitPrice, item?.unit_price),
+    unitCostInternal: thinNumericField(item?.unitCostInternal, item?.unitCost, item?.unit_cost),
+    costInternal: thinNumericField(item?.costInternal),
+    unit: asText(item?.unit),
+    note: asText(item?.note),
+  }, item, index, "invoice_material");
+}
+
+// Splits a thin (cloud-restored) invoice's generic children back into the
+// canonical estimator sections BY THEIR PERSISTED SEMANTIC KIND.
+//
+// The previous behavior folded every thin child into materials.items regardless
+// of kind, which moved labor out of Labor and -- because a material is priced
+// qty x priceEach while labor is qty x hours x rate -- repriced it. A restored
+// technician (qty 1, hours 14, rate 50 = $700) came back as $50.
+//
+// Children carrying NO kind at all are true pre-contract legacy rows: they keep
+// the historical material-fallback representation, which is the narrowest
+// existing container for a generic priced row. Children carrying an explicit but
+// unrecognized kind also render through that container, but their original kind
+// is preserved on the row so serialization re-emits it instead of silently
+// rewriting them into materials.
+function partitionThinInvoiceLineItems(source) {
+  const empty = { labor: [], materials: [], total: 0 };
+  if (hasStructuredInvoiceSections(source)) return empty;
+  const lineItems = readThinInvoiceLineItems(source).filter(Boolean);
+  if (lineItems.length === 0) return empty;
+
+  const labor = [];
+  const materials = [];
+  const legacyRows = [];
+
+  lineItems.forEach((item, index) => {
+    const kind = readThinItemKind(item);
+    if (!kind) {
+      legacyRows.push({ item, index });
+      return;
+    }
+    if (THIN_LABOR_KINDS.has(kind)) {
+      labor.push(buildThinLaborLine(item, index));
+      return;
+    }
+    if (THIN_MATERIAL_KINDS.has(kind)) {
+      materials.push(buildThinMaterialItem(item, index));
+      return;
+    }
+    materials.push(buildThinMaterialItem(item, index, asText(item?.kind)));
+  });
+
+  legacyRows.forEach(({ item, index }) => {
+    const legacy = mapLegacyThinLineItemToMaterial(item, index);
+    if (legacy) materials.push(legacy);
+  });
+
+  return {
+    labor,
+    materials,
+    total: labor.length + materials.length,
+  };
+}
+
+// Unchanged historical mapping for kind-less legacy thin rows. Preserved exactly
+// (including its qty >= 1 clamp and its unit-into-note fold) so pre-contract
+// records keep behaving the way they always have.
+function mapLegacyThinLineItemToMaterial(item, index) {
+  const qty = Math.max(1, toCurrencyNumber(item?.qty ?? item?.quantity ?? 1));
+  const explicitPrice = firstFiniteNumber(
+    item?.priceEach,
+    item?.price,
+    item?.unitPrice,
+    item?.unit_price
+  );
+  const explicitTotal = firstFiniteNumber(
+    item?.total,
+    item?.totalPrice,
+    item?.total_price
+  );
+  const priceEach = explicitPrice !== null
+    ? roundCurrency(explicitPrice)
+    : roundCurrency((explicitTotal ?? 0) / (qty || 1));
+
+  const mapped = {
+    id: asText(item?.id) || `invoice_line_${index}`,
+    desc: asText(item?.desc || item?.description || item?.label || item?.name),
+    qty,
+    priceEach,
+    markupPct: toCurrencyNumber(item?.markupPct),
+    unitCostInternal: item?.unitCostInternal ?? item?.costInternal ?? "",
+    costInternal: item?.costInternal ?? "",
+    note: asText(item?.note || item?.unit),
+  };
+  if (!mapped.desc && !mapped.priceEach && !mapped.qty) return null;
+  return mapped;
 }
 
 export function generateNextInvoiceNumber(invoices) {
@@ -802,6 +923,45 @@ function reconcileLegacyEstimateInvoices(nextInvoices) {
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify(reconciledEstimateRecords));
 }
 
+// The authoritative identity boundary.
+//
+// Read normalization is deliberately non-minting: an old id-less legacy invoice
+// (a `docType: "invoice"` record still living in Estimate storage) stays id-less
+// while it is merely read, so repeated reads can never hand the same document a
+// different identity. But `readStoredInvoices()` MERGES those legacy records
+// with canonical ones, and that merged collection is what a later save writes
+// back -- so without this step an id-less legacy invoice crosses into canonical
+// invoice storage still lacking an id, and the cloud convergence engine
+// correctly refuses to reconcile a canonical record that has no identity.
+//
+// Promotion therefore happens exactly once, here, when a record is actually
+// persisted:
+//   A. already has an id            -> untouched, no new id, no metadata churn
+//   B. no id but has meta.savedDocId -> that becomes the canonical id
+//   C. neither                       -> mint ONE id and pin meta.savedDocId to it
+//
+// Canonical identity is never derived from the invoice number: the number is
+// mutable business/display identity, the id is storage/document identity.
+function promoteInvoiceCanonicalIdentity(invoices) {
+  const list = Array.isArray(invoices) ? invoices : [];
+  return list.map((invoice) => {
+    if (!invoice || typeof invoice !== "object") return invoice;
+    // CASE A -- already canonical. Return the exact same record so a normal save
+    // of already-identified invoices stays a no-op for identity and metadata.
+    if (asText(invoice.id)) return invoice;
+    // CASE B reuses the builder's own saved-document pointer; CASE C mints once.
+    const canonicalId = asText(invoice?.meta?.savedDocId) || createInvoiceId();
+    return {
+      ...invoice,
+      id: canonicalId,
+      meta: {
+        ...(invoice.meta && typeof invoice.meta === "object" ? invoice.meta : {}),
+        savedDocId: canonicalId,
+      },
+    };
+  });
+}
+
 export function readStoredInvoices() {
   try {
     const parsed = readStoredArray(INVOICES_KEY);
@@ -823,7 +983,11 @@ export function readStoredInvoices() {
 
 export function writeStoredInvoices(invoices) {
   const previousInvoices = readStoredInvoices();
-  const next = normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions());
+  // Promote BEFORE the project backfill and before legacy reconciliation, so
+  // both see the canonical id this write is committing to.
+  const next = promoteInvoiceCanonicalIdentity(
+    normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions())
+  );
   const sync = backfillProjectCollections({
     customers: readStoredCustomers(),
     projects: readStoredProjects(),
@@ -853,7 +1017,7 @@ export function buildEstimateInvoiceSnapshot(estimate) {
     approvedTotal: source?.approvedTotal ?? source?.total,
   });
   return {
-    estimateId: asText(source?.id),
+    estimateId: getDocumentEditTarget(source, "estimate"),
     estimateNumber: asText(source?.estimateNumber || source?.job?.docNumber),
     projectId: asText(source?.projectId || source?.customer?.projectId || source?.sourceEstimateSnapshot?.projectId),
     approvedTotal: financialSummary.approvedTotal,
@@ -985,8 +1149,12 @@ export function normalizeInvoiceRecord(record, options = {}) {
       updatedAt,
     }, { nowTs: updatedAt }).id;
   const hasStructuredSections = hasStructuredInvoiceSections(source);
-  const fallbackMaterialItems = mapThinInvoiceLineItemsToMaterials(source);
+  // Thin (cloud-restored) children are partitioned back into their own semantic
+  // sections rather than all being folded into materials.
+  const thinSections = partitionThinInvoiceLineItems(source);
+  const fallbackMaterialItems = thinSections.materials;
   const hasFallbackMaterialItems = fallbackMaterialItems.length > 0;
+  const hasThinChildren = thinSections.total > 0;
   const sourceMaterials = source?.materials && typeof source.materials === "object" ? source.materials : {};
   const explicitBlanketCost = sourceMaterials.blanketCost ?? source?.blanketCost ?? source?.materialsCost;
   const hasExplicitBlanketCost = String(explicitBlanketCost ?? "").trim() !== "";
@@ -1011,14 +1179,22 @@ export function normalizeInvoiceRecord(record, options = {}) {
   const resolvedMaterialsMode = hasFallbackMaterialItems
     ? "itemized"
     : resolveMaterialsMode(source);
+  // The blanket-cost fallback exists for invoices that carry NO children at all,
+  // only a parent total. Once thin children of any kind have been restored the
+  // engine derives the total from them, so filling blanketCost as well would
+  // double-count a restored labor-only invoice.
   const normalizedBlanketCost = hasExplicitBlanketCost
     ? explicitBlanketCost
-    : (!hasStructuredSections && !hasFallbackMaterialItems && invoiceTotal > 0 ? invoiceTotal : "");
+    : (!hasStructuredSections && !hasThinChildren && invoiceTotal > 0 ? invoiceTotal : "");
 
-  return {
+  const normalizedRecord = {
     ...source,
     ...financialSummary,
-    id: asText(source?.id) || createInvoiceId(),
+    // Normalization is read-only with respect to business identity. New ids are
+    // assigned once by the document creation/save boundary, never from mutable
+    // invoice-number metadata and never merely because a record was read.
+    id: asText(source?.id)
+      || asText(source?.meta?.savedDocId),
     docType: "invoice",
     ui: {
       ...(source?.ui || {}),
@@ -1090,6 +1266,54 @@ export function normalizeInvoiceRecord(record, options = {}) {
     updatedAt,
     ts: Number(source?.ts || updatedAt) || updatedAt,
   };
+
+  // Restored labor children belong in labor.lines -- the only section whose
+  // arithmetic is qty x hours x rate. Assigned only when thin labor was actually
+  // restored so records that legitimately have no labor section keep not having
+  // one.
+  if (thinSections.labor.length > 0) {
+    const sourceLabor = source?.labor && typeof source.labor === "object" ? source.labor : {};
+    // A thin restored invoice has no labor section at all, so the engine's
+    // adjustment inputs must come back at their neutral defaults. Leaving
+    // multiplier undefined is NOT neutral: computeTotals clamps it to the 0.25
+    // floor, which would quietly reprice restored labor.
+    normalizedRecord.labor = {
+      hazardPct: DEFAULT_STATE?.labor?.hazardPct ?? 0,
+      riskPct: DEFAULT_STATE?.labor?.riskPct ?? 0,
+      multiplier: DEFAULT_STATE?.labor?.multiplier ?? 1,
+      ...sourceLabor,
+      lines: thinSections.labor,
+    };
+  }
+
+  // A normalized invoice carries its children only in the canonical structured
+  // sections (labor.lines / materials.items / additionalCharges.items). A thin
+  // cloud-restored invoice arrives with its children in a generic lineItems
+  // array; the block above already folds those into materials.items. If the
+  // generic arrays are left on the record they become a SECOND copy of the same
+  // children, and the backend line-item derivation
+  // (labor.lines + materials.items + lineItems) counts each child twice. That is
+  // the 16-child seed presenting as 32 device-side children -- a divergence the
+  // cloud convergence engine then correctly refuses to reconcile
+  // (persistent protected data_mismatch). Strip the redundant thin arrays so the
+  // child set stays single and deterministic across restore / reopen / save.
+  delete normalizedRecord.lineItems;
+  delete normalizedRecord.invoiceLineItems;
+  delete normalizedRecord.items;
+
+  // Historical invoices can still live in the Estimates collection without a
+  // canonical id. Keep their number only as a non-persisted lookup target so
+  // opening can resolve the original record. The first real save assigns and
+  // persists a canonical id once; normalization itself never promotes this
+  // mutable display number into identity.
+  if (!asText(source?.id) && !asText(source?.meta?.savedDocId) && invoiceNumber) {
+    Object.defineProperty(normalizedRecord, "__legacyEditTarget", {
+      value: invoiceNumber,
+      enumerable: false,
+    });
+  }
+
+  return normalizedRecord;
 }
 
 export function normalizeInvoiceList(records, options = {}) {
@@ -1123,7 +1347,7 @@ export function isInvoiceReceivable(record, nowTs = Date.now()) {
 }
 
 export function buildEstimateInvoiceSummary(estimate, invoices, options = {}) {
-  const sourceEstimateId = asText(estimate?.id);
+  const sourceEstimateId = getDocumentEditTarget(estimate, "estimate");
   const ignoreInvoiceId = asText(options?.ignoreInvoiceId);
   const approvedTotal = roundCurrency(estimate?.total ?? estimate?.approvedTotal);
   const arr = Array.isArray(invoices) ? invoices : [];
@@ -1228,6 +1452,7 @@ function baseInvoiceDraft(nowTs) {
     ui: {
       ...(base?.ui || {}),
       docType: "invoice",
+      includeInvoiceScopeOnPdf: false,
     },
     status: INVOICE_STATUSES.DRAFT,
     invoiceType: INVOICE_TYPES.MANUAL,
@@ -1265,18 +1490,11 @@ function buildInvoiceScopeCarryover(source = {}, options = {}) {
   const scopeImages = Array.isArray(source?.scopeImages)
     ? deepClone(source.scopeImages.filter(Boolean))
     : [];
-  const includeInvoiceScopeNotes = Boolean(
-    scopeNotes
-    || scopeImages.length > 0
-    || asText(tradeInsert?.text)
-  );
-
   return {
     scopeNotes,
     additionalNotes,
     tradeInsert,
     scopeImages,
-    includeInvoiceScopeNotes,
   };
 }
 
@@ -1323,6 +1541,9 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = generateNextInvoiceNumber(invoices);
   const snapshot = buildEstimateInvoiceSnapshot(estimate);
+  if (!snapshot.estimateId) {
+    return { ok: false, message: "Estimate identity is missing. Reopen the estimate before creating an invoice.", summary };
+  }
   const scopeCarryover = buildInvoiceScopeCarryover(estimate, { note: options?.note });
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
   const dueDate = normalizeIsoDate(options?.dueDate || estimate?.job?.due);
@@ -1374,7 +1595,7 @@ export function createInvoiceDraftFromEstimate(estimate, invoices, options = {})
     ...(draft.ui || {}),
     docType: "invoice",
     materialsMode: "blanket",
-    includeInvoiceScopeNotes: scopeCarryover.includeInvoiceScopeNotes,
+    includeInvoiceScopeOnPdf: false,
   };
   draft.labor = {
     ...(draft.labor || {}),
@@ -1466,6 +1687,9 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
   const dueDate = normalizeIsoDate(options?.dueDate || source?.job?.due);
   const snapshot = buildEstimateInvoiceSnapshot(source);
+  if (!snapshot.estimateId) {
+    return { ok: false, message: "Estimate identity is missing. Reopen the estimate before creating an invoice.", summary };
+  }
   const customerId = asText(source?.customerId || source?.customer?.id || snapshot?.customerId);
   const customerName = asText(source?.customerName || source?.customer?.name || snapshot?.customerName);
   const projectName = asText(source?.projectName || source?.customer?.projectName || snapshot?.projectName);
@@ -1483,10 +1707,11 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     ?? 0
   );
   const scopeCarryover = buildInvoiceScopeCarryover(source);
+  const invoiceId = createInvoiceId();
 
   const draft = normalizeInvoiceRecord({
     ...source,
-    id: "",
+    id: invoiceId,
     docType: "invoice",
     status: INVOICE_STATUSES.DRAFT,
     invoiceType: source?.invoiceType || INVOICE_TYPES.CUSTOM,
@@ -1519,7 +1744,7 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
       ...(source?.ui || {}),
       docType: "invoice",
       materialsMode,
-      includeInvoiceScopeNotes: scopeCarryover.includeInvoiceScopeNotes,
+      includeInvoiceScopeOnPdf: false,
     },
     customer: {
       ...(source?.customer || {}),
@@ -1544,7 +1769,7 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     },
     meta: {
       ...(source?.meta || {}),
-      savedDocId: "",
+      savedDocId: invoiceId,
       savedDocCreatedAt: now,
       lastSavedAt: 0,
       ephemeralDraft: true,
@@ -1602,7 +1827,7 @@ export function duplicateInvoiceDraft(invoice, invoices, options = {}) {
 
   if (duplicate.sourceEstimateId) {
     const estimates = Array.isArray(options?.estimates) ? options.estimates : [];
-    const estimate = estimates.find((entry) => asText(entry?.id) === duplicate.sourceEstimateId) || null;
+    const estimate = resolveDocumentEditTarget(estimates, duplicate.sourceEstimateId, "estimate");
     const validation = validateInvoiceAgainstEstimate({
       invoice: duplicate,
       estimate,

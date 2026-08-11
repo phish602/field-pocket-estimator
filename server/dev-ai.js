@@ -17,7 +17,14 @@ app.post(
 );
 app.use(express.json({ limit: "1mb" }));
 app.post("/api/stripe/create-subscription-checkout", createExpressSubscriptionCheckoutHandler());
-app.post("/api/cloud/repair-stale-invoice-line-items", createExpressStaleInvoiceLineItemRepairHandler());
+// The LOCAL dev bridge may only ever repair the local Supabase instance. This is
+// enforced inside the handler as well as by scripts/start-dev-ai-local.js, so a
+// stray SUPABASE_URL in the shell cannot point this destructive route at a
+// hosted project. The deployed production route (api/cloud/...) is unaffected.
+app.post(
+  "/api/cloud/repair-stale-invoice-line-items",
+  createExpressStaleInvoiceLineItemRepairHandler({ requireLocalSupabase: true }),
+);
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
 const GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions";

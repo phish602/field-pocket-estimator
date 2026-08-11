@@ -80,6 +80,83 @@ async function save() {
   });
 }
 
+describe("CompanyProfileScreen authoritative readiness hydration", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useBusinessMutationGuard.mockReturnValue({
+      ensureCanMutateBusinessData: jest.fn(async () => ({ ok: true })),
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  test("hydrates the existing profile when authoritative storage becomes readable without writing or becoming dirty", async () => {
+    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(SAVED_PROFILE));
+    const profileWrites = jest.spyOn(Storage.prototype, "setItem");
+    const dirtyEvents = [];
+    const onDirty = (event) => dirtyEvents.push(Boolean(event?.detail?.dirty));
+    window.addEventListener("estipaid:user-profile-dirty", onDirty);
+
+    try {
+      const view = render(<CompanyProfileScreen authoritativeStorageReady={false} />);
+      expect(screen.getByPlaceholderText("Example: Desert Ridge HOA")).toHaveValue("");
+
+      view.rerender(<CompanyProfileScreen authoritativeStorageReady />);
+
+      await waitFor(() => {
+        expect(screen.getByDisplayValue("Desert Ridge")).toBeInTheDocument();
+      });
+      expect(profileWrites.mock.calls.filter(([key]) => key === STORAGE_KEYS.COMPANY_PROFILE)).toHaveLength(0);
+      expect(dirtyEvents).not.toContain(true);
+    } finally {
+      window.removeEventListener("estipaid:user-profile-dirty", onDirty);
+    }
+  });
+
+  test("keeps normal profile hydration unchanged when authoritative storage is ready at mount", async () => {
+    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(SAVED_PROFILE));
+    const profileWrites = jest.spyOn(Storage.prototype, "setItem");
+
+    render(<CompanyProfileScreen authoritativeStorageReady />);
+
+    expect(await screen.findByDisplayValue("Desert Ridge")).toBeInTheDocument();
+    expect(profileWrites.mock.calls.filter(([key]) => key === STORAGE_KEYS.COMPANY_PROFILE)).toHaveLength(0);
+  });
+
+  test("does not overwrite form edits made before a late readiness transition", async () => {
+    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(SAVED_PROFILE));
+    const view = render(<CompanyProfileScreen authoritativeStorageReady={false} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Example: Desert Ridge HOA"), {
+      target: { value: "Unsaved Local Edit" },
+    });
+    view.rerender(<CompanyProfileScreen authoritativeStorageReady />);
+
+    expect(screen.getByDisplayValue("Unsaved Local Edit")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Desert Ridge")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE))).toEqual(SAVED_PROFILE);
+  });
+
+  test("missing required fields show actionable feedback without reaching persistence", async () => {
+    const mutationGuard = jest.fn(async () => ({ ok: true }));
+    useBusinessMutationGuard.mockReturnValue({ ensureCanMutateBusinessData: mutationGuard });
+    const profileWrites = jest.spyOn(Storage.prototype, "setItem");
+
+    render(<CompanyProfileScreen authoritativeStorageReady />);
+    await save();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Missing required information");
+    expect(screen.getByRole("alert")).toHaveTextContent("Company Name");
+    expect(screen.getByRole("alert")).toHaveTextContent("Phone");
+    expect(screen.getAllByText("This field is required.")).toHaveLength(6);
+    expect(mutationGuard).not.toHaveBeenCalled();
+    expect(profileWrites.mock.calls.filter(([key]) => key === STORAGE_KEYS.COMPANY_PROFILE)).toHaveLength(0);
+  });
+});
+
 describe("CompanyProfileScreen explicit save", () => {
   let originalConfirm;
 
@@ -161,6 +238,7 @@ describe("CompanyProfileScreen explicit save", () => {
       await save();
 
       expect(readProfile().companyName).toBe("Desert Ridge");
+      expect(screen.getByRole("alert")).toHaveTextContent("Save canceled. Your Company Profile changes were not written.");
       expect(readCloudBackupQueueState().pending).toBe(false);
       expect(events.at(-1)).toBe(true);
     } finally {

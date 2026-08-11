@@ -47,19 +47,19 @@ describe("stale invoice line item repair browser client", () => {
   });
 
   test.each([
-    ["non JSON", { ok: false, json: jest.fn(async () => { throw new Error("not JSON"); }) }],
-    ["network failure", new Error("network")], ["400", { ok: false, json: jest.fn(async () => ({ code: "invalid_request" })) }],
-    ["401", { ok: false, json: jest.fn(async () => ({ code: "unauthorized" })) }], ["403", { ok: false, json: jest.fn(async () => ({ code: "forbidden" })) }],
-    ["409", { ok: false, json: jest.fn(async () => ({ code: "repair_refused" })) }], ["500", { ok: false, json: jest.fn(async () => ({ code: "repair_unavailable" })) }],
-  ])("%s response is normalized safely", async (_name, response) => {
-    const fetchImpl = jest.fn(async () => { if (response instanceof Error) throw response; return response; });
-    const { result } = call({ fetchImpl }); expect(await result).toEqual({ ok: false, error: "Repair unavailable." });
+    ["non JSON", async () => ({ ok: false, status: 500, json: async () => { throw new Error("not JSON"); } }), "repair_unavailable"],
+    ["network failure", async () => { throw new Error("network"); }, "repair_unreachable"], ["400", async () => ({ ok: false, status: 400, json: async () => ({ code: "invalid_request" }) }), "invalid_request"],
+    ["401", async () => ({ ok: false, status: 401, json: async () => ({ code: "unauthorized" }) }), "unauthorized"], ["403", async () => ({ ok: false, status: 403, json: async () => ({ code: "forbidden" }) }), "forbidden"],
+    ["409", async () => ({ ok: false, status: 409, json: async () => ({ code: "repair_refused" }) }), "repair_refused"], ["500", async () => ({ ok: false, status: 500, json: async () => ({ code: "repair_unavailable" }) }), "repair_unavailable"],
+  ])("%s response is normalized safely", async (_name, resolveResponse, failureCode) => {
+    const fetchImpl = jest.fn(resolveResponse);
+    const { result } = call({ fetchImpl }); expect(await result).toEqual({ ok: false, error: "Repair unavailable.", failureCode });
   });
 
   test("does not expose tokens, log, mutate directly, or retry", async () => {
     const client = authClient(); const fetchImpl = jest.fn(async () => { throw new Error("fail"); }); const log = jest.spyOn(console, "log").mockImplementation(() => {});
     const result = await repairProvenStaleInvoiceLineItemDuplicates({ client, companyId: "company", deviceId: "device", staleRowIds: [first], fetchImpl });
-    expect(result).toEqual({ ok: false, error: "Repair unavailable." }); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(client.from).not.toHaveBeenCalled(); expect(log).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: "Repair unavailable.", failureCode: "repair_unreachable" }); expect(fetchImpl).toHaveBeenCalledTimes(1); expect(client.from).not.toHaveBeenCalled(); expect(log).not.toHaveBeenCalled();
     log.mockRestore();
   });
 });

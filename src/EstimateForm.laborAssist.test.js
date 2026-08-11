@@ -95,6 +95,7 @@ jest.mock("./utils/settings", () => {
 import EstimateForm from "./EstimateForm";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { STORAGE_KEYS } from "./constants/storageKeys";
+import { advanceToWizardStep } from "./testUtils/wizardTestNavigation";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -217,6 +218,7 @@ function setup({ state, laborWrites }) {
   });
 
   const view = render(<EstimateForm />);
+  advanceToWizardStep("labor");
   mockPatch.mockClear();
   return view;
 }
@@ -257,6 +259,7 @@ function setupManualLaborEditor({ state, updateLaborLine = jest.fn() }) {
   });
 
   const view = render(<EstimateForm />);
+  advanceToWizardStep("labor");
   mockPatch.mockClear();
   return { ...view, updateLaborLine };
 }
@@ -317,6 +320,8 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     render(<EstimateForm />);
+    // Labor-from-scope is triggered from the Labor step's AI Assist button.
+    advanceToWizardStep("labor");
     mockPatch.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /^ai assist$/i }));
@@ -655,6 +660,7 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     render(<EstimateForm />);
+    advanceToWizardStep("scope");
     mockPatch.mockClear();
 
     fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
@@ -710,6 +716,7 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     render(<EstimateForm />);
+    advanceToWizardStep("scope");
     mockPatch.mockClear();
 
     fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
@@ -772,6 +779,7 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     render(<EstimateForm />);
+    advanceToWizardStep("scope");
     mockPatch.mockClear();
 
     fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
@@ -845,6 +853,7 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     render(<EstimateForm />);
+    advanceToWizardStep("scope");
     mockPatch.mockClear();
 
     fireEvent.click(screen.getByTitle(/ai drafts scope text you review and edit before accepting/i));
@@ -929,11 +938,13 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     const view = render(<EstimateForm />);
+    advanceToWizardStep("labor");
     mockPatch.mockClear();
     mockSubmitMaterialsAssist.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /switch to itemized/i }));
     view.rerender(<EstimateForm />);
+    advanceToWizardStep("labor");
 
     await waitFor(() => {
       expect(mockSubmitMaterialsAssist).toHaveBeenCalledWith("3 toilets, wax rings, closet bolts, supply lines, caulk");
@@ -998,11 +1009,13 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     const view = render(<EstimateForm />);
+    advanceToWizardStep("labor");
     mockPatch.mockClear();
     mockSubmitMaterialsAssist.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /keep current/i }));
     view.rerender(<EstimateForm />);
+    advanceToWizardStep("labor");
 
     await waitFor(() => {
       expect(mockCloseMaterialsAssist).toHaveBeenCalledTimes(1);
@@ -1069,11 +1082,13 @@ describe("EstimateForm labor AI assist writeback", () => {
     });
 
     const view = render(<EstimateForm />);
+    advanceToWizardStep("labor");
     mockPatch.mockClear();
     mockSubmitMaterialsAssist.mockClear();
 
     fireEvent.click(screen.getByLabelText(/close/i));
     view.rerender(<EstimateForm />);
+    advanceToWizardStep("labor");
 
     await waitFor(() => {
       expect(mockCloseMaterialsAssist).toHaveBeenCalledTimes(1);

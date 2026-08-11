@@ -373,14 +373,18 @@ export function clearCloudBackupDirty(reason, { expectedRevision = null } = {}) 
       && Number(current.localMutationRevision || 0) !== Number(expectedRevision);
 
     if (revisionChanged) {
+      // The generation we just uploaded succeeded, but a NEWER local revision
+      // (e.g. a payment saved while the upload was in flight) is still pending.
+      // That newer revision has NOT reached the cloud, so this must not stamp
+      // lastSuccessfulBackupAt / lastVerifiedAt -- doing so let the UI report
+      // "Cloud backup is up to date" while a money-critical mutation was still
+      // unsynced. The queue stays pending so the worker drains the new revision.
       return writeQueueState({
         ...current,
         pending: true,
         status: CLOUD_BACKUP_STATUS.PENDING,
         syncingRevision: null,
         updatedAt: ts,
-        lastSuccessfulBackupAt: ts,
-        lastVerifiedAt: ts,
         lastError: "",
         lastErrorCode: "",
       });

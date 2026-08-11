@@ -13,6 +13,21 @@ const PANEL_COPY = {
   },
 };
 
+const DELIVERY_COPY = {
+  en: {
+    section: "Delivery",
+    title: "Send to Customer",
+    description: "Secure customer delivery will be available when the customer portal backend is connected.",
+    comingSoon: "Coming soon",
+  },
+  es: {
+    section: "Entrega",
+    title: "Enviar al cliente",
+    description: "La entrega segura al cliente estará disponible cuando se conecte el portal del cliente.",
+    comingSoon: "Próximamente",
+  },
+};
+
 const styles = {
   card: {
     display: "flex",
@@ -147,6 +162,26 @@ const styles = {
     padding: "11px 12px",
   },
 };
+
+export function CustomerPortalDeliveryStatus({ documentType = "estimate", lang = "en" }) {
+  const copy = DELIVERY_COPY[lang === "es" ? "es" : "en"];
+  return (
+    <section
+      className="pe-finalize-delivery"
+      data-customer-delivery="coming-soon"
+      data-document-type={documentType === "invoice" ? "invoice" : "estimate"}
+      aria-label={copy.title}
+    >
+      <div className="pe-finalize-delivery-mark" aria-hidden="true">↗</div>
+      <div className="pe-finalize-delivery-copy">
+        <span>{copy.section}</span>
+        <strong>{copy.title}</strong>
+        <p>{copy.description}</p>
+      </div>
+      <span className="pe-finalize-delivery-badge">{copy.comingSoon}</span>
+    </section>
+  );
+}
 
 export default function CustomerPortalSharePanel({
   documentType = "estimate",

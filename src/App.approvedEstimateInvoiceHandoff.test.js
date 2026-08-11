@@ -2,6 +2,7 @@ import {
   resetConfiguredTestWorkspace,
   clearTestAuthoritativeRuntimeWrites,
   getTestAuthoritativeRuntimeWrites,
+  setTestAuthoritativeRuntimeQuotaExceeded,
   setupConfiguredWorkspace,
   buildUnlockedVaultSessionResult,
   waitForConfiguredWorkspaceShell,
@@ -251,6 +252,7 @@ jest.mock("./utils/settings", () => {
 import App from "./App";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { readCloudBackupQueueState } from "./lib/cloudBackupQueue";
+import { advanceToWizardStep } from "./testUtils/wizardTestNavigation";
 
 jest.setTimeout(15000);
 
@@ -522,7 +524,233 @@ describe("App approved estimate invoice builder handoff", () => {
   });
 
   afterEach(() => {
+    setTestAuthoritativeRuntimeQuotaExceeded(false);
     setItemSpy.mockRestore();
+  });
+
+  test("an id-less legacy estimate uses the existing approval transition without creating a duplicate", async () => {
+    const customer = createCustomer({
+      id: "cust_legacy_approval",
+      name: "Legacy Approval Customer",
+      projectName: "Legacy Approval Project",
+      projectNumber: "P-LEGACY-APPROVAL",
+      address: "101 Legacy Way",
+    });
+    const estimate = createEstimate({
+      id: "",
+      status: "draft",
+      estimateNumber: "EST-LEGACY-APPROVAL",
+      projectId: "proj_legacy_approval",
+      customer,
+      scopeNotes: "Keep the original legacy scope.",
+      materialsMode: "itemized",
+      total: 500,
+      laborLine: { id: "labor_legacy_approval", role: "painter", hours: "4", rate: "75" },
+      materialItem: { id: "material_legacy_approval", desc: "Paint", qty: "2", priceEach: "100" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /Mark Approved/i })[0]);
+    await screen.findByText("Create Invoice?");
+
+    expect(readStoredEstimates()).toEqual([
+      expect.objectContaining({
+        id: "",
+        estimateNumber: "EST-LEGACY-APPROVAL",
+        status: "approved",
+        scopeNotes: estimate.scopeNotes,
+      }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /No, Later/i }));
+  });
+
+  test("an ambiguous legacy estimate identity fails closed without changing either source record", async () => {
+    const firstCustomer = createCustomer({
+      id: "cust_legacy_ambiguous_first",
+      name: "First Ambiguous Customer",
+      projectName: "First Ambiguous Project",
+      projectNumber: "P-AMBIGUOUS-1",
+      address: "111 Ambiguous Way",
+    });
+    const secondCustomer = createCustomer({
+      id: "cust_legacy_ambiguous_second",
+      name: "Second Ambiguous Customer",
+      projectName: "Second Ambiguous Project",
+      projectNumber: "P-AMBIGUOUS-2",
+      address: "222 Ambiguous Way",
+    });
+    const first = createEstimate({
+      id: "",
+      status: "draft",
+      estimateNumber: "EST-LEGACY-AMBIGUOUS",
+      projectId: "proj_legacy_ambiguous_first",
+      customer: firstCustomer,
+      scopeNotes: "First source scope.",
+      materialsMode: "itemized",
+      total: 300,
+      laborLine: { id: "labor_ambiguous_first", role: "painter", hours: "2", rate: "75" },
+      materialItem: { id: "material_ambiguous_first", desc: "Paint", qty: "1", priceEach: "75" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+    });
+    const second = createEstimate({
+      id: "",
+      status: "draft",
+      estimateNumber: "EST-LEGACY-AMBIGUOUS",
+      projectId: "proj_legacy_ambiguous_second",
+      customer: secondCustomer,
+      scopeNotes: "Second source scope.",
+      materialsMode: "itemized",
+      total: 350,
+      laborLine: { id: "labor_ambiguous_second", role: "painter", hours: "3", rate: "75" },
+      materialItem: { id: "material_ambiguous_second", desc: "Primer", qty: "1", priceEach: "80" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+    });
+
+    localStorage.clear();
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([firstCustomer, secondCustomer]));
+    localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([first, second]));
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+
+    await renderAppOnEstimates(firstCustomer.projectName);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Details$/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /Mark Approved/i })[0]);
+
+    expect(await screen.findByText("Unable to update this estimate because its identity is missing or ambiguous.")).toBeInTheDocument();
+    expect(readStoredEstimates()).toEqual([first, second]);
+    expect(screen.queryByText("Create Invoice?")).not.toBeInTheDocument();
+  });
+
+  test("a failed legacy approval write does not change status or open conversion", async () => {
+    const customer = createCustomer({
+      id: "cust_legacy_approval_failure",
+      name: "Legacy Approval Failure Customer",
+      projectName: "Legacy Approval Failure Project",
+      projectNumber: "P-LEGACY-APPROVAL-FAILURE",
+      address: "151 Legacy Way",
+    });
+    const estimate = createEstimate({
+      id: "",
+      status: "draft",
+      estimateNumber: "EST-LEGACY-APPROVAL-FAILURE",
+      projectId: "proj_legacy_approval_failure",
+      customer,
+      scopeNotes: "Keep this draft unchanged when approval storage fails.",
+      materialsMode: "itemized",
+      total: 450,
+      laborLine: { id: "labor_approval_failure", role: "painter", hours: "3", rate: "75" },
+      materialItem: { id: "material_approval_failure", desc: "Paint", qty: "1", priceEach: "100" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    setTestAuthoritativeRuntimeQuotaExceeded(true);
+    fireEvent.click(await screen.findByRole("button", { name: /Mark Approved/i }));
+
+    expect(await screen.findByText("Unable to save the estimate status.")).toBeInTheDocument();
+    setTestAuthoritativeRuntimeQuotaExceeded(false);
+    expect(readStoredEstimates()).toEqual([estimate]);
+    expect(screen.queryByText("Create Invoice?")).not.toBeInTheDocument();
+  });
+
+  test("an approved id-less legacy estimate creates one separately linked invoice through Create Invoice", async () => {
+    const customer = createCustomer({
+      id: "cust_legacy_conversion",
+      name: "Legacy Conversion Customer",
+      projectName: "Legacy Conversion Project",
+      projectNumber: "P-LEGACY-CONVERSION",
+      address: "202 Legacy Way",
+    });
+    const scopeImages = createScopeImages(2);
+    const tradeInsert = { key: "painting", text: "Protect finishes and apply two finish coats." };
+    const estimate = createEstimate({
+      id: "",
+      status: "approved",
+      estimateNumber: "EST-LEGACY-CONVERSION",
+      projectId: "proj_legacy_conversion",
+      customer,
+      scopeNotes: "Carry the complete legacy scope.",
+      additionalNotes: "Net 15. Coordinate night access.",
+      tradeInsert,
+      scopeImages,
+      materialsMode: "itemized",
+      total: 980,
+      laborLine: { id: "labor_legacy_conversion", role: "painter", hours: "8", rate: "85", trueRateInternal: "55" },
+      materialItem: { id: "material_legacy_conversion", desc: "Paint and patch materials", qty: "1", priceEach: "180", unitCostInternal: "120" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+      additionalChargeItems: [{ id: "charge_legacy_conversion", desc: "Night work", qty: "1", priceEach: "120" }],
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Convert to Invoice/i }));
+    await screen.findByRole("heading", { name: /EDIT INVOICE/i });
+
+    const storedEstimates = readStoredEstimates();
+    const storedInvoices = readStoredInvoices();
+    expect(storedEstimates).toHaveLength(1);
+    expect(storedEstimates[0]).toEqual(expect.objectContaining({
+      id: "",
+      estimateNumber: "EST-LEGACY-CONVERSION",
+      status: "approved",
+      scopeNotes: estimate.scopeNotes,
+    }));
+    expect(storedInvoices).toHaveLength(1);
+    expect(storedInvoices[0]).toEqual(expect.objectContaining({
+      sourceEstimateId: "EST-LEGACY-CONVERSION",
+      customerId: customer.id,
+      projectId: "proj_legacy_conversion",
+      scopeNotes: estimate.scopeNotes,
+      scopeImages,
+      tradeInsert,
+      additionalNotes: estimate.additionalNotes,
+      labor: estimate.labor,
+      materials: estimate.materials,
+      additionalCharges: estimate.additionalCharges,
+    }));
+    expect(storedInvoices[0].ui).toEqual(expect.objectContaining({ includeInvoiceScopeOnPdf: false }));
+    expect(storedInvoices[0].id).not.toBe(storedEstimates[0].id);
+  });
+
+  test("a failed legacy invoice write leaves the source estimate approved and unlinked", async () => {
+    const customer = createCustomer({
+      id: "cust_legacy_failure",
+      name: "Legacy Failure Customer",
+      projectName: "Legacy Failure Project",
+      projectNumber: "P-LEGACY-FAILURE",
+      address: "303 Legacy Way",
+    });
+    const estimate = createEstimate({
+      id: "",
+      status: "approved",
+      estimateNumber: "EST-LEGACY-FAILURE",
+      projectId: "proj_legacy_failure",
+      customer,
+      scopeNotes: "Do not lose this source estimate.",
+      materialsMode: "itemized",
+      total: 400,
+      laborLine: { id: "labor_legacy_failure", role: "painter", hours: "4", rate: "75" },
+      materialItem: { id: "material_legacy_failure", desc: "Paint", qty: "1", priceEach: "100" },
+      blanketMaterials: { blanketCost: "", blanketInternalCost: "", materialsBlanketDescription: "", markupPct: 0, item: {} },
+    });
+
+    seedEstimateSession({ estimate, customer });
+    await renderAppOnEstimates(customer.projectName);
+    fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
+    setTestAuthoritativeRuntimeQuotaExceeded(true);
+    fireEvent.click(await screen.findByRole("button", { name: /Convert to Invoice/i }));
+
+    expect(await screen.findByText("Unable to save the invoice. The estimate was not changed.")).toBeInTheDocument();
+    setTestAuthoritativeRuntimeQuotaExceeded(false);
+    expect(readStoredInvoices()).toEqual([]);
+    expect(readStoredEstimates()).toEqual([estimate]);
+    expect(screen.queryByRole("heading", { name: /EDIT INVOICE/i })).not.toBeInTheDocument();
   });
 
   test("prompt Yes opens the full invoice builder with a preserved itemized invoice draft", async () => {
@@ -590,12 +818,16 @@ describe("App approved estimate invoice builder handoff", () => {
 
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
 
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
       expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
     });
+
+    // The converted project name is owned by the Project Info step.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
 
     const invoices = readStoredInvoices();
     expect(invoices).toHaveLength(1);
@@ -613,7 +845,7 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(createdInvoice.ui).toEqual(expect.objectContaining({
       docType: "invoice",
       materialsMode: "itemized",
-      includeInvoiceScopeNotes: true,
+      includeInvoiceScopeOnPdf: false,
     }));
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       estimateNumber: estimate.estimateNumber,
@@ -706,22 +938,30 @@ describe("App approved estimate invoice builder handoff", () => {
     await renderAppOnEstimates(customer.projectName);
 
     fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
-    await screen.findByRole("button", { name: /Create Invoice/i });
+    await screen.findByRole("button", { name: /Convert to Invoice/i });
 
     setItemSpy.mockClear();
     clearTestAuthoritativeRuntimeWrites();
 
-    fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Convert to Invoice/i }));
 
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
 
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /Create invoice/i })).not.toBeInTheDocument();
       expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
-      expect(screen.getByLabelText(/Include on Invoice/i)).toBeChecked();
     });
+
+    // Converted project name remains on Project Info; Scope is the next shared
+    // step and its invoice-only checkbox controls PDF inclusion only.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(customer.projectName);
+
+    advanceToWizardStep("scope");
+    expect(screen.getByRole("heading", { level: 2, name: "Scope of Work" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Include Scope of Work on PDF" })).not.toBeChecked();
 
     const invoices = readStoredInvoices();
     expect(invoices).toHaveLength(1);
@@ -739,7 +979,7 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(createdInvoice.ui).toEqual(expect.objectContaining({
       docType: "invoice",
       materialsMode: "blanket",
-      includeInvoiceScopeNotes: true,
+      includeInvoiceScopeOnPdf: false,
     }));
     expect(createdInvoice.sourceEstimateSnapshot).toEqual(expect.objectContaining({
       estimateNumber: estimate.estimateNumber,
@@ -829,12 +1069,12 @@ describe("App approved estimate invoice builder handoff", () => {
     await renderAppOnEstimates(customer.projectName);
 
     fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
-    await screen.findByRole("button", { name: /Create Invoice/i });
+    await screen.findByRole("button", { name: /Convert to Invoice/i });
 
     setItemSpy.mockClear();
     clearTestAuthoritativeRuntimeWrites();
 
-    fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Convert to Invoice/i }));
 
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
 
@@ -864,7 +1104,7 @@ describe("App approved estimate invoice builder handoff", () => {
     }));
     expect(createdInvoice.scopeNotes).toBe(estimate.scopeNotes);
     expect(createdInvoice.additionalNotes).toBe("");
-    expect(createdInvoice.ui).toEqual(expect.objectContaining({ includeInvoiceScopeNotes: true }));
+    expect(createdInvoice.ui).toEqual(expect.objectContaining({ includeInvoiceScopeOnPdf: false }));
     expect(screen.queryByText(/Quick Composer/i)).not.toBeInTheDocument();
 
     expectEditInvoiceTargetWasSet(setItemSpy, createdInvoice.id);
@@ -936,9 +1176,9 @@ describe("App approved estimate invoice builder handoff", () => {
     await renderAppOnEstimates(customer.projectName);
 
     fireEvent.click(screen.getByRole("button", { name: /^Details$/i }));
-    await screen.findByRole("button", { name: /Create Invoice/i });
+    await screen.findByRole("button", { name: /Convert to Invoice/i });
 
-    fireEvent.click(screen.getByRole("button", { name: /Create Invoice/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Convert to Invoice/i }));
 
     await screen.findByRole("heading", { name: /EDIT INVOICE/i });
 
@@ -950,7 +1190,7 @@ describe("App approved estimate invoice builder handoff", () => {
     expect(createdInvoice.scopeImages).toEqual(scopeImages);
     expect(createdInvoice.ui).toEqual(expect.objectContaining({
       docType: "invoice",
-      includeInvoiceScopeNotes: true,
+      includeInvoiceScopeOnPdf: false,
     }));
     expect(createdInvoice.materials).toEqual(expect.objectContaining({
       items: [expect.objectContaining({ desc: "Paint and patch materials" })],

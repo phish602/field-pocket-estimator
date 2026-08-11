@@ -523,6 +523,14 @@ export function mapCloudInvoiceLineItem(row) {
   if (metadata.unit_cost !== null && metadata.unit_cost !== undefined && Number.isFinite(Number(metadata.unit_cost))) {
     item.unitCost = Number(metadata.unit_cost);
   }
+  // The hours the estimator engine needs to RECOMPUTE this child's total.
+  // Without it a restored labor row can only be read as quantity x unit_price,
+  // which silently reprices a 14-hour technician from $700 to $50. Written by
+  // the shared line-item contract (buildLineItemMetadata) and read back under
+  // the same name the backend mapper already understands.
+  if (metadata.hours !== null && metadata.hours !== undefined && Number.isFinite(Number(metadata.hours))) {
+    item.hours = Number(metadata.hours);
+  }
   return item;
 }
 

@@ -345,17 +345,15 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
     // Live draft must still be untouched while the edit session is open.
     expect(readStoredEstimatorState().raw).toBe(JSON.stringify(draftA));
 
-    fireEvent.click(screen.getByRole("button", { name: /^Update Estimate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Review & Save$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save Estimate$/i }));
 
     await waitFor(() => {
       expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
     });
 
-    // Give the deferred navigate-away (180ms) and any stray autosave window
-    // (350ms debounce) time to play out before asserting final state.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-    });
+    expect(await screen.findByRole("heading", { name: /estimate saved/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /exit builder/i }));
 
     await waitFor(() => {
       expect(screen.queryByText("EDIT ESTIMATE")).not.toBeInTheDocument();
@@ -406,7 +404,8 @@ describe("App live draft vs saved-estimate edit-session isolation", () => {
 
     await openEstimateBForEdit(customerB);
 
-    fireEvent.click(screen.getByRole("button", { name: /^Update Estimate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Review & Save$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save Estimate$/i }));
     await waitFor(() => {
       expect(localStorage.getItem(EDIT_ESTIMATE_TARGET_KEY)).toBeNull();
     });
