@@ -6,6 +6,10 @@ import {
   SUPABASE_RUNTIME_MODE,
   CLOUD_ENABLED_ENV,
   LOCAL_SUPABASE_ENABLED_ENV,
+  MOBILE_TEST_ENABLED_ENV,
+  MOBILE_TEST_SUPABASE_URL_ENV,
+  resolveSupabaseRuntimeUrl,
+  isSupportedMobileTestSupabaseUrl,
   VERCEL_ENV,
   VERCEL_TARGET_ENV,
 } from "./supabaseRuntimePolicy";
@@ -15,13 +19,18 @@ const SUPABASE_URL_ENV = "REACT_APP_SUPABASE_URL";
 const LOCAL_URL = "http://127.0.0.1:54321";
 const LOCAL_URL_LOCALHOST = "http://localhost:54321";
 const HOSTED_URL = "https://example.supabase.co";
+const APP_TUNNEL_ORIGIN = "https://phone-app.trycloudflare.com";
+const SUPABASE_TUNNEL_URL = "https://local-supabase.trycloudflare.com";
 
 // Build an env object explicitly (never inherit process.env), so each case
 // proves exactly which variables drive the decision.
-function env({ enabled, localEnabled, vercelEnv, targetEnv, url } = {}) {
+function env({ enabled, localEnabled, mobileEnabled, mobileUrl, nodeEnv, vercelEnv, targetEnv, url } = {}) {
   const out = {};
   if (enabled !== undefined) out[CLOUD_ENABLED_ENV] = enabled;
   if (localEnabled !== undefined) out[LOCAL_SUPABASE_ENABLED_ENV] = localEnabled;
+  if (mobileEnabled !== undefined) out[MOBILE_TEST_ENABLED_ENV] = mobileEnabled;
+  if (mobileUrl !== undefined) out[MOBILE_TEST_SUPABASE_URL_ENV] = mobileUrl;
+  if (nodeEnv !== undefined) out.NODE_ENV = nodeEnv;
   if (vercelEnv !== undefined) out[VERCEL_ENV] = vercelEnv;
   if (targetEnv !== undefined) out[VERCEL_TARGET_ENV] = targetEnv;
   if (url !== undefined) out[SUPABASE_URL_ENV] = url;
@@ -155,6 +164,94 @@ describe("evaluateSupabaseRuntimePolicy (Gate P1 fail-closed matrix)", () => {
     expect(JSON.stringify(r)).not.toContain("54321");
     expect(Object.values(r)).not.toContain(LOCAL_URL);
   });
+});
+
+describe("temporary mobile-test Supabase URL resolution", () => {
+  const resolve = (overrides = {}) => resolveSupabaseRuntimeUrl({
+    localUrl: LOCAL_URL,
+    mobileTunnelUrl: SUPABASE_TUNNEL_URL,
+    mobileTestEnabled: "true",
+    nodeEnv: "development",
+    currentOrigin: APP_TUNNEL_ORIGIN,
+    ...overrides,
+  });
+
+  test("development trycloudflare page with explicit flag selects the exact configured trycloudflare Supabase URL", () => {
+    expect(resolve()).toEqual({
+      allowed: true,
+      url: SUPABASE_TUNNEL_URL,
+      usesMobileTunnel: true,
+      reason: "mobile_tunnel_selected",
+    });
+
+    const result = evaluateSupabaseRuntimePolicy(env({
+      localEnabled: "true",
+      mobileEnabled: "true",
+      mobileUrl: SUPABASE_TUNNEL_URL,
+      nodeEnv: "development",
+      url: LOCAL_URL,
+    }), { currentOrigin: APP_TUNNEL_ORIGIN });
+    expect(result.allowed).toBe(true);
+    expect(result.runtimeMode).toBe(SUPABASE_RUNTIME_MODE.MOBILE_TEST);
+    expect(result.usesMobileTunnel).toBe(true);
+  });
+
+  test("localhost page keeps the exact local Supabase URL while mobile mode is enabled", () => {
+    const result = resolve({ currentOrigin: "http://127.0.0.1:4001" });
+    expect(result.allowed).toBe(true);
+    expect(result.url).toBe(LOCAL_URL);
+    expect(result.usesMobileTunnel).toBe(false);
+    expect(result.reason).toBe("mobile_page_not_eligible");
+  });
+
+  test("production rejects valid-looking mobile tunnel configuration", () => {
+    const resolved = resolve({ nodeEnv: "production" });
+    expect(resolved.allowed).toBe(false);
+    expect(resolved.url).toBe("");
+    expect(resolved.reason).toBe(SUPABASE_RUNTIME_POLICY_REASON.MOBILE_TEST_NON_DEVELOPMENT);
+
+    const result = evaluateSupabaseRuntimePolicy(env({
+      localEnabled: "true",
+      mobileEnabled: "true",
+      mobileUrl: SUPABASE_TUNNEL_URL,
+      nodeEnv: "production",
+      url: LOCAL_URL,
+    }), { currentOrigin: APP_TUNNEL_ORIGIN });
+    expect(result.allowed).toBe(false);
+    expect(result.runtimeMode).toBe(SUPABASE_RUNTIME_MODE.DENIED);
+    expect(result.reason).toBe(SUPABASE_RUNTIME_POLICY_REASON.MOBILE_TEST_NON_DEVELOPMENT);
+  });
+
+  test.each([
+    ["arbitrary HTTPS domain", "https://evil.example.com"],
+    ["hosted Supabase domain", "https://project.supabase.co"],
+    ["HTTP trycloudflare URL", "http://local-supabase.trycloudflare.com"],
+    ["embedded credentials", "https://user:pass@local-supabase.trycloudflare.com"],
+    ["query string", "https://local-supabase.trycloudflare.com?token=x"],
+    ["bare query marker", "https://local-supabase.trycloudflare.com?"],
+    ["fragment", "https://local-supabase.trycloudflare.com#token"],
+    ["bare fragment marker", "https://local-supabase.trycloudflare.com#"],
+    ["non-root path", "https://local-supabase.trycloudflare.com/auth/v1"],
+    ["trycloudflare apex", "https://trycloudflare.com"],
+  ])("rejects %s", (_label, mobileTunnelUrl) => {
+    expect(isSupportedMobileTestSupabaseUrl(mobileTunnelUrl)).toBe(false);
+    const result = resolve({ mobileTunnelUrl });
+    expect(result.allowed).toBe(false);
+    expect(result.url).toBe("");
+    expect(result.usesMobileTunnel).toBe(false);
+    expect(result.reason).toBe(SUPABASE_RUNTIME_POLICY_REASON.INVALID_MOBILE_TEST_SUPABASE_URL);
+  });
+
+  test.each([undefined, "", "false", "yes", "1"])(
+    "flag value %p leaves the normal local URL selected",
+    (mobileTestEnabled) => {
+      const result = resolve({ mobileTestEnabled });
+      expect(result.allowed).toBe(true);
+      expect(result.url).toBe(LOCAL_URL);
+      expect(result.usesMobileTunnel).toBe(false);
+      expect(result.reason).toBe("default_url_selected");
+    }
+  );
 });
 
 describe("evaluateSupabaseRuntimePolicy -- local Supabase lane", () => {

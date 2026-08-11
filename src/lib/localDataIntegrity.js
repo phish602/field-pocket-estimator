@@ -816,19 +816,39 @@ export function getCloudDataDecision({
   const queueStatus = asText(queueState?.status).toLowerCase();
   const queueFailed = queueStatus === "failed" || queueStatus === "needs_attention";
   const queueRequiresReview = queueStatus === "remote_changed" || queueStatus === "conflict";
-  // Keep this as diagnostic context, but do not let ordinary queued work hide
-  // an explicit mismatch reported by onboarding or verification.
   const knownPendingLocalMutation = queuePending && ["pending", "syncing", "offline_pending", "retry_wait"].includes(queueStatus);
   const rawMismatch = onboardingState === "local_cloud_mismatch"
     || Boolean(cloudVerification?.ok && cloudVerification?.allMatched === false);
-  const mismatch = rawMismatch;
-  // Rows the cloud has that this device does not (e.g. a cloud-only
-  // estimate) are not fatal corruption -- they just mean the normal upsert
-  // backup can't silently proceed, so the user gets an explicit choice
-  // between restoring cloud data down or deliberately replacing the cloud
-  // backup with this device's snapshot.
+  // Rows the cloud is MISSING that this device has (e.g. a payment saved 900ms
+  // ago whose money-critical backup has not drained yet) are the expected
+  // local-ahead state, not evidence that the cloud changed elsewhere.
+  const cloudMissingLocalRowsDetected = asArray(cloudVerification?.tableResults)
+    .some((result) => asArray(result?.missingLegacyIds).length > 0);
+  // Declared before `mismatch` because the local-ahead verdict depends on it:
+  // anything the CLOUD has that this device does not is real external
+  // divergence and must never be explained away by a pending local write.
   const cloudOnlyRowsDetected = asArray(cloudVerification?.tableResults)
     .some((result) => asArray(result?.extraLegacyIds).length > 0);
+  // A pending local revision EXPLAINS the difference only when verification
+  // actually ran, the only differences are rows the cloud is missing, and there
+  // is nothing cloud-only. This is a classification fix, not a cosmetic one: the
+  // queue stays pending and the write still has to succeed before anything can
+  // report the cloud current. Without it, a normal local save was labelled
+  // "Cloud changed elsewhere" the instant it was queued.
+  const pendingLocalAheadOnly = Boolean(
+    knownPendingLocalMutation
+    && cloudVerification?.ok
+    && cloudVerification?.allMatched === false
+    && cloudMissingLocalRowsDetected
+    && !cloudOnlyRowsDetected
+  );
+  const mismatch = rawMismatch && !pendingLocalAheadOnly;
+  // (cloudOnlyRowsDetected is computed above, before `mismatch`, because the
+  // local-ahead verdict depends on it. Rows the cloud has that this device does
+  // not are not fatal corruption -- they just mean the normal upsert backup
+  // can't silently proceed, so the user gets an explicit choice between
+  // restoring cloud data down or deliberately replacing the cloud backup with
+  // this device's snapshot.)
   // A resolvable mismatch isn't limited to detected cloud-only rows -- a
   // generic verification mismatch (e.g. "Cloud verification found
   // mismatches between local and Supabase data") is just as resolvable via
@@ -845,11 +865,16 @@ export function getCloudDataDecision({
   const cloudUnrestorable = onboardingState === "cloud_available_empty_device"
     && Boolean(restorePreview?.partial || asText(restorePreview?.status) === "blocked_unsupported_shape");
   const partialLocalData = asArray(localIntegrity?.blockers).some((issue) => issue?.code === "empty_estimates_with_invoices");
+  // A pending local revision means this device holds money-critical data the
+  // cloud does not have yet, so the cloud is by definition NOT current -- even
+  // though the difference is expected and self-resolving. Every surface reading
+  // verifiedCurrent must therefore wait for the queue to drain.
   const verifiedCurrent = (onboardingState === "already_backed_up" || onboardingState === "backup_completed")
     && !firstBlocker
     && !firstSafeRepair
     && !mismatch
-    && !cloudUnrestorable;
+    && !cloudUnrestorable
+    && !queuePending;
 
   let screenState = null;
   if (partialLocalData) {
@@ -919,6 +944,7 @@ export function getCloudDataDecision({
     chipState,
     chipAction,
     knownPendingLocalMutation,
+    pendingLocalAheadOnly,
     queueRequiresReview,
     firstBlocker,
     firstSafeRepair,

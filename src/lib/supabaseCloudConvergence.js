@@ -919,6 +919,16 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
           allMatched: Boolean(verification?.allMatched),
           blockerCount: Array.isArray(verification?.blockers) ? verification.blockers.length : 0,
           repairAvailable,
+          // Narrow, non-sensitive plumbing so the automatic recovery hook can hand
+          // a PROVEN-repairable mismatch to the existing backup worker. Convergence
+          // itself still performs no cloud writes and still reports a mismatch.
+          repairableMismatchOnly: Boolean(verification?.repairableMismatchOnly),
+          repairTypes: Array.isArray(verification?.availableRepairs)
+            ? [...new Set(verification.availableRepairs.map((repair) => asText(repair?.type)).filter(Boolean))]
+            : [],
+          repairRowCount: Array.isArray(verification?.availableRepairs)
+            ? verification.availableRepairs.reduce((sum, repair) => sum + (Number(repair?.count) || 0), 0)
+            : 0,
           noticeCodes: Array.isArray(verification?.notices)
             ? [...new Set(verification.notices.filter((notice) => notice?.level === "warning" || notice?.level === "error").map((notice) => asText(notice?.code)).filter(Boolean))]
             : [],

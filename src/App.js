@@ -42,6 +42,7 @@ import useVaultDeviceRecovery from "./lib/useVaultDeviceRecovery";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
 import useVaultCompatibilityBridge from "./lib/useVaultCompatibilityBridge";
+import { getDocumentEditTarget, resolveDocumentEditTarget } from "./lib/documentEditTarget";
 import { VAULT_BRIDGE_RELEASE } from "./lib/vaultBridgeBuildPolicy";
 import { workspaceTag as deriveVaultWorkspaceTag } from "./lib/vaultCrypto";
 import useVaultIdleLock from "./lib/useVaultIdleLock";
@@ -557,11 +558,8 @@ function readValidatedCreateEditTargets() {
 
   if (estimateEditTarget) {
     const estimates = loadSavedEstimates();
-    const hasEstimateTarget = estimates.some((entry) => {
-      const docType = String(entry?.docType || "estimate").toLowerCase();
-      return docType !== "invoice" && String(entry?.id || "").trim() === estimateEditTarget;
-    });
-    if (!hasEstimateTarget) {
+    const estimateRecord = resolveDocumentEditTarget(estimates, estimateEditTarget, "estimate");
+    if (!estimateRecord) {
       estimateEditTarget = "";
       try { localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY); } catch {}
     }
@@ -569,7 +567,7 @@ function readValidatedCreateEditTargets() {
 
   if (invoiceEditTarget) {
     const invoices = readStoredInvoices();
-    const invoiceRecord = invoices.find((entry) => String(entry?.id || "").trim() === invoiceEditTarget);
+    const invoiceRecord = resolveDocumentEditTarget(invoices, invoiceEditTarget, "invoice");
     if (!invoiceRecord || deriveInvoiceStatus(invoiceRecord) === INVOICE_STATUSES.VOID) {
       invoiceEditTarget = "";
       try { localStorage.removeItem(EDIT_INVOICE_TARGET_KEY); } catch {}
@@ -2519,6 +2517,7 @@ function EstiPaidAppShell({
   auth = null,
   account = null,
   deviceLock = null,
+  authoritativeStorageReady = false,
   vaultIdleLockMinutes = DEFAULT_VAULT_IDLE_LOCK_MINUTES,
   onVaultIdleLockMinutesChange = null,
   onVaultLockNow = null,
@@ -3398,11 +3397,11 @@ const [spinTick, setSpinTick] = useState(0);
 
       if (matchingInvoices.length !== 1) return;
 
-      const matchedId = String(matchingInvoices[0]?.id || "").trim();
-      if (!matchedId) return;
+      const matchedTarget = getDocumentEditTarget(matchingInvoices[0], "invoice");
+      if (!matchedTarget) return;
 
       try {
-        localStorage.setItem(EDIT_INVOICE_TARGET_KEY, matchedId);
+        localStorage.setItem(EDIT_INVOICE_TARGET_KEY, matchedTarget);
         localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       } catch {}
     };
@@ -4025,7 +4024,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         />
       );
     }
-    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen supabaseConfigured={Boolean(auth?.configured)} companyId={String(account?.company?.id || "")} accessToken={String(auth?.session?.access_token || "")} /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
+    if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen authoritativeStorageReady={authoritativeStorageReady} supabaseConfigured={Boolean(auth?.configured)} companyId={String(account?.company?.id || "")} accessToken={String(auth?.session?.access_token || "")} /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? (
       <AdvancedSettingsScreen
         onOpenCompanyProfile={() => navigateToCompanyProfile()}
@@ -4983,6 +4982,7 @@ export default function App() {
         auth={auth}
         account={account}
         deviceLock={deviceLock}
+        authoritativeStorageReady={vaultRuntimeReady}
         vaultIdleLockMinutes={vaultIdleLockMinutes}
         onVaultIdleLockMinutesChange={changeVaultIdleLockMinutes}
         onVaultLockNow={VAULT_BRIDGE_RELEASE ? vault?.lock : lockVaultNow}

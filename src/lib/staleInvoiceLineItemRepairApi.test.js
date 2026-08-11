@@ -26,7 +26,8 @@ describe("stale invoice line item repair API", () => {
     const response = await invoke(operation, { body: { companyId: "company", deviceId: "device", staleRowIds: ["row"], destructiveOverride: true, table: "invoices" } });
     expect(response.statusCode).toBe(200);
     expect(operation).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company", deviceId: "device", staleRowIds: ["row"], accessToken: "browser-token" }));
-    expect(Object.keys(operation.mock.calls[0][0]).sort()).toEqual(["accessToken", "adminClient", "companyId", "deviceId", "env", "staleRowIds"]);
+    expect(operation.mock.calls[0][0].requireLocalSupabase).toBe(false);
+    expect(Object.keys(operation.mock.calls[0][0]).sort()).toEqual(["accessToken", "adminClient", "companyId", "deviceId", "env", "requireLocalSupabase", "staleRowIds"]);
   });
 
   test.each([

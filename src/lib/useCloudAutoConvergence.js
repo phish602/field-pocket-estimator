@@ -5,6 +5,13 @@ import { useEffect, useRef } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
 import {
+  markCloudBackupDirty,
+  readCloudBackupQueueState,
+  CLOUD_BACKUP_SEVERITY,
+  CLOUD_BACKUP_PRIORITY,
+} from "./cloudBackupQueue";
+import { STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR } from "./supabaseCloudVerification";
+import {
   runSupabaseCloudConvergence,
   recoverInterruptedCloudConvergence,
   recordCloudConvergenceResult,
@@ -27,6 +34,42 @@ const MAX_RETRIES = RETRY_DELAYS_MS.length;
 export const CLOUD_CONVERGENCE_FOREGROUND_BURST_MS = 1000;
 
 function online() { try { return typeof navigator === "undefined" || navigator.onLine !== false; } catch { return true; } }
+
+// Reason marker for the ONE queue entry an automatically-repairable mismatch
+// creates. It is a normal money-critical backup request -- the existing auto
+// backup worker drains it through the existing migration writer, which is where
+// the proven stale-child repair already lives.
+export const STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON = "stale_invoice_line_item_placeholder_repair";
+
+// Convergence NEVER writes to the cloud. When verification proves the entire
+// mismatch is the repairable blank-invoice-child class, the only action taken
+// here is enqueuing existing backup work, exactly as a normal user edit would.
+// Returns true when a queue entry was created.
+export function requestStaleInvoiceLineItemRepairBackup(result) {
+  const mismatch = result?.mismatch;
+  if (result?.status !== "mismatch" || result?.code !== "verification_mismatch") return false;
+  if (mismatch?.repairableMismatchOnly !== true) return false;
+  const repairTypes = Array.isArray(mismatch?.repairTypes) ? mismatch.repairTypes : [];
+  if (!repairTypes.includes(STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR)) return false;
+  // Loop protection via the EXISTING queue: if a generation carrying this exact
+  // repair reason is still pending, the worker has not drained it yet and a
+  // second identical request would only churn the queue revision.
+  try {
+    const queue = readCloudBackupQueueState();
+    if (queue?.pending && Array.isArray(queue?.reasons)
+      && queue.reasons.includes(STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON)) {
+      return false;
+    }
+  } catch { return false; }
+  markCloudBackupDirty({
+    reason: STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
+    domains: ["invoices", "invoice_line_items"],
+    severity: CLOUD_BACKUP_SEVERITY.MONEY_CRITICAL,
+    priority: CLOUD_BACKUP_PRIORITY.IMMEDIATE,
+    source: "cloud_convergence_repairable_mismatch",
+  });
+  return true;
+}
 
 // After a verified local convergence (and only after the journal is cleared),
 // refresh exactly the screens whose families changed -- no full browser reload,
@@ -58,6 +101,9 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
   // Dedupe identical consecutive transient publishes so a re-render or heartbeat
   // does not spam the status surfaces with the same loading/transient result.
   const lastKeyRef = useRef("");
+  // At most one automatic repair-backup request per repair cycle; cleared once a
+  // convergence cycle settles matched/converged.
+  const repairQueuedRef = useRef(false);
   const stateRef = useRef({ configured, user, company, deviceLock });
   stateRef.current = { configured, user, company, deviceLock };
 
@@ -144,6 +190,13 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
           if (result?.ok && (result.status === "converged" || result.status === "matched")) {
             clearRetry();
             dispatchConvergenceChangeEvents(result);
+            // A settled cycle re-arms the repair bridge, so a genuinely new
+            // repairable mismatch later can still queue exactly one request.
+            repairQueuedRef.current = false;
+          } else if (!repairQueuedRef.current && requestStaleInvoiceLineItemRepairBackup(result)) {
+            // One queue entry per repair cycle. The existing auto-backup worker
+            // picks it up and runs the existing writer + server repair path.
+            repairQueuedRef.current = true;
           }
         } finally {
           releaseCloudBackupRunLock();

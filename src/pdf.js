@@ -846,7 +846,7 @@ function buildPdfDoc(payload) {
   const shouldRenderScopeNotes = scopeBlocks.length > 0
     && (
       payload?.docType === "estimate"
-      || (payload?.docType === "invoice" && payload?.includeInvoiceScopeNotes === true)
+      || (payload?.docType === "invoice" && payload?.includeInvoiceScopeOnPdf === true)
     );
   const additionalNotesText = formatLongFormPdfText(payload?.additionalNotes);
   const displayedSummaryRows = (summaryRows.length ? summaryRows : [["Total", "$0.00"]]).filter((row) => {

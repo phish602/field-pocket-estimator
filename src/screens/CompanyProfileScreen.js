@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { formatPhoneForDisplay, sanitizePhoneDigits, sanitizeZip } from "../utils/sanitize";
@@ -353,11 +353,18 @@ function readProfileReturnTarget() {
   }
 }
 
-export default function CompanyProfileScreen({ supabaseConfigured = false, companyId = "", accessToken = "" } = {}) {
+export default function CompanyProfileScreen({
+  authoritativeStorageReady = true,
+  supabaseConfigured = false,
+  companyId = "",
+  accessToken = "",
+} = {}) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
   if (initialProfileRef.current === null) {
-    initialProfileRef.current = loadProfile();
+    initialProfileRef.current = authoritativeStorageReady
+      ? loadProfile()
+      : stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });
   }
 
   const [profile, setProfile] = useState(() => initialProfileRef.current);
@@ -378,6 +385,11 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const [logoNotice, setLogoNotice] = useState("");
   const [logoError, setLogoError] = useState("");
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(() => serializeProfileState(initialProfileRef.current));
+  const profileRef = useRef(profile);
+  const lastSavedSnapshotRef = useRef(lastSavedSnapshot);
+  const authoritativeHydrationCompleteRef = useRef(false);
+  profileRef.current = profile;
+  lastSavedSnapshotRef.current = lastSavedSnapshot;
   const [showMissingRequiredPrompt, setShowMissingRequiredPrompt] = useState(false);
   const [stripeConnectBusy, setStripeConnectBusy] = useState(false);
   const [stripeStatusBusy, setStripeStatusBusy] = useState(false);
@@ -389,6 +401,25 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
   const brandingUploadButtonRef = useRef(null);
   const brandingFocusTimerRef = useRef(null);
   const saveFlashTimerRef = useRef(null);
+
+  // App already holds the shell behind its verified vault-runtime gate. This
+  // one-shot read is the screen's matching lifecycle boundary: it closes the
+  // remaining first-render gap without polling, writing, or falling back to an
+  // unscoped key. If an edit somehow exists before readiness, it wins.
+  useLayoutEffect(() => {
+    if (!authoritativeStorageReady || authoritativeHydrationCompleteRef.current) return;
+    authoritativeHydrationCompleteRef.current = true;
+
+    const currentSnapshot = serializeProfileState(profileRef.current);
+    if (currentSnapshot !== lastSavedSnapshotRef.current) return;
+
+    const hydratedProfile = loadProfile();
+    const hydratedSnapshot = serializeProfileState(hydratedProfile);
+    setProfile(hydratedProfile);
+    setLastSavedSnapshot(hydratedSnapshot);
+    setLastSaveOk(true);
+    setSaveFailureMessage("");
+  }, [authoritativeStorageReady]);
 
   // Gate 17A: the subscription label follows the SERVER-resolved plan only.
   // The former storage listener re-read local plan state, which let a
@@ -912,6 +943,8 @@ export default function CompanyProfileScreen({ supabaseConfigured = false, compa
         const ok = window.confirm("Overwrite saved Company Profile?");
         if (!ok) {
           suppressStaleSaveSuccess();
+          setLastSaveOk(false);
+          setSaveFailureMessage("Save canceled. Your Company Profile changes were not written.");
           return;
         }
       }
@@ -1196,6 +1229,11 @@ const stripeActionGroupStyle = {
             </div>
           </div>
         </div>
+        {!lastSaveOk ? (
+          <div className="pe-company-save-fail" role="alert" aria-live="assertive" style={{ display: "block", margin: "0 0 10px" }}>
+            {saveFailureMessage || "Save failed (storage unavailable)"}
+          </div>
+        ) : null}
         <CloudBackupInlineStatus style={{ margin: "-4px 0 8px" }} />
 
         <div
@@ -1662,11 +1700,6 @@ const stripeActionGroupStyle = {
             {savedAt ? (
               <span style={{ display: "block", marginTop: 4, opacity: 0.8 }}>
                 Saved {new Date(savedAt).toLocaleString()}
-              </span>
-            ) : null}
-            {!lastSaveOk ? (
-              <span className="pe-company-save-fail" style={{ display: "block", marginTop: 6 }}>
-                {saveFailureMessage || "Save failed (storage unavailable)"}
               </span>
             ) : null}
           </div>

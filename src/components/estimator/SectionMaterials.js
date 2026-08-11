@@ -149,7 +149,9 @@ export default function SectionMaterials(props) {
   } = props || {};
   const blanketDescriptionRef = useRef(null);
   const noteInputRefs = useRef({});
-  const [noteOpenById, setNoteOpenById] = useState({});
+  const [noteOpenById, setNoteOpenById] = useState(() => Object.fromEntries(
+    (Array.isArray(materialItems) ? materialItems : []).map((item, index) => [String(item?.id ?? index), true])
+  ));
   const blanketDescriptionValue = String(materialsBlanketDescription || "");
   const materialsBottomActionsStyle = bottomActionsStyle || styles.sectionFooterActions;
   const materialNoteSeed = useMemo(() => {
@@ -171,7 +173,7 @@ export default function SectionMaterials(props) {
         const id = entry.id;
         next[id] = Object.prototype.hasOwnProperty.call(prev, id)
           ? prev[id]
-          : entry.hasNote;
+          : true;
       }
 
       const prevKeys = Object.keys(prev);
@@ -216,14 +218,15 @@ export default function SectionMaterials(props) {
   }, [blanketDescriptionValue, materialsMode]);
 
   return (
-    <section className="pe-section">
+    <section className="pe-section pe-workspace pe-workspace-materials">
       <div className="pe-divider" style={styles.sectionHeaderDivider} />
-      <div style={styles.sectionHeaderRow}>
-        <div style={styles.sectionTitleWithIcon}>
-          <span style={styles.sectionTitleIcon} aria-hidden="true">{headerIcon}</span>
+      <div className="pe-workspace-header pe-materials-header" style={styles.sectionHeaderRow}>
+        <div className="pe-task-kicker" style={styles.sectionTitleWithIcon}>
+          <span className="pe-task-kicker-icon" style={styles.sectionTitleIcon} aria-hidden="true">{headerIcon}</span>
           <div style={{ ...styles.sectionTitleStack, marginBottom: 0 }}>
-            <div className="pe-section-title" style={styles.sectionTitleText}>{t("materials")}</div>
-            <div style={styles.sectionAccentLine} />
+            <div className="pe-task-kicker-label">
+              {lang === "es" ? "Paquete de materiales" : "Material package"}
+            </div>
           </div>
         </div>
         <div style={styles.sectionHeaderControls}>
@@ -252,18 +255,25 @@ export default function SectionMaterials(props) {
         </div>
       </div>
 
+      <div className="pe-task-description pe-materials-guidance">
+        {lang === "es"
+          ? "Arma el paquete del trabajo y confirma cómo cada cantidad, precio y margen llega al total facturado."
+          : "Build the job package and see how each quantity, price, and markup reaches the billed total."}
+      </div>
+
       {materialsMode === "itemized" && !materialsOpen && (
         <div className="pe-muted" style={{ ...styles.laborCollapsedMeta, marginBottom: 8 }}>
           {itemizedCollapsedSummary}
         </div>
       )}
 
-      <div style={{ marginTop: 0, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div className="pe-material-mode-row" style={{ marginTop: 0, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <div className="pe-muted" style={{ minWidth: 140 }}>
+          <div className="pe-muted pe-material-mode-label" style={{ minWidth: 140 }}>
             {t("materialsMode")}
           </div>
           <div
+            className="pe-segmented-control"
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -277,7 +287,7 @@ export default function SectionMaterials(props) {
           >
             <button
               type="button"
-              className="pe-btn pe-btn-ghost"
+              className={`pe-btn pe-btn-ghost pe-segmented-button${materialsMode === "blanket" ? " is-active" : ""}`}
               onClick={() => {
                 triggerHaptic?.();
                 setMaterialsMode("blanket");
@@ -295,7 +305,7 @@ export default function SectionMaterials(props) {
             </button>
             <button
               type="button"
-              className="pe-btn pe-btn-ghost"
+              className={`pe-btn pe-btn-ghost pe-segmented-button${materialsMode === "itemized" ? " is-active" : ""}`}
               onClick={() => {
                 triggerHaptic?.();
                 setMaterialsMode("itemized");
@@ -317,13 +327,13 @@ export default function SectionMaterials(props) {
 
       {materialsMode === "blanket" && (
         <>
-          <div className="pe-muted" style={{ marginTop: 10 }}>
+          <div className="pe-muted pe-materials-blanket-guidance" style={{ marginTop: 10 }}>
             {lang === "es"
               ? "Total global — ingresa un monto para todos los materiales del trabajo. Costo + margen = monto facturado."
               : "One total covering all materials for this job — cost + markup = billed amount on the document."}
           </div>
           <div
-            className="pe-grid"
+            className="pe-grid pe-materials-blanket-grid"
             style={{
               marginTop: 10,
               gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
@@ -365,7 +375,7 @@ export default function SectionMaterials(props) {
               />
             </div>
           </div>
-          <div style={{ marginTop: 10, display: "grid", gap: 4 }}>
+          <div className="pe-materials-description" style={{ marginTop: 10, display: "grid", gap: 4 }}>
             <div style={styles.label}>{t("materialsBlanketDescriptionLabel")}</div>
             <textarea
               ref={blanketDescriptionRef}
@@ -379,7 +389,7 @@ export default function SectionMaterials(props) {
               style={{ minHeight: BLANKET_DESCRIPTION_MIN_HEIGHT, resize: "none" }}
             />
           </div>
-          <div className="pe-row pe-row-slim">
+          <div className="pe-row pe-row-slim pe-calculated-total">
             <div className="pe-muted">
               {lang === "es"
                 ? `Materiales facturados (${normalizedMarkupPct}%)`
@@ -395,7 +405,7 @@ export default function SectionMaterials(props) {
           className={`pe-collapse ${materialsOpen ? "pe-open" : ""}`}
           style={{ ...styles.materialsItemizedCollapseWrap, transitionDuration: `${collapseMs}ms` }}
         >
-          <div className="pe-muted" style={{ marginTop: 10 }}>
+          <div className="pe-muted pe-materials-itemized-guidance" style={{ marginTop: 10 }}>
             {t("materialsItemizedHelp")}
           </div>
           <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
@@ -582,7 +592,7 @@ export default function SectionMaterials(props) {
                     </button>
                   </div>
 
-                  <div className="pe-row pe-row-slim" style={{ marginTop: 6 }}>
+                  <div className="pe-row pe-row-slim pe-line-result" style={{ marginTop: 6 }}>
                     <div className="pe-muted">
                       {lang === "es" ? "Total de línea" : "Line total"}
                     </div>
@@ -592,7 +602,7 @@ export default function SectionMaterials(props) {
               );
             })}
           </div>
-          <div className="pe-row pe-row-slim" style={{ marginTop: 10 }}>
+          <div className="pe-row pe-row-slim pe-calculated-total" style={{ marginTop: 10 }}>
             <div className="pe-muted">{t("materialsItemizedTotal")}</div>
             <div className={`pe-value ${animateMaterialsTotal ? "value-pulse" : ""}`}>{money.format(itemizedMaterialsTotal)}</div>
           </div>

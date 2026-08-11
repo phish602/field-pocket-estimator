@@ -193,8 +193,29 @@ function extractProjectNumber(record = {}) {
   return pickText(record?.projectNumber, record?.customer?.projectNumber);
 }
 
+// Keys on a mapped child that carry no business meaning on their own: they are
+// implementation/default scaffolding the estimator UI attaches to every row it
+// renders, including the blank placeholder rows DEFAULT_STATE always seeds.
+const LINE_ITEM_STRUCTURAL_KEYS = new Set(["kind", "legacy_local_id", "sort_order"]);
+
+// A row is a real business child only when at least one BUSINESS field survived
+// the empty-value prune below. That prune drops null/undefined/"" but keeps an
+// explicit numeric 0, so a deliberate zero-valued row (0 hours, $0 price) still
+// counts as a real child -- only rows that are semantically blank are dropped.
+function hasBusinessLineItemContent(mapped) {
+  return Object.keys(mapped).some((key) => !LINE_ITEM_STRUCTURAL_KEYS.has(key));
+}
+
 function extractDocumentLineItems(record = {}, kind = "") {
   const items = [];
+  // One shared mapper, document-type-aware. Everything the Invoice persistence
+  // repair added is gated on this flag, so ESTIMATE children keep the exact
+  // pre-repair projection: the same field reads and the same "empty object"
+  // rejection. Invoices additionally read the estimator's own row field names
+  // and reject semantically blank placeholder rows. Both are required by the
+  // Invoice repair, and neither may change Estimate canonical child rows.
+  // This mirrors how `hours` is already contained via lineItemIncludesSemantics.
+  const isInvoice = kind === "invoice";
   const laborLines = Array.isArray(record?.labor?.lines) ? record.labor.lines : (Array.isArray(record?.laborLines) ? record.laborLines : []);
   const materialItems = Array.isArray(record?.materials?.items) ? record.materials.items : (Array.isArray(record?.materialItems) ? record.materialItems : []);
   const genericItems = Array.isArray(record?.lineItems) ? record.lineItems : (Array.isArray(record?.items) ? record.items : []);
@@ -210,17 +231,40 @@ function extractDocumentLineItems(record = {}, kind = "") {
     const mapped = {
       kind: explicitKind || itemKind || kind || "line_item",
       legacy_local_id: buildLegacyLocalId(item),
-      description: pickText(item?.description, item?.name, item?.title, item?.label, item?.notes, item?.text),
+      // Invoice only: the estimator's own field names. A labor line describes
+      // itself with `role`, a material item with `desc`, and a material prices
+      // itself with `priceEach`. The invoice placeholder filter below decides
+      // emptiness from what this projection can see, so without these reads a
+      // real populated invoice row would be mistaken for a blank placeholder
+      // and dropped.
+      description: isInvoice
+        ? pickText(item?.description, item?.desc, item?.role, item?.name, item?.title, item?.label, item?.notes, item?.text)
+        : pickText(item?.description, item?.name, item?.title, item?.label, item?.notes, item?.text),
       quantity: toNumberOrNull(item?.quantity ?? item?.qty ?? item?.count),
       unit: pickText(item?.unit, item?.units, item?.uom),
-      unit_price: toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price),
-      unit_cost: toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal),
+      unit_price: isInvoice
+        ? toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price ?? item?.priceEach)
+        : toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price),
+      unit_cost: isInvoice
+        ? toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.unitCostInternal ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal)
+        : toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal),
       total: toNumberOrNull(item?.total ?? item?.amount),
+      // Invoice only: labor is qty x hours x rate, and there is no hours column,
+      // so hours travels in the invoice-scoped metadata contract.
+      ...(isInvoice ? { hours: toNumberOrNull(item?.hours) } : {}),
       sort_order: hasExplicitSortOrder ? Number(explicitSortOrder) : index,
     };
     Object.keys(mapped).forEach((key) => {
       if (mapped[key] === null || mapped[key] === "" || mapped[key] === undefined) delete mapped[key];
     });
+    if (isInvoice) {
+      // A blank UI placeholder row reduces to nothing but its structural keys.
+      // Persisting it would mint a canonical backend child for a row the user
+      // never filled in, and every save would keep re-minting it.
+      if (!hasBusinessLineItemContent(mapped)) return null;
+      return mapped;
+    }
+    // Estimate: unchanged pre-repair rejection.
     if (Object.keys(mapped).length === 0) return null;
     return mapped;
   };

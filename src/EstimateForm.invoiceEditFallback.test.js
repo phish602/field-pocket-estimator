@@ -159,19 +159,6 @@ jest.mock("./components/estimator/InlineCustomNumberField", () => {
   };
 });
 
-jest.mock("./components/estimator/PdfPromptModal", () => {
-  return function MockPdfPromptModal({ open, onDownload, onView, onShare }) {
-    if (!open) return null;
-    return (
-      <div data-testid="pdf-prompt-modal">
-        <button type="button" onClick={onView}>View PDF</button>
-        <button type="button" onClick={onDownload}>Download PDF</button>
-        <button type="button" onClick={onShare}>Share PDF</button>
-      </div>
-    );
-  };
-});
-
 jest.mock("./components/estimator/SectionMaterials", () => {
   return function MockSectionMaterials() {
     return <div data-testid="section-materials" />;
@@ -256,6 +243,7 @@ import { DEFAULT_STATE, STORAGE_KEY } from "./estimator/defaultState";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES } from "./constants/routes";
 import { normalizeScopeImageForStorage } from "./lib/scopeImageStorage";
+import { advanceToWizardStep } from "./testUtils/wizardTestNavigation";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -267,6 +255,17 @@ function renderEstimateFormInStrictMode() {
       <EstimateForm />
     </React.StrictMode>
   );
+}
+
+function openFinalizationPreview() {
+  fireEvent.click(screen.getByRole("button", { name: /review & save/i }));
+  return screen.getByRole("dialog", { name: /review & save (estimate|invoice)/i });
+}
+
+async function approveFinalization() {
+  openFinalizationPreview();
+  fireEvent.click(screen.getByRole("button", { name: /save estimate|approve & save/i }));
+  return screen.findByRole("heading", { name: /^(estimate|invoice) saved$/i });
 }
 
 function getScopeImageInput() {
@@ -599,9 +598,10 @@ describe("EstimateForm invoice edit fallback", () => {
 
   afterEach(() => {
     alertSpy.mockRestore();
+    jest.restoreAllMocks();
   });
 
-  test("uses invoice-specific Start Here guidance while keeping the invoice toggle hidden and estimate mode unchanged", async () => {
+  test("uses compact invoice readiness metadata while keeping shared Scope navigation and estimate mode unchanged", async () => {
     const invoiceState = clone(DEFAULT_STATE);
     invoiceState.ui = {
       ...(invoiceState.ui || {}),
@@ -614,13 +614,14 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Invoice Builder");
 
-    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByLabelText("Builder readiness")).toBeInTheDocument();
+    expect(screen.queryByText("Start here")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Estimate$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Invoice$/i })).not.toBeInTheDocument();
     expect(screen.getByText("Project / Job")).toBeInTheDocument();
     expect(screen.getByText("Amounts / Lines")).toBeInTheDocument();
     expect(screen.queryByText(/^Scope$/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Scope of Work")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("combobox", { name: "Jump to section" })).getByRole("option", { name: "Scope of Work" })).toBeInTheDocument();
 
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
@@ -635,14 +636,21 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Estimate Builder");
 
-    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByLabelText("Builder readiness")).toBeInTheDocument();
+    expect(screen.queryByText("Start here")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Estimate$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Invoice$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
-    expect(screen.getByText("Scope of Work")).toBeInTheDocument();
+
+    // Estimate mode keeps a Scope of Work step; the invoice run above never
+    // reaches one. Navigate to it through the real Next control and assert the
+    // active section owns the single workspace heading.
+    advanceToWizardStep("scope");
+    expect(document.querySelector('[data-wizard-step="scope"]')).not.toBeNull();
+    expect(screen.getByRole("heading", { level: 2, name: "Scope of Work" })).toBeInTheDocument();
   });
 
-  test("renders the Send to Customer skeleton for estimates without displacing save or export actions", async () => {
+  test("preserves the Review portal skeleton beside the single finalization entry", async () => {
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
       ...(estimateState.ui || {}),
@@ -658,12 +666,14 @@ describe("EstimateForm invoice edit fallback", () => {
     mockInitialState = estimateState;
 
     renderEstimateFormInStrictMode();
+    advanceToWizardStep("review");
 
     await screen.findByText("Estimate Builder");
 
     expect(screen.getByRole("button", { name: /send to customer/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /save estimate/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /export pdf/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /review & save/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /save estimate/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /export pdf/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /send to customer/i }));
 
@@ -692,6 +702,7 @@ describe("EstimateForm invoice edit fallback", () => {
     mockInitialState = invoiceState;
 
     renderEstimateFormInStrictMode();
+    advanceToWizardStep("review");
 
     await screen.findByText("Invoice Builder");
 
@@ -701,7 +712,7 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(screen.queryByText("Approve Invoice")).not.toBeInTheDocument();
   });
 
-  test("shows Start Here for seeded new estimate flow while keeping project and customer context linked", async () => {
+  test("shows compact readiness for a seeded estimate while keeping project and customer context linked", async () => {
     const customer = createCustomer();
     const project = createProject();
     mockInitialState = clone(DEFAULT_STATE);
@@ -712,13 +723,18 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Estimate Builder");
 
+    // Customer step owns the seed banner and compact readiness chips.
     expect(screen.getByText("New estimate for", { exact: false })).toBeInTheDocument();
     expect(screen.getAllByText(project.projectName).length).toBeGreaterThan(0);
     expect(screen.getAllByText(customer.name).length).toBeGreaterThan(0);
-    expect(screen.getByText("Start here")).toBeInTheDocument();
+    expect(screen.getByLabelText("Builder readiness")).toBeInTheDocument();
+    expect(screen.queryByText("Start here")).not.toBeInTheDocument();
     expect(screen.getByText(/^Project$/i)).toBeInTheDocument();
     expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
     expect(screen.getByText(/Linked customer:/i)).toBeInTheDocument();
+
+    // The seeded project name field lives on the Project Info step.
+    advanceToWizardStep("project");
     expect(screen.getByDisplayValue(project.projectName)).toBeInTheDocument();
     expectTradeScopeStarterUiAbsent();
   });
@@ -733,6 +749,10 @@ describe("EstimateForm invoice edit fallback", () => {
       siteAddress: "500 Seed Row",
     });
     mockInitialState = clone(DEFAULT_STATE);
+    mockInitialState.labor = {
+      ...(mockInitialState.labor || {}),
+      lines: [createLaborLine({ hours: "2", rate: "100" })],
+    };
     localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
     localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
     localStorage.setItem(
@@ -782,11 +802,14 @@ describe("EstimateForm invoice edit fallback", () => {
     const customerOption = await screen.findByText(customer.name, { selector: "div" });
     fireEvent.pointerDown(customerOption);
 
+    // The job date lives on Project Info; move there through the real control.
+    advanceToWizardStep("project");
+
     const dateInput = document.querySelector('input[type="date"]');
     expect(dateInput).not.toBeNull();
     fireEvent.change(dateInput, { target: { value: "2026-07-03" } });
 
-    fireEvent.click(screen.getByRole("button", { name: "Save Estimate" }));
+    await approveFinalization();
 
     await waitFor(() => {
       const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
@@ -801,7 +824,7 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(mockPatch).not.toHaveBeenCalledWith("projectId", "");
   });
 
-  test("shows Start Here in estimate edit mode while invoice edit mode stays unchanged", async () => {
+  test("opens an existing estimate on Review without showing starter shortcuts", async () => {
     const customer = createCustomer();
     const savedEstimate = createSavedEstimate();
     mockInitialState = clone(DEFAULT_STATE);
@@ -816,9 +839,34 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT ESTIMATE");
 
-    expect(screen.getByText("Start here")).toBeInTheDocument();
-    expect(screen.getByText(/^Scope$/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Review" })).toBeInTheDocument();
+    expect(screen.queryByText("Start here")).not.toBeInTheDocument();
     expectTradeScopeStarterUiAbsent();
+  });
+
+  test("opens an id-less legacy estimate on Review without rewriting it", async () => {
+    const customer = createCustomer();
+    const legacyEstimate = createSavedEstimate({
+      id: "",
+      meta: {},
+      estimateNumber: "EST-LEGACY-OPEN",
+      job: { ...createSavedEstimate().job, docNumber: "EST-LEGACY-OPEN" },
+    });
+    const beforeOpen = JSON.stringify([legacyEstimate]);
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedEstimateStorage({
+      estimate: legacyEstimate,
+      customer,
+      editEstimateTargetId: "EST-LEGACY-OPEN",
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT ESTIMATE");
+    expect(screen.getByRole("heading", { level: 2, name: "Review" })).toBeInTheDocument();
+    expect(screen.getByText("#EST-LEGACY-OPEN")).toBeInTheDocument();
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(beforeOpen);
   });
 
   test("hydrates a valid saved estimate edit target with labor and materials intact", async () => {
@@ -878,10 +926,14 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT ESTIMATE");
 
+    // Customer step: hydrated customer from the saved edit target.
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
     });
 
+    // Scope step owns the photo cap message and the stored thumbnails.
+    advanceToWizardStep("scope");
     expect(screen.getByText("Scope photos: 8 of 8 used — remove a photo before adding another.")).toBeInTheDocument();
     expect(screen.getByAltText("Reference Photo 1.jpg")).toHaveAttribute("src", scopeImages[0].dataUrl);
     expect(screen.getByAltText("Reference Photo 8.jpg")).toHaveAttribute("src", scopeImages[7].dataUrl);
@@ -965,14 +1017,21 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Invoice Builder");
 
+    // Customer step: the fallback notice and a cleared customer field.
     await waitFor(() => {
       expect(screen.queryByText("EDIT INVOICE")).not.toBeInTheDocument();
       expect(screen.getByText("Invoice not found. Switched to new mode.")).toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("");
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("");
-      expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
-      expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
     });
+
+    // Project Info step: cleared job title.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("");
+
+    // Labor step: cleared hours and rate.
+    advanceToWizardStep("labor");
+    expect(screen.getByPlaceholderText("Hours")).toHaveValue("");
+    expect(screen.getByPlaceholderText("Rate ($/hr)")).toHaveValue("");
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const fallbackState = replaceStateCall[0] || {};
@@ -1049,6 +1108,7 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT ESTIMATE");
 
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
       expect(screen.getByText("#EST-2001")).toBeInTheDocument();
@@ -1092,13 +1152,21 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT INVOICE");
 
+    // Customer step: hydrated customer, no fallback notice.
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.queryByText("Invoice not found. Switched to new mode.")).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
     });
 
+    // Asserted on the Customer step, where the Start Here chips would render
+    // if invoice edit mode did not suppress them.
     expect(screen.queryByText("Start here")).not.toBeInTheDocument();
+
+    // Project Info step owns the job title.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
+
     expectTradeScopeStarterUiAbsent();
     expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
 
@@ -1108,6 +1176,351 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(hydratedState.meta).toEqual(expect.objectContaining({ savedDocId: savedInvoice.id }));
     expect(hydratedState.ui).toEqual(expect.objectContaining({ docType: "invoice" }));
     expectDisplayedInvoiceTotal("$300.00");
+  });
+
+  test("opens an id-less legacy invoice on Review without rewriting it", async () => {
+    const customer = createCustomer();
+    const legacyInvoice = createSavedInvoice({
+      id: "",
+      meta: {},
+      invoiceNumber: "INV-LEGACY-OPEN",
+      job: { ...createSavedInvoice().job, docNumber: "INV-LEGACY-OPEN" },
+    });
+    const beforeOpen = JSON.stringify([legacyInvoice]);
+    mockInitialState = clone(DEFAULT_STATE);
+
+    seedInvoiceStorage({
+      invoice: legacyInvoice,
+      customer,
+      editInvoiceTargetId: "INV-LEGACY-OPEN",
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+    expect(screen.getByRole("heading", { level: 2, name: "Review" })).toBeInTheDocument();
+    const hydratedState = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1]?.[0] || {};
+    expect(hydratedState).toEqual(expect.objectContaining({
+      invoiceNumber: "INV-LEGACY-OPEN",
+      ui: expect.objectContaining({ docType: "invoice" }),
+    }));
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(beforeOpen);
+  });
+
+  test("plain Save keeps an id-less legacy Estimate Draft before explicit sent, approved, and conversion actions", async () => {
+    const customer = createCustomer();
+    const legacyEstimate = createSavedEstimate({
+      id: "",
+      meta: {},
+      status: "draft",
+      estimateNumber: "EST-LEGACY-LIFECYCLE",
+      job: { ...createSavedEstimate().job, docNumber: "EST-LEGACY-LIFECYCLE" },
+    });
+    mockInitialState = clone(legacyEstimate);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || legacyEstimate),
+      meta: {
+        ...((mockLatestState || legacyEstimate).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedEstimateStorage({
+      estimate: legacyEstimate,
+      customer,
+      editEstimateTargetId: "EST-LEGACY-LIFECYCLE",
+    });
+    const navigateInvoiceBuilder = jest.fn();
+    window.addEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT ESTIMATE");
+    await approveFinalization();
+
+    let savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+    expect(savedEstimates).toHaveLength(1);
+    expect(savedEstimates[0]).toEqual(expect.objectContaining({
+      id: "EST-LEGACY-LIFECYCLE",
+      estimateNumber: "EST-LEGACY-LIFECYCLE",
+      status: "draft",
+    }));
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+    expect(navigateInvoiceBuilder).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /mark as sent/i }));
+    await waitFor(() => {
+      savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+      expect(savedEstimates[0]).toEqual(expect.objectContaining({ status: "pending" }));
+    });
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /mark approved/i }));
+    await waitFor(() => {
+      savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+      expect(savedEstimates[0]).toEqual(expect.objectContaining({ status: "approved" }));
+    });
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^convert to invoice$/i }));
+    await waitFor(() => expect(navigateInvoiceBuilder).toHaveBeenCalledTimes(1));
+    const savedInvoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(savedInvoices).toHaveLength(1);
+    expect(savedInvoices[0]).toEqual(expect.objectContaining({
+      sourceEstimateId: "EST-LEGACY-LIFECYCLE",
+    }));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]")).toHaveLength(1);
+    window.removeEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+  });
+
+  test("Approve & Convert to Invoice converts an opened id-less legacy estimate exactly once and opens the resulting invoice", async () => {
+    const customer = createCustomer();
+    const scopeImages = createScopeImages(2);
+    const tradeInsert = { key: "painting", text: "Protect finishes and apply two finish coats." };
+    const legacyEstimate = createSavedEstimate({
+      id: "",
+      meta: {},
+      status: "draft",
+      estimateNumber: "EST-LEGACY-SAVE",
+      job: { ...createSavedEstimate().job, docNumber: "EST-LEGACY-SAVE" },
+      scopeNotes: "Carry this built legacy scope into the invoice.",
+      scopeImages,
+      tradeInsert,
+      additionalNotes: "Net 15. Coordinate access with the manager.",
+      additionalCharges: {
+        items: [{ id: "charge_legacy", desc: "Night work", qty: "1", priceEach: "125" }],
+      },
+    });
+    mockInitialState = clone(legacyEstimate);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || legacyEstimate),
+      meta: {
+        ...((mockLatestState || legacyEstimate).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedEstimateStorage({
+      estimate: legacyEstimate,
+      customer,
+      editEstimateTargetId: "EST-LEGACY-SAVE",
+    });
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT ESTIMATE");
+    const navigateInvoiceBuilder = jest.fn();
+    window.addEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+
+    openFinalizationPreview();
+    const approveButton = screen.getByRole("button", { name: /approve & convert to invoice/i });
+    fireEvent.click(approveButton);
+    fireEvent.click(approveButton);
+    await waitFor(() => expect(navigateInvoiceBuilder).toHaveBeenCalledTimes(1));
+
+    const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+    expect(savedEstimates).toHaveLength(1);
+    expect(savedEstimates[0]).toEqual(expect.objectContaining({
+      id: "EST-LEGACY-SAVE",
+      estimateNumber: "EST-LEGACY-SAVE",
+      status: "approved",
+      scopeNotes: legacyEstimate.scopeNotes,
+    }));
+    const savedInvoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(savedInvoices).toHaveLength(1);
+    expect(savedInvoices[0]).toEqual(expect.objectContaining({
+      sourceEstimateId: "EST-LEGACY-SAVE",
+      customerId: customer.id,
+      projectId: legacyEstimate.projectId,
+      scopeNotes: legacyEstimate.scopeNotes,
+      scopeImages,
+      tradeInsert,
+      additionalNotes: legacyEstimate.additionalNotes,
+    }));
+    expect(savedInvoices[0].labor.lines).toEqual([
+      expect.objectContaining(legacyEstimate.labor.lines[0]),
+    ]);
+    expect(savedInvoices[0].materials).toEqual(expect.objectContaining({
+      blanketCost: legacyEstimate.materials.blanketCost,
+      blanketInternalCost: legacyEstimate.materials.blanketInternalCost,
+      materialsBlanketDescription: legacyEstimate.materials.materialsBlanketDescription,
+    }));
+    expect(savedInvoices[0].additionalCharges.items).toEqual([
+      expect.objectContaining(legacyEstimate.additionalCharges.items[0]),
+    ]);
+    expect(savedInvoices[0].ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      includeInvoiceScopeOnPdf: false,
+    }));
+    expect(savedInvoices[0].id).not.toBe(savedEstimates[0].id);
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBe(savedInvoices[0].id);
+    expect(navigateInvoiceBuilder).toHaveBeenCalledTimes(1);
+
+    savedInvoices[0].scopeNotes = "Invoice-only edit";
+    savedInvoices[0].labor.lines[0].hours = "99";
+    expect(savedEstimates[0].scopeNotes).toBe(legacyEstimate.scopeNotes);
+    expect(savedEstimates[0].labor.lines[0].hours).toBe(legacyEstimate.labor.lines[0].hours);
+    window.removeEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+  });
+
+  test("a failed approval write creates no invoice and reports no false finalization success", async () => {
+    const customer = createCustomer();
+    const legacyEstimate = createSavedEstimate({
+      id: "",
+      meta: {},
+      status: "draft",
+      estimateNumber: "EST-LEGACY-APPROVAL-FAIL",
+      job: { ...createSavedEstimate().job, docNumber: "EST-LEGACY-APPROVAL-FAIL" },
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || legacyEstimate),
+      meta: {
+        ...((mockLatestState || legacyEstimate).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedEstimateStorage({
+      estimate: legacyEstimate,
+      customer,
+      editEstimateTargetId: "EST-LEGACY-APPROVAL-FAIL",
+    });
+
+    const actualSetItem = Storage.prototype.setItem;
+    let estimateWriteCount = 0;
+    jest.spyOn(Storage.prototype, "setItem").mockImplementation(function failApprovalWrite(key, value) {
+      if (key === STORAGE_KEYS.ESTIMATES) {
+        estimateWriteCount += 1;
+        if (estimateWriteCount === 2) {
+          throw new DOMException("quota exceeded", "QuotaExceededError");
+        }
+      }
+      return actualSetItem.call(this, key, value);
+    });
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT ESTIMATE");
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /approve & convert to invoice/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Storage is full. Remove some photos or templates and try again.");
+    const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+    expect(savedEstimates).toHaveLength(1);
+    expect(savedEstimates[0]).toEqual(expect.objectContaining({
+      id: "EST-LEGACY-APPROVAL-FAIL",
+      status: "draft",
+    }));
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+    expect(screen.queryByRole("heading", { name: /estimate saved/i })).not.toBeInTheDocument();
+  });
+
+  test("a failed converted-invoice write leaves the source approved without navigating", async () => {
+    const customer = createCustomer();
+    const legacyEstimate = createSavedEstimate({
+      id: "",
+      meta: {},
+      status: "draft",
+      estimateNumber: "EST-LEGACY-INVOICE-FAIL",
+      job: { ...createSavedEstimate().job, docNumber: "EST-LEGACY-INVOICE-FAIL" },
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || legacyEstimate),
+      meta: {
+        ...((mockLatestState || legacyEstimate).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedEstimateStorage({
+      estimate: legacyEstimate,
+      customer,
+      editEstimateTargetId: "EST-LEGACY-INVOICE-FAIL",
+    });
+
+    const actualSetItem = Storage.prototype.setItem;
+    jest.spyOn(Storage.prototype, "setItem").mockImplementation(function failInvoiceWrite(key, value) {
+      if (key === STORAGE_KEYS.INVOICES) {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      }
+      return actualSetItem.call(this, key, value);
+    });
+    const navigateInvoiceBuilder = jest.fn();
+    window.addEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT ESTIMATE");
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /approve & convert to invoice/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Storage is full. Remove some photos or templates and try again.");
+    const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
+    expect(savedEstimates).toHaveLength(1);
+    expect(savedEstimates[0]).toEqual(expect.objectContaining({
+      id: "EST-LEGACY-INVOICE-FAIL",
+      status: "approved",
+    }));
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+    expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
+    expect(navigateInvoiceBuilder).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: /estimate saved/i })).not.toBeInTheDocument();
+    window.removeEventListener("estipaid:navigate-invoice-builder", navigateInvoiceBuilder);
+  });
+
+  test("saving and reopening an id-less legacy invoice promotes one canonical id without duplication", async () => {
+    const customer = createCustomer();
+    const legacyInvoice = createSavedInvoice({
+      id: "",
+      meta: {},
+      invoiceNumber: "INV-LEGACY-SAVE",
+      job: { ...createSavedInvoice().job, docNumber: "INV-LEGACY-SAVE" },
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || legacyInvoice),
+      meta: {
+        ...((mockLatestState || legacyInvoice).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedInvoiceStorage({
+      invoice: legacyInvoice,
+      customer,
+      editInvoiceTargetId: "INV-LEGACY-SAVE",
+    });
+
+    const firstRender = renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+    await approveFinalization();
+
+    const afterFirstSave = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(afterFirstSave).toHaveLength(1);
+    expect(afterFirstSave[0]).toEqual(expect.objectContaining({
+      invoiceNumber: "INV-LEGACY-SAVE",
+      docType: "invoice",
+    }));
+    expect(afterFirstSave[0].id).toMatch(/^doc_/);
+    expect(afterFirstSave[0].id).not.toBe("INV-LEGACY-SAVE");
+    expect(afterFirstSave[0].meta.savedDocId).toBe(afterFirstSave[0].id);
+
+    const canonicalId = afterFirstSave[0].id;
+    firstRender.unmount();
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([{
+      ...afterFirstSave[0],
+      invoiceNumber: "INV-LEGACY-SAVE-REVISED",
+      job: {
+        ...(afterFirstSave[0].job || {}),
+        docNumber: "INV-LEGACY-SAVE-REVISED",
+      },
+    }]));
+    localStorage.setItem(EDIT_INVOICE_TARGET_KEY, canonicalId);
+    mockInitialState = clone(DEFAULT_STATE);
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+    await approveFinalization();
+
+    const afterSecondSave = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(afterSecondSave).toHaveLength(1);
+    expect(afterSecondSave[0].id).toBe(canonicalId);
+    expect(afterSecondSave[0].meta.savedDocId).toBe(canonicalId);
+    expect(afterSecondSave[0].invoiceNumber).toBe("INV-LEGACY-SAVE-REVISED");
   });
 
   test("hydrates a thin restored invoice edit target into populated invoice builder data", async () => {
@@ -1168,10 +1581,15 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT INVOICE");
 
+    // Customer step: hydrated customer name.
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
     });
+
+    // Project Info step: hydrated project name.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};
@@ -1214,7 +1632,12 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(hydratedState.paymentStatus).toBe("partial");
     expect(hydratedState.amountPaid).toBe(250);
     expect(hydratedState.balanceRemaining).toBe(750);
-    expect(hydratedState.lineItems).toEqual(restoredInvoice.lineItems);
+    // The thin restored lineItems are folded into the canonical materials.items
+    // (asserted above). They must NOT also survive as a duplicate generic
+    // lineItems array: carrying both would make the backend line-item derivation
+    // count every child twice, doubling the invoice's children on the next
+    // cloud backup and producing a persistent protected data_mismatch.
+    expect(hydratedState.lineItems).toBeUndefined();
     expect(hydratedState.payments).toEqual([
       expect.objectContaining({ id: "pay_1", amount: 250, method: "cash" }),
     ]);
@@ -1267,10 +1690,15 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT INVOICE");
 
+    // Customer step: hydrated customer name.
+    advanceToWizardStep("customer");
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue(customer.name);
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
     });
+
+    // Project Info step: hydrated project name.
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue(project.projectName);
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};
@@ -1298,6 +1726,7 @@ describe("EstimateForm invoice edit fallback", () => {
     });
 
     const { unmount } = renderEstimateFormInStrictMode();
+    advanceToWizardStep("scope");
 
     await screen.findByText("EDIT ESTIMATE");
     expect(screen.getAllByText(/Repair wall damage in lobby/i).length).toBeGreaterThan(0);
@@ -1315,12 +1744,44 @@ describe("EstimateForm invoice edit fallback", () => {
       customer,
       editInvoiceTargetId: savedInvoice.id,
     });
+    const beforeLegacyInvoiceOpen = localStorage.getItem(STORAGE_KEYS.INVOICES);
 
     unmount();
     renderEstimateFormInStrictMode();
 
     await screen.findByText(/Invoice Builder|EDIT INVOICE/);
+    const reviewScope = document.querySelector('[data-review-section="scope"]');
+    expect(reviewScope).not.toBeNull();
+    expect(within(reviewScope).getByText(/Invoice scope text retained for reference/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit — Scope of Work" }));
+    expect(document.querySelector('[data-wizard-step="scope"]')).not.toBeNull();
+    expect(screen.getAllByText(/Invoice scope text retained for reference/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("checkbox", { name: "Include Scope of Work on PDF" })).not.toBeChecked();
     expectTradeScopeStarterUiAbsent();
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(beforeLegacyInvoiceOpen);
+  });
+
+  test("a saved legacy invoice without meaningful scope still exposes Scope without mutating storage", async () => {
+    const customer = createCustomer();
+    const savedInvoice = createSavedInvoice({
+      scopeNotes: "",
+      scopeImages: [],
+      tradeInsert: { key: "", text: "" },
+    });
+    mockInitialState = clone(DEFAULT_STATE);
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+    const beforeOpen = localStorage.getItem(STORAGE_KEYS.INVOICES);
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+
+    expect(document.querySelector('[data-review-section="scope"]')).not.toBeNull();
+    expect(within(screen.getByRole("combobox", { name: "Jump to section" })).getByRole("option", { name: "Scope of Work" })).toBeInTheDocument();
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(beforeOpen);
   });
 
   test("hydrates saved invoice labor into invoice edit mode", async () => {
@@ -1345,10 +1806,14 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT INVOICE");
 
+    // Customer step first, then Project Info -- same assertions, in step order.
+    advanceToWizardStep("customer");
     await waitFor(() => {
-      expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
       expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Invoice Verify Customer");
     });
+
+    advanceToWizardStep("project");
+    expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Invoice Verify Project");
 
     const replaceStateCall = mockReplaceState.mock.calls[mockReplaceState.mock.calls.length - 1] || [];
     const hydratedState = replaceStateCall[0] || {};
@@ -1367,6 +1832,229 @@ describe("EstimateForm invoice edit fallback", () => {
         }),
       ],
     }));
+  });
+
+  test("approves an Invoice through the existing update path and continues editing in place", async () => {
+    const customer = createCustomer();
+    const project = createProject();
+    const savedInvoice = createSavedInvoice();
+    mockInitialState = clone(savedInvoice);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || savedInvoice),
+      meta: {
+        ...((mockLatestState || savedInvoice).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      project,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+    const navigateSpy = jest.fn();
+    window.addEventListener("estipaid:navigate-invoices", navigateSpy);
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+
+    openFinalizationPreview();
+    expect(screen.getByRole("dialog", { name: /review & save invoice/i })).toBeInTheDocument();
+    expect(mockSaveNow).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /approve & save/i }));
+
+    expect(await screen.findByRole("heading", { name: /invoice saved/i })).toBeInTheDocument();
+    expect(mockSaveNow).toHaveBeenCalledTimes(1);
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]")).toEqual([
+      expect.objectContaining({ id: savedInvoice.id, docType: "invoice" }),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: /^View PDF$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Download PDF$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Share PDF$/i }));
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(3));
+    expect(mockExportPdf.mock.calls.map((call) => call[1])).toEqual(["view", "download", "share"]);
+    expect(mockSaveNow).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /continue editing/i }));
+    expect(screen.queryByRole("dialog", { name: /invoice saved/i })).not.toBeInTheDocument();
+    expect(screen.getByText("EDIT INVOICE")).toBeInTheDocument();
+    window.removeEventListener("estipaid:navigate-invoices", navigateSpy);
+  });
+
+  test("persists a new invoice after durable draft verification and invoice record enrichment", async () => {
+    const customer = createCustomer();
+    const invoiceState = clone(DEFAULT_STATE);
+    invoiceState.ui = { ...invoiceState.ui, docType: "invoice", materialsMode: "blanket" };
+    invoiceState.customer = { ...invoiceState.customer, ...customer, projectSameAsCustomer: false };
+    invoiceState.job = {
+      ...invoiceState.job,
+      docNumber: "INV-1001",
+      date: "2026-05-03",
+      due: "2026-05-17",
+      poNumber: "PO-INV-1",
+    };
+    invoiceState.labor = { ...invoiceState.labor, lines: [createLaborLine()] };
+    invoiceState.materials = {
+      ...invoiceState.materials,
+      blanketCost: "300",
+      blanketInternalCost: "200",
+      materialsBlanketDescription: "Allowance",
+    };
+    mockInitialState = invoiceState;
+    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([customer]));
+    mockSaveNow.mockImplementation((metaPatch = {}) => {
+      const persisted = clone(mockLatestState || invoiceState);
+      const nextPersisted = {
+        ...persisted,
+        meta: {
+          ...(persisted.meta || {}),
+          ...metaPatch,
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPersisted));
+      return nextPersisted;
+    });
+
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("Invoice Builder");
+    await approveFinalization();
+
+    const savedInvoices = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(savedInvoices).toEqual([
+      expect.objectContaining({
+        docType: "invoice",
+        invoiceNumber: "INV-1001",
+        customerId: customer.id,
+      }),
+    ]);
+    expect(savedInvoices[0].ui).toEqual(expect.objectContaining({
+      docType: "invoice",
+      includeInvoiceScopeOnPdf: false,
+    }));
+  });
+
+  test("persists one included-scope invoice and reopens it on Review with Scope available", async () => {
+    const customer = createCustomer();
+    const savedInvoice = createSavedInvoice({
+      scopeNotes: "Persist this included invoice scope.",
+      ui: {
+        docType: "invoice",
+        materialsMode: "blanket",
+        includeInvoiceScopeOnPdf: true,
+      },
+    });
+    mockInitialState = clone(savedInvoice);
+    mockSaveNow.mockImplementation((metaPatch = {}) => ({
+      ...clone(mockLatestState || savedInvoice),
+      meta: {
+        ...((mockLatestState || savedInvoice).meta || {}),
+        ...metaPatch,
+      },
+    }));
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    const firstRender = renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+    await approveFinalization();
+
+    const storedAfterSave = JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]");
+    expect(storedAfterSave).toHaveLength(1);
+    expect(storedAfterSave[0]).toEqual(expect.objectContaining({
+      id: savedInvoice.id,
+      scopeNotes: "Persist this included invoice scope.",
+    }));
+    expect(storedAfterSave[0].ui).toEqual(expect.objectContaining({ includeInvoiceScopeOnPdf: true }));
+
+    firstRender.unmount();
+    mockInitialState = clone(DEFAULT_STATE);
+    localStorage.setItem(EDIT_INVOICE_TARGET_KEY, savedInvoice.id);
+    renderEstimateFormInStrictMode();
+
+    await screen.findByText("EDIT INVOICE");
+    const reviewScope = document.querySelector('[data-review-section="scope"]');
+    expect(reviewScope).not.toBeNull();
+    expect(within(reviewScope).getByText(/Persist this included invoice scope/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit — Scope of Work" }));
+    expect(screen.getByRole("checkbox", { name: "Include Scope of Work on PDF" })).toBeChecked();
+  });
+
+  test("explicitly unchecked retained scope stays in Review but out of the Invoice PDF payload", async () => {
+    const customer = createCustomer();
+    const scopeImages = createScopeImages(1);
+    const savedInvoice = createSavedInvoice({
+      scopeNotes: "Retained hidden invoice scope.",
+      scopeImages,
+      ui: {
+        docType: "invoice",
+        materialsMode: "blanket",
+        includeInvoiceScopeOnPdf: false,
+      },
+    });
+    mockInitialState = clone(savedInvoice);
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+
+    const reviewScope = document.querySelector('[data-review-section="scope"]');
+    expect(reviewScope).not.toBeNull();
+    expect(within(reviewScope).getByText(/Retained hidden invoice scope/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit — Scope of Work" }));
+    expect(screen.getByRole("checkbox", { name: "Include Scope of Work on PDF" })).not.toBeChecked();
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /download preview/i }));
+
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    const [payload] = mockExportPdf.mock.calls[0];
+    expect(payload.docType).toBe("invoice");
+    expect(payload.includeInvoiceScopeOnPdf).toBe(false);
+    expect(payload.scopeNotes).toBe("");
+    expect(payload.scopeImages).toEqual([]);
+    expect(mockLatestState.scopeNotes).toBe("Retained hidden invoice scope.");
+    expect(mockLatestState.scopeImages).toEqual(scopeImages);
+  });
+
+  test("included Invoice Scope reaches the existing shared PDF payload", async () => {
+    const customer = createCustomer();
+    const scopeImages = createScopeImages(1);
+    const savedInvoice = createSavedInvoice({
+      scopeNotes: "Included invoice PDF scope.",
+      scopeImages,
+      ui: {
+        docType: "invoice",
+        materialsMode: "blanket",
+        includeInvoiceScopeOnPdf: true,
+      },
+    });
+    mockInitialState = clone(savedInvoice);
+    seedInvoiceStorage({
+      invoice: savedInvoice,
+      customer,
+      editInvoiceTargetId: savedInvoice.id,
+    });
+
+    renderEstimateFormInStrictMode();
+    await screen.findByText("EDIT INVOICE");
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /download preview/i }));
+
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    const [payload] = mockExportPdf.mock.calls[0];
+    expect(payload.docType).toBe("invoice");
+    expect(payload.includeInvoiceScopeOnPdf).toBe(true);
+    expect(payload.scopeNotes).toBe("Included invoice PDF scope.");
+    expect(payload.scopeImages).toEqual(scopeImages);
   });
 
   test("exports saved paid invoice data when edit-mode invoice state is blank", async () => {
@@ -1436,12 +2124,17 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT INVOICE");
 
-    fireEvent.click(screen.getByRole("button", { name: /export pdf/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /download pdf/i }));
-
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /view pdf/i }));
     await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    expect(mockExportPdf.mock.calls[0][1]).toBe("view");
+    expect(mockSaveNow).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /download preview/i }));
 
-    const [payload, mode] = mockExportPdf.mock.calls[0];
+    await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(2));
+    expect(mockSaveNow).not.toHaveBeenCalled();
+
+    const [payload, mode] = mockExportPdf.mock.calls[1];
     const summaryValues = Object.fromEntries(payload.summaryRows || []);
 
     expect(mode).toBe("download");
@@ -1506,10 +2199,11 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("EDIT ESTIMATE");
 
-    fireEvent.click(screen.getByRole("button", { name: /export pdf/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /download pdf/i }));
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /download preview/i }));
 
     await waitFor(() => expect(mockExportPdf).toHaveBeenCalledTimes(1));
+    expect(mockSaveNow).not.toHaveBeenCalled();
 
     const [payload, mode] = mockExportPdf.mock.calls[0];
 
@@ -1537,6 +2231,7 @@ describe("EstimateForm invoice edit fallback", () => {
     });
 
     renderEstimateFormInStrictMode();
+    advanceToWizardStep("scope");
 
     await screen.findByText("Estimate Builder");
 
@@ -1576,6 +2271,7 @@ describe("EstimateForm invoice edit fallback", () => {
     mockInitialState = clone(savedEstimate);
 
     renderEstimateFormInStrictMode();
+    advanceToWizardStep("scope");
 
     await screen.findByText("Estimate Builder");
 
@@ -1594,6 +2290,7 @@ describe("EstimateForm invoice edit fallback", () => {
     normalizeScopeImageForStorage.mockRejectedValue(new Error("Could not process this photo. Try another image."));
 
     renderEstimateFormInStrictMode();
+    advanceToWizardStep("scope");
 
     await screen.findByText("Estimate Builder");
 
@@ -1608,7 +2305,7 @@ describe("EstimateForm invoice edit fallback", () => {
     expect(mockPatch).not.toHaveBeenCalledWith("scopeImages", expect.anything());
   });
 
-  test("shows a friendly storage-full message when the builder draft cannot persist during save", async () => {
+  test("shows a general save error when the builder draft durability check fails without a quota error", async () => {
     const estimateState = clone(DEFAULT_STATE);
     estimateState.ui = {
       ...(estimateState.ui || {}),
@@ -1643,9 +2340,10 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Estimate Builder");
 
+    openFinalizationPreview();
     fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
 
-    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Save failed. Please try again.");
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
@@ -1697,9 +2395,10 @@ describe("EstimateForm invoice edit fallback", () => {
     };
     estimateState.scopeNotes = "Estimate should auto-fill a number during save.";
     estimateState.projectId = project.id;
-    estimateState.total = 420;
-    estimateState.grandTotal = 420;
-    estimateState.totalRevenue = 420;
+    estimateState.labor = {
+      ...(estimateState.labor || {}),
+      lines: [createLaborLine({ hours: "2", rate: "100", trueRateInternal: "60" })],
+    };
     mockInitialState = estimateState;
     mockSaveNow.mockImplementation((metaPatch = {}, options = {}) => {
       const persisted = clone(mockLatestState || {});
@@ -1721,7 +2420,7 @@ describe("EstimateForm invoice edit fallback", () => {
 
     await screen.findByText("Estimate Builder");
 
-    fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
+    await approveFinalization();
 
     await waitFor(() => {
       const savedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
@@ -1731,10 +2430,14 @@ describe("EstimateForm invoice edit fallback", () => {
         customerName: customer.name,
         projectId: project.id,
         estimateNumber: "EST-0001",
+        status: "draft",
       }));
       expect(savedEstimates[0].job).toEqual(expect.objectContaining({ docNumber: "EST-0001" }));
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.INVOICES) || "[]")).toHaveLength(0);
+      expect(localStorage.getItem(EDIT_INVOICE_TARGET_KEY)).toBeNull();
     });
 
+    fireEvent.click(screen.getByRole("button", { name: /exit builder/i }));
     await waitFor(() => {
       expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
       expect(localStorage.getItem(STORAGE_KEYS.ESTIMATE_DRAFT)).toBeNull();
@@ -1767,14 +2470,18 @@ describe("EstimateForm invoice edit fallback", () => {
     localStorage.setItem(STORAGE_KEY, draftRaw);
     localStorage.setItem(STORAGE_KEYS.ESTIMATE_DRAFT, draftRaw);
     localStorage.setItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE, "1");
-    mockSaveNow.mockImplementation((metaPatch = {}) => ({
-      ...clone(estimateState),
-      meta: {
-        ...(estimateState.meta || {}),
-        ...metaPatch,
-        lastSavedAt: FIXED_TIMESTAMP,
-      },
-    }));
+    mockSaveNow.mockImplementation((metaPatch = {}) => {
+      const nextPersisted = {
+        ...clone(estimateState),
+        meta: {
+          ...(estimateState.meta || {}),
+          ...metaPatch,
+          lastSavedAt: FIXED_TIMESTAMP,
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPersisted));
+      return nextPersisted;
+    });
 
     renderEstimateFormInStrictMode();
 
@@ -1788,10 +2495,15 @@ describe("EstimateForm invoice edit fallback", () => {
       return actualSetItem.call(this, key, value);
     });
 
+    openFinalizationPreview();
     fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
 
-    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Storage is full. Remove some photos or templates and try again.");
+    fireEvent.click(screen.getByRole("button", { name: /back to editing/i }));
+
+    // The failed save must leave the draft intact on both steps that hold it.
     expect(screen.getByPlaceholderText("Search or select a customer…")).toHaveValue("Failed Save Customer");
+    advanceToWizardStep("project");
     expect(screen.getByPlaceholderText("Job / Work Title (optional)")).toHaveValue("Failed Save Project");
     expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBeNull();
   });
@@ -1801,25 +2513,36 @@ describe("EstimateForm invoice edit fallback", () => {
     const savedEstimate = createSavedEstimate({
       scopeNotes: "Existing saved estimate scope.",
     });
+    const project = createProject({
+      id: savedEstimate.projectId,
+      customerId: customer.id,
+      customerName: customer.name,
+      projectName: savedEstimate.projectName,
+    });
     mockInitialState = clone(savedEstimate);
-    mockSaveNow.mockImplementation((metaPatch = {}) => ({
-      ...clone(savedEstimate),
-      meta: {
-        ...(savedEstimate.meta || {}),
-        ...metaPatch,
-        lastSavedAt: FIXED_TIMESTAMP,
-      },
-    }));
+    mockSaveNow.mockImplementation((metaPatch = {}) => {
+      const nextPersisted = {
+        ...clone(savedEstimate),
+        meta: {
+          ...(savedEstimate.meta || {}),
+          ...metaPatch,
+          lastSavedAt: FIXED_TIMESTAMP,
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPersisted));
+      return nextPersisted;
+    });
 
     seedEstimateStorage({
       estimate: savedEstimate,
       customer,
       editEstimateTargetId: savedEstimate.id,
     });
+    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project]));
 
     renderEstimateFormInStrictMode();
 
-    await screen.findByRole("button", { name: /save estimate|update estimate/i });
+    await screen.findByRole("button", { name: /review & save/i });
 
     const actualSetItem = Storage.prototype.setItem;
     jest.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
@@ -1829,8 +2552,9 @@ describe("EstimateForm invoice edit fallback", () => {
       return actualSetItem.call(this, key, value);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /save estimate|update estimate/i }));
+    openFinalizationPreview();
+    fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
 
-    expect(await screen.findByText("Storage is full. Remove some photos or templates and try again.")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Storage is full. Remove some photos or templates and try again.");
   });
 });

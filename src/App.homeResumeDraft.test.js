@@ -579,7 +579,10 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
 
   expect(await screen.findByText("Estimate Builder")).toBeInTheDocument();
 
+  fireEvent.click(screen.getByRole("button", { name: /review & save/i }));
+  expect(screen.getByRole("dialog", { name: /review & save estimate/i })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /save estimate/i }));
+  expect(await screen.findByRole("heading", { name: /estimate saved/i })).toBeInTheDocument();
 
   await waitFor(() => {
     const storedEstimates = JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES) || "[]");
@@ -598,17 +601,19 @@ test("successful new estimate save clears Resume Draft and returns Create to a c
         ],
       }),
     ]);
-    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBeNull();
   });
 
-  // A real, conscious "Save Estimate" must mark automatic cloud backup dirty.
+  // A real, conscious approval/save must mark automatic cloud backup dirty.
   const backupQueueState = readCloudBackupQueueState();
   expect(backupQueueState.pending).toBe(true);
   expect(backupQueueState.domains).toContain("estimates");
 
-  // A successful save intentionally shows its completion state before routing
-  // to Estimates. Wait for that live post-save transition before navigating
-  // elsewhere so this test does not race the pending route event with Home.
+  fireEvent.click(screen.getByRole("button", { name: /exit builder/i }));
+  await waitFor(() => {
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATOR_STATE)).toBeNull();
+  });
+
+  // Exit Builder uses the existing post-save route to Estimates.
   expect(await screen.findByText(/Saved Estimates \(1\)/i)).toBeInTheDocument();
 
   fireEvent.click(screen.getByLabelText("Home"));

@@ -1,7 +1,7 @@
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 
-import CustomerPortalSharePanel from "./CustomerPortalSharePanel";
+import CustomerPortalSharePanel, { CustomerPortalDeliveryStatus } from "./CustomerPortalSharePanel";
 
 describe("CustomerPortalSharePanel", () => {
   test("renders estimate portal copy with staged actions and no side effects", () => {
@@ -44,5 +44,25 @@ describe("CustomerPortalSharePanel", () => {
     fireEvent.click(toggle);
 
     expect(screen.getByText("Approve Estimate")).toBeInTheDocument();
+  });
+});
+
+describe("CustomerPortalDeliveryStatus", () => {
+  test("truthfully exposes future secure delivery without an enabled send action", () => {
+    render(<CustomerPortalDeliveryStatus documentType="estimate" />);
+
+    expect(screen.getByText("Send to Customer")).toBeInTheDocument();
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.getByText(/portal backend is connected/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /send to customer/i })).not.toBeInTheDocument();
+    expect(document.querySelector('[data-customer-delivery="coming-soon"]')).toHaveAttribute("data-document-type", "estimate");
+  });
+
+  test("uses localized Spanish delivery status for Invoice", () => {
+    render(<CustomerPortalDeliveryStatus documentType="invoice" lang="es" />);
+
+    expect(screen.getByText("Enviar al cliente")).toBeInTheDocument();
+    expect(screen.getByText("Próximamente")).toBeInTheDocument();
+    expect(document.querySelector('[data-customer-delivery="coming-soon"]')).toHaveAttribute("data-document-type", "invoice");
   });
 });

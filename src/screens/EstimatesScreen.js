@@ -21,6 +21,11 @@ import {
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
+import {
+  getDocumentEditTarget,
+  resolveDocumentEditTarget,
+  updateResolvedDocumentEditTarget,
+} from "../lib/documentEditTarget";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -51,7 +56,7 @@ function normalizeEstimateStatus(status) {
 
 export function getEstimateDeleteMode(estimate, invoices = [], projects = []) {
   const status = String(estimate?.deleteSafetyStatus ?? estimate?.status ?? "").trim().toLowerCase();
-  const id = String(estimate?.id || "").trim();
+  const id = getDocumentEditTarget(estimate, "estimate");
   const linkedInvoices = (Array.isArray(invoices) ? invoices : []).filter((invoice) => {
     const sourceEstimateId = String(invoice?.sourceEstimateId || "").trim();
     const estimateId = String(invoice?.estimateId || "").trim();
@@ -335,15 +340,7 @@ function EmptyEstimateIcon() {
 function estimateIdentity(doc) {
   const id = String(doc?.id || "").trim();
   if (id) return `id:${id}`;
-  const num = String(
-    doc?.estimateNumber
-    || doc?.docNumber
-    || doc?.documentNumber
-    || doc?.documentNo
-    || doc?.number
-    || doc?.job?.docNumber
-    || ""
-  ).trim();
+  const num = getDocumentEditTarget(doc, "estimate");
   return num ? `num:${num}` : "";
 }
 
@@ -734,10 +731,12 @@ export default function EstimatesScreen({
   const typeaheadWrapRef = useRef(null);
   const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
   const openEstimateNavRef = useRef({ estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 });
+  const invoiceBuilderLaunchPromiseRef = useRef(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [showListSkeleton, setShowListSkeleton] = useState(true);
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [openErrorMessage, setOpenErrorMessage] = useState("");
   const [invoicePromptTarget, setInvoicePromptTarget] = useState(null);
   const [invoiceComposerTarget, setInvoiceComposerTarget] = useState(null);
   const [invoiceComposerForm, setInvoiceComposerForm] = useState(() => createInvoiceComposerForm(null, null));
@@ -1323,6 +1322,12 @@ export default function EstimatesScreen({
     return () => window.clearTimeout(timer);
   }, [showCopyToast]);
 
+  useEffect(() => {
+    if (!openErrorMessage) return undefined;
+    const timer = window.setTimeout(() => setOpenErrorMessage(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [openErrorMessage]);
+
   const copyEstimateNumber = async (estimateNumber, evt) => {
     if (evt?.stopPropagation) evt.stopPropagation();
     const value = String(estimateNumber || "").trim();
@@ -1372,10 +1377,14 @@ export default function EstimatesScreen({
   };
 
   const openEstimate = (estimate) => {
-    const id = String(estimate?.id || "").trim();
+    const editTarget = getDocumentEditTarget(estimate, "estimate");
+    if (!editTarget) {
+      setOpenErrorMessage("This estimate cannot be opened because its saved identity is missing.");
+      return;
+    }
     const previous = openEstimateNavRef.current || {};
     const now = Date.now();
-    if (previous.estimateId === id && (now - Number(previous.triggeredAt || 0)) < OPEN_ESTIMATE_NAV_GUARD_MS) {
+    if (previous.estimateId === editTarget && (now - Number(previous.triggeredAt || 0)) < OPEN_ESTIMATE_NAV_GUARD_MS) {
       return;
     }
 
@@ -1387,8 +1396,7 @@ export default function EstimatesScreen({
     }
 
     try {
-      if (id) localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, id);
-      else localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+      localStorage.setItem(EDIT_ESTIMATE_TARGET_KEY, editTarget);
       localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
     } catch {}
     try {
@@ -1408,7 +1416,7 @@ export default function EstimatesScreen({
     };
 
     openEstimateNavRef.current = {
-      estimateId: id,
+      estimateId: editTarget,
       triggeredAt: now,
       rafId: 0,
       timerId: 0,
@@ -1426,15 +1434,15 @@ export default function EstimatesScreen({
     finalizeOpen();
   };
 
-  const setEstimateStatus = (estimate, nextStatus) => {
+  const setEstimateStatus = (estimate, nextStatus, options = {}) => {
     const normalized = normalizeEstimateStatus(nextStatus);
-    const targetIdentity = estimateIdentity(estimate);
-    const targetId = String(estimate?.id || "").trim();
-    const storedEstimate = readSavedEstimatesList().find((item) => (
-      targetIdentity
-        ? estimateIdentity(item) === targetIdentity
-        : String(item?.id || "").trim() === targetId
-    ));
+    const target = getDocumentEditTarget(estimate, "estimate");
+    const existing = readSavedEstimatesList();
+    const storedEstimate = resolveDocumentEditTarget(existing, target, "estimate");
+    if (!storedEstimate) {
+      setOpenErrorMessage("Unable to update this estimate because its identity is missing or ambiguous.");
+      return false;
+    }
     if (estimate?.archived || storedEstimate?.archived) return;
 
     if (estimate?.status === STATUS_APPROVED && normalized !== STATUS_APPROVED) {
@@ -1445,12 +1453,29 @@ export default function EstimatesScreen({
       }
     }
 
+    try {
+      const update = updateResolvedDocumentEditTarget(
+        existing,
+        target,
+        "estimate",
+        (item) => ({ ...item, status: normalized })
+      );
+      if (!update) {
+        setOpenErrorMessage("Unable to update this estimate because its identity is missing or ambiguous.");
+        return false;
+      }
+      writeStoredEstimatesPreservingLegacy(update.records);
+    } catch {
+      setOpenErrorMessage("Unable to save the estimate status.");
+      return false;
+    }
+
     setEstimates((prev) => {
-      const next = (Array.isArray(prev) ? prev : []).map((item) => {
-        const matches = targetIdentity
-          ? estimateIdentity(item) === targetIdentity
-          : String(item?.id || "").trim() === targetId;
-        if (!matches) return item;
+      const list = Array.isArray(prev) ? prev : [];
+      const resolved = resolveDocumentEditTarget(list, target, "estimate");
+      if (!resolved) return prev;
+      const next = list.map((item) => {
+        if (item !== resolved) return item;
         return { ...item, status: normalized };
       });
       return next.slice().sort(sortEstimatesByDateDesc);
@@ -1458,7 +1483,11 @@ export default function EstimatesScreen({
 
     setExpanded({});
 
-    if (normalized === STATUS_APPROVED && shouldShowApprovalInvoicePrompt(estimate)) {
+    if (
+      normalized === STATUS_APPROVED
+      && options?.showInvoicePrompt !== false
+      && shouldShowApprovalInvoicePrompt(estimate)
+    ) {
       setTimeout(() => {
         setInvoicePromptTarget(estimate);
       }, 0);
@@ -1478,17 +1507,7 @@ export default function EstimatesScreen({
       return next;
     });
 
-    try {
-      const existing = readSavedEstimatesList();
-      const next = existing.map((item) => {
-        const matches = targetIdentity
-          ? estimateIdentity(item) === targetIdentity
-          : String(item?.id || "").trim() === targetId;
-        if (!matches) return item;
-        return { ...item, status: normalized };
-      });
-      writeStoredEstimatesPreservingLegacy(next);
-    } catch {}
+    return true;
   };
 
   // Move a customer-facing estimate back to Draft so it becomes deletable again.
@@ -1623,57 +1642,75 @@ export default function EstimatesScreen({
   };
 
   const resolveApprovedEstimateForInvoiceLaunch = (estimate) => {
-    const targetIdentity = estimateIdentity(estimate);
-    const targetId = String(estimate?.id || "").trim();
-    const liveEstimate = (Array.isArray(estimates) ? estimates : []).find((entry) => {
-      if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
-      return String(entry?.id || "").trim() === targetId;
-    }) || null;
-    const persistedEstimate = liveEstimate
-      ? null
-      : readSavedEstimatesList().find((entry) => {
-        if (targetIdentity) return estimateIdentity(entry) === targetIdentity;
-        return String(entry?.id || "").trim() === targetId;
-      }) || null;
-    const resolved = liveEstimate || persistedEstimate || estimate || null;
+    const target = getDocumentEditTarget(estimate, "estimate");
+    if (!target) return null;
+    const resolved = resolveDocumentEditTarget(readSavedEstimatesList(), target, "estimate");
     if (!resolved || resolved?.archived || normalizeEstimateStatus(resolved?.status) !== STATUS_APPROVED) return null;
     return resolved;
   };
 
-  const openInvoiceBuilderFromEstimate = async (estimate) => {
-    const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
-    if (!target) return false;
+  const openInvoiceBuilderFromEstimate = (estimate) => {
+    if (invoiceBuilderLaunchPromiseRef.current) return invoiceBuilderLaunchPromiseRef.current;
+    const task = (async () => {
+      const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
+      if (!target) return false;
 
-    const currentInvoices = readStoredInvoices();
-    const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
-    if (!created.ok || !created.draft) {
+      const currentInvoices = readStoredInvoices();
+      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+      if (!created.ok || !created.draft) {
+        setOpenErrorMessage(created.message || "Unable to create an invoice from this estimate.");
+        return false;
+      }
+
+      const mutationAccess = await ensureCanMutateBusinessData("local_save");
+      if (!mutationAccess?.ok) {
+        window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        return false;
+      }
+
+      let nextInvoices;
+      try {
+        nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+      } catch {
+        setOpenErrorMessage("Unable to save the invoice. The estimate was not changed.");
+        return false;
+      }
+      setInvoices(nextInvoices);
+      closeInvoiceComposer();
+      try {
+        localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
+        localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
+        localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
+        localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
+        localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
+      } catch {}
+      try {
+        window.dispatchEvent(new Event("estipaid:invoices-changed"));
+      } catch {}
+      try {
+        window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
+      } catch {}
+      return true;
+    })();
+    invoiceBuilderLaunchPromiseRef.current = task;
+    task.finally(() => {
+      if (invoiceBuilderLaunchPromiseRef.current === task) {
+        invoiceBuilderLaunchPromiseRef.current = null;
+      }
+    });
+    return task;
+  };
+
+  const approveAndConvertEstimate = async (estimate) => {
+    const approved = setEstimateStatus(estimate, STATUS_APPROVED, { showInvoicePrompt: false });
+    if (!approved) return false;
+    const exactApprovedEstimate = resolveApprovedEstimateForInvoiceLaunch(estimate);
+    if (!exactApprovedEstimate) {
+      setOpenErrorMessage("The approved estimate could not be verified for conversion.");
       return false;
     }
-
-    const mutationAccess = await ensureCanMutateBusinessData("local_save");
-    if (!mutationAccess?.ok) {
-      window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      return false;
-    }
-
-    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
-    setInvoices(nextInvoices);
-    closeInvoiceComposer();
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
-      localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);
-      localStorage.removeItem(STORAGE_KEYS.ESTIMATOR_STATE);
-      localStorage.removeItem(STORAGE_KEYS.ESTIMATE_DRAFT);
-      localStorage.removeItem(STORAGE_KEYS.RESTORE_DRAFT_ON_CREATE);
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:invoices-changed"));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
-    return true;
+    return openInvoiceBuilderFromEstimate(exactApprovedEstimate);
   };
 
   useEffect(() => {
@@ -2875,7 +2912,7 @@ export default function EstimatesScreen({
               const actionMeta = status === STATUS_APPROVED
                 ? remainingToInvoice > 0
                   ? {
-                      label: lang === "es" ? "Siguiente acción: crear factura" : "Create Invoice",
+                      label: lang === "es" ? "Convertir en factura" : "Convert to Invoice",
                       tone: "rgba(74,222,128,0.9)",
                       border: "rgba(34,197,94,0.22)",
                       background: "rgba(34,197,94,0.08)",
@@ -3394,14 +3431,26 @@ export default function EstimatesScreen({
                         >
                           {lang === "es" ? "Marcar perdido" : "Mark Lost"}
                         </button>
-                        <button
-                          className={status === STATUS_PENDING ? "pe-btn" : "pe-btn pe-btn-ghost"}
-                          type="button"
-                          disabled={Boolean(e?.archived)}
-                          onClick={() => setEstimateStatus(e, STATUS_PENDING)}
-                        >
-                          {lang === "es" ? "Marcar en espera de respuesta" : "Mark Awaiting Response"}
-                        </button>
+                        {status === STATUS_DRAFT ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            disabled={Boolean(e?.archived)}
+                            onClick={() => setEstimateStatus(e, STATUS_PENDING)}
+                          >
+                            {lang === "es" ? "Marcar como enviada" : "Mark as Sent"}
+                          </button>
+                        ) : null}
+                        {status !== STATUS_DRAFT && status !== STATUS_PENDING ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            disabled={Boolean(e?.archived)}
+                            onClick={() => setEstimateStatus(e, STATUS_PENDING)}
+                          >
+                            {lang === "es" ? "Marcar en espera de respuesta" : "Mark Awaiting Response"}
+                          </button>
+                        ) : null}
                         {status === STATUS_PENDING ? (
                           <button
                             className="pe-btn pe-btn-ghost"
@@ -3424,6 +3473,15 @@ export default function EstimatesScreen({
                           <CopyIcon />
                           Duplicate
                         </button>
+                        {(status === STATUS_DRAFT || status === STATUS_PENDING) && !e?.archived ? (
+                          <button
+                            className="pe-btn"
+                            type="button"
+                            onClick={() => approveAndConvertEstimate(e)}
+                          >
+                            {lang === "es" ? "Aprobar y convertir en factura" : "Approve & Convert to Invoice"}
+                          </button>
+                        ) : null}
                         {status === STATUS_APPROVED && !e?.archived ? (
                           <button
                             className="pe-btn"
@@ -3431,7 +3489,7 @@ export default function EstimatesScreen({
                             onClick={() => openInvoiceBuilderFromEstimate(e)}
                             disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
                           >
-                            {lang === "es" ? "Crear factura" : "Create Invoice"}
+                            {lang === "es" ? "Convertir en factura" : "Convert to Invoice"}
                           </button>
                         ) : null}
                       </div>
@@ -4077,7 +4135,9 @@ export default function EstimatesScreen({
           </div>
         </div>
       )}
-      {showCopyToast ? (
+      {openErrorMessage ? (
+        <div className="pe-toast" role="status" aria-live="polite">{openErrorMessage}</div>
+      ) : showCopyToast ? (
         <div className="pe-toast" role="status" aria-live="polite">Estimate number copied</div>
       ) : null}
     </section>

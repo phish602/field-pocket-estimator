@@ -1,6 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { getSupabaseEnv } from "./supabaseEnv";
-import { evaluateSupabaseRuntimePolicy } from "./supabaseRuntimePolicy";
+import {
+  evaluateSupabaseRuntimePolicy,
+  MOBILE_TEST_ENABLED_ENV,
+  MOBILE_TEST_SUPABASE_URL_ENV,
+  resolveSupabaseRuntimeUrl,
+} from "./supabaseRuntimePolicy";
 
 export const supabaseEnv = getSupabaseEnv();
 
@@ -8,7 +13,7 @@ export const supabaseEnv = getSupabaseEnv();
 // construction. Even when a valid URL + anon key are present in the build -- a
 // Vercel Preview that inherited Production env vars, local dev, a test, or an
 // unknown deployment -- the client is built ONLY when the fail-closed runtime
-// policy allows it. Exactly two lanes qualify:
+// policy allows it. Two durable lanes qualify:
 //
 //   - runtimeMode "production": a Vercel Production deployment carrying the
 //     explicit REACT_APP_ESTIPAID_CLOUD_ENABLED=true opt-in (hosted Supabase).
@@ -17,20 +22,37 @@ export const supabaseEnv = getSupabaseEnv();
 //     and an exact loopback Supabase origin (http://127.0.0.1:54321 or
 //     http://localhost:54321) -- never hosted Supabase.
 //
+// The development-only mobile_test sub-mode keeps the same local lane and
+// client, but substitutes one validated HTTPS trycloudflare API origin when
+// the app page is itself on an HTTPS trycloudflare origin.
 // Preview / Vercel development / unset-with-hosted-URL / unknown / conflicting
 // opt-ins can never construct a client, so automated Chrome cannot generate
 // hosted PostgREST/Auth egress no matter what credentials leak in.
-export const supabaseRuntimePolicy = evaluateSupabaseRuntimePolicy();
+const currentOrigin = typeof window !== "undefined" && window.location
+  ? String(window.location.origin || "")
+  : "";
+
+const supabaseRuntimeUrlDecision = resolveSupabaseRuntimeUrl({
+  localUrl: supabaseEnv.url,
+  mobileTunnelUrl: process.env[MOBILE_TEST_SUPABASE_URL_ENV],
+  mobileTestEnabled: process.env[MOBILE_TEST_ENABLED_ENV],
+  nodeEnv: process.env.NODE_ENV,
+  currentOrigin,
+});
+
+export const supabaseRuntimePolicy = evaluateSupabaseRuntimePolicy(process.env, { currentOrigin });
 
 // Configured requires ALL of: valid URL, valid anon key, AND policy.allowed.
-export const isSupabaseConfigured = supabaseEnv.isConfigured && supabaseRuntimePolicy.allowed;
+export const isSupabaseConfigured = supabaseEnv.isConfigured
+  && supabaseRuntimePolicy.allowed
+  && supabaseRuntimeUrlDecision.allowed;
 
 // When not configured, `createClient` is never called and no client is retained
 // (no lazy fallback, no network probe, no runtime switch) -- a denied policy
 // yields a hard null. The auth options below are identical in both permitted
 // lanes (Vercel Production hosted Supabase and loopback-only local Supabase).
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseEnv.url, supabaseEnv.anonKey, {
+  ? createClient(supabaseRuntimeUrlDecision.url, supabaseEnv.anonKey, {
       auth: {
         autoRefreshToken: true,
         detectSessionInUrl: true,

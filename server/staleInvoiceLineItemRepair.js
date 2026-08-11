@@ -9,12 +9,35 @@ const INVOICE_COLUMNS = "id,company_id,customer_id,project_id,estimate_id,source
 const text = (value) => String(value || "").trim();
 const accessTokenFromAuthorization = (value) => (/^Bearer\s+(.+)$/i.exec(text(value)) || [])[1] || "";
 
-function serviceClient({ env = process.env, adminClient } = {}) {
-  if (adminClient) return adminClient;
-  if (!text(env.SUPABASE_URL) || !text(env.SUPABASE_SERVICE_ROLE_KEY)) return null;
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+// EXACT canonical values only -- never substring or hostname matching, so
+// "http://localhost.attacker.example:54321" can never be accepted.
+const APPROVED_LOCAL_SUPABASE_URLS = Object.freeze([
+  "http://127.0.0.1:54321",
+  "http://127.0.0.1:54321/",
+  "http://localhost:54321",
+  "http://localhost:54321/",
+]);
+
+function isApprovedLocalSupabaseUrl(value) {
+  return APPROVED_LOCAL_SUPABASE_URLS.includes(text(value));
+}
+
+// Returns { ok: true, client } or { ok: false, code }. The codes are fixed
+// non-sensitive tokens; no URL, key or token is ever carried out of here.
+//
+// requireLocalSupabase is opt-in and used ONLY by the local dev bridge. The
+// deployed production API route keeps its normal configuration and may continue
+// to use hosted Supabase.
+function resolveServiceClient({ env = process.env, adminClient, requireLocalSupabase = false } = {}) {
+  if (adminClient) return { ok: true, client: adminClient };
+  const url = text(env.SUPABASE_URL);
+  const key = text(env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!url || !key) return { ok: false, code: "runtime_not_configured" };
+  if (requireLocalSupabase && !isApprovedLocalSupabaseUrl(url)) return { ok: false, code: "local_supabase_required" };
+  return {
+    ok: true,
+    client: createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }),
+  };
 }
 
 function parseDeterministicLineId(value) {
@@ -42,17 +65,58 @@ function semanticallySameRow(left, right) {
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
-function safeFailure(status, error) {
-  return { ok: false, status, error };
+// Mirrors the shared client contract's parent-segment sanitizer. Reimplemented
+// here on purpose: the server must be able to prove a deletion without trusting
+// or importing anything the browser controls.
+function sanitizeParentSegment(value) {
+  const normalized = text(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "parent";
 }
 
-async function repairStaleInvoiceLineItemDuplicates({ companyId, deviceId, staleRowIds, accessToken, env, adminClient } = {}) {
+const BUSINESS_FIELDS = ["description", "quantity", "unit", "unit_price", "total_price"];
+const PLACEHOLDER_KINDS = ["labor", "material"];
+
+// Explicit zero is DATA. Only null / undefined / "" are absent, so a $0 line, a
+// 0-quantity line or a 0-hour line is never treated as an empty placeholder.
+const isAbsent = (value) => value === null || value === undefined || value === "";
+
+function hasOnlyStructuralMetadata(metadata) {
+  if (metadata === null || metadata === undefined) return true;
+  if (typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const keys = Object.keys(metadata);
+  if (keys.length === 0) return true;
+  // Exactly the structural kind and nothing else. Any unknown key -- and any
+  // economic key such as hours / unit_cost / markup, even valued 0 -- fails.
+  if (keys.length !== 1 || keys[0] !== "kind") return false;
+  return PLACEHOLDER_KINDS.includes(text(metadata.kind));
+}
+
+function isEmptyPlaceholderRow(row) {
+  if (!row || typeof row !== "object") return false;
+  if (!BUSINESS_FIELDS.every((field) => isAbsent(row[field]))) return false;
+  return hasOnlyStructuralMetadata(row.metadata);
+}
+
+// `reason` is an optional fixed, non-sensitive diagnostic token (never a URL,
+// key, token or business value) so the caller can tell a runtime/configuration
+// problem apart from a safety refusal.
+function safeFailure(status, error, reason) {
+  return reason ? { ok: false, status, error, reason } : { ok: false, status, error };
+}
+
+async function repairStaleInvoiceLineItemDuplicates({ companyId, deviceId, staleRowIds, accessToken, env, adminClient, requireLocalSupabase = false } = {}) {
   const ids = Array.isArray(staleRowIds) ? staleRowIds.map(text) : [];
-  const client = serviceClient({ env, adminClient });
-  if (!client || !text(companyId) || !text(deviceId) || !text(accessToken)
+  // A MALFORMED REQUEST and an UNCONFIGURED SERVER are different failures.
+  // Collapsing both into 400 is exactly why a green test suite told us nothing
+  // about the real runtime: a server with no admin credentials looked like a bad
+  // request from the caller.
+  if (!text(companyId) || !text(deviceId) || !text(accessToken)
     || ids.length < 1 || ids.length > 100 || new Set(ids).size !== ids.length || ids.some((id) => !UUID.test(id))) {
     return safeFailure(400, "Invalid repair request.");
   }
+  const resolved = resolveServiceClient({ env, adminClient, requireLocalSupabase });
+  if (!resolved.ok) return safeFailure(503, "Repair unavailable.", resolved.code);
+  const client = resolved.client;
 
   try {
     const userResult = await client.auth.getUser(accessToken);
@@ -98,7 +162,9 @@ async function repairStaleInvoiceLineItemDuplicates({ companyId, deviceId, stale
     const paymentIdsBefore = (paymentResult.data || []).map((row) => row.id).sort();
     const canonicalBefore = allChildren.filter((row) => !ids.includes(row.id));
 
-    const proofIsExact = staleRows.every((staleRow) => {
+    // PROOF CLASS A (unchanged): wrong-parent deterministic duplicate whose exact
+    // canonical twin still exists at the same stable index under the real parent.
+    const provesExactTwin = (staleRow) => {
       const staleKey = parseDeterministicLineId(staleRow.legacy_local_id);
       const invoice = invoiceById.get(staleRow.invoice_id);
       if (!staleKey || !invoice?.legacy_local_id || staleKey.parent === invoice.legacy_local_id) return false;
@@ -108,8 +174,31 @@ async function repairStaleInvoiceLineItemDuplicates({ companyId, deviceId, stale
           && candidateKey?.parent === invoice.legacy_local_id && candidateKey.index === staleKey.index;
       });
       return twins.length === 1 && semanticallySameLineItem(staleRow, twins[0]);
+    };
+
+    // PROOF CLASS B (new): same-parent obsolete blank placeholder. Independently
+    // proven here from the row itself -- the server never needs the browser's
+    // canonical payload, because a row with NO business content can never be a
+    // canonical child under the corrected writer contract.
+    const provesEmptyPlaceholder = (staleRow) => {
+      const staleKey = parseDeterministicLineId(staleRow.legacy_local_id);
+      const invoice = invoiceById.get(staleRow.invoice_id);
+      if (!staleKey || !invoice || !text(invoice.legacy_local_id)) return false;
+      if (text(invoice.company_id) !== text(companyId) || invoice.id !== staleRow.invoice_id) return false;
+      if (staleKey.parent !== sanitizeParentSegment(invoice.legacy_local_id)) return false;
+      return isEmptyPlaceholderRow(staleRow);
+    };
+
+    // Every requested row must independently satisfy ONE of the two proofs. A
+    // single unprovable row refuses the whole batch -- the batch is never
+    // silently narrowed or broadened.
+    const proofTypeByRowId = new Map();
+    const allRowsProven = staleRows.every((staleRow) => {
+      if (provesExactTwin(staleRow)) { proofTypeByRowId.set(staleRow.id, "duplicate_exact_twin"); return true; }
+      if (provesEmptyPlaceholder(staleRow)) { proofTypeByRowId.set(staleRow.id, "empty_placeholder"); return true; }
+      return false;
     });
-    if (!proofIsExact) return safeFailure(409, "Repair refused.");
+    if (!allRowsProven) return safeFailure(409, "Repair refused.");
 
     const repairId = randomUUID();
     const archiveRows = staleRows.map((staleRow) => ({
@@ -119,7 +208,9 @@ async function repairStaleInvoiceLineItemDuplicates({ companyId, deviceId, stale
       event_type: "cloud_repair.stale_invoice_line_item_duplicate_quarantined",
       entity_type: "invoice_line_item",
       entity_id: staleRow.id,
-      payload: { version: 1, repairId, deviceId, stale: staleRow },
+      // proofType keeps the audit trail honest: a blank placeholder is archived
+      // as a placeholder, never mislabelled as a duplicate.
+      payload: { version: 1, repairId, deviceId, proofType: proofTypeByRowId.get(staleRow.id), stale: staleRow },
     }));
     const archiveResult = await client.from("audit_events").insert(archiveRows).select("id");
     if (archiveResult.error || (archiveResult.data && archiveResult.data.length !== staleRows.length)) {
@@ -182,18 +273,27 @@ function createExpressStaleInvoiceLineItemRepairHandler(options = {}) {
         accessToken: accessTokenFromAuthorization(req.headers?.authorization),
         env: options.env,
         adminClient: options.adminClient,
+        requireLocalSupabase: options.requireLocalSupabase === true,
       });
     } catch {
       return res.status(500).json({ code: "repair_unavailable", message: "Repair unavailable." });
     }
     if (result.ok) return res.status(200).json({ ok: true, repaired: result.repaired, repairVersion: result.repairVersion });
     const status = Number.isInteger(result.status) ? result.status : 500;
-    return res.status(status).json({ code: status === 400 ? "invalid_request" : status === 401 ? "unauthorized" : status === 403 ? "forbidden" : status === 409 ? "repair_refused" : "repair_unavailable", message: result.error || "Repair unavailable." });
+    const code = status === 400 ? "invalid_request"
+      : status === 401 ? "unauthorized"
+        : status === 403 ? "forbidden"
+          : status === 409 ? "repair_refused"
+            : "repair_unavailable";
+    return res.status(status).json({ code, message: result.error || "Repair unavailable." });
   };
 }
 
 module.exports = {
   REPAIR_VERSION,
+  APPROVED_LOCAL_SUPABASE_URLS,
+  isApprovedLocalSupabaseUrl,
+  resolveServiceClient,
   repairStaleInvoiceLineItemDuplicates,
   createExpressStaleInvoiceLineItemRepairHandler,
   accessTokenFromAuthorization,

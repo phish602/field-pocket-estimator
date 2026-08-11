@@ -59,12 +59,23 @@ export function resolveLineItemSortOrder(item, index) {
   return Number.isFinite(Number(item?.sort_order)) ? Number(item.sort_order) : index;
 }
 
-export function buildLineItemMetadata(item, { includeKind = false } = {}) {
+export function buildLineItemMetadata(item, { includeKind = false, includeSemantics = false } = {}) {
   const metadata = {};
   const unitCost = item?.unit_cost;
   if (unitCost !== null && unitCost !== undefined && unitCost !== "") {
     const nextCost = Number(unitCost);
     if (Number.isFinite(nextCost)) metadata.unit_cost = nextCost;
+  }
+  // Labor is qty x hours x rate, but invoice_line_items has no hours column, so
+  // quantity + unit_price alone cannot reproduce the total: a restored labor row
+  // silently collapses to qty x rate. hours rides in the existing metadata JSON
+  // contract -- no schema change, no second persistence system.
+  if (includeSemantics) {
+    const hours = item?.hours;
+    if (hours !== null && hours !== undefined && hours !== "") {
+      const nextHours = Number(hours);
+      if (Number.isFinite(nextHours)) metadata.hours = nextHours;
+    }
   }
   if (includeKind) {
     const kind = asText(item?.kind);
@@ -104,13 +115,22 @@ export function compareRestoredLineItemOrder(a, b) {
 
 export function lineItemIncludesLineRole(entityType) { return entityType === "estimate"; }
 export function lineItemIncludesKind(entityType) { return entityType === "invoice"; }
+// Only invoices reconstruct their builder state FROM their child rows, so only
+// invoices need the semantic economics carried in metadata. Estimates restore
+// from their verbatim restore_payload (see mapCloudEstimateToLocal), so adding
+// these to estimate children would change already-persisted estimate evidence
+// for no restore benefit.
+export function lineItemIncludesSemantics(entityType) { return entityType === "invoice"; }
 
 // The complete canonical child contract row (minus legacy_local_id) used by BOTH
 // the verifier's "expected" row and the writer's persisted payload. parentColumn
 // is "estimate_id" | "invoice_id"; pass it (with parentCloudId) for the verifier,
 // or omit it for identity-only evidence comparisons.
 export function buildLineItemContractRow({ entityType, item, index, parentColumn = "", parentCloudId = "" }) {
-  const metadata = buildLineItemMetadata(item, { includeKind: lineItemIncludesKind(entityType) });
+  const metadata = buildLineItemMetadata(item, {
+    includeKind: lineItemIncludesKind(entityType),
+    includeSemantics: lineItemIncludesSemantics(entityType),
+  });
   const row = {
     sort_order: resolveLineItemSortOrder(item, index),
     description: item?.description ?? null,

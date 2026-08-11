@@ -116,7 +116,7 @@ describe("server stale invoice line item repair", () => {
 
   test("missing server configuration performs no mutation", async () => {
     const result = await repairStaleInvoiceLineItemDuplicates({ companyId: ids.company, deviceId: "device-safe", staleRowIds: [ids.stale1], accessToken: "token", env: {} });
-    expect(result).toEqual({ ok: false, status: 400, error: "Invalid repair request." });
+    expect(result).toEqual({ ok: false, status: 503, error: "Repair unavailable.", reason: "runtime_not_configured" });
   });
 
   test.each([
