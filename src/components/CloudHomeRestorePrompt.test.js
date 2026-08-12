@@ -1,7 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import CloudHomeRestorePrompt from "./CloudHomeRestorePrompt";
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import useCloudAutoConvergence from "../lib/useCloudAutoConvergence";
+
+jest.mock("../lib/supabaseCloudConvergence", () => {
+  const actual = jest.requireActual("../lib/supabaseCloudConvergence");
+  return {
+    ...actual,
+    runSupabaseCloudConvergence: jest.fn(),
+    recoverInterruptedCloudConvergence: jest.fn(),
+  };
+});
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -53,6 +63,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
     ELIGIBLE: "eligible",
     RESTORED: "restored",
     BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
+    RUN_LOCK_BUSY: "run_lock_busy",
     ERROR: "error",
   },
   CLOUD_BACKUP_EXPORT_STATUS: {
@@ -137,6 +148,9 @@ const {
 const { updateEstimateRestorePayloads, ESTIMATE_PAYLOAD_UPDATE_STATUS } = require("../lib/supabaseEstimateRestorePayload");
 const { readCloudPartialRecoveryStatus } = require("../lib/cloudPartialRecoveryStatus");
 const actualCloudPartialRecoveryStatus = jest.requireActual("../lib/cloudPartialRecoveryStatus");
+const { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } = require("../lib/supabaseCloudConvergence");
+
+const ACTIVE_DEVICE_LOCK = { ready: true, loading: false, isActive: true, isLocked: false };
 
 function signInWithCompany() {
   useSupabaseAuth.mockReturnValue({
@@ -270,6 +284,106 @@ test("automatic recovery clears restoring after a deferred failure while mounted
   expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
+test("fresh-device recovery owns startup when convergence mounts before its delayed preview, then hands off one convergence after local hydration", async () => {
+  const previewDeferred = createDeferred();
+  const convergenceRequested = jest.fn();
+  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  try {
+    previewSupabaseCloudRestore.mockReturnValue(previewDeferred.promise);
+    executeSupabaseCloudRestore.mockImplementation(async () => {
+      // This models the existing restore transaction's local apply before it
+      // returns RESTORED and dispatches its pre-existing handoff event.
+      localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-restored" }]));
+      return { status: CLOUD_RESTORE_STATUS.RESTORED, restored: true };
+    });
+    runSupabaseCloudConvergence.mockResolvedValue({ ok: true, status: "matched" });
+    recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
+
+    // The app-level convergence hook mounts first while the fresh-device
+    // recovery preview is still unresolved.
+    renderHook(() => useCloudAutoConvergence({
+      configured: true,
+      user: { id: "user_1" },
+      company: { id: "company_1" },
+      deviceLock: ACTIVE_DEVICE_LOCK,
+    }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+
+    await renderAndSettle();
+    await act(async () => {
+      previewDeferred.resolve({
+        status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+        eligible: true,
+        partial: false,
+        fullyRestorable: true,
+        blockers: [],
+        notices: [],
+      });
+      await previewDeferred.promise;
+    });
+
+    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+    expect(runSupabaseCloudConvergence).toHaveBeenCalledWith(expect.objectContaining({ storage: localStorage }));
+    expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1);
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  }
+});
+
+test("automatic fresh-device recovery retries a transient run lock once at a time and converges only after restore succeeds", async () => {
+  jest.useFakeTimers();
+  const convergenceRequested = jest.fn();
+  const deferredRetry = createDeferred();
+  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  try {
+    previewSupabaseCloudRestore.mockResolvedValue({
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      fullyRestorable: true,
+      blockers: [],
+      notices: [],
+    });
+    executeSupabaseCloudRestore
+      .mockResolvedValueOnce({ status: CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY })
+      .mockReturnValueOnce(deferredRetry.promise);
+
+    await renderAndSettle();
+    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+
+    // The second restore remains in flight; advancing past the entire retry
+    // budget cannot start a concurrent third restore.
+    await act(async () => {
+      jest.advanceTimersByTime(10000);
+      await Promise.resolve();
+    });
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      deferredRetry.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
+      await deferredRetry.promise;
+    });
+
+    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(2);
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+    jest.useRealTimers();
+  }
+});
+
 function buildCloudExportArtifact(overrides = {}) {
   return {
     artifactVersion: "cloud-backup-export-artifact-v1",
@@ -345,6 +459,10 @@ beforeEach(() => {
     notices: [],
   });
   executeSupabaseCloudRestore.mockReset();
+  runSupabaseCloudConvergence.mockReset();
+  runSupabaseCloudConvergence.mockResolvedValue({ ok: true, status: "matched" });
+  recoverInterruptedCloudConvergence.mockReset();
+  recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
   exportSupabaseCloudBackupArtifact.mockReset();
   exportSupabaseCloudBackupArtifact.mockResolvedValue({
     status: CLOUD_BACKUP_EXPORT_STATUS.EXPORTED,

@@ -54,6 +54,7 @@ import {
   buildPartialSnapshotRecheckMessage,
   getCloudRestoreAvailability,
 } from "../lib/cloudRestoreUi";
+import { VAULT_COMPATIBILITY_GUARD_KEY } from "../lib/vaultCompatibilityGuard";
 
 const ESTIPAID_PREFIX = "estipaid-";
 const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
@@ -1347,6 +1348,10 @@ export default function AdvancedSettingsScreen({
     try {
       const keys = listEstipaidKeys();
       keys.forEach((key) => {
+        // This is device-global vault authority, not workspace business data.
+        // Removing it while the encrypted runtime catalog remains creates a
+        // guard/catalog mismatch that correctly fails closed after reload.
+        if (key === VAULT_COMPATIBILITY_GUARD_KEY) return;
         try { localStorage.removeItem(key); } catch {}
       });
       try { window.dispatchEvent(new Event("estipaid:settings-changed")); } catch {}
