@@ -7,7 +7,8 @@ import {
   readCloudBackupQueueState,
   CLOUD_BACKUP_STATUS,
 } from "./cloudBackupQueue";
-import { releaseCloudBackupRunLock, acquireCloudBackupRunLock } from "./cloudBackupRunLock";
+import { resetCloudOperationRunLockForTests, tryAcquireCloudOperationRunLock } from "./cloudOperationRunLock";
+import { CLOUD_OPERATION_OWNER } from "./cloudOperationOwnership";
 import { runSupabaseCloudOnboardingBackup, CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
 import { updateSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import useCloudAutoBackup from "./useCloudAutoBackup";
@@ -44,7 +45,7 @@ function baseProps(overrides = {}) {
 
 beforeEach(() => {
   localStorage.clear();
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
   runSupabaseCloudOnboardingBackup.mockReset();
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
   updateSupabaseAppRestoreBundle.mockReset();
@@ -52,7 +53,44 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
+});
+
+describe("shared automatic-operation ownership", () => {
+  // CASE 11 (backup side): a clean, positively-empty core device is recovery's
+  // turn. Automatic backup must not take the shared run lock or write cloud.
+  test("does not run on a clean empty-core device where recovery owns the operation", async () => {
+    localStorage.clear();
+    // A queue generation exists but carries no local core data behind it.
+    markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
+    clearCloudBackupDirty({ syncedRevision: readCloudBackupQueueState().localMutationRevision });
+    expect(readCloudBackupQueueState().pending).toBe(false);
+
+    renderHook(() => useCloudAutoBackup(baseProps()));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
+
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
+    resetCloudOperationRunLockForTests();
+  });
+
+  // CASE 10 / DELETION-TO-EMPTY (backup side): the user deleted their last core
+  // document. Core is empty AND a real generation is pending -- that is BACKUP's
+  // work, not a fresh device, so the existing backup path must still run.
+  test("still runs when the user deletes their final core document, leaving an empty core with pending work", async () => {
+    localStorage.clear();
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([]));
+    markCloudBackupDirty({ reason: "invoice_deleted", severity: "money_critical" });
+    expect(readCloudBackupQueueState().pending).toBe(true);
+
+    renderHook(() => useCloudAutoBackup(baseProps()));
+
+    await waitFor(() => expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledTimes(1));
+    expect(runSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+      user: USER,
+      company: COMPANY,
+    }));
+  });
 });
 
 test("pending normal-priority queue schedules and runs an automatic backup", async () => {
@@ -359,14 +397,14 @@ test("deferred-priority queue does not auto-run even when pending", async () => 
 
 test("does not run while a manual backup already holds the shared run lock", async () => {
   markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
-  expect(acquireCloudBackupRunLock()).toBe(true);
+  expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
 
   const { unmount } = renderHook(() => useCloudAutoBackup(baseProps()));
 
   await new Promise((resolve) => setTimeout(resolve, 40));
   expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
   unmount();
 });
 

@@ -17,6 +17,7 @@ import useSupabaseAuth from "./useSupabaseAuth";
 import useSupabaseAccount from "./useSupabaseAccount";
 import useCloudBackupStatus from "./useCloudBackupStatus";
 import { CLOUD_ONBOARDING_STATUS } from "./supabaseCloudOnboarding";
+import { CLOUD_OPERATION_OWNER, resolveOperationOwnerFromCounts } from "./cloudOperationOwnership";
 import { LOCAL_DATA_DECISION } from "./localDataIntegrity";
 import { getCloudRestoreAvailability } from "./cloudRestoreUi";
 
@@ -68,8 +69,19 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
     partialLocalSnapshot,
   });
 
+  // Which automatic actor owns the next operation is NOT decided here any more:
+  // the shared cloudOperationOwnership contract ranks pending local work above an
+  // empty-core device, so a user who just deleted their last document can never be
+  // offered a fresh-device restore over their own un-backed-up deletion. Onboarding
+  // still owns the cloud/local data classification below; ownership only decides
+  // precedence between the automatic actors.
+  const operationOwner = resolveOperationOwnerFromCounts({
+    counts: onboardingStatus?.preview?.localCounts,
+    queueState,
+  });
+
   if (isSupabaseReady && userEmail && hasCompany && status) {
-    if (queueState.pending) {
+    if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
       state = CLOUD_RESTORE_PROMPT_STATE.LOCAL_PENDING_BACKUP;
     } else if (status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE) {
       state = hasChamberedDraft

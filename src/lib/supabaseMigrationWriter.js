@@ -15,7 +15,11 @@ import {
   hasPermanentCloudIdentityConflict,
 } from "./cloudIdentityReconciliation";
 import { setCloudAssetBindingsBatch, getCloudAssetBindingUuidMap } from "./cloudAssetBindings";
-import { buildParentLineItemContract, sanitizeLineItemParentSegment } from "./cloudLineItemContract";
+import {
+  buildParentLineItemContract,
+  sanitizeLineItemParentSegment,
+  parseInvoiceChildLegacyId as parseInvoiceLineItemLegacyId,
+} from "./cloudLineItemContract";
 import { isProvenEmptyInvoiceLineItemPlaceholder } from "./staleInvoiceLineItemProof";
 
 export const SUPABASE_MIGRATION_WRITER_VERSION = "supabase-migration-writer-v1";
@@ -847,11 +851,6 @@ function summarizeLineItemSync(payloads, existingRows) {
   }, 0);
   const written = Math.max((Array.isArray(payloads) ? payloads.length : 0) - reused, 0);
   return { reused, written };
-}
-
-function parseInvoiceLineItemLegacyId(value) {
-  const match = /^invoice:([^:]+):line:(\d+)$/.exec(asText(value));
-  return match ? { parentSegment: match[1], stableIndex: Number(match[2]) } : null;
 }
 
 function normalizedValue(value) {

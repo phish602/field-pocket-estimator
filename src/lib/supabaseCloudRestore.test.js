@@ -1256,13 +1256,14 @@ describe("supabaseCloudRestore", () => {
 });
 
 const { readCloudAssetBindings, CLOUD_ASSET_BINDINGS_KEY } = require("./cloudAssetBindings");
-const { acquireCloudBackupRunLock, releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+const { tryAcquireCloudOperationRunLock, resetCloudOperationRunLockForTests } = require("./cloudOperationRunLock");
+const { CLOUD_OPERATION_OWNER } = require("./cloudOperationOwnership");
 
 describe("executeSupabaseCloudRestore — shared run lock", () => {
-  afterEach(() => releaseCloudBackupRunLock());
+  afterEach(() => resetCloudOperationRunLockForTests());
 
   test("refuses to begin while the existing convergence/backup lock owns local mutation access", async () => {
-    expect(acquireCloudBackupRunLock()).toBe(true);
+    expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
     const storage = buildWritableStorage();
 
     const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
@@ -1421,7 +1422,7 @@ describe("mapCloudProjectToLocal customerless projects (Gate 16D)", () => {
 // via readExistingBundleRows). The coordinator here is a defensive guarantee for
 // concurrent DIRECT reader calls sharing one Supabase client identity + company
 // id; the real backup and convergence workers are serialized by
-// cloudBackupRunLock and lifecycle bursts are coalesced in useCloudAutoConvergence.
+// cloudOperationRunLock and lifecycle bursts are coalesced in useCloudAutoConvergence.
 describe("readSupabaseCloudConvergenceSnapshot in-flight coordinator (Gate E2.2)", () => {
   const { readSupabaseCloudConvergenceSnapshot } = require("./supabaseCloudRestore");
 

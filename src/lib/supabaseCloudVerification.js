@@ -3,7 +3,11 @@ import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 import { readCloudAssetBindings } from "./cloudAssetBindings";
-import { buildParentLineItemContract, sanitizeLineItemParentSegment } from "./cloudLineItemContract";
+import {
+  buildParentLineItemContract,
+  sanitizeLineItemParentSegment,
+  parseInvoiceChildLegacyId,
+} from "./cloudLineItemContract";
 import { isProvenEmptyInvoiceLineItemPlaceholder } from "./staleInvoiceLineItemProof";
 
 // Repair class this verifier can prove: obsolete blank invoice children left in
@@ -186,7 +190,7 @@ function classifyExtraInvoiceLineItems(extraRows, parentCloudRows, localParentLe
   (Array.isArray(extraRows) ? extraRows : []).forEach((row) => {
     const rowId = asText(row?.id);
     const legacyId = asText(row?.legacy_local_id);
-    const parsed = /^invoice:([^:]+):line:(\d+)$/.exec(legacyId);
+    const parsed = parseInvoiceChildLegacyId(legacyId);
     const cloudParentId = asText(row?.invoice_id);
     const parentLegacyId = ambiguousCloudIds.has(cloudParentId) ? "" : asText(parentLegacyByCloudId.get(cloudParentId));
     if (
@@ -194,7 +198,7 @@ function classifyExtraInvoiceLineItems(extraRows, parentCloudRows, localParentLe
       && parsed
       && parentLegacyId
       && localParentLegacyIds.has(parentLegacyId)
-      && parsed[1] === sanitizeLineItemParentSegment(parentLegacyId)
+      && parsed.parentSegment === sanitizeLineItemParentSegment(parentLegacyId)
       && isProvenEmptyInvoiceLineItemPlaceholder(row)
     ) {
       repairable.push({ rowId, legacyId });

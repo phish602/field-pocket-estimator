@@ -1,6 +1,14 @@
 // @ts-nocheck
 /* eslint-disable */
 
+// Structural-vs-business child semantics and the absence rule live in the shared
+// cloud line-item contract, so what this mapper refuses to persist and what the
+// stale-placeholder proof later recognizes as never-canonical stay one decision.
+import {
+  isAbsentLineItemValue,
+  hasBusinessLineItemContent,
+} from "../lib/cloudLineItemContract";
+
 export const BACKEND_MAPPING_VERSION = "backend-mapping-v1";
 
 const BACKEND_SOURCE = "local_storage_export";
@@ -193,18 +201,11 @@ function extractProjectNumber(record = {}) {
   return pickText(record?.projectNumber, record?.customer?.projectNumber);
 }
 
-// Keys on a mapped child that carry no business meaning on their own: they are
-// implementation/default scaffolding the estimator UI attaches to every row it
-// renders, including the blank placeholder rows DEFAULT_STATE always seeds.
-const LINE_ITEM_STRUCTURAL_KEYS = new Set(["kind", "legacy_local_id", "sort_order"]);
-
 // A row is a real business child only when at least one BUSINESS field survived
-// the empty-value prune below. That prune drops null/undefined/"" but keeps an
-// explicit numeric 0, so a deliberate zero-valued row (0 hours, $0 price) still
-// counts as a real child -- only rows that are semantically blank are dropped.
-function hasBusinessLineItemContent(mapped) {
-  return Object.keys(mapped).some((key) => !LINE_ITEM_STRUCTURAL_KEYS.has(key));
-}
+// the empty-value prune below (hasBusinessLineItemContent, from the shared
+// contract). That prune drops null/undefined/"" but keeps an explicit numeric 0,
+// so a deliberate zero-valued row (0 hours, $0 price) still counts as a real
+// child -- only rows that are semantically blank are dropped.
 
 function extractDocumentLineItems(record = {}, kind = "") {
   const items = [];
@@ -255,7 +256,7 @@ function extractDocumentLineItems(record = {}, kind = "") {
       sort_order: hasExplicitSortOrder ? Number(explicitSortOrder) : index,
     };
     Object.keys(mapped).forEach((key) => {
-      if (mapped[key] === null || mapped[key] === "" || mapped[key] === undefined) delete mapped[key];
+      if (isAbsentLineItemValue(mapped[key])) delete mapped[key];
     });
     if (isInvoice) {
       // A blank UI placeholder row reduces to nothing but its structural keys.

@@ -11,7 +11,7 @@ import useCloudAutoConvergence, {
   STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
 } from "./useCloudAutoConvergence";
 import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } from "./supabaseCloudConvergence";
-import { releaseCloudBackupRunLock } from "./cloudBackupRunLock";
+import { resetCloudOperationRunLockForTests } from "./cloudOperationRunLock";
 import {
   readCloudBackupQueueState,
   clearCloudBackupDirty,
@@ -78,14 +78,14 @@ function seedNonEmptyLocalCore() {
 
 beforeEach(() => {
   localStorage.clear();
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
   jest.clearAllMocks();
   recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
   runSupabaseCloudOnboardingBackup.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.BACKUP_COMPLETED });
   updateSupabaseAppRestoreBundle.mockResolvedValue({ status: "completed", bundleUpdated: true });
 });
 
-afterEach(() => releaseCloudBackupRunLock());
+afterEach(() => resetCloudOperationRunLockForTests());
 
 describe("TEST 11 - automatic recovery queue bridge", () => {
   test("a repairable-only mismatch enqueues exactly one money-critical repair request", async () => {

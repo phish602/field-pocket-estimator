@@ -4,7 +4,7 @@
 import { useEffect, useRef } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
-import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
+import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
 import {
   markCloudBackupDirty,
   readCloudBackupQueueState,
@@ -12,6 +12,10 @@ import {
   CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
 import { STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR } from "./supabaseCloudVerification";
+import {
+  CLOUD_OPERATION_OWNER,
+  resolveOperationOwnerFromSnapshot,
+} from "./cloudOperationOwnership";
 import {
   runSupabaseCloudConvergence,
   recoverInterruptedCloudConvergence,
@@ -36,20 +40,20 @@ export const CLOUD_CONVERGENCE_FOREGROUND_BURST_MS = 1000;
 
 function online() { try { return typeof navigator === "undefined" || navigator.onLine !== false; } catch { return true; } }
 
-// A fully empty core snapshot is the only startup condition where recovery,
-// rather than passive convergence, owns the next cloud operation. This reads
-// the same existing local model used by recovery eligibility; it neither
-// reaches Supabase nor changes storage/queue state.
-function hasEmptyLocalCoreBusinessData(storage) {
+// Which automatic actor owns the next cloud operation. The precedence RULE lives
+// in the shared cloudOperationOwnership contract, which auto-backup, onboarding
+// and the restore prompt consume too, so no actor can invent its own order. This
+// reads the same existing local model used by recovery eligibility plus the
+// existing backup queue; it neither reaches Supabase nor changes storage/queue
+// state.
+function resolveLocalOperationOwner(storage) {
   try {
     const { snapshot } = buildLocalSnapshotFromStorage(storage);
-    return ["customers", "projects", "estimates", "invoices"].every((family) => (
-      Array.isArray(snapshot?.[family]) && snapshot[family].length === 0
-    ));
+    return resolveOperationOwnerFromSnapshot({ snapshot, queueState: readCloudBackupQueueState() });
   } catch {
     // A malformed/unreadable local snapshot must retain the established safe
     // convergence behavior rather than silently suppressing recovery checks.
-    return false;
+    return CLOUD_OPERATION_OWNER.CONVERGENCE;
   }
 }
 
@@ -167,12 +171,19 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         if (!lock || lock.ready !== true || lock.loading === true) { record({ status: "skipped", code: "device_lock_loading", stage: "eligibility", retryable: true }); scheduleRetry(); return; }
         if (lock.isLocked === true) { record({ status: "skipped", code: "device_locked", stage: "device_access", retryable: false }); return; }
 
+        // ONE shared precedence decision for this scan.
+        const operationOwner = resolveLocalOperationOwner(localStorage);
+
         // Fresh-device startup ownership: automatic convergence must never
         // acquire the shared run lock before the existing recovery path has
         // had a chance to hydrate an empty core snapshot. Recovery explicitly
         // requests convergence after a successful local apply, at which point
         // this condition is no longer true and the normal path resumes.
-        if (hasEmptyLocalCoreBusinessData(localStorage)) {
+        //
+        // Note the shared contract already ranked a pending local mutation ABOVE
+        // an empty core, so a user who just deleted their last document reaches
+        // the backup branch below instead of being mistaken for a fresh device.
+        if (operationOwner === CLOUD_OPERATION_OWNER.RECOVERY) {
           record({ status: "skipped", code: "fresh_device_recovery_pending", stage: "startup_ownership", retryable: false });
           return;
         }
@@ -204,9 +215,21 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         if (!recovered.ok) { record({ status: "critical", code: recovered.code || "unresolved_journal", stage: "journal_recovery", retryable: false }); return; }
         if (disposed) return;
 
-        // The shared backup lock gates against the backup worker. A busy lock is a
-        // transient miss that must receive a bounded retry -- never abandonment.
-        if (!acquireCloudBackupRunLock()) {
+        // Pending local work outranks convergence: yield BEFORE touching the
+        // shared run lock so the existing backup worker keeps its turn. This sits
+        // after journal recovery on purpose -- the backup worker refuses to run
+        // while an unresolved convergence journal exists, so yielding any earlier
+        // would leave that journal with nobody to recover it.
+        if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
+          record({ status: "skipped", code: "local_backup_pending", stage: "operation_ownership", retryable: true });
+          scheduleRetry(); return;
+        }
+
+        // The shared operation lock gates against the backup and restore actors.
+        // A busy lock is a transient miss that must receive a bounded retry --
+        // never abandonment.
+        const lease = tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.CONVERGENCE);
+        if (!lease) {
           record({ status: "skipped", code: "run_lock_busy", stage: "run_lock", retryable: true });
           scheduleRetry(); return;
         }
@@ -227,7 +250,9 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
             repairQueuedRef.current = true;
           }
         } finally {
-          releaseCloudBackupRunLock();
+          // Releases only THIS scan's lease, so a late unwind can never unlock a
+          // newer operation that has since acquired the mutex.
+          releaseCloudOperationRunLock(lease);
         }
       } finally {
         inFlightRef.current = false;
