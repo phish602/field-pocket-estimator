@@ -2,6 +2,7 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AdvancedSettingsScreen from "./AdvancedSettingsScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { VAULT_COMPATIBILITY_GUARD_KEY } from "../lib/vaultCompatibilityGuard";
 import useSupabaseAuth from "../lib/useSupabaseAuth";
 import useSupabaseAccount from "../lib/useSupabaseAccount";
 import useDeviceLockStatus from "../lib/useDeviceLockStatus";
@@ -436,6 +437,22 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(signOut).not.toHaveBeenCalled();
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
     expect(JSON.stringify(onLockNow.mock.calls)).not.toMatch(/password|kek|dek|cryptokey|metadata/i);
+  });
+
+  test("clearing local EstiPaid business data preserves the device-global vault authority guard", () => {
+    localStorage.setItem(VAULT_COMPATIBILITY_GUARD_KEY, '{"version":1,"state":"authoritative"}');
+    localStorage.setItem("supabase.auth.token", "local-auth-session");
+    jest.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<AdvancedSettingsScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear EstiPaid local data" }));
+
+    expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+    expect(localStorage.getItem(VAULT_COMPATIBILITY_GUARD_KEY)).toBe('{"version":1,"state":"authoritative"}');
+    expect(localStorage.getItem("supabase.auth.token")).toBe("local-auth-session");
   });
 
   test("exports a redacted support bundle with read-only data", async () => {

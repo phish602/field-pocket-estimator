@@ -3,6 +3,7 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 import useCloudAutoConvergence from "./useCloudAutoConvergence";
 import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } from "./supabaseCloudConvergence";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock, isCloudBackupRunLocked } from "./cloudBackupRunLock";
+import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("./supabaseCloudConvergence", () => {
   const actual = jest.requireActual("./supabaseCloudConvergence");
@@ -18,6 +19,7 @@ const props = (overrides = {}) => ({ configured: true, user: { id: "user-1" }, c
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-existing" }]));
   releaseCloudBackupRunLock();
   jest.clearAllMocks();
   recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
@@ -32,6 +34,25 @@ test("runs once for an authenticated, ready, active, unlocked device without use
   expect(runSupabaseCloudConvergence).toHaveBeenCalledWith(expect.objectContaining({ configured: true, user: { id: "user-1" }, company: { id: "company-1" } }));
   expect(recoverInterruptedCloudConvergence).toHaveBeenCalled();
   expect(isCloudBackupRunLocked()).toBe(false); // lock released after the run
+});
+
+test("an empty fresh device yields startup ownership until recovery populates local core and explicitly hands convergence off", async () => {
+  // Production ordering: convergence mounts before the asynchronously-loaded
+  // restore preview has established that this is a fully restorable device.
+  // On pre-fix main this fails because convergence immediately takes the shared
+  // cloud run lock and starts its scan before recovery gets that opportunity.
+  localStorage.clear();
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+
+  // Model the existing restore transaction's local apply, followed by its
+  // existing requestCloudConvergence event. This is the only point at which
+  // automatic convergence may resume on a fresh device.
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-restored" }]));
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  expect(isCloudBackupRunLocked()).toBe(false);
 });
 
 test("does not run until the device lock is ready and active", async () => {

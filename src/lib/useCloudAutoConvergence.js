@@ -3,6 +3,7 @@
 
 import { useEffect, useRef } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
 import {
   markCloudBackupDirty,
@@ -34,6 +35,23 @@ const MAX_RETRIES = RETRY_DELAYS_MS.length;
 export const CLOUD_CONVERGENCE_FOREGROUND_BURST_MS = 1000;
 
 function online() { try { return typeof navigator === "undefined" || navigator.onLine !== false; } catch { return true; } }
+
+// A fully empty core snapshot is the only startup condition where recovery,
+// rather than passive convergence, owns the next cloud operation. This reads
+// the same existing local model used by recovery eligibility; it neither
+// reaches Supabase nor changes storage/queue state.
+function hasEmptyLocalCoreBusinessData(storage) {
+  try {
+    const { snapshot } = buildLocalSnapshotFromStorage(storage);
+    return ["customers", "projects", "estimates", "invoices"].every((family) => (
+      Array.isArray(snapshot?.[family]) && snapshot[family].length === 0
+    ));
+  } catch {
+    // A malformed/unreadable local snapshot must retain the established safe
+    // convergence behavior rather than silently suppressing recovery checks.
+    return false;
+  }
+}
 
 // Reason marker for the ONE queue entry an automatically-repairable mismatch
 // creates. It is a normal money-critical backup request -- the existing auto
@@ -148,6 +166,16 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         if (!online()) { record({ status: "skipped", code: "offline", stage: "eligibility", retryable: true }); scheduleRetry(); return; }
         if (!lock || lock.ready !== true || lock.loading === true) { record({ status: "skipped", code: "device_lock_loading", stage: "eligibility", retryable: true }); scheduleRetry(); return; }
         if (lock.isLocked === true) { record({ status: "skipped", code: "device_locked", stage: "device_access", retryable: false }); return; }
+
+        // Fresh-device startup ownership: automatic convergence must never
+        // acquire the shared run lock before the existing recovery path has
+        // had a chance to hydrate an empty core snapshot. Recovery explicitly
+        // requests convergence after a successful local apply, at which point
+        // this condition is no longer true and the normal path resumes.
+        if (hasEmptyLocalCoreBusinessData(localStorage)) {
+          record({ status: "skipped", code: "fresh_device_recovery_pending", stage: "startup_ownership", retryable: false });
+          return;
+        }
 
         // Device-state recovery WITHOUT takeover: a ready, unlocked, but inactive
         // device re-reads ownership once (deviceLock.refresh performs a non-force

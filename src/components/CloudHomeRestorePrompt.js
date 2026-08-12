@@ -51,6 +51,7 @@ import CloudConfirmDialog from "./CloudConfirmDialog";
 import { buildCloudRestoreConfirmationDialog } from "../lib/cloudRestoreUi";
 
 const DISMISS_KEY = "estipaid-home-restore-prompt-dismissed-v1";
+export const AUTO_RECOVERY_RUN_LOCK_RETRY_DELAYS_MS = [250, 1000, 3000];
 
 function readDismissed() {
   try {
@@ -183,6 +184,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // hydration after this component has claimed the fully-safe empty-device
   // recovery attempt.
   const automaticRecoveryStartedRef = useRef(false);
+  const automaticRecoveryRetryCountRef = useRef(0);
+  const automaticRecoveryRetryTimerRef = useRef(null);
+  const [automaticRecoveryRetryTick, setAutomaticRecoveryRetryTick] = useState(0);
   // The automatic attempt must survive its own setRestoring(true) render and
   // any ordinary callback identity changes. Only a real component unmount may
   // suppress an already-started recovery's completion work.
@@ -190,7 +194,10 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const refreshCloudStatusRef = useRef(refreshCloudStatus);
   refreshCloudStatusRef.current = refreshCloudStatus;
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (automaticRecoveryRetryTimerRef.current) clearTimeout(automaticRecoveryRetryTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const canAutoRecover = (
@@ -212,6 +219,25 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     }))
       .then((result) => {
         if (!mountedRef.current) return;
+        // A legitimate cloud actor may temporarily own the shared mutex. This
+        // is not a recovery failure and must not consume the single automatic
+        // fresh-device attempt forever. Retry in a bounded sequence, always
+        // after the prior restore call has settled, so no restore calls overlap.
+        if (result?.status === CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY) {
+          automaticRecoveryStartedRef.current = false;
+          if (
+            !automaticRecoveryRetryTimerRef.current
+            && automaticRecoveryRetryCountRef.current < AUTO_RECOVERY_RUN_LOCK_RETRY_DELAYS_MS.length
+          ) {
+            const delay = AUTO_RECOVERY_RUN_LOCK_RETRY_DELAYS_MS[automaticRecoveryRetryCountRef.current];
+            automaticRecoveryRetryCountRef.current += 1;
+            automaticRecoveryRetryTimerRef.current = setTimeout(() => {
+              automaticRecoveryRetryTimerRef.current = null;
+              if (mountedRef.current) setAutomaticRecoveryRetryTick((tick) => tick + 1);
+            }, delay);
+          }
+          return;
+        }
         setRestoreResult(result);
         // The restore owns the shared lock through its strict comparison. Ask
         // the existing convergence hook to inspect any remaining repairable
@@ -225,7 +251,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       })
       .finally(() => { if (mountedRef.current) setRestoring(false); });
     return undefined;
-  }, [state, restorePreview?.fullyRestorable, restoreAvailable, partialLocalSnapshot, hasChamberedDraft, checking, isSupabaseReady, user?.id, company?.id]);
+  }, [state, restorePreview?.fullyRestorable, restoreAvailable, partialLocalSnapshot, hasChamberedDraft, checking, isSupabaseReady, user?.id, company?.id, automaticRecoveryRetryTick]);
   const confirmActionRunningRef = useRef(false);
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done
