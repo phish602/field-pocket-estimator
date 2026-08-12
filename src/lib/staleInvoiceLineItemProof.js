@@ -37,7 +37,15 @@ export const INVOICE_LINE_ITEM_BUSINESS_FIELDS = [
 // structural section classification. Anything else -- hours, unit_cost, markup,
 // or any key this proof does not recognize -- is economic state and disqualifies
 // the row, even when its numeric value is 0.
-export const PLACEHOLDER_INVOICE_CHILD_KINDS = ["labor", "material"];
+//
+// "invoice" is the HISTORICAL generic section tag written by an older writer that
+// did not yet split blank scaffolding into labor/material. It is structural for
+// exactly the same reason the other two are: it names a section, carries no
+// economic value, and the corrected mapper refuses to persist a generic invoice
+// row with no business content. Recognizing the kind changes NOTHING about the
+// emptiness requirements below -- a `kind:"invoice"` row still has to clear every
+// business-field and metadata-shape check before it can be called a placeholder.
+export const PLACEHOLDER_INVOICE_CHILD_KINDS = ["labor", "material", "invoice"];
 
 export function isPlaceholderInvoiceChildKind(kind) {
   return PLACEHOLDER_INVOICE_CHILD_KINDS.includes(String(kind == null ? "" : kind).trim());
