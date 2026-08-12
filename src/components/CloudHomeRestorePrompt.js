@@ -183,6 +183,14 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   // hydration after this component has claimed the fully-safe empty-device
   // recovery attempt.
   const automaticRecoveryStartedRef = useRef(false);
+  // The automatic attempt must survive its own setRestoring(true) render and
+  // any ordinary callback identity changes. Only a real component unmount may
+  // suppress an already-started recovery's completion work.
+  const mountedRef = useRef(true);
+  const refreshCloudStatusRef = useRef(refreshCloudStatus);
+  refreshCloudStatusRef.current = refreshCloudStatus;
+
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   useEffect(() => {
     const canAutoRecover = (
@@ -192,11 +200,9 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       && !partialLocalSnapshot
       && !hasChamberedDraft
       && !checking
-      && !restoring
     );
     if (!canAutoRecover || automaticRecoveryStartedRef.current) return undefined;
     automaticRecoveryStartedRef.current = true;
-    let active = true;
     setRestoring(true);
     Promise.resolve(executeSupabaseCloudRestore({
       storage: localStorage,
@@ -205,21 +211,21 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
       company,
     }))
       .then((result) => {
-        if (!active) return;
+        if (!mountedRef.current) return;
         setRestoreResult(result);
         // The restore owns the shared lock through its strict comparison. Ask
         // the existing convergence hook to inspect any remaining repairable
         // mismatch only after that owner has released it; it will retry a busy
         // lock rather than racing this cloud-origin hydration.
         if (result?.status === CLOUD_RESTORE_STATUS.RESTORED) requestCloudConvergence();
-        refreshCloudStatus();
+        refreshCloudStatusRef.current();
       })
       .catch(() => {
-        if (active) setRestoreResult({ status: CLOUD_RESTORE_STATUS.ERROR, error: "Restore could not be completed on this device." });
+        if (mountedRef.current) setRestoreResult({ status: CLOUD_RESTORE_STATUS.ERROR, error: "Restore could not be completed on this device." });
       })
-      .finally(() => { if (active) setRestoring(false); });
-    return () => { active = false; };
-  }, [state, restorePreview?.fullyRestorable, restoreAvailable, partialLocalSnapshot, hasChamberedDraft, checking, restoring, isSupabaseReady, user?.id, company?.id, refreshCloudStatus]);
+      .finally(() => { if (mountedRef.current) setRestoring(false); });
+    return undefined;
+  }, [state, restorePreview?.fullyRestorable, restoreAvailable, partialLocalSnapshot, hasChamberedDraft, checking, isSupabaseReady, user?.id, company?.id]);
   const confirmActionRunningRef = useRef(false);
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done

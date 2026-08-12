@@ -205,6 +205,71 @@ test("automatically hydrates a fully-restorable empty device once without starti
   expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
 });
 
+test("automatic recovery completes after its own restoring rerender and hands convergence off once", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+    eligible: true,
+    partial: false,
+    fullyRestorable: true,
+    blockers: [],
+    notices: [],
+  });
+  const deferred = createDeferred();
+  executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
+  const convergenceRequested = jest.fn();
+  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  try {
+    await renderAndSettle();
+    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+    // setRestoring(true) has already rendered the busy state before the
+    // deferred promise settles -- the precise lifecycle that used to cancel
+    // the effect's own completion handlers.
+    expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeDisabled();
+    const onboardingChecksBeforeCompletion = checkSupabaseCloudOnboardingStatus.mock.calls.length;
+
+    await act(async () => {
+      deferred.resolve({ status: CLOUD_RESTORE_STATUS.RESTORED, restored: true });
+      await deferred.promise;
+    });
+
+    await waitFor(() => expect(convergenceRequested).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(checkSupabaseCloudOnboardingStatus.mock.calls.length)
+      .toBeGreaterThan(onboardingChecksBeforeCompletion));
+    expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("cloud-home-restore-prompt")).not.toBeInTheDocument();
+    expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  }
+});
+
+test("automatic recovery clears restoring after a deferred failure while mounted", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+    eligible: true,
+    partial: false,
+    fullyRestorable: true,
+    blockers: [],
+    notices: [],
+  });
+  const deferred = createDeferred();
+  executeSupabaseCloudRestore.mockReturnValue(deferred.promise);
+
+  await renderAndSettle();
+  await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeDisabled();
+
+  await act(async () => {
+    deferred.reject(new Error("local recovery failed"));
+    try { await deferred.promise; } catch {}
+  });
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Restore could not be completed on this device."));
+  expect(screen.getByRole("button", { name: "Finish Recovery" })).toBeEnabled();
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1);
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+});
+
 function buildCloudExportArtifact(overrides = {}) {
   return {
     artifactVersion: "cloud-backup-export-artifact-v1",
