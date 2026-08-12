@@ -4,6 +4,7 @@ const mockScanLocalDataIntegrity = jest.fn();
 const mockRepairStoredLocalDataIntegrity = jest.fn();
 const mockRunSupabaseCloudOnboardingBackup = jest.fn();
 const mockClearCloudBackupDirty = jest.fn();
+const mockRunSupabaseCloudVerification = jest.fn();
 
 jest.mock("./supabaseCloudRestore", () => ({
   __esModule: true,
@@ -36,6 +37,11 @@ jest.mock("./supabaseCloudOnboarding", () => ({
 jest.mock("./cloudBackupQueue", () => ({
   __esModule: true,
   clearCloudBackupDirty: (...args) => mockClearCloudBackupDirty(...args),
+}));
+
+jest.mock("./supabaseCloudVerification", () => ({
+  __esModule: true,
+  runSupabaseCloudVerification: (...args) => mockRunSupabaseCloudVerification(...args),
 }));
 
 const {
@@ -268,7 +274,7 @@ describe("recovery continuation", () => {
     );
   });
 
-  test("repairs once and then backs up automatically when recovered data is safe", async () => {
+  test("repairs once and verifies a full cloud-origin recovery without backing it up again", async () => {
     const phases = [];
     mockScanLocalDataIntegrity.mockReturnValue({
       blockers: [],
@@ -279,9 +285,7 @@ describe("recovery continuation", () => {
       repairs: { staleEstimateProjectIds: [{ estimateId: "est_1", staleProjectId: "missing_project" }] },
       integrity: { blockers: [], safeRepairs: [] },
     });
-    mockRunSupabaseCloudOnboardingBackup.mockResolvedValue({
-      status: "backup_completed",
-    });
+    mockRunSupabaseCloudVerification.mockResolvedValue({ ok: true, allMatched: true, notices: [], availableRepairs: [] });
 
     const result = await runRecoveryContinuation({
       configured: true,
@@ -293,15 +297,17 @@ describe("recovery continuation", () => {
       onPhase: (phase) => phases.push(phase),
     });
 
-    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.BACKED_UP);
+    expect(result.status).toBe(RECOVERY_CONTINUATION_STATUS.VERIFIED);
+    expect(result.backupRan).toBe(false);
     expect(result.repairChanged).toBe(true);
-    expect(mockRunSupabaseCloudOnboardingBackup).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockRunSupabaseCloudVerification).toHaveBeenCalledWith(expect.objectContaining({
       configured: true,
       user: { id: "user_1" },
       company: { id: "company_1" },
-      role: "owner",
+      storageSnapshot: expect.anything(),
     }));
-    expect(phases).toEqual(["checking", "repairing", "backing_up"]);
+    expect(mockRunSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+    expect(phases).toEqual(["checking", "repairing"]);
   });
 
   test("writes partial recovery status before attempting backup for preserved skipped estimates", async () => {

@@ -52,6 +52,19 @@ export function buildLineItemLegacyId(entityType, parentLegacyId, stableIndex) {
   return `${entityType}:${sanitizeLineItemParentSegment(parentLegacyId)}:line:${stableIndex}`;
 }
 
+// A cloud-restored child already carries the canonical identity that was used
+// to persist it. Keep that identity when it belongs to this exact parent and
+// entity type. In particular, filtering an obsolete blank sibling must never
+// renumber a real recovered child from `line:2` to `line:0` on its next
+// cloud-verification/backup pass.
+function recoveredCanonicalLineItemIndex({ entityType, parentLegacyId, item }) {
+  const legacyId = asText(item?.legacy_local_id || item?.legacyLocalId || item?.id);
+  const expectedPrefix = `${entityType}:${sanitizeLineItemParentSegment(parentLegacyId)}:line:`;
+  if (!legacyId.startsWith(expectedPrefix)) return null;
+  const stableIndex = parseLineItemStableIndex(legacyId);
+  return stableIndex !== null && legacyId === `${expectedPrefix}${stableIndex}` ? stableIndex : null;
+}
+
 // Persisted sort_order retains the writer's original behavior: the finite source
 // sort_order when present, otherwise the array position. Never rewritten to equal
 // the identity index.
@@ -151,7 +164,11 @@ export function buildLineItemContractRow({ entityType, item, index, parentColumn
 // the writer, verifier, and convergence evidence check.
 export function buildParentLineItemContract({ entityType, parentLegacyId, parentCloudId = "", parentColumn = "", items }) {
   const list = Array.isArray(items) ? items : [];
-  const stableIndexes = computeStableLineItemIndexes(list);
+  const derivedStableIndexes = computeStableLineItemIndexes(list);
+  const stableIndexes = list.map((item, index) => {
+    const recoveredIndex = recoveredCanonicalLineItemIndex({ entityType, parentLegacyId, item });
+    return recoveredIndex === null ? derivedStableIndexes[index] : recoveredIndex;
+  });
   const rows = [];
   const duplicateIds = [];
   const seen = new Set();

@@ -1,6 +1,7 @@
 const mockGetSupabaseClient = jest.fn();
 const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 const mockEnsureCurrentDeviceCanApplyLocalRestore = jest.fn();
+const mockRunSupabaseCloudVerification = jest.fn();
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
@@ -11,6 +12,10 @@ jest.mock("./supabaseDeviceLock", () => ({
   ensureCurrentDeviceCanApplyLocalRestore: (...args) => mockEnsureCurrentDeviceCanApplyLocalRestore(...args),
   DEVICE_LOCK_LOST_CODE: "device_lock_lost",
   DEVICE_LOCK_LOST_RESTORE_MESSAGE: "Recovery stopped because EstiPaid was switched to another device.",
+}));
+
+jest.mock("./supabaseCloudVerification", () => ({
+  runSupabaseCloudVerification: (...args) => mockRunSupabaseCloudVerification(...args),
 }));
 
 const {
@@ -315,6 +320,8 @@ describe("supabaseCloudRestore", () => {
     mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
     mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
     mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockRunSupabaseCloudVerification.mockReset();
+    mockRunSupabaseCloudVerification.mockResolvedValue({ ok: true, allMatched: true, availableRepairs: [], notices: [] });
   });
 
   describe("previewSupabaseCloudRestore", () => {
@@ -854,6 +861,25 @@ describe("supabaseCloudRestore", () => {
       ]);
     });
 
+    test("captures no verified baseline until strict verification actually matches", async () => {
+      mockRunSupabaseCloudVerification.mockResolvedValue({
+        ok: true,
+        allMatched: false,
+        availableRepairs: [{ type: "stale_invoice_line_item_empty_placeholders", count: 2 }],
+        notices: [{ level: "warning", code: "cloud_verification_mismatch" }],
+      });
+      const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
+      mockGetSupabaseClient.mockReturnValue(mockClient);
+
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.baselineCaptured).toBe(false);
+      expect(result.verification).toMatchObject({ ok: true, allMatched: false });
+      expect(storage.__store[STORAGE_KEYS.CLOUD_SYNC_BASELINE]).toBeUndefined();
+    });
+
     test("a successful restore clears cloud backup dirty instead of marking it (local now equals cloud)", async () => {
       localStorage.clear();
       markCloudBackupDirty({ reason: "pre_restore_stale_marker", domains: ["customers"], severity: "normal" });
@@ -1230,6 +1256,22 @@ describe("supabaseCloudRestore", () => {
 });
 
 const { readCloudAssetBindings, CLOUD_ASSET_BINDINGS_KEY } = require("./cloudAssetBindings");
+const { acquireCloudBackupRunLock, releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+
+describe("executeSupabaseCloudRestore — shared run lock", () => {
+  afterEach(() => releaseCloudBackupRunLock());
+
+  test("refuses to begin while the existing convergence/backup lock owns local mutation access", async () => {
+    expect(acquireCloudBackupRunLock()).toBe(true);
+    const storage = buildWritableStorage();
+
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY);
+    expect(result.noWritesPerformed).toBe(true);
+    expect(storage.setItem).not.toHaveBeenCalled();
+  });
+});
 
 describe("executeSupabaseCloudRestore — cloud asset binding capture", () => {
   const U = {

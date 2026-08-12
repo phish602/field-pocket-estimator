@@ -93,6 +93,30 @@ describe("cloudLineItemContract whole-parent construction", () => {
     const { duplicateIds } = buildParentLineItemContract({ entityType: "invoice", parentLegacyId: "inv_1", parentCloudId: "c", parentColumn: "invoice_id", items: [{}, {}] });
     expect(duplicateIds).toEqual([]);
   });
+
+  test("preserves a recovered canonical invoice child identity when blank siblings were filtered", () => {
+    const { rows, duplicateIds } = buildParentLineItemContract({
+      entityType: "invoice",
+      parentLegacyId: "INV-RECOVERY-1",
+      parentCloudId: "cloud-invoice-1",
+      parentColumn: "invoice_id",
+      // The cloud used line:2 because two older blank placeholders occupied
+      // line:0/line:1. The local mapper correctly filters those placeholders;
+      // that must not renumber this real recovered child.
+      items: [{
+        id: "invoice:inv-recovery-1:line:2",
+        kind: "material",
+        sort_order: 0,
+        description: "Recovered panel",
+        quantity: 1,
+        unit_price: 125,
+        total: 125,
+      }],
+    });
+
+    expect(duplicateIds).toEqual([]);
+    expect(rows.map((row) => row.legacy_local_id)).toEqual(["invoice:inv-recovery-1:line:2"]);
+  });
 });
 
 describe("cloudLineItemContract deterministic restore ordering", () => {

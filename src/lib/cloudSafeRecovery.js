@@ -37,6 +37,7 @@ import {
   clearCloudPartialRecoveryStatus,
   writeCloudPartialRecoveryStatus,
 } from "./cloudPartialRecoveryStatus";
+import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 
 export const SAFE_CLOUD_RECOVERY_STATUS = {
   SIGNED_OUT: "signed_out",
@@ -184,6 +185,7 @@ export function applySafeCloudRecovery({ preview, storage } = {}) {
 // ---------------------------------------------------------------------------
 
 export const RECOVERY_CONTINUATION_STATUS = {
+  VERIFIED: "verified",
   BACKED_UP: "backed_up",
   BACKED_UP_WITH_SKIPPED: "backed_up_with_skipped",
   PAUSED: "paused",
@@ -249,7 +251,9 @@ function isSkippedEstimateOnlyMismatch(verification, skippedEstimates) {
 
 /**
  * Runs the post-recovery pipeline: integrity -> safe repair -> integrity ->
- * automatic cloud backup (only when blocker-free) -> plain-language result.
+ * strict cloud verification for a full cloud-origin recovery, or the existing
+ * backup continuation for the special partial-recovery case -> plain-language
+ * result.
  * Backup itself re-validates through the existing safe onboarding path, so
  * this can never bypass the writer's own checks. onPhase (optional) receives
  * "checking" | "repairing" | "backing_up" for UI progress.
@@ -323,6 +327,38 @@ export async function runRecoveryContinuation({
       pausedReason: describeBackupPauseReason(firstBlocker),
       pausedReasonCode: String(firstBlocker?.code || "integrity_unavailable"),
       technicalDetail: String(firstBlocker?.message || "Local integrity could not be confirmed."),
+    };
+  }
+
+  // A complete recovery copied the authoritative cloud snapshot onto an empty
+  // device. It is not a new local mutation and must never immediately write
+  // the same records back to cloud. Verify first; normal convergence resumes
+  // after this settled result, while partial recovery keeps its existing
+  // backup-protection continuation below.
+  if (Number(skippedEstimates) <= 0) {
+    const verification = await runSupabaseCloudVerification({ storageSnapshot: storage, configured, user, company });
+    const warnings = Array.isArray(verification?.notices)
+      && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+    if (verification?.ok && verification?.allMatched && !warnings && !(verification?.availableRepairs?.length)) {
+      clearCloudBackupDirty("safe_cloud_recovery_verified");
+      return {
+        status: RECOVERY_CONTINUATION_STATUS.VERIFIED,
+        backupRan: false,
+        repairChanged,
+        repairs,
+        skippedEstimates,
+        verification,
+      };
+    }
+    return {
+      status: RECOVERY_CONTINUATION_STATUS.PAUSED,
+      backupRan: false,
+      repairChanged,
+      repairs,
+      skippedEstimates,
+      pausedReason: "Recovered data needs verification before cloud sync can resume.",
+      pausedReasonCode: "recovery_verification_mismatch",
+      verification,
     };
   }
 

@@ -1013,12 +1013,19 @@ export default function AdvancedSettingsScreen({
       if (result?.deviceLockLost) {
         setCloudStatusMessage(CLOUD_RESTORE_STOPPED_MESSAGE);
       }
-      // executeSupabaseCloudRestore never re-verifies on its own, so without
-      // this the mismatch state on this screen would never clear after a
-      // successful restore -- only the header chip's separate hook refreshes
-      // on the restore-complete event. Re-check the same way runSafeMetadataRepair
-      // does after a repair.
-      if (result?.status === CLOUD_RESTORE_STATUS.RESTORED && isSupabaseReady && user?.id && company?.id) {
+      // A competing writer can change local state while a restore is reading
+      // cloud rows. Re-check after every attempt that could have observed such
+      // a change, not only RESTORED, so LOCAL_NOT_EMPTY is never rendered beside
+      // the stale pre-attempt 0/0/0/0 Data Check snapshot.
+      if (
+        [
+          CLOUD_RESTORE_STATUS.RESTORED,
+          CLOUD_RESTORE_STATUS.LOCAL_NOT_EMPTY,
+          CLOUD_RESTORE_STATUS.DEVICE_LOCKED,
+          CLOUD_RESTORE_STATUS.ERROR,
+        ].includes(result?.status)
+        && isSupabaseReady && user?.id && company?.id
+      ) {
         try {
           const nextStatus = await checkSupabaseCloudOnboardingStatus({
             storageSnapshot: localStorage,
