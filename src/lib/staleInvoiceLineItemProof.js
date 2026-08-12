@@ -15,33 +15,21 @@
 // and never trusts this module. That duplication is deliberate: the browser is
 // not authorized to be the only proof of a deletion.
 
-// Explicit zero is DATA, never emptiness. A $0 line, a 0-quantity line and a
-// 0-hour line are all real business records a user may have entered on purpose.
-// Only null / undefined / "" count as absent.
-function isAbsent(value) {
-  return value === null || value === undefined || value === "";
-}
+// Absence, the business-column list and the recognized structural kinds are NOT
+// defined here any more: they are shared client invoice-child semantics owned by
+// cloudLineItemContract, so the mapper that decides what to persist and this
+// proof that decides what was never canonical can never drift apart.
+import {
+  isAbsentLineItemValue as isAbsent,
+  INVOICE_CHILD_BUSINESS_COLUMNS,
+  INVOICE_CHILD_STRUCTURAL_KINDS,
+  isInvoiceChildStructuralKind,
+} from "./cloudLineItemContract";
 
-// The business columns of the shared line-item contract. A placeholder must have
-// none of them. sort_order is deliberately NOT here: it is structural position,
-// not content, and every row has one.
-export const INVOICE_LINE_ITEM_BUSINESS_FIELDS = [
-  "description",
-  "quantity",
-  "unit",
-  "unit_price",
-  "total_price",
-];
-
-// The only metadata a blank estimator row can legitimately carry is its
-// structural section classification. Anything else -- hours, unit_cost, markup,
-// or any key this proof does not recognize -- is economic state and disqualifies
-// the row, even when its numeric value is 0.
-export const PLACEHOLDER_INVOICE_CHILD_KINDS = ["labor", "material"];
-
-export function isPlaceholderInvoiceChildKind(kind) {
-  return PLACEHOLDER_INVOICE_CHILD_KINDS.includes(String(kind == null ? "" : kind).trim());
-}
+// Preserved export names for existing consumers; the contract is the owner.
+export const INVOICE_LINE_ITEM_BUSINESS_FIELDS = INVOICE_CHILD_BUSINESS_COLUMNS;
+export const PLACEHOLDER_INVOICE_CHILD_KINDS = INVOICE_CHILD_STRUCTURAL_KINDS;
+export const isPlaceholderInvoiceChildKind = isInvoiceChildStructuralKind;
 
 export function isEmptyInvoiceLineItemMetadata(metadata) {
   if (metadata === null || metadata === undefined) return true;

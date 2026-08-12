@@ -214,6 +214,86 @@ describe("TEST 9 - verification reports an available repair", () => {
   });
 });
 
+// The shape observed in Production: 19 semantically-blank historical children,
+// 17 carrying the generic kind:"invoice" tag and 2 carrying kind:"material".
+// Synthetic rows only -- no Production business payload is reproduced here.
+const PRODUCTION_SHAPED_STALE_KINDS = Array.from({ length: 19 }, (_, index) => (index < 17 ? "invoice" : "material"));
+
+// Blanks sit at indices that never collide with canonical children: samples carry
+// canonical 0..1 and blanks at 2..3, the modern invoice carries canonical 0..8 and
+// blanks at 9..11.
+function productionShapedStaleSlots() {
+  const slots = [];
+  PARENTS.forEach((parent) => { slots.push([parent, 2], [parent, 3]); });
+  [9, 10, 11].forEach((index) => slots.push([MODERN, index]));
+  return slots.slice(0, PRODUCTION_SHAPED_STALE_KINDS.length);
+}
+
+function buildProductionShapedCloudRows({ staleOverrides = {} } = {}) {
+  const rows = buildCloudRows();
+  const canonical = canonicalCloudChildren();
+  const stale = productionShapedStaleSlots().map(([parent, index], slot) => (
+    blankCloudChild(parent, index, PRODUCTION_SHAPED_STALE_KINDS[slot])
+  ));
+  Object.entries(staleOverrides).forEach(([legacyId, override]) => {
+    const target = stale.find((row) => row.legacy_local_id === legacyId);
+    if (target) Object.assign(target, override);
+  });
+  return { ...rows, invoice_line_items: [...canonical, ...stale] };
+}
+
+describe("TEST 17 - the Production-shaped 17 invoice + 2 material mismatch", () => {
+  test("19 blank historical children are reported as one repairable-only repair", async () => {
+    const rows = buildProductionShapedCloudRows();
+    const stale = rows.invoice_line_items.filter((row) => row.description === "");
+    expect(stale).toHaveLength(19);
+    expect(stale.filter((row) => row.metadata.kind === "invoice")).toHaveLength(17);
+    expect(stale.filter((row) => row.metadata.kind === "material")).toHaveLength(2);
+    expect(rows.invoice_line_items).toHaveLength(44);
+
+    const result = await run(rows);
+
+    expect(result.ok).toBe(true);
+    expect(result.localCounts.invoiceLineItems).toBe(25);
+    // Still a genuine mismatch -- nothing is silently accepted.
+    expect(result.allMatched).toBe(false);
+
+    expect(result.availableRepairs).toHaveLength(1);
+    const repair = result.availableRepairs[0];
+    expect(repair.type).toBe(STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR);
+    expect(repair.table).toBe("invoice_line_items");
+    // All 19 classified repairable, zero unresolved extras.
+    expect(repair.count).toBe(19);
+    expect(repair.rowIds).toHaveLength(19);
+    expect(repair.legacyIds.sort()).toEqual(
+      productionShapedStaleSlots().map(([parent, index]) => `invoice:${parent}:line:${index}`).sort()
+    );
+
+    expect(result.repairableMismatchOnly).toBe(true);
+    expect(result.noWritesPerformed).toBe(true);
+  });
+
+  test.each([
+    ["a description", { description: "Technician" }],
+    ["an explicit zero quantity", { quantity: 0 }],
+    ["an explicit zero unit_price", { unit_price: 0 }],
+    ["an explicit zero total_price", { total_price: 0 }],
+    ["metadata.hours 0", { metadata: { kind: "invoice", hours: 0 } }],
+    ["an unknown metadata key", { metadata: { kind: "invoice", note: "x" } }],
+  ])("one kind:\"invoice\" row carrying %s blocks the repairable verdict", async (_label, override) => {
+    const rows = buildProductionShapedCloudRows({
+      staleOverrides: { [`invoice:${PARENTS[0]}:line:2`]: override },
+    });
+
+    const result = await run(rows);
+
+    expect(result.allMatched).toBe(false);
+    expect(result.repairableMismatchOnly).toBe(false);
+    expect(result.availableRepairs[0].count).toBe(18);
+    expect(result.availableRepairs[0].legacyIds).not.toContain(`invoice:${PARENTS[0]}:line:2`);
+  });
+});
+
 describe("TEST 10 - mixed unsafe mismatch is never repairable-only", () => {
   test.each([
     ["a description", { description: "Technician" }],

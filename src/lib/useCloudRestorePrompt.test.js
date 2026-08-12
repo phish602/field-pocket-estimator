@@ -46,6 +46,59 @@ beforeEach(() => {
   });
 });
 
+describe("shared automatic-operation ownership", () => {
+  const cloudAvailableEmptyDevice = (overrides = {}) => ({
+    queueState: { pending: false },
+    onboardingStatus: {
+      status: "cloud_available_empty_device",
+      preview: { localCounts: { customers: 0, projects: 0, estimates: 0, invoices: 0 } },
+    },
+    restorePreview: { status: "eligible", eligible: true, partial: false, blockers: [] },
+    restorePreviewLoading: false,
+    decision: { screenState: null },
+    refreshCloudStatus: jest.fn(),
+    ...overrides,
+  });
+
+  // CASE 8: empty device, nothing pending, cloud has data -> recovery eligible
+  // exactly as before.
+  test("a clean empty device with cloud data still offers fresh-device recovery", () => {
+    useCloudBackupStatus.mockReturnValue(cloudAvailableEmptyDevice());
+    const { result } = renderHook(() => useCloudRestorePrompt());
+    expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE);
+  });
+
+  // CASE 9 / DELETION-TO-EMPTY: the same empty device, but the user's deletion is
+  // still queued. Pending local work outranks the empty core, so the prompt must
+  // NOT offer or auto-start a fresh-device restore over that un-backed-up work.
+  test("an empty core with pending local work is protected as backup work, never a restore offer", () => {
+    useCloudBackupStatus.mockReturnValue(cloudAvailableEmptyDevice({
+      queueState: { pending: true, localMutationRevision: 4 },
+    }));
+
+    const { result } = renderHook(() => useCloudRestorePrompt());
+
+    expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.LOCAL_PENDING_BACKUP);
+    expect(result.current.state).not.toBe(CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE);
+  });
+
+  // Pending work outranks every other classification, not just the empty-device one.
+  test.each([
+    ["cloud_available_empty_device"],
+    ["local_cloud_mismatch"],
+    ["needs_attention"],
+    ["error"],
+  ])("pending local work outranks the %s classification", (status) => {
+    useCloudBackupStatus.mockReturnValue(cloudAvailableEmptyDevice({
+      queueState: { pending: true, localMutationRevision: 2 },
+      onboardingStatus: { status, preview: { localCounts: { customers: 1 } } },
+    }));
+
+    const { result } = renderHook(() => useCloudRestorePrompt());
+    expect(result.current.state).toBe(CLOUD_RESTORE_PROMPT_STATE.LOCAL_PENDING_BACKUP);
+  });
+});
+
 test("surfaces exact missing estimate payload count for an empty-device blocked restore", () => {
   useCloudBackupStatus.mockReturnValue({
     queueState: { pending: false },

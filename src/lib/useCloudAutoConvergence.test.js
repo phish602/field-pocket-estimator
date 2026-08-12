@@ -2,7 +2,9 @@ import React from "react";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import useCloudAutoConvergence from "./useCloudAutoConvergence";
 import { runSupabaseCloudConvergence, recoverInterruptedCloudConvergence } from "./supabaseCloudConvergence";
-import { acquireCloudBackupRunLock, releaseCloudBackupRunLock, isCloudBackupRunLocked } from "./cloudBackupRunLock";
+import { tryAcquireCloudOperationRunLock, resetCloudOperationRunLockForTests, isCloudOperationRunLocked } from "./cloudOperationRunLock";
+import { CLOUD_OPERATION_OWNER } from "./cloudOperationOwnership";
+import { markCloudBackupDirty, clearCloudBackupDirty, readCloudBackupQueueState } from "./cloudBackupQueue";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 
 jest.mock("./supabaseCloudConvergence", () => {
@@ -20,20 +22,20 @@ const props = (overrides = {}) => ({ configured: true, user: { id: "user-1" }, c
 beforeEach(() => {
   localStorage.clear();
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-existing" }]));
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
   jest.clearAllMocks();
   recoverInterruptedCloudConvergence.mockReturnValue({ ok: true, recovered: false });
   runSupabaseCloudConvergence.mockResolvedValue({ ok: true, status: "matched" });
 });
 
-afterEach(() => releaseCloudBackupRunLock());
+afterEach(() => resetCloudOperationRunLockForTests());
 
 test("runs once for an authenticated, ready, active, unlocked device without user action", async () => {
   renderHook(() => useCloudAutoConvergence(props()));
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
   expect(runSupabaseCloudConvergence).toHaveBeenCalledWith(expect.objectContaining({ configured: true, user: { id: "user-1" }, company: { id: "company-1" } }));
   expect(recoverInterruptedCloudConvergence).toHaveBeenCalled();
-  expect(isCloudBackupRunLocked()).toBe(false); // lock released after the run
+  expect(isCloudOperationRunLocked()).toBe(false); // lock released after the run
 });
 
 test("an empty fresh device yields startup ownership until recovery populates local core and explicitly hands convergence off", async () => {
@@ -52,7 +54,83 @@ test("an empty fresh device yields startup ownership until recovery populates lo
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-restored" }]));
   act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
-  expect(isCloudBackupRunLocked()).toBe(false);
+  expect(isCloudOperationRunLocked()).toBe(false);
+});
+
+test("startup ownership handoff: recovery owns an empty core, convergence takes no run lock, then hydration hands off exactly once", async () => {
+  // EMPTY LOCAL CORE -> the shared cloudOperationOwnership contract gives startup
+  // to recovery, so convergence must yield before it reaches the run lock.
+  localStorage.clear();
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  // Yielding is not enough -- convergence must not have CLAIMED the shared lock.
+  // If it had, this acquire would fail and recovery could not proceed.
+  expect(isCloudOperationRunLocked()).toBe(false);
+  expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
+  resetCloudOperationRunLockForTests();
+
+  // Non-core local data must not end recovery ownership.
+  localStorage.setItem(STORAGE_KEYS.SCOPE_TEMPLATES, JSON.stringify([{ id: "template-1" }]));
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+
+  // SIMULATED SUCCESSFUL HYDRATION -> local core is no longer empty, so the same
+  // pure rule now answers CONVERGENCE. No "recovery complete" flag is involved.
+  localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([{ id: "invoice-restored" }]));
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  expect(isCloudOperationRunLocked()).toBe(false);
+});
+
+test("yields to pending local backup work without taking the shared run lock", async () => {
+  // CASE 10 (convergence side) + deletion-to-empty: the user deleted their final
+  // core document, so the core is empty AND a generation is pending. Convergence
+  // must not run and must not take the lock -- that is backup's turn.
+  localStorage.clear();
+  markCloudBackupDirty({ reason: "invoice_deleted", severity: "money_critical" });
+  expect(readCloudBackupQueueState().pending).toBe(true);
+
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  // The lock is genuinely free for the backup worker to claim.
+  expect(isCloudOperationRunLocked()).toBe(false);
+  expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
+  resetCloudOperationRunLockForTests();
+});
+
+test("full ownership handoff: recovery -> convergence -> backup -> convergence, from local state alone", async () => {
+  // 1. EMPTY + CLEAN -> recovery owns. Convergence yields before the run lock.
+  localStorage.clear();
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  expect(isCloudOperationRunLocked()).toBe(false);
+
+  // 2. Recovery hydrates local core -> convergence owns and runs exactly once.
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-restored" }]));
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+
+  // 3. An ordinary local edit queues a generation -> backup owns, convergence yields.
+  markCloudBackupDirty({ reason: "project_saved", severity: "normal" });
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1);
+  expect(isCloudOperationRunLocked()).toBe(false);
+
+  // 4. The queue drains -> convergence owns again. No coordinator state was ever
+  // written; every transition came from local data + the existing queue.
+  clearCloudBackupDirty({ syncedRevision: readCloudBackupQueueState().localMutationRevision });
+  expect(readCloudBackupQueueState().pending).toBe(false);
+  act(() => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-request")); });
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(2));
+  expect(isCloudOperationRunLocked()).toBe(false);
 });
 
 test("does not run until the device lock is ready and active", async () => {
@@ -81,13 +159,13 @@ test("a locked device never runs", async () => {
 
 test("a busy shared backup lock defers the attempt without permanently suppressing it", async () => {
   // The backup worker holds the lock.
-  expect(acquireCloudBackupRunLock()).toBe(true);
+  expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
   renderHook(() => useCloudAutoConvergence(props()));
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   expect(runSupabaseCloudConvergence).not.toHaveBeenCalled(); // deferred, not consumed
 
   // Lock frees up; a later lifecycle event runs the (still pending) attempt.
-  releaseCloudBackupRunLock();
+  resetCloudOperationRunLockForTests();
   act(() => { window.dispatchEvent(new Event("focus")); });
   await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
 });
@@ -181,7 +259,7 @@ test("an unresolved journal blocks the convergence run", async () => {
   renderHook(() => useCloudAutoConvergence(props()));
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
-  expect(isCloudBackupRunLocked()).toBe(false);
+  expect(isCloudOperationRunLocked()).toBe(false);
 });
 
 test("a rolled-back convergence emits no success change events", async () => {
@@ -286,12 +364,12 @@ test("offline publishes a retryable offline result and does not run", async () =
 test("a busy shared lock retries on a bounded timer and later succeeds without any focus event", async () => {
   jest.useFakeTimers();
   try {
-    acquireCloudBackupRunLock(); // worker holds the lock
+    tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP); // worker holds the lock
     renderHook(() => useCloudAutoConvergence(props()));
     await Promise.resolve(); await Promise.resolve();
     expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
     // Free the lock, then let the bounded retry (1s) fire -- no lifecycle event.
-    releaseCloudBackupRunLock();
+    resetCloudOperationRunLockForTests();
     await act(async () => { jest.advanceTimersByTime(1000); await Promise.resolve(); await Promise.resolve(); });
     expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1);
   } finally {

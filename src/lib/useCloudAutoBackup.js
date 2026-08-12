@@ -21,7 +21,9 @@ import {
   markCloudBackupDirty,
   CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
-import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
+import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
+import { CLOUD_OPERATION_OWNER, resolveOperationOwnerFromSnapshot } from "./cloudOperationOwnership";
+import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { runSupabaseCloudOnboardingBackup } from "./supabaseCloudOnboarding";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
@@ -61,6 +63,23 @@ function isEligibleQueueState(queueState) {
   return Boolean(queueState?.pending)
     && queueState?.priority !== CLOUD_BACKUP_PRIORITY.DEFERRED
     && !["remote_changed", "conflict"].includes(String(queueState?.status || ""));
+}
+
+// Same shared precedence contract convergence and the restore prompt use. A
+// pending queue always makes BACKUP the owner, so in practice this only blocks
+// the case that must be blocked: a clean, positively-empty core device, where
+// recovery owns the next operation and automatic backup must not take the shared
+// run lock or write cloud. Eligibility (deferred / conflicted / offline / journal)
+// remains this hook's own separate decision, unchanged.
+function backupOwnsNextOperation(queueState) {
+  try {
+    const { snapshot } = buildLocalSnapshotFromStorage(localStorage);
+    return resolveOperationOwnerFromSnapshot({ snapshot, queueState }) === CLOUD_OPERATION_OWNER.BACKUP;
+  } catch {
+    // An unreadable local snapshot can never prove an empty core, so ownership
+    // never falls to recovery; keep the established backup behavior.
+    return true;
+  }
 }
 
 function hasUnresolvedConvergenceJournal() {
@@ -174,6 +193,7 @@ export default function useCloudAutoBackup({
 
       const queueState = readCloudBackupQueueState();
       if (!isEligibleQueueState(queueState)) return;
+      if (!backupOwnsNextOperation(queueState)) return;
       const recoveryKey = queueIdentity(queueState, params.company?.id);
       const recoveringNeedsAttention = queueState.status === "needs_attention";
       if (needsAttentionRecoveryAttemptsRef.current.has(recoveryKey)) return;
@@ -183,9 +203,10 @@ export default function useCloudAutoBackup({
         return;
       }
 
-      if (!acquireCloudBackupRunLock()) {
-        // Convergence and backup share this lock. Keep the queue intact and
-        // recheck later instead of dropping a pending local mutation.
+      const lease = tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP);
+      if (!lease) {
+        // Convergence, restore and backup share this lock. Keep the queue intact
+        // and recheck later instead of dropping a pending local mutation.
         scheduleCheck();
         return;
       }
@@ -256,7 +277,8 @@ export default function useCloudAutoBackup({
           { retryDelayMs: retryDelayMs(Number(current.retryCount || 0) + 1), errorCode: "automatic_backup_error" }
         );
       } finally {
-        releaseCloudBackupRunLock();
+        // Releases only THIS attempt's lease, never a newer operation's.
+        releaseCloudOperationRunLock(lease);
         setRunningState(false);
         // A mutation may have landed while the writer was awaiting cloud I/O.
         // Its generation remains pending, so schedule exactly one follow-up.

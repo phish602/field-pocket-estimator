@@ -24,6 +24,74 @@ const asText = (value) => String(value == null ? "" : value).trim();
 
 export const CLOUD_LINE_ITEM_ENTITY_TYPES = ["estimate", "invoice"];
 
+// ---------------------------------------------------------------------------
+// SHARED CLIENT INVOICE-CHILD SEMANTICS
+//
+// These primitives answer questions that the mapper, the stale-placeholder
+// proof, the writer's stale planner and the cloud verifier all used to answer
+// separately -- with their own copies of the same regex, the same absence rule
+// and the same field lists. Divergence between those copies is exactly how a
+// correctly-written child can start looking like a cloud-only extra, so the
+// client now has ONE owner for each of them.
+//
+// The SERVER deliberately does NOT consume these (see
+// server/staleInvoiceLineItemRepair.js). Its destructive proof reimplements
+// every one of them on purpose: the browser must never be the only authority
+// behind a deletion. That duplication is a security boundary, not drift.
+// ---------------------------------------------------------------------------
+
+// Absence has exactly one definition. Explicit numeric 0 is DATA, never
+// emptiness: a $0 line, a 0-quantity line and a 0-hour line are all real
+// business records a user may have entered on purpose. Only null / undefined /
+// "" count as absent.
+export function isAbsentLineItemValue(value) {
+  return value === null || value === undefined || value === "";
+}
+
+// Keys on a MAPPED child (local projection) that carry no business meaning on
+// their own: implementation/default scaffolding the estimator UI attaches to
+// every row it renders, including the blank placeholder rows DEFAULT_STATE
+// seeds.
+export const LINE_ITEM_STRUCTURAL_KEYS = Object.freeze(["kind", "legacy_local_id", "sort_order"]);
+
+// A mapped row is a real business child only when at least one non-structural
+// key survived the caller's empty-value prune. Because that prune uses the
+// absence rule above, an explicit 0 keeps the row real.
+export function hasBusinessLineItemContent(mapped) {
+  if (!mapped || typeof mapped !== "object" || Array.isArray(mapped)) return false;
+  return Object.keys(mapped).some((key) => !LINE_ITEM_STRUCTURAL_KEYS.includes(key));
+}
+
+// The business COLUMNS of a persisted cloud invoice_line_items row. sort_order
+// is deliberately absent: it is structural position, not content, and every row
+// has one.
+export const INVOICE_CHILD_BUSINESS_COLUMNS = Object.freeze([
+  "description",
+  "quantity",
+  "unit",
+  "unit_price",
+  "total_price",
+]);
+
+// The only metadata a blank estimator row can legitimately carry is its
+// structural section classification. "invoice" is the HISTORICAL generic
+// section tag written by an older writer that did not yet split blank
+// scaffolding into labor/material. Anything else -- hours, unit_cost, markup,
+// or any unrecognized key -- is economic state, even when its value is 0.
+export const INVOICE_CHILD_STRUCTURAL_KINDS = Object.freeze(["labor", "material", "invoice"]);
+
+export function isInvoiceChildStructuralKind(kind) {
+  return INVOICE_CHILD_STRUCTURAL_KINDS.includes(asText(kind));
+}
+
+// The STRICT deterministic invoice-child identity: `invoice:<parent>:line:<n>`
+// with a non-negative index. Returns null when the id does not follow the
+// contract so callers fail closed instead of guessing.
+export function parseInvoiceChildLegacyId(value) {
+  const match = /^invoice:([^:]+):line:(\d+)$/.exec(asText(value));
+  return match ? { parentSegment: match[1], stableIndex: Number(match[2]) } : null;
+}
+
 export function sanitizeLineItemParentSegment(value, fallback = "parent") {
   const normalized = asText(value).toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
   return normalized || fallback;

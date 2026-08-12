@@ -41,7 +41,8 @@ import {
   APP_RESTORE_BUNDLE_STATUS,
 } from "../lib/supabaseAppRestoreBundle";
 import { markCloudBackupDirty, readCloudBackupQueueState, markCloudBackupSyncing, applyCloudBackupResultToQueue, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
-import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "../lib/cloudBackupRunLock";
+import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "../lib/cloudOperationRunLock";
+import { CLOUD_OPERATION_OWNER } from "../lib/cloudOperationOwnership";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import {
   getCloudDataDecision,
@@ -733,8 +734,10 @@ export default function AdvancedSettingsScreen({
   const runCloudBackup = async () => {
     if (!ensureUnlockedForWrite()) return;
     // Shared with the Gate 13B automatic background worker so a manual click
-    // and an automatic run never execute a cloud backup at the same time.
-    if (!acquireCloudBackupRunLock()) return;
+    // and an automatic run never execute a cloud backup at the same time. A
+    // manual backup is still a BACKUP operation.
+    const lease = tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP);
+    if (!lease) return;
     try {
       setOnboardingBackupBusy(true);
       // Capture the queue generation so a verified clear cannot wipe out a
@@ -768,7 +771,7 @@ export default function AdvancedSettingsScreen({
       applyCloudBackupResultToQueue({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: "Unable to complete cloud backup." });
       setAutoBackupQueueState(readCloudBackupQueueState());
     } finally {
-      releaseCloudBackupRunLock();
+      releaseCloudOperationRunLock(lease);
       setOnboardingBackupBusy(false);
     }
   };
@@ -780,7 +783,9 @@ export default function AdvancedSettingsScreen({
   // can never race the Gate 13B automatic background worker.
   const runReplaceCloudBackup = async () => {
     if (!ensureUnlockedForWrite()) return;
-    if (!acquireCloudBackupRunLock()) return;
+    // The user-confirmed replacement path is still a BACKUP operation.
+    const lease = tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP);
+    if (!lease) return;
     try {
       setReplaceCloudBusy(true);
       const syncingQueue = markCloudBackupSyncing({ companyId: company?.id });
@@ -819,7 +824,7 @@ export default function AdvancedSettingsScreen({
       applyCloudBackupResultToQueue({ status: CLOUD_ONBOARDING_STATUS.ERROR, error: "Unable to replace the cloud backup." });
       setAutoBackupQueueState(readCloudBackupQueueState());
     } finally {
-      releaseCloudBackupRunLock();
+      releaseCloudOperationRunLock(lease);
       setReplaceCloudBusy(false);
     }
   };

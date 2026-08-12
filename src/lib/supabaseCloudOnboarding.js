@@ -12,6 +12,13 @@ import {
   ESTIMATE_PAYLOAD_UPDATE_STATUS,
 } from "./supabaseEstimateRestorePayload";
 import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+// Onboarding consumes the CORE-STATE layer of the shared ownership contract
+// only. It classifies data state; it never depends on backup queue state and
+// never chooses the full automatic operation.
+import {
+  hasEmptyCoreBusinessCounts,
+  sumCoreBusinessDocCounts,
+} from "./cloudOperationOwnership";
 
 export const SUPABASE_CLOUD_ONBOARDING_VERSION = "supabase-cloud-onboarding-v1";
 
@@ -74,19 +81,15 @@ function totalLocalRecords(localCounts) {
   );
 }
 
-// "Core" business docs only -- customers/projects/estimates/invoices. Used
-// to classify device emptiness (Phase A). Line items and payments are
-// dependent data: if their parent docs are zero, they don't change whether
-// a device counts as empty.
-function sumCoreDocCounts(counts) {
-  const c = counts || {};
-  return (
-    Number(c.customers || 0) +
-    Number(c.projects || 0) +
-    Number(c.estimates || 0) +
-    Number(c.invoices || 0)
-  );
-}
+// "Core" business docs only -- customers/projects/estimates/invoices. Used to
+// classify device emptiness (Phase A). Line items and payments are dependent
+// data: if their parent docs are zero, they don't change whether a device counts
+// as empty.
+//
+// The rule now lives in the shared cloudOperationOwnership contract, which
+// useCloudAutoConvergence consumes too, so onboarding's "empty device" and
+// convergence's "recovery owns startup" can never drift apart.
+const sumCoreDocCounts = sumCoreBusinessDocCounts;
 
 function buildHelperContext({ storageSnapshot, configured, user, company, role }) {
   return {
@@ -673,11 +676,13 @@ export async function checkSupabaseCloudOnboardingStatus({
       }
       return automaticSafeRepairRuns.get(runKey);
     }
-    const localCoreCount = sumCoreDocCounts(preview?.localCounts);
+    // Same shared core-state authority the automatic actors resolve ownership
+    // from, so "empty device" means one thing across the app.
+    const localCoreEmpty = hasEmptyCoreBusinessCounts(preview?.localCounts);
     const cloudCountKnown = Boolean(preview?.cloudCountCheckAvailable);
     const cloudCoreCount = cloudCountKnown ? sumCoreDocCounts(preview?.cloudCounts) : 0;
 
-    if (localCoreCount === 0) {
+    if (localCoreEmpty) {
       // This device has no estimates/invoices/customers/projects of its own.
       // Distinguish "nothing exists yet anywhere" from "a second device
       // signing into a workspace that's already backed up".

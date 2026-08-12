@@ -7,7 +7,8 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { readCloudBackupQueueState } from "./cloudBackupQueue";
 import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
-import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
+import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
+import { CLOUD_OPERATION_OWNER } from "./cloudOperationOwnership";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import {
@@ -719,7 +720,7 @@ function validateCloudConvergenceGraph(rowsByTable) {
 // Scope of this coordinator (read carefully -- it is narrow by design):
 //   - The real automatic backup and convergence workers never contend here:
 //     useCloudAutoBackup and useCloudAutoConvergence both acquire the shared
-//     cloudBackupRunLock around their entire read, so they are SERIALIZED and
+//     cloudOperationRunLock around their entire read, so they are SERIALIZED and
 //     one worker can never scan while the other is scanning. This coordinator
 //     does NOT combine or collapse a backup worker scan with a convergence
 //     worker scan -- the run lock already prevents them from overlapping.
@@ -1214,7 +1215,8 @@ async function executeSupabaseCloudRestoreOwned({
 export async function executeSupabaseCloudRestore(options = {}) {
   const gated = gateBasicPrerequisites(options);
   if (gated) return buildExecuteResult(gated);
-  if (!acquireCloudBackupRunLock()) {
+  const lease = tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.RECOVERY);
+  if (!lease) {
     return buildExecuteResult(CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY, {
       error: "Cloud recovery is already running. Please wait for it to finish.",
       noWritesPerformed: true,
@@ -1225,7 +1227,8 @@ export async function executeSupabaseCloudRestore(options = {}) {
   try {
     return await executeSupabaseCloudRestoreOwned(options);
   } finally {
-    releaseCloudBackupRunLock();
+    // Releases only THIS restore's lease, even if the transaction threw.
+    releaseCloudOperationRunLock(lease);
   }
 }
 

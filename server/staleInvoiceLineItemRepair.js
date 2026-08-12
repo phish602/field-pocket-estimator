@@ -74,7 +74,11 @@ function sanitizeParentSegment(value) {
 }
 
 const BUSINESS_FIELDS = ["description", "quantity", "unit", "unit_price", "total_price"];
-const PLACEHOLDER_KINDS = ["labor", "material"];
+// "invoice" is the historical generic section tag from an older writer, proven
+// structural in the same way labor/material are. Independently re-listed here --
+// the server never imports the browser's contract -- and it grants NO leniency:
+// the emptiness and identity proofs below still have to pass on their own.
+const PLACEHOLDER_KINDS = ["labor", "material", "invoice"];
 
 // Explicit zero is DATA. Only null / undefined / "" are absent, so a $0 line, a
 // 0-quantity line or a 0-hour line is never treated as an empty placeholder.

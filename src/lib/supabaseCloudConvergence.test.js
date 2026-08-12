@@ -823,11 +823,11 @@ test("Gate 16B raw-cloud round trip: a real semantic child mismatch rolls back t
 describe("Gate 16C real hook-to-convergence (no injected device access)", () => {
   const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
   const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
-  const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+  const { resetCloudOperationRunLockForTests } = require("./cloudOperationRunLock");
   const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
   const { renderHook, waitFor } = require("@testing-library/react");
 
-  afterEach(() => releaseCloudBackupRunLock());
+  afterEach(() => resetCloudOperationRunLockForTests());
 
   // A thenable client that also serves the device-lock app_settings row so the
   // real ownership checks see THIS device as active. The restore-bundle read
@@ -1284,7 +1284,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
   test("complete live-shaped replay: 7/11/12 and 9->10 invoices reach strict Cloud OK through the real hook", async () => {
     const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
     const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
-    const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+    const { resetCloudOperationRunLockForTests } = require("./cloudOperationRunLock");
     const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
     const { renderHook, waitFor } = require("@testing-library/react");
 
@@ -1382,7 +1382,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(before);
     } finally {
       window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
-      releaseCloudBackupRunLock();
+      resetCloudOperationRunLockForTests();
     }
   }, 30000);
 
@@ -1530,7 +1530,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
   describe("Gate 16H quota-safe baseline completion", () => {
     const { readPersistedCloudBackupQueueState } = require("./cloudBackupQueue");
     const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
-    const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+    const { resetCloudOperationRunLockForTests } = require("./cloudOperationRunLock");
     const { buildCloudSyncBaseline, readCloudSyncBaseline } = require("./cloudSyncBaseline");
     const { buildConvergenceRollbackKeySet, buildSafeConvergenceResult } = require("./supabaseCloudConvergence");
 
@@ -1610,7 +1610,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
     }
     afterEach(() => {
       if (realLocalStorageDescriptor) { Object.defineProperty(window, "localStorage", realLocalStorageDescriptor); realLocalStorageDescriptor = null; }
-      releaseCloudBackupRunLock();
+      resetCloudOperationRunLockForTests();
     });
 
     // Records every write attempt (key + length only), mirroring the browser probe.
@@ -1986,7 +1986,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
     test("complete live-state replay: v1 queue + stale takeover pause recover, then 9->10 invoices reach strict Cloud OK", async () => {
       const { default: useCloudAutoConvergence } = require("./useCloudAutoConvergence");
       const { getOrCreateLocalDeviceId } = require("./supabaseDeviceLock");
-      const { releaseCloudBackupRunLock } = require("./cloudBackupRunLock");
+      const { resetCloudOperationRunLockForTests } = require("./cloudOperationRunLock");
       const { CLOUD_CONVERGENCE_RESULT_EVENT } = require("./supabaseCloudConvergence");
       const { renderHook, waitFor } = require("@testing-library/react");
 
@@ -2089,7 +2089,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
         expect(readPauseRaw()).toBeNull();
       } finally {
         window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult);
-        releaseCloudBackupRunLock();
+        resetCloudOperationRunLockForTests();
       }
     }, 30000);
 
