@@ -7,7 +7,9 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
 import { readCloudBackupQueueState } from "./cloudBackupQueue";
 import { captureVerifiedCloudSyncBaseline } from "./cloudSyncBaseline";
+import { acquireCloudBackupRunLock, releaseCloudBackupRunLock } from "./cloudBackupRunLock";
 import { buildLocalSnapshotFromStorage, scanLocalDataIntegrity } from "./localDataIntegrity";
+import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
 import {
   ensureCurrentDeviceCanWriteCloud,
   ensureCurrentDeviceCanApplyLocalRestore,
@@ -56,6 +58,7 @@ export const CLOUD_RESTORE_STATUS = {
   RESTORED: "restored",
   DEVICE_LOCKED: "device_locked",
   BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
+  RUN_LOCK_BUSY: "run_lock_busy",
   ERROR: "error",
 };
 
@@ -350,6 +353,7 @@ function buildPreviewResult(status, extra = {}) {
       settingsCaptured: false,
       scopeTemplatesCaptured: false,
     },
+    fullyRestorable: false,
     recoveryEligibleForPartialLocalSnapshot: false,
     noWritesPerformed: true,
     ...extra,
@@ -436,6 +440,10 @@ export async function previewSupabaseCloudRestore({
   return buildPreviewResult(CLOUD_RESTORE_STATUS.ELIGIBLE, {
     eligible: true,
     partial: blockers.length > 0,
+    // This is a proof from the same preview that guards manual restore. It is
+    // deliberately false for any partial/guessed estimate shape, so callers
+    // may auto-hydrate only the exact fully faithful empty-device case.
+    fullyRestorable: blockers.length === 0,
     localCounts,
     cloudCounts,
     blockers,
@@ -941,7 +949,7 @@ function captureRestoredCloudAssetBindings({ companyId, fetched, restorableEstim
 // partial restore, not a guessed one: every field that is written comes
 // directly from a cloud column (or, for estimates, the exact captured local
 // object) with a known, faithful local equivalent.
-export async function executeSupabaseCloudRestore({
+async function executeSupabaseCloudRestoreOwned({
   storage,
   configured = false,
   user = null,
@@ -1099,17 +1107,30 @@ export async function executeSupabaseCloudRestore({
     fetched,
     restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
   });
-  // Restore is an exact cloud-to-local reconstruction. Capture a durable
-  // three-way baseline only after the local apply and binding capture have
-  // succeeded; a failed baseline never changes restored business data.
-  const baselineCapture = captureVerifiedCloudSyncBaseline({
-    storage,
-    companyId,
-    queueRevision: Number(readCloudBackupQueueState()?.localMutationRevision || 0),
-    cloudSnapshot: { ok: true, mapped: payload },
-    verified: true,
-    deviceAccess: applyAccess,
-  });
+  // A cloud-origin local write is not, by itself, proof that the complete
+  // writer/verifier contract round-trips. Capture the durable three-way
+  // baseline only after a strict read-only comparison says every record (and
+  // child identity) matches. Repairable historical placeholders deliberately
+  // defer the baseline to the existing repair/convergence path.
+  let verification = null;
+  let baselineCapture = { ok: false, code: "baseline_capture_not_verified" };
+  try {
+    verification = await runSupabaseCloudVerification({ storageSnapshot: storage, configured, user, company });
+    const hasVerificationWarning = Array.isArray(verification?.notices)
+      && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+    if (verification?.ok && verification?.allMatched && !hasVerificationWarning && !(verification?.availableRepairs?.length)) {
+      baselineCapture = captureVerifiedCloudSyncBaseline({
+        storage,
+        companyId,
+        queueRevision: Number(readCloudBackupQueueState()?.localMutationRevision || 0),
+        cloudSnapshot: { ok: true, mapped: payload },
+        verified: true,
+        deviceAccess: applyAccess,
+      });
+    }
+  } catch {
+    verification = { ok: false, allMatched: false, notices: [{ level: "warning", code: "restore_verification_failed" }] };
+  }
 
   dispatchChangeEvents({
     includeEstimates: payload.estimates.length > 0,
@@ -1173,6 +1194,7 @@ export async function executeSupabaseCloudRestore({
     appBundleRestored: appBundle.status === "available",
     appBundleSummary: appBundle.captureSummary,
     baselineCaptured: Boolean(baselineCapture?.ok),
+    verification,
     noWritesPerformed: false,
     noExistingLocalDataOverwritten: !overwritingExistingLocalData,
     restoredCounts: {
@@ -1183,6 +1205,28 @@ export async function executeSupabaseCloudRestore({
     },
     assetBindingCapture,
   });
+}
+
+// Recovery and automatic convergence both change local business storage. They
+// must share the existing in-memory backup run lock for the entire restore
+// transaction, from the initial emptiness proof through the final local apply.
+// A busy lock is a retryable ownership result, never permission to overwrite.
+export async function executeSupabaseCloudRestore(options = {}) {
+  const gated = gateBasicPrerequisites(options);
+  if (gated) return buildExecuteResult(gated);
+  if (!acquireCloudBackupRunLock()) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.RUN_LOCK_BUSY, {
+      error: "Cloud recovery is already running. Please wait for it to finish.",
+      noWritesPerformed: true,
+      noCloudDataDeleted: true,
+      noExistingLocalDataOverwritten: true,
+    });
+  }
+  try {
+    return await executeSupabaseCloudRestoreOwned(options);
+  } finally {
+    releaseCloudBackupRunLock();
+  }
 }
 
 function buildCloudExportResult(status, extra = {}) {

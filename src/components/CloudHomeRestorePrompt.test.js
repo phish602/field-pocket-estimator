@@ -178,6 +178,33 @@ function safeRecoveryPreviewFixture(overrides = {}) {
   };
 }
 
+test("automatically hydrates a fully-restorable empty device once without starting a cloud backup", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+    eligible: true,
+    partial: false,
+    fullyRestorable: true,
+    blockers: [],
+    notices: [],
+  });
+  executeSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.RESTORED,
+    restored: true,
+    restoredCounts: { customers: 2, projects: 1, estimates: 1, invoices: 1 },
+  });
+
+  await renderAndSettle();
+
+  await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+  expect(executeSupabaseCloudRestore).toHaveBeenCalledWith(expect.objectContaining({
+    configured: true,
+    user: expect.objectContaining({ id: "user_1" }),
+    company: expect.objectContaining({ id: "company_1" }),
+    storage: localStorage,
+  }));
+  expect(runSupabaseCloudOnboardingBackup).not.toHaveBeenCalled();
+});
+
 function buildCloudExportArtifact(overrides = {}) {
   return {
     artifactVersion: "cloud-backup-export-artifact-v1",

@@ -158,6 +158,7 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
     localFirstBlocker,
     localBlockersCount,
     refreshCloudStatus,
+    restorePreview,
   } = useCloudRestorePrompt({ hasChamberedDraft });
   const [dismissed, setDismissed] = useState(readDismissed);
   const [restoring, setRestoring] = useState(false);
@@ -178,6 +179,47 @@ export default function CloudHomeRestorePrompt({ hasChamberedDraft = false, styl
   const [removingOlderEstimates, setRemovingOlderEstimates] = useState(false);
   const [olderEstimateCleanupResult, setOlderEstimateCleanupResult] = useState(null);
   const [completedRecoveryStatus, setCompletedRecoveryStatus] = useState(() => readCloudPartialRecoveryStatus(localStorage));
+  // In-memory only: StrictMode, focus and pageshow must not start a second
+  // hydration after this component has claimed the fully-safe empty-device
+  // recovery attempt.
+  const automaticRecoveryStartedRef = useRef(false);
+
+  useEffect(() => {
+    const canAutoRecover = (
+      state === CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE
+      && restorePreview?.fullyRestorable === true
+      && restoreAvailable
+      && !partialLocalSnapshot
+      && !hasChamberedDraft
+      && !checking
+      && !restoring
+    );
+    if (!canAutoRecover || automaticRecoveryStartedRef.current) return undefined;
+    automaticRecoveryStartedRef.current = true;
+    let active = true;
+    setRestoring(true);
+    Promise.resolve(executeSupabaseCloudRestore({
+      storage: localStorage,
+      configured: isSupabaseReady,
+      user,
+      company,
+    }))
+      .then((result) => {
+        if (!active) return;
+        setRestoreResult(result);
+        // The restore owns the shared lock through its strict comparison. Ask
+        // the existing convergence hook to inspect any remaining repairable
+        // mismatch only after that owner has released it; it will retry a busy
+        // lock rather than racing this cloud-origin hydration.
+        if (result?.status === CLOUD_RESTORE_STATUS.RESTORED) requestCloudConvergence();
+        refreshCloudStatus();
+      })
+      .catch(() => {
+        if (active) setRestoreResult({ status: CLOUD_RESTORE_STATUS.ERROR, error: "Restore could not be completed on this device." });
+      })
+      .finally(() => { if (active) setRestoring(false); });
+    return () => { active = false; };
+  }, [state, restorePreview?.fullyRestorable, restoreAvailable, partialLocalSnapshot, hasChamberedDraft, checking, restoring, isSupabaseReady, user?.id, company?.id, refreshCloudStatus]);
   const confirmActionRunningRef = useRef(false);
   // Gate 13O-2L recovery-assistant pipeline:
   // idle -> recovering -> checking -> repairing -> backing_up -> done
