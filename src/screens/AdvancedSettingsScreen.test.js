@@ -38,6 +38,13 @@ import {
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { scanLocalDataIntegrity } from "../lib/localDataIntegrity";
+import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
+
+jest.mock("../utils/devSampleData", () => ({
+  __esModule: true,
+  clearDevSampleData: jest.fn(),
+  seedDevSampleData: jest.fn(),
+}));
 
 jest.mock("../lib/useSupabaseAuth", () => ({
   __esModule: true,
@@ -193,6 +200,67 @@ beforeEach(() => {
     isLocked: false,
     isActive: true,
     activeDeviceState: null,
+  });
+});
+
+describe("AdvancedSettingsScreen development sample data controls", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    Object.defineProperty(process.env, "NODE_ENV", {
+      configurable: true,
+      value: "production",
+    });
+    seedDevSampleData.mockReset();
+    clearDevSampleData.mockReset();
+    seedDevSampleData.mockReturnValue({ customers: 6, estimates: 8, invoices: 8 });
+    clearDevSampleData.mockReturnValue({ clearedCustomers: 6, clearedEstimates: 8, clearedInvoices: 8 });
+    useSupabaseAuth.mockReturnValue(buildAuthState());
+    useSupabaseAccount.mockReturnValue(buildAccountState());
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
+    jest.spyOn(window, "alert").mockImplementation(() => {});
+    jest.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.env, "NODE_ENV", {
+      configurable: true,
+      value: originalNodeEnv,
+    });
+    jest.restoreAllMocks();
+  });
+
+  test("hides Development Sample Data when developer tools are disabled in a production build", () => {
+    render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
+
+    expect(screen.queryByText("Development Sample Data")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load / Refresh Sample Data" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear Sample Data" })).not.toBeInTheDocument();
+  });
+
+  test("shows Development Sample Data when developer tools are enabled in a production build", () => {
+    render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
+
+    expect(screen.getByText("Development Sample Data")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load / Refresh Sample Data" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear Sample Data" })).toBeInTheDocument();
+  });
+
+  test("loads canonical sample data through the developer-tools gate in a production build", () => {
+    render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load / Refresh Sample Data" }));
+
+    expect(seedDevSampleData).toHaveBeenCalledTimes(1);
+  });
+
+  test("clears canonical sample data through the developer-tools gate in a production build", () => {
+    render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear Sample Data" }));
+
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(clearDevSampleData).toHaveBeenCalledTimes(1);
   });
 });
 
