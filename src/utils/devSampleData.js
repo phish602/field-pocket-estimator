@@ -32,6 +32,11 @@ const ACTIVE_EDIT_CONTEXT_KEY = "estipaid-active-edit-context-v1";
 const DEV_SAMPLE_REGISTRY_KEY = "estipaid-dev-sample-registry-v1";
 const SAMPLE_ID_PREFIX = "sample_";
 
+// A stored sample registry is compatibility state. Bump this intentionally when
+// the current application model changes the canonical sample representation so
+// an older local fixture is always replaced instead of being silently mixed in.
+export const DEV_SAMPLE_DATA_VERSION = "2026-08-canonical-v1";
+
 const SAMPLE_IDS = {
   customers: [
     "sample_customer_desert_ridge_hospitality_group",
@@ -540,7 +545,10 @@ function buildEstimateRecord(config) {
       blanketInternalCost: String(config.blanketInternalCost ?? ""),
       materialsBlanketDescription: String(config.materialsBlanketDescription || ""),
       markupPct: Number(config.materialsMarkupPct || 0),
-      items: [createBlankLine(config.id, "material_blank", { desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" })],
+      // The estimator UI can render its own blank row. Persisted sample data
+      // models what a saved blanket-material estimate actually contains: no
+      // itemized material child at all.
+      items: [],
     };
   } else {
     state.materials = {
@@ -798,7 +806,7 @@ function createManualInvoice(config) {
       hazardPct: 0,
       riskPct: 0,
       multiplier: 1,
-      lines: [createBlankLine(config.id, "labor_blank", { role: "", hours: "", rate: "", trueRateInternal: "" })],
+      lines: [],
     },
     materials: {
       ...(draft.materials || {}),
@@ -806,7 +814,7 @@ function createManualInvoice(config) {
       blanketInternalCost: String(invoiceInternalCost),
       materialsBlanketDescription: String(config.materialsDescription || config.note || ""),
       markupPct: 0,
-      items: [createBlankLine(config.id, "material_blank", { desc: "", qty: "", unitCostInternal: "", costInternal: "", priceEach: "" })],
+      items: [],
     },
     createdAt,
     updatedAt: savedAt,
@@ -1516,6 +1524,12 @@ export function clearDevSampleData() {
   const existingEstimates = readArray(ESTIMATES_KEY);
   const existingInvoices = readArray(INVOICES_KEY);
   const registry = readRegistry();
+  // The registry is local-only and intentionally is not part of a cloud
+  // restore. Projects are normalized to canonical `proj_*` ids, not the
+  // `sample_project_*` source ids, so derive the current fixture ids too.
+  // Without this, a restored sample dataset is mistaken for user data and a
+  // same-version reseed duplicates its projects.
+  const currentDataset = buildDevSampleDataset();
 
   const customerIds = collectSampleIds(existingCustomers, [
     ...SAMPLE_IDS.customers,
@@ -1523,6 +1537,7 @@ export function clearDevSampleData() {
   ]);
   const projectIds = collectSampleIds(existingProjects, [
     ...(Array.isArray(SAMPLE_IDS.projects) ? SAMPLE_IDS.projects : []),
+    ...currentDataset.projects.map((record) => String(record?.id || "").trim()).filter(Boolean),
     ...(Array.isArray(registry?.projects) ? registry.projects : []),
   ]);
   const estimateIds = collectSampleIds(existingEstimates, [
@@ -1604,6 +1619,8 @@ export function buildDevSampleDataset() {
 }
 
 export function seedDevSampleData() {
+  const previousRegistry = readRegistry();
+  const previousVersion = String(previousRegistry?.version || "").trim();
   clearDevSampleData();
 
   const { customers, projects, estimates, invoices } = buildDevSampleDataset();
@@ -1618,6 +1635,7 @@ export function seedDevSampleData() {
   writeArray(ESTIMATES_KEY, mergedEstimates);
   writeArray(INVOICES_KEY, mergedInvoices);
   writeRegistry({
+    version: DEV_SAMPLE_DATA_VERSION,
     seededAt: Date.now(),
     customers: customers.map((record) => String(record?.id || "").trim()).filter(Boolean),
     projects: projects.map((record) => String(record?.id || "").trim()).filter(Boolean),
@@ -1628,6 +1646,8 @@ export function seedDevSampleData() {
   emitSeedEvents();
 
   return {
+    version: DEV_SAMPLE_DATA_VERSION,
+    replacedPreviousSampleVersion: previousVersion || null,
     customers: customers.length,
     projects: projects.length,
     estimates: estimates.length,
