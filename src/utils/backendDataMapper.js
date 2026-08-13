@@ -112,10 +112,23 @@ function normalizeInvoiceStatus(value) {
   return raw || "draft";
 }
 
-function normalizePaymentStatus(value) {
+function normalizePaymentStatus(value, { payment = null, invoice = null } = {}) {
   const raw = asText(value).toLowerCase();
   if (raw === "unpaid" || raw === "partial" || raw === "paid" || raw === "void") return raw;
-  return raw || "unpaid";
+
+  const invoiceStatus = asText(invoice?.status).toLowerCase();
+  const invoicePaymentStatus = asText(invoice?.paymentStatus).toLowerCase();
+  if (invoiceStatus === "void" || invoicePaymentStatus === "void") return "void";
+
+  // Payments are appended only after the app has accepted the payment and
+  // records their amount plus completion date. Older local payment objects do
+  // not carry an individual status field, so treating that completed ledger
+  // entry as `unpaid` loses its business meaning in the cloud.
+  const amount = toNumberOrNull(payment?.amount);
+  const paidAt = toIsoTimestamp(payment?.paidAt || payment?.date);
+  if (amount !== null && amount > EPSILON && paidAt) return "paid";
+
+  return "unpaid";
 }
 
 function createBackendRecordIdFallback(context) {
@@ -457,6 +470,8 @@ export function mapLocalEstimateToBackendEstimate(estimate, context) {
     work_title: pickText(source?.workTitle, source?.jobTitle, source?.jobName, source?.job?.title, source?.title),
     converted_invoice_legacy_local_id: asText(source?.invoiceId || source?.convertedInvoiceId || source?.sourceInvoiceId || source?.invoice?.id),
     converted_invoice_number: pickText(source?.invoiceNumber, source?.convertedInvoiceNumber, source?.invoice?.invoiceNumber),
+    notes: pickText(source?.notes, source?.scopeNotes, source?.additionalNotes),
+    terms: pickText(source?.terms),
     line_items: extractDocumentLineItems(source, "estimate"),
     ...mapEstimateFinancialFields(source),
     ...mapCommonTimelineFields(source),
@@ -487,6 +502,8 @@ export function mapLocalInvoiceToBackendInvoice(invoice, context) {
     amount_paid: toNumberOrNull(source?.amountPaid),
     balance_remaining: toNumberOrNull(source?.balanceRemaining),
     total: toNumberOrNull(source?.invoiceTotal ?? source?.total ?? snapshot?.approvedTotal),
+    notes: pickText(source?.notes, source?.additionalNotes),
+    terms: pickText(source?.terms),
     customer_name: pickText(source?.customerName, source?.customer?.name, source?.customer?.companyName, source?.customer?.fullName, snapshot?.customerName),
     project_name: pickText(source?.projectName, source?.project?.name, snapshot?.projectName),
     project_number: extractProjectNumber(source) || pickText(snapshot?.projectNumber),
@@ -514,7 +531,7 @@ export function mapLocalInvoicePaymentToBackendPayment(payment, invoice, context
     legacy_local_id: buildLegacyLocalId(source),
     amount: toNumberOrNull(source?.amount),
     method: pickText(source?.method),
-    status: normalizePaymentStatus(source?.status),
+    status: normalizePaymentStatus(source?.status, { payment: source, invoice: targetInvoice }),
     paid_at: toIsoTimestamp(source?.paidAt || source?.date),
     ...mapCommonTimelineFields(source),
   };

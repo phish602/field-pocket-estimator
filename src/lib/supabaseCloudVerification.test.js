@@ -17,35 +17,18 @@ function buildStorageSnapshot({
   auditEvents,
   cloudPartialRecoveryStatus,
 } = {}) {
+  const defaults = defaultLocalData();
   return {
     getItem(key) {
       const values = {
-        "estipaid-company-profile-v1": JSON.stringify(companyProfile || { id: "local_company", companyName: "AAS Property Care" }),
-        "estipaid-customers-v1": JSON.stringify(customers || [{ id: "cust_1", name: "Acme Co" }]),
-        "estipaid-projects-v1": JSON.stringify(projects || [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]),
-        "estipaid-estimates-v1": JSON.stringify(estimates || [{
-          id: "est_1",
-          projectId: "proj_1",
-          customerId: "cust_1",
-          estimateNumber: "EST-1",
-          total: 100,
-          labor: { lines: [{ id: "line_1", description: "Labor", quantity: 1, rate: 100 }] },
-        }]),
-        "estipaid-invoices-v1": JSON.stringify(invoices || [{
-          id: "inv_1",
-          projectId: "proj_1",
-          customerId: "cust_1",
-          sourceEstimateId: "est_1",
-          invoiceNumber: "INV-1",
-          invoiceTotal: 100,
-          amountPaid: 25,
-          balanceRemaining: 75,
-          lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
-          payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
-        }]),
-        "estipaid-settings-v1": JSON.stringify(settings || {}),
-        "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates || []),
-        "estipaid-audit-events-v1": JSON.stringify(auditEvents || []),
+        "estipaid-company-profile-v1": JSON.stringify(companyProfile ?? defaults.companyProfile),
+        "estipaid-customers-v1": JSON.stringify(customers ?? defaults.customers),
+        "estipaid-projects-v1": JSON.stringify(projects ?? defaults.projects),
+        "estipaid-estimates-v1": JSON.stringify(estimates ?? defaults.estimates),
+        "estipaid-invoices-v1": JSON.stringify(invoices ?? defaults.invoices),
+        "estipaid-settings-v1": JSON.stringify(settings ?? defaults.settings),
+        "estipaid-scope-templates-v1": JSON.stringify(scopeTemplates ?? defaults.scopeTemplates),
+        "estipaid-audit-events-v1": JSON.stringify(auditEvents ?? defaults.auditEvents),
         "estipaid-cloud-partial-recovery-status-v1": cloudPartialRecoveryStatus
           ? JSON.stringify(cloudPartialRecoveryStatus)
           : null,
@@ -55,23 +38,39 @@ function buildStorageSnapshot({
   };
 }
 
-function defaultMatchingRows() {
+function defaultLocalData() {
   return {
-    customers: [{ id: "db_cust_1", legacy_local_id: "cust_1" }],
-    projects: [{ id: "db_proj_1", legacy_local_id: "proj_1" }],
+    companyProfile: { id: "local_company", companyName: "AAS Property Care" },
+    customers: [{ id: "cust_1", name: "Acme Co" }],
+    projects: [{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }],
     estimates: [{
-      id: "db_est_1",
-      legacy_local_id: "est_1",
-      restore_payload: { schema: "estipaid.estimate.restore_payload", version: 1, estimate: { id: "est_1" } },
-      restore_payload_version: "1",
+      id: "est_1",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      estimateNumber: "EST-1",
+      total: 100,
+      labor: { lines: [{ id: "line_1", description: "Labor", quantity: 1, rate: 100 }] },
     }],
-    invoices: [{ id: "db_inv_1", legacy_local_id: "inv_1" }],
-    invoice_payments: [{ id: "db_pay_1", legacy_local_id: "pay_1" }],
-    estimate_line_items: [{ id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1", sort_order: 0, description: "Labor", quantity: 1, unit: null, unit_price: 100, total_price: null, metadata: null, line_role: "labor" }],
-    // Invoice line items carry kind inside metadata (the writer's real output);
-    // estimate line items carry kind in the line_role column instead.
-    invoice_line_items: [{ id: "db_inv_line_1", legacy_local_id: "invoice:inv_1:line:0", invoice_id: "db_inv_1", sort_order: 0, description: "Material", quantity: 1, unit: null, unit_price: 100, total_price: 100, metadata: { kind: "invoice" } }],
+    invoices: [{
+      id: "inv_1",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      sourceEstimateId: "est_1",
+      invoiceNumber: "INV-1",
+      invoiceTotal: 100,
+      amountPaid: 25,
+      balanceRemaining: 75,
+      lineItems: [{ id: "inv_line_1", description: "Material", quantity: 1, price: 100, total: 100 }],
+      payments: [{ id: "pay_1", amount: 25, method: "cash", status: "paid" }],
+    }],
+    settings: {},
+    scopeTemplates: [],
+    auditEvents: [],
   };
+}
+
+function defaultMatchingRows() {
+  return writerShapedCloudRows(defaultLocalData());
 }
 
 function createMockClient(rowsByTable = {}, errorsByTable = {}) {
@@ -88,6 +87,17 @@ function createMockClient(rowsByTable = {}, errorsByTable = {}) {
     return { select, from: undefined, insert: undefined, update: undefined, upsert: undefined, delete: undefined };
   });
   return { from, eqMocks, selectMocks };
+}
+
+async function verifyCloud({ localData = defaultLocalData(), cloudRows = writerShapedCloudRows(defaultLocalData()) } = {}) {
+  const mockClient = createMockClient(cloudRows);
+  mockGetSupabaseClient.mockReturnValue(mockClient);
+  return runSupabaseCloudVerification({
+    storageSnapshot: buildStorageSnapshot(localData),
+    configured: true,
+    user: { id: "user_1" },
+    company: { id: "company_1", name: "AAS Property Care" },
+  });
 }
 
 describe("supabaseCloudVerification", () => {
@@ -207,8 +217,9 @@ describe("supabaseCloudVerification", () => {
     expect(mockClient.from).toHaveBeenCalledWith("invoice_payments");
     expect(mockClient.from).toHaveBeenCalledWith("estimate_line_items");
     expect(mockClient.from).toHaveBeenCalledWith("invoice_line_items");
-    expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith("id, legacy_local_id, restore_payload, restore_payload_version");
-    expect(mockClient.selectMocks.customers).toHaveBeenCalledWith("id, legacy_local_id");
+    expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith(expect.stringContaining("restore_payload"));
+    expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith(expect.stringContaining("total_amount"));
+    expect(mockClient.selectMocks.customers).toHaveBeenCalledWith(expect.stringContaining("display_name"));
   });
 
   test("treats estimates without restore_payload as a cloud mismatch even when ids and counts match", async () => {
@@ -304,7 +315,7 @@ describe("supabaseCloudVerification", () => {
       { id: "db_est_2", legacy_local_id: "est_2", restore_payload: null, restore_payload_version: null },
     ];
     rows.estimate_line_items = [
-      { id: "db_est_line_1", legacy_local_id: "estimate:est_1:line:0", estimate_id: "db_est_1", sort_order: 0, description: "Labor", quantity: 1, unit: null, unit_price: 100, total_price: null, metadata: null, line_role: "labor" },
+      ...rows.estimate_line_items,
       { id: "db_est_line_2", legacy_local_id: "estimate:est_2:line:0", estimate_id: "db_est_2", sort_order: 0, description: "Older", quantity: 1, unit: null, unit_price: 1, total_price: 1, metadata: null, line_role: "labor" },
     ];
     const mockClient = createMockClient(rows);
@@ -453,6 +464,78 @@ describe("supabaseCloudVerification", () => {
   });
 });
 
+describe("supabaseCloudVerification semantic business contracts", () => {
+  beforeEach(() => {
+    mockGetSupabaseClient.mockReset();
+  });
+
+  test.each([
+    ["invoice status", (rows) => { rows.invoices[0].status = "sent"; }, "invoices", "status"],
+    ["invoice amount paid", (rows) => { rows.invoices[0].amount_paid = 0; }, "invoices", "amount_paid"],
+    ["invoice balance", (rows) => { rows.invoices[0].balance_remaining = 100; }, "invoices", "balance_remaining"],
+    ["invoice total", (rows) => { rows.invoices[0].total_amount = 101; }, "invoices", "total_amount"],
+    ["payment amount", (rows) => { rows.invoice_payments[0].amount = 24; }, "invoice_payments", "amount"],
+    ["payment parent invoice", (rows) => { rows.invoice_payments[0].invoice_id = "db_invoice_wrong"; }, "invoice_payments", "invoice_id"],
+    ["payment method", (rows) => { rows.invoice_payments[0].method = "card"; }, "invoice_payments", "method"],
+    ["customer business field", (rows) => { rows.customers[0].display_name = "Changed customer"; }, "customers", "display_name"],
+    ["project relationship", (rows) => { rows.projects[0].customer_id = "db_customer_wrong"; }, "projects", "customer_id"],
+    ["estimate financial field", (rows) => { rows.estimates[0].total_amount = 101; }, "estimates", "total_amount"],
+  ])("rejects same-id semantic drift in %s", async (_name, mutate, table, field) => {
+    const cloudRows = writerShapedCloudRows(defaultLocalData());
+    mutate(cloudRows);
+
+    const result = await verifyCloud({ cloudRows });
+    const tableResult = result.tableResults.find((entry) => entry.table === table);
+
+    expect(result.allMatched).toBe(false);
+    expect(tableResult).toEqual(expect.objectContaining({ status: "mismatch", semanticMismatchCount: 1 }));
+    expect(tableResult.semanticMismatchFields).toContain(field);
+  });
+
+  test("rejects the INV-2609 stale paid-header false green", async () => {
+    const localData = defaultLocalData();
+    localData.invoices[0] = {
+      ...localData.invoices[0],
+      invoiceNumber: "INV-2609",
+      status: "paid",
+      paymentStatus: "paid",
+      invoiceTotal: 9050.32,
+      amountPaid: 9050.32,
+      balanceRemaining: 0,
+      payments: [{ id: "pay_2609", amount: 9050.32, method: "bank_transfer", paidAt: "2026-08-12" }],
+    };
+    const cloudRows = writerShapedCloudRows(localData);
+    cloudRows.invoices[0] = {
+      ...cloudRows.invoices[0],
+      status: "sent",
+      payment_status: "unpaid",
+      amount_paid: 0,
+      balance_remaining: 9050.32,
+    };
+
+    const result = await verifyCloud({ localData, cloudRows });
+    const invoiceResult = result.tableResults.find((entry) => entry.table === "invoices");
+
+    expect(result.allMatched).toBe(false);
+    expect(invoiceResult.semanticMismatchFields).toEqual(expect.arrayContaining([
+      "status", "payment_status", "amount_paid", "balance_remaining",
+    ]));
+  });
+
+  test("accepts equivalent normalized money, dates, and ignored server metadata", async () => {
+    const localData = defaultLocalData();
+    localData.invoices[0].payments[0].paidAt = "2026-08-12";
+    const cloudRows = writerShapedCloudRows(localData);
+    cloudRows.invoices[0] = {
+      ...cloudRows.invoices[0], total_amount: "100.000", amount_paid: "25.0", balance_remaining: "75.000", created_at: "server", updated_at: "server",
+    };
+    cloudRows.invoice_payments[0] = { ...cloudRows.invoice_payments[0], paid_at: "2026-08-12T00:00:00.000Z", created_by: "server", updated_by: "server" };
+
+    const result = await verifyCloud({ localData, cloudRows });
+    expect(result.allMatched).toBe(true);
+  });
+});
+
 // Gate 16A live stale-device regression: the writer and verifier must generate
 // identical child identities so correctly-written children never look cloud-only.
 // This builds cloud rows via the SHARED contract from the same local snapshot the
@@ -461,6 +544,9 @@ describe("supabaseCloudVerification", () => {
 // estimate line items.
 const { buildParentLineItemContract } = require("./cloudLineItemContract");
 const { mapLocalSnapshotToBackendDraft } = require("../utils/backendDataMapper");
+const { buildPersistedEstimateContract } = require("./supabaseEstimatePersistenceContract");
+const { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } = require("./supabaseEstimateRestorePayload");
+const { buildDevSampleDataset, DEV_SAMPLE_DATA_VERSION } = require("../utils/devSampleData");
 
 function liveShapeLocalData() {
   const customers = Array.from({ length: 7 }, (_, i) => ({ id: `cust-${i + 1}`, name: `Customer ${i + 1}` }));
@@ -495,10 +581,69 @@ function liveShapeLocalData() {
 
 function writerShapedCloudRows(localData) {
   const draft = mapLocalSnapshotToBackendDraft(localData, { companyId: "company_1", userId: "user_1" });
-  const parentRows = (list, prefix) => list.map((r, i) => ({ id: `db_${prefix}_${i}`, legacy_local_id: r.legacy_local_id }));
-  const estimates = draft.estimates.map((e, i) => ({ id: `db_est_${i}`, legacy_local_id: e.legacy_local_id, restore_payload: { schema: "estipaid.estimate.restore_payload", version: 1, estimate: { id: e.legacy_local_id } }, restore_payload_version: "1" }));
+  const customers = draft.customers.map((customer, i) => ({
+    id: `db_cust_${i}`,
+    legacy_local_id: customer.legacy_local_id,
+    display_name: customer.display_name || null,
+    company_name: customer.company_name || null,
+    contact_name: customer.contact_name || null,
+    phone: customer.phone || null,
+    email: customer.email || null,
+    billing_address: customer.billing_address || customer.address || null,
+    customer_type: customer.customer_type || null,
+    customer_status: customer.status || null,
+  }));
+  const customerIdByLegacyId = Object.fromEntries(customers.map((row) => [row.legacy_local_id, row.id]));
+  const projects = draft.projects.map((project, i) => ({
+    id: `db_proj_${i}`,
+    legacy_local_id: project.legacy_local_id,
+    customer_id: customerIdByLegacyId[project.customer_legacy_local_id] || null,
+    project_number: project.project_number || null,
+    project_name: project.project_name || null,
+    site_address: project.site_address || null,
+    status: project.status || "draft",
+    notes: project.notes || null,
+    scope_summary: project.scope_summary || null,
+  }));
+  const projectIdByLegacyId = Object.fromEntries(projects.map((row) => [row.legacy_local_id, row.id]));
+  const localEstimateByLegacyId = Object.fromEntries((localData.estimates || []).map((estimate) => [estimate.id, estimate]));
+  const estimates = draft.estimates.map((estimate, i) => {
+    const persisted = buildPersistedEstimateContract(estimate);
+    return {
+      id: `db_est_${i}`,
+      legacy_local_id: persisted.legacy_local_id,
+      customer_id: customerIdByLegacyId[persisted.customer_legacy_local_id] || null,
+      project_id: projectIdByLegacyId[persisted.project_legacy_local_id] || null,
+      estimate_number: persisted.estimate_number,
+      status: persisted.status,
+      total_amount: persisted.total_amount,
+      notes: persisted.notes,
+      terms: persisted.terms,
+      converted_invoice_legacy_id: persisted.converted_invoice_legacy_local_id,
+      restore_payload: buildEstimateRestorePayload(localEstimateByLegacyId[persisted.legacy_local_id]),
+      restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
+    };
+  });
   const estIdBy = Object.fromEntries(estimates.map((r) => [r.legacy_local_id, r.id]));
-  const invoices = draft.invoices.map((v, i) => ({ id: `db_inv_${i}`, legacy_local_id: v.legacy_local_id }));
+  const invoices = draft.invoices.map((invoice, i) => ({
+    id: `db_inv_${i}`,
+    legacy_local_id: invoice.legacy_local_id,
+    customer_id: customerIdByLegacyId[invoice.customer_legacy_local_id] || null,
+    project_id: projectIdByLegacyId[invoice.project_legacy_local_id] || null,
+    estimate_id: estIdBy[invoice.source_estimate_legacy_local_id] || null,
+    source_estimate_legacy_id: invoice.source_estimate_legacy_local_id || null,
+    invoice_number: invoice.invoice_number || null,
+    estimate_number: invoice.estimate_number || null,
+    status: invoice.status || "draft",
+    payment_status: invoice.payment_status || "unpaid",
+    invoice_date: invoice.invoice_date || null,
+    due_date: invoice.due_date || null,
+    total_amount: invoice.total ?? null,
+    amount_paid: invoice.amount_paid ?? 0,
+    balance_remaining: invoice.balance_remaining ?? null,
+    notes: invoice.notes || null,
+    terms: invoice.terms || null,
+  }));
   const invIdBy = Object.fromEntries(invoices.map((r) => [r.legacy_local_id, r.id]));
   const estimate_line_items = [];
   draft.estimates.forEach((e) => {
@@ -513,15 +658,55 @@ function writerShapedCloudRows(localData) {
     });
   });
   return {
-    customers: parentRows(draft.customers, "cust"),
-    projects: parentRows(draft.projects, "proj"),
+    customers,
+    projects,
     estimates,
     invoices,
-    invoice_payments: draft.invoicePayments.map((p, i) => ({ id: `db_pay_${i}`, legacy_local_id: p.legacy_local_id })),
+    invoice_payments: draft.invoicePayments.map((payment, i) => ({
+      id: `db_pay_${i}`,
+      legacy_local_id: payment.legacy_local_id,
+      invoice_id: invIdBy[payment.invoice_legacy_local_id] || null,
+      amount: payment.amount ?? null,
+      method: payment.method || null,
+      status: payment.status || null,
+      paid_at: payment.paid_at || null,
+    })),
     estimate_line_items,
     invoice_line_items,
   };
 }
+
+test("current canonical sample data maps through the writer contract and verifies Cloud OK", async () => {
+  const localData = buildDevSampleDataset();
+  const draft = mapLocalSnapshotToBackendDraft(localData, { companyId: "company_1", userId: "user_1" });
+  const cloudRows = writerShapedCloudRows(localData);
+  const paidInvoice = draft.invoices.find((invoice) => invoice.legacy_local_id === "sample_invoice_hilton_mobilization_deposit");
+  const partialInvoice = draft.invoices.find((invoice) => invoice.legacy_local_id === "sample_invoice_sonoran_signage_add");
+  const paidPayment = draft.invoicePayments.find((payment) => payment.legacy_local_id === "sample_payment_hilton_mobilization_deposit");
+  const partialPayment = draft.invoicePayments.find((payment) => payment.legacy_local_id === "sample_payment_sonoran_signage_add");
+
+  expect(DEV_SAMPLE_DATA_VERSION).toBe("2026-08-canonical-v1");
+  expect(draft.customers).toHaveLength(6);
+  expect(draft.projects).toHaveLength(6);
+  expect(draft.estimates).toHaveLength(8);
+  expect(draft.invoices).toHaveLength(8);
+  expect(draft.invoicePayments).toHaveLength(3);
+  expect(draft.estimates.flatMap((estimate) => estimate.line_items)).toHaveLength(40);
+  expect(draft.invoices.flatMap((invoice) => invoice.line_items)).toHaveLength(0);
+  expect(paidInvoice).toEqual(expect.objectContaining({ status: "paid", payment_status: "paid", amount_paid: paidInvoice.total, balance_remaining: 0 }));
+  expect(partialInvoice).toEqual(expect.objectContaining({ payment_status: "partial" }));
+  expect(partialInvoice.amount_paid).toBeGreaterThan(0);
+  expect(partialInvoice.balance_remaining).toBeGreaterThan(0);
+  expect(paidPayment).toEqual(expect.objectContaining({ status: "paid", method: "ach" }));
+  expect(partialPayment).toEqual(expect.objectContaining({ status: "paid", method: "ach" }));
+
+  const result = await verifyCloud({ localData, cloudRows });
+  expect(result.allMatched).toBe(true);
+
+  cloudRows.invoices[0].status = "sent";
+  const mismatched = await verifyCloud({ localData, cloudRows });
+  expect(mismatched.allMatched).toBe(false);
+});
 
 test("live stale-device shape: writer-shaped children with overlapping sort orders verify as allMatched (22 estimate line items)", async () => {
   const localData = liveShapeLocalData();
