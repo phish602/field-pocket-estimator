@@ -181,6 +181,8 @@ describe("backendDataMapper", () => {
       approvedTotal: 1234.56,
       invoiceId: "inv_1",
       invoiceNumber: "INV-100",
+      scopeNotes: "Preserved estimate scope",
+      terms: "Net 30",
       createdAt: 1710000000000,
       updatedAt: 1710001000000,
       labor: { lines: [{ id: "lab_1", description: "Labor", quantity: 2, rate: 50 }] },
@@ -200,6 +202,8 @@ describe("backendDataMapper", () => {
       total_cost: 800,
       gross_profit: 434.56,
       approved_total: 1234.56,
+      notes: "Preserved estimate scope",
+      terms: "Net 30",
     }));
     expect(Array.isArray(estimate.line_items)).toBe(true);
     expect(estimate.line_items).toEqual(expect.arrayContaining([
@@ -228,6 +232,8 @@ describe("backendDataMapper", () => {
       amountPaid: 234.56,
       balanceRemaining: 1000,
       total: 1234.56,
+      additionalNotes: "Preserved invoice notes",
+      terms: "Due on receipt",
       createdAt: 1710000000000,
       updatedAt: 1710001000000,
       sourceEstimateSnapshot: {
@@ -261,6 +267,8 @@ describe("backendDataMapper", () => {
       amount_paid: 234.56,
       balance_remaining: 1000,
       total: 1234.56,
+      notes: "Preserved invoice notes",
+      terms: "Due on receipt",
     }));
     expect(invoice.sourceEstimateSnapshot).toBeUndefined();
     expect(Array.isArray(invoice.line_items)).toBe(true);
@@ -290,6 +298,46 @@ describe("backendDataMapper", () => {
     }));
     expect(payment.notes).toBeUndefined();
     expect(payment.stripePayload).toBeUndefined();
+  });
+
+  test("maps a completed manual payment without a legacy status as paid", () => {
+    const context = createBackendMappingContext({ companyId: "company_1", userId: "user_1" });
+    const payment = mapLocalInvoicePaymentToBackendPayment({
+      id: "pay_2609",
+      amount: 9050.32,
+      method: "bank_transfer",
+      paidAt: "2026-08-12",
+    }, {
+      id: "inv_2609",
+      status: "paid",
+      paymentStatus: "paid",
+    }, context);
+
+    expect(payment).toEqual(expect.objectContaining({ status: "paid", paid_at: "2026-08-12T00:00:00.000Z" }));
+  });
+
+  test.each([
+    ["paid", "paid"],
+    ["void", "void"],
+    ["partial", "partial"],
+  ])("preserves explicit payment status %s", (status, expected) => {
+    const payment = mapLocalInvoicePaymentToBackendPayment({
+      id: `pay_${status}`,
+      amount: 25,
+      paidAt: "2026-08-12",
+      status,
+    }, { id: "inv_1" }, createBackendMappingContext({ companyId: "company_1", userId: "user_1" }));
+
+    expect(payment.status).toBe(expected);
+  });
+
+  test("does not promote an incomplete payment placeholder to paid", () => {
+    const payment = mapLocalInvoicePaymentToBackendPayment({
+      id: "pay_placeholder",
+      amount: 0,
+    }, { id: "inv_1", status: "sent", paymentStatus: "unpaid" }, createBackendMappingContext({ companyId: "company_1", userId: "user_1" }));
+
+    expect(payment.status).toBe("unpaid");
   });
 
   test("duplicate local customer ids produce a warning", () => {

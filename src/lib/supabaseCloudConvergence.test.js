@@ -598,7 +598,7 @@ test("live stale-device fixture: the tenth cloud invoice imports atomically, exi
 // carries production-shaped children: labor/material/generic kinds, overlapping
 // per-category sort orders, metadata.kind + metadata.unit_cost, and a unit.
 // ---------------------------------------------------------------------------
-const { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } = require("./supabaseEstimateRestorePayload");
+const { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION, buildEstimateRestorePayload } = require("./supabaseEstimateRestorePayload");
 
 // A thenable query chain: from(t).select(...).eq(...).eq(...)... resolves to the
 // table's rows. app_settings resolves empty (no restore bundle).
@@ -637,7 +637,7 @@ function writerEstimateRow({ local, id, customerUuid, projectUuid, totalAmount, 
     total_amount: totalAmount,
     notes: mapped.notes || null, terms: mapped.terms || null,
     converted_invoice_legacy_id: convertedInvoiceLegacyId,
-    restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: local.id, estimate: local },
+    restore_payload: buildEstimateRestorePayload(local),
     restore_payload_version: ESTIMATE_RESTORE_PAYLOAD_VERSION,
   };
 }
@@ -672,15 +672,15 @@ const U = { cust1: uuid(101), cust2: uuid(102), proj1: uuid(201), proj2: uuid(20
 
 function buildRawCloudTables() {
   const customers = [
-    { id: U.cust1, legacy_local_id: "cust-1", display_name: "Cust 1", customer_type: "residential" },
-    { id: U.cust2, legacy_local_id: "cust-2", display_name: "Cust 2", customer_type: "residential" },
+    { id: U.cust1, legacy_local_id: "cust-1", display_name: "Cust 1", company_name: "Cust 1", contact_name: "Cust 1", phone: null, email: null, billing_address: null, customer_type: "residential", customer_status: null },
+    { id: U.cust2, legacy_local_id: "cust-2", display_name: "Cust 2", company_name: "Cust 2", contact_name: "Cust 2", phone: null, email: null, billing_address: null, customer_type: "residential", customer_status: null },
   ];
   const projects = [
-    { id: U.proj1, legacy_local_id: "proj-1", customer_id: U.cust1, project_number: "P-1", project_name: "Proj 1" },
-    { id: U.proj2, legacy_local_id: "proj-2", customer_id: U.cust2, project_number: "P-2", project_name: "Proj 2" },
+    { id: U.proj1, legacy_local_id: "proj-1", customer_id: U.cust1, project_number: "P-1", project_name: "Proj 1", status: "active", notes: null, scope_summary: null },
+    { id: U.proj2, legacy_local_id: "proj-2", customer_id: U.cust2, project_number: "P-2", project_name: "Proj 2", status: "active", notes: null, scope_summary: null },
     // Gate 16D: a legitimately unassigned (customerless) project -- customer_id
     // is null in the cloud and restores as customerId "".
-    { id: U.projCl, legacy_local_id: "proj-cl", customer_id: null, project_number: "P-CL", project_name: "Unassigned" },
+    { id: U.projCl, legacy_local_id: "proj-cl", customer_id: null, project_number: "P-CL", project_name: "Unassigned", status: "active", notes: null, scope_summary: null },
   ];
   const est1Local = estimate("est-1", { customerId: "cust-1", projectId: "proj-1", estimateNumber: "EST-1" });
   // est-1 carries total 100 and no approved/grand total, so the writer persists
@@ -696,7 +696,7 @@ function buildRawCloudTables() {
     writerInvoiceChildRows(legacy, cloudId, [{ kind: "invoice", sort_order: 0, description: "Service", quantity: 1, unit_price: 100, total: 100 }], `db-il-${i}`).forEach((r) => invoiceLineRows.push(r));
   }
   // The tenth, cloud-only invoice with a valid source estimate and 6 children.
-  invoiceRows.push({ id: U.inv(10), legacy_local_id: "inv-10", customer_id: U.cust1, project_id: U.proj1, source_estimate_legacy_id: "est-1", invoice_number: "INV-10", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
+  invoiceRows.push({ id: U.inv(10), legacy_local_id: "inv-10", customer_id: U.cust1, project_id: U.proj1, estimate_id: U.est1, source_estimate_legacy_id: "est-1", invoice_number: "INV-10", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
   writerInvoiceChildRows("inv-10", U.inv(10), inv10BackendLines(), "db-il-10").forEach((r) => invoiceLineRows.push(r));
 
   return { customers, projects, estimates, invoices: invoiceRows, invoice_payments: [], estimate_line_items: [], invoice_line_items: invoiceLineRows, est1Local };
@@ -1169,8 +1169,20 @@ describe("Gate 16F/16G live-shaped device replay", () => {
   };
 
   function buildLiveRawCloudTables() {
-    const customers = Array.from({ length: 7 }, (_, i) => ({ id: L.cust(i + 1), legacy_local_id: `cust-${i + 1}`, display_name: `Customer ${i + 1}`, customer_type: "residential" }));
-    const projects = Array.from({ length: 11 }, (_, i) => ({ id: L.proj(i + 1), legacy_local_id: `proj-${i + 1}`, customer_id: L.cust(((i) % 7) + 1), project_number: `P-${i + 1}`, project_name: `Project ${i + 1}` }));
+    const customers = Array.from({ length: 7 }, (_, i) => {
+      const name = `Customer ${i + 1}`;
+      return {
+        id: L.cust(i + 1), legacy_local_id: `cust-${i + 1}`,
+        display_name: name, company_name: name, contact_name: name,
+        phone: null, email: null, billing_address: null,
+        customer_type: "residential", customer_status: null,
+      };
+    });
+    const projects = Array.from({ length: 11 }, (_, i) => ({
+      id: L.proj(i + 1), legacy_local_id: `proj-${i + 1}`,
+      customer_id: L.cust(((i) % 7) + 1), project_number: `P-${i + 1}`,
+      project_name: `Project ${i + 1}`, status: "active", notes: null, scope_of_work: null,
+    }));
 
     const estimateRows = []; const estimateLineRows = [];
     LIVE_ESTIMATE_SPECS.forEach(({ n, spec, totalAmount }) => {
@@ -1192,7 +1204,7 @@ describe("Gate 16F/16G live-shaped device replay", () => {
       paymentRows.push({ id: L.pay(i), legacy_local_id: `pay-${i}`, invoice_id: L.inv(i), amount: 25 * i, method: "check", status: "paid", paid_at: "2026-07-05T00:00:00.000Z" });
     }
     // The tenth, cloud-only invoice: six children, sourced from est-1.
-    invoiceRows.push({ id: L.inv(10), legacy_local_id: "inv-10", customer_id: L.cust(1), project_id: L.proj(1), source_estimate_legacy_id: "est-1", invoice_number: "INV-2010", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
+    invoiceRows.push({ id: L.inv(10), legacy_local_id: "inv-10", customer_id: L.cust(1), project_id: L.proj(1), estimate_id: L.est(1), source_estimate_legacy_id: "est-1", invoice_number: "INV-2010", status: "sent", payment_status: "unpaid", total_amount: 495, amount_paid: 0, balance_remaining: 495, invoice_date: "2026-07-02", due_date: "2026-08-02", notes: "Framing job" });
     writerInvoiceChildRows("inv-10", L.inv(10), inv10BackendLines(), "db-live-il-10").forEach((row) => invoiceLineRows.push(row));
 
     return { customers, projects, estimates: estimateRows, invoices: invoiceRows, invoice_payments: paymentRows, estimate_line_items: estimateLineRows, invoice_line_items: invoiceLineRows };

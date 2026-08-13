@@ -1,6 +1,8 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
 import { mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import { buildPersistedEstimateContract } from "./supabaseEstimatePersistenceContract";
+import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 import { readCloudPartialRecoveryStatus } from "./cloudPartialRecoveryStatus";
 import { readCloudAssetBindings } from "./cloudAssetBindings";
 import {
@@ -16,16 +18,16 @@ import { isProvenEmptyInvoiceLineItemPlaceholder } from "./staleInvoiceLineItemP
 // cloud and carry no business content.
 export const STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR = "stale_invoice_line_item_empty_placeholders";
 
-export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v1";
+export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-v2";
 
 // These tables carry a direct local legacy_local_id, so local vs cloud rows
 // can be diffed 1:1 by id, not just by count.
 const ID_COMPARABLE_TABLES = [
-  ["customers", "customers"],
-  ["projects", "projects"],
-  ["estimates", "estimates"],
-  ["invoices", "invoices"],
-  ["invoice_payments", "invoicePayments"],
+  ["customers", "customers", "id, legacy_local_id, display_name, company_name, contact_name, phone, email, billing_address, customer_type, customer_status"],
+  ["projects", "projects", "id, legacy_local_id, customer_id, project_number, project_name, site_address, status, notes, scope_summary"],
+  ["estimates", "estimates", "id, legacy_local_id, customer_id, project_id, estimate_number, status, total_amount, notes, terms, converted_invoice_legacy_id, restore_payload, restore_payload_version"],
+  ["invoices", "invoices", "id, legacy_local_id, customer_id, project_id, estimate_id, source_estimate_legacy_id, invoice_number, estimate_number, status, payment_status, invoice_date, due_date, total_amount, amount_paid, balance_remaining, notes, terms"],
+  ["invoice_payments", "invoicePayments", "id, legacy_local_id, invoice_id, amount, method, status, paid_at"],
 ];
 
 const CHILD_TABLES = [
@@ -89,6 +91,137 @@ function normalizedChildValue(value) {
   return value;
 }
 
+function normalizedText(value) {
+  const text = asText(value);
+  return text || null;
+}
+
+function normalizedMoney(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round((number + Number.EPSILON) * 100) / 100;
+}
+
+function normalizedDate(value) {
+  const text = asText(value);
+  if (!text) return null;
+  const dateOnly = text.match(/^(\d{4}-\d{2}-\d{2})(?:$|T)/);
+  if (dateOnly) return dateOnly[1];
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : text;
+}
+
+function normalizedJson(value) {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) return value.map(normalizedJson);
+  if (typeof value === "object") {
+    return Object.keys(value).sort().reduce((out, key) => ({ ...out, [key]: normalizedJson(value[key]) }), {});
+  }
+  return value;
+}
+
+function sameNormalizedValue(expected, actual, kind) {
+  const normalize = kind === "money"
+    ? normalizedMoney
+    : kind === "date"
+      ? normalizedDate
+      : kind === "json"
+        ? normalizedJson
+        : normalizedText;
+  return JSON.stringify(normalize(expected)) === JSON.stringify(normalize(actual));
+}
+
+function compareSemanticContract(expected, cloud, fields) {
+  return fields
+    .filter(([field, kind = "text"]) => !sameNormalizedValue(expected?.[field], cloud?.[field], kind))
+    .map(([field]) => field);
+}
+
+function cloudIdByLegacyId(rows) {
+  return new Map((Array.isArray(rows) ? rows : []).map((row) => [asText(row?.legacy_local_id), asText(row?.id)]));
+}
+
+function buildCustomerContract(customer) {
+  return {
+    display_name: customer?.display_name || null,
+    company_name: customer?.company_name || null,
+    contact_name: customer?.contact_name || null,
+    phone: customer?.phone || null,
+    email: customer?.email || null,
+    billing_address: customer?.billing_address || customer?.address || null,
+    customer_type: customer?.customer_type || null,
+    customer_status: customer?.status || null,
+  };
+}
+
+function buildProjectContract(project, customerIds) {
+  return {
+    customer_id: customerIds.get(asText(project?.customer_legacy_local_id)) || null,
+    project_number: project?.project_number || null,
+    project_name: project?.project_name || null,
+    site_address: project?.site_address || null,
+    status: project?.status || "draft",
+    notes: project?.notes || null,
+    scope_summary: project?.scope_summary || null,
+  };
+}
+
+function buildEstimateContract(estimate, customerIds, projectIds, localEstimatesByLegacyId) {
+  const persisted = buildPersistedEstimateContract(estimate);
+  const sourceEstimate = localEstimatesByLegacyId.get(asText(persisted.legacy_local_id));
+  return {
+    customer_id: customerIds.get(asText(persisted.customer_legacy_local_id)) || null,
+    project_id: projectIds.get(asText(persisted.project_legacy_local_id)) || null,
+    estimate_number: persisted.estimate_number,
+    status: persisted.status,
+    total_amount: persisted.total_amount,
+    notes: persisted.notes,
+    terms: persisted.terms,
+    converted_invoice_legacy_id: persisted.converted_invoice_legacy_local_id,
+    restore_payload: sourceEstimate ? buildEstimateRestorePayload(sourceEstimate) : null,
+    restore_payload_version: sourceEstimate ? ESTIMATE_RESTORE_PAYLOAD_VERSION : null,
+  };
+}
+
+function buildInvoiceContract(invoice, customerIds, projectIds, estimateIds) {
+  return {
+    customer_id: customerIds.get(asText(invoice?.customer_legacy_local_id)) || null,
+    project_id: projectIds.get(asText(invoice?.project_legacy_local_id)) || null,
+    estimate_id: estimateIds.get(asText(invoice?.source_estimate_legacy_local_id)) || null,
+    source_estimate_legacy_id: invoice?.source_estimate_legacy_local_id || null,
+    invoice_number: invoice?.invoice_number || null,
+    estimate_number: invoice?.estimate_number || null,
+    status: invoice?.status || "draft",
+    payment_status: invoice?.payment_status || "unpaid",
+    invoice_date: invoice?.invoice_date || null,
+    due_date: invoice?.due_date || null,
+    total_amount: invoice?.total ?? null,
+    amount_paid: invoice?.amount_paid ?? 0,
+    balance_remaining: invoice?.balance_remaining ?? null,
+    notes: invoice?.notes || null,
+    terms: invoice?.terms || null,
+  };
+}
+
+function buildInvoicePaymentContract(payment, invoiceIds) {
+  return {
+    invoice_id: invoiceIds.get(asText(payment?.invoice_legacy_local_id)) || null,
+    amount: payment?.amount ?? null,
+    method: payment?.method || null,
+    status: payment?.status || null,
+    paid_at: payment?.paid_at || null,
+  };
+}
+
+const SEMANTIC_FIELDS = {
+  customers: [["display_name"], ["company_name"], ["contact_name"], ["phone"], ["email"], ["billing_address"], ["customer_type"], ["customer_status"]],
+  projects: [["customer_id"], ["project_number"], ["project_name"], ["site_address"], ["status"], ["notes"], ["scope_summary"]],
+  estimates: [["customer_id"], ["project_id"], ["estimate_number"], ["status"], ["total_amount", "money"], ["notes"], ["terms"], ["converted_invoice_legacy_id"], ["restore_payload", "json"], ["restore_payload_version"]],
+  invoices: [["customer_id"], ["project_id"], ["estimate_id"], ["source_estimate_legacy_id"], ["invoice_number"], ["estimate_number"], ["status"], ["payment_status"], ["invoice_date", "date"], ["due_date", "date"], ["total_amount", "money"], ["amount_paid", "money"], ["balance_remaining", "money"], ["notes"], ["terms"]],
+  invoice_payments: [["invoice_id"], ["amount", "money"], ["method"], ["status"], ["paid_at", "date"]],
+};
+
 function sameChildContract(expected, cloud, { parentColumn, includeLineRole }) {
   const fields = [parentColumn, "sort_order", "description", "quantity", "unit", "unit_price", "total_price", "metadata"];
   if (includeLineRole) fields.push("line_role");
@@ -130,6 +263,25 @@ function hasValidEstimateRestorePayload(row) {
     !Array.isArray(row.restore_payload) &&
     asText(row?.restore_payload_version)
   );
+}
+
+function buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot) {
+  const customerIds = cloudIdByLegacyId(cloudRowsByTable.customers);
+  const projectIds = cloudIdByLegacyId(cloudRowsByTable.projects);
+  const estimateIds = cloudIdByLegacyId(cloudRowsByTable.estimates);
+  const invoiceIds = cloudIdByLegacyId(cloudRowsByTable.invoices);
+  const localEstimatesByLegacyId = new Map(
+    (Array.isArray(localSnapshot?.estimates) ? localSnapshot.estimates : [])
+      .map((estimate) => [asText(estimate?.id), estimate])
+      .filter(([legacyId]) => Boolean(legacyId))
+  );
+
+  if (table === "customers") return buildCustomerContract(localRow);
+  if (table === "projects") return buildProjectContract(localRow, customerIds);
+  if (table === "estimates") return buildEstimateContract(localRow, customerIds, projectIds, localEstimatesByLegacyId);
+  if (table === "invoices") return buildInvoiceContract(localRow, customerIds, projectIds, estimateIds);
+  if (table === "invoice_payments") return buildInvoicePaymentContract(localRow, invoiceIds);
+  return {};
 }
 
 function diffIdSets(localIds, cloudIds) {
@@ -334,10 +486,7 @@ export async function runSupabaseCloudVerification({
   let preservedSkippedCloudEstimateRowIds = new Set();
   let preservedOlderEstimatesMatched = false;
 
-  for (const [table, key] of ID_COMPARABLE_TABLES) {
-    const columns = table === "estimates"
-      ? "id, legacy_local_id, restore_payload, restore_payload_version"
-      : "id, legacy_local_id";
+  for (const [table, key, columns] of ID_COMPARABLE_TABLES) {
     const { rows, error } = await readCloudRows(client, table, companyId, columns);
     if (error) {
       tableResults.push(buildUnavailableTableResult(table, localCounts[key], error));
@@ -397,12 +546,26 @@ export async function runSupabaseCloudVerification({
           .filter(Boolean)
       );
     }
+    const cloudByLegacyId = new Map((Array.isArray(rows) ? rows : []).map((row) => [asText(row?.legacy_local_id), row]));
+    const semanticMismatchLegacyIds = [];
+    const semanticMismatchFields = new Set();
+    (Array.isArray(draft?.[key]) ? draft[key] : []).forEach((localRow) => {
+      const legacyLocalId = asText(localRow?.legacy_local_id);
+      const cloudRow = cloudByLegacyId.get(legacyLocalId);
+      if (!legacyLocalId || !cloudRow) return;
+      const expected = buildExpectedSemanticContract(table, localRow, draft, cloudRowsByTable, localSnapshot);
+      const mismatchedFields = compareSemanticContract(expected, cloudRow, SEMANTIC_FIELDS[table] || []);
+      if (mismatchedFields.length === 0) return;
+      semanticMismatchLegacyIds.push(legacyLocalId);
+      mismatchedFields.forEach((field) => semanticMismatchFields.add(field));
+    });
     const matched = (
       localCounts[key] === rows.length
       && missing.length === 0
       && extra.length === 0
       && missingRestorePayloadLegacyIds.length === 0
-    ) || preservedOlderEstimateSetMatched;
+      && semanticMismatchLegacyIds.length === 0
+    ) || (preservedOlderEstimateSetMatched && semanticMismatchLegacyIds.length === 0);
 
     tableResults.push({
       table,
@@ -414,6 +577,9 @@ export async function runSupabaseCloudVerification({
       missingRestorePayloadLegacyIds,
       oldDeviceRequiredMissingRestorePayloadLegacyIds,
       preservedMissingRestorePayloadLegacyIds,
+      semanticMismatchLegacyIds: semanticMismatchLegacyIds.sort(),
+      semanticMismatchCount: semanticMismatchLegacyIds.length,
+      semanticMismatchFields: [...semanticMismatchFields].sort().slice(0, 24),
       countOnly: false,
       preservedExtraLegacyIds: preservedOlderEstimateSetMatched ? extra : [],
     });
