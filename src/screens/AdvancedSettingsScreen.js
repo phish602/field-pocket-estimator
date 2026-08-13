@@ -355,7 +355,6 @@ export default function AdvancedSettingsScreen({
   const [cloudConfirmDialog, setCloudConfirmDialog] = useState(null);
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
-  const isDevBuild = process.env.NODE_ENV !== "production";
   const showDeveloperCloudTools = resolveDeveloperCloudToolsEnabled(developerCloudToolsEnabled);
   const {
     configured: isSupabaseReady,
@@ -1367,7 +1366,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const loadDevSampleData = () => {
-    if (!isDevBuild) return;
+    if (!showDeveloperCloudTools) return;
     try {
       setBusyLabel("Loading sample data...");
       const result = seedDevSampleData();
@@ -1382,7 +1381,7 @@ export default function AdvancedSettingsScreen({
   };
 
   const clearOnlyDevSampleData = () => {
-    if (!isDevBuild) return;
+    if (!showDeveloperCloudTools) return;
     if (!window.confirm("Remove seeded sample customers, estimates, and invoices only?")) return;
     try {
       setBusyLabel("Clearing sample data...");
@@ -2884,15 +2883,15 @@ export default function AdvancedSettingsScreen({
                 </button>
               </div>
 
-              {isDevBuild ? (
+              {showDeveloperCloudTools ? (
                 <div style={{ display: "grid", gap: 8, paddingTop: 8, borderTop: "1px solid rgba(148,163,184,0.18)" }}>
                   <div className="pe-field-label" style={{ marginBottom: 0 }}>Development Sample Data</div>
                   <div className="pe-field-helper">
-                    Loads deterministic customers, estimates, and invoice records into normal EstiPaid storage for local testing only.
+                    Loads deterministic development fixtures into normal EstiPaid storage for controlled testing.
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button type="button" className="pe-btn pe-btn-ghost" onClick={loadDevSampleData}>
-                      Load Sample Data
+                      Load / Refresh Sample Data
                     </button>
                     <button type="button" className="pe-btn pe-btn-ghost" onClick={clearOnlyDevSampleData}>
                       Clear Sample Data
