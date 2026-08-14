@@ -39,6 +39,21 @@
   font-family: inherit;
 }
 
+/* Viewport-stability guard (shared boundary).
+   Mobile WebKit zooms the whole page when a text-entry control smaller than 16px
+   receives focus, and it does NOT restore the previous scale on blur -- the zoom
+   then follows the user through every later screen, which reads as "the app
+   randomly zooms in while navigating". 16px is the browser threshold, not a
+   design choice: it is the largest size that still triggers no zoom. This sets
+   the floor for controls that do not otherwise declare a size; any deliberate
+   larger rule still wins on specificity/order. Text-entry controls only -- this
+   must not become app-wide typography growth. */
+.pe-app input:not(:where([type="checkbox"], [type="radio"])),
+.pe-app select,
+.pe-app textarea {
+  font-size: 16px;
+}
+
 /* Canonical cyber-glass control treatment from Estimator. */
 .pe-app input.pe-input,
 .pe-app select.pe-input,

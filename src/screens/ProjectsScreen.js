@@ -153,7 +153,10 @@ const S = {
     border: "1px solid rgba(255,255,255,0.1)",
     borderRadius: 10,
     color: "rgba(230,241,248,0.92)",
-    fontSize: 14,
+    // Must stay >= 16: mobile WebKit zooms the page when a focused control is
+    // smaller than that, and the zoom persists across navigation. Inline styles
+    // win over the shared FieldSystem.css guard, so the floor is repeated here.
+    fontSize: 16,
     padding: "10px 14px",
     fontFamily: "inherit",
     boxSizing: "border-box",

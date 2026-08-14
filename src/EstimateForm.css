@@ -851,7 +851,8 @@
     min-height: 40px;
     padding: 9px 40px 9px 10px !important;
     border-radius: 12px;
-    font-size: 15px;
+    /* >= 16px keeps mobile WebKit from zooming the page on focus. */
+    font-size: 16px;
     font-weight: 800;
     line-height: 1.1;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -1488,7 +1489,8 @@
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(8, 12, 20, 0.36);
-  font-size: 15px;
+  /* >= 16px keeps mobile WebKit from zooming the page on focus. */
+  font-size: 16px;
   line-height: 1.5;
   padding: 12px 14px;
   color: rgba(240, 244, 248, 0.96);
@@ -3815,7 +3817,8 @@
   background-color: rgba(8, 15, 22, 0.82);
   color: rgba(218, 231, 238, 0.88);
   font: inherit;
-  font-size: 11px;
+  /* >= 16px keeps mobile WebKit from zooming the page on focus. */
+  font-size: 16px;
   font-weight: 750;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -4034,7 +4037,8 @@
     min-width: 104px;
     min-height: 38px;
     padding-inline: 9px 28px;
-    font-size: 10.5px;
+    /* >= 16px keeps mobile WebKit from zooming the page on focus. */
+    font-size: 16px;
   }
   .pe-command-bar-doc.has-summary {
     display: grid;
