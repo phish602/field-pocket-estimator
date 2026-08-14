@@ -1146,13 +1146,22 @@ function getStatusConfirmationContent(nextStatus, lang) {
   return null;
 }
 
-export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDetail }) {
+export default function InvoicesScreen({
+  lang,
+  t,
+  spinTick = 0,
+  onOpenProjectDetail,
+  postSaveTarget = null,
+  onPostSaveTargetConsumed,
+  onBeginInvoiceEdit,
+}) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
-  const [q, setQ] = useState("");
+  const initialPostSaveFilters = postSaveTarget?.type === "invoice" ? (postSaveTarget.filters || {}) : {};
+  const [q, setQ] = useState(() => String(initialPostSaveFilters.q || ""));
   const [typeaheadHidden, setTypeaheadHidden] = useState(false);
   const [highlightInvoiceId, setHighlightInvoiceId] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [showArchived, setShowArchived] = useState(false);
+  const [statusFilter, setStatusFilter] = useState(() => String(initialPostSaveFilters.statusFilter || "all"));
+  const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
   const [list, setList] = useState(() => readStoredInvoices());
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [expanded, setExpanded] = useState(() => ({}));
@@ -1485,6 +1494,50 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
     highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
   };
 
+  const savedInvoice = postSaveTarget?.type === "invoice"
+    ? (list || []).find((invoice) => String(invoice?.id || "").trim() === String(postSaveTarget?.id || "").trim())
+    : null;
+
+  useEffect(() => {
+    if (!savedInvoice) return;
+    if (Boolean(savedInvoice?.archived) !== Boolean(showArchived)) {
+      setShowArchived(Boolean(savedInvoice?.archived));
+      return;
+    }
+    const meta = invoiceDisplayMeta.get(String(savedInvoice?.id || "")) || {};
+    const query = String(q || "").trim().toLowerCase();
+    const searchText = [
+      savedInvoice?.invoiceNumber,
+      meta.customerName,
+      savedInvoice?.customerName,
+      meta.projectName,
+      savedInvoice?.projectName,
+      savedInvoice?.workTitle,
+      savedInvoice?.jobTitle,
+      savedInvoice?.jobName,
+      savedInvoice?.job?.title,
+      savedInvoice?.title,
+      savedInvoice?.name,
+      savedInvoice?.estimateNumber,
+    ].map((value) => String(value || "").toLowerCase());
+    if (query && !searchText.some((value) => value.includes(query))) setQ("");
+    if (statusFilter !== "all" && deriveInvoiceStatus(savedInvoice) !== statusFilter) setStatusFilter("all");
+  }, [invoiceDisplayMeta, q, savedInvoice, showArchived, statusFilter]);
+
+  useEffect(() => {
+    if (!savedInvoice || !filtered.some((invoice) => String(invoice?.id || "") === String(savedInvoice?.id || ""))) return;
+    const savedId = String(savedInvoice?.id || "").trim();
+    if (!savedId) return;
+    const node = invoiceCardRefs.current?.[savedId];
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    setHighlightInvoiceId(savedId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
+    try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+    onPostSaveTargetConsumed?.();
+  }, [filtered, onPostSaveTargetConsumed, savedInvoice, showListSkeleton]);
+
   useEffect(() => {
     if (!highlightInvoiceId) return;
     const node = invoiceCardRefs.current?.[highlightInvoiceId];
@@ -1638,6 +1691,7 @@ export default function InvoicesScreen({ lang, t, spinTick = 0, onOpenProjectDet
       setShowToast(true);
       return;
     }
+    onBeginInvoiceEdit?.(invoice, { q, statusFilter, showArchived });
     try {
       localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
       localStorage.removeItem(ACTIVE_EDIT_CONTEXT_KEY);

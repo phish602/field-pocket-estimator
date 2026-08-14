@@ -152,10 +152,48 @@ describe("InvoicesScreen search typeahead", () => {
       });
       const card = document.querySelector('[data-invoice-card-id="inv_a"]');
       expect(card.getAttribute("data-invoice-card-highlighted")).toBe("true");
-      expect(scrollIntoView).toHaveBeenCalled();
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     } finally {
       Element.prototype.scrollIntoView = prev;
       alertSpy.mockRestore();
+    }
+  });
+
+  test("a post-save target reveals, highlights, and consumes the exact invoice after relaxing conflicting search and status", async () => {
+    const scrollIntoView = jest.fn();
+    const prev = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const onPostSaveTargetConsumed = jest.fn();
+    const invoices = [
+      createInvoice({ id: "inv_open", invoiceNumber: "INV-0041", status: "sent", paymentStatus: "open" }),
+      createInvoice({ id: "inv_paid", invoiceNumber: "INV-0042", status: "paid", paymentStatus: "paid", amountPaid: 900, balanceRemaining: 0 }),
+    ];
+
+    try {
+      seedInvoices(invoices);
+      render(
+        <InvoicesScreen
+          lang="en"
+          t={(key) => key}
+          postSaveTarget={{
+            type: "invoice",
+            id: "inv_paid",
+            filters: { q: "does not match", statusFilter: "open" },
+          }}
+          onPostSaveTargetConsumed={onPostSaveTargetConsumed}
+        />
+      );
+
+      await waitFor(() => {
+        const card = document.querySelector('[data-invoice-card-id="inv_paid"]');
+        expect(card).toHaveAttribute("data-invoice-card-highlighted", "true");
+      });
+      expect(getSearchInput()).toHaveValue("");
+      expect(screen.getByRole("combobox")).toHaveValue("all");
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(onPostSaveTargetConsumed).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = prev;
     }
   });
 

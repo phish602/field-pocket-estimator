@@ -1136,6 +1136,22 @@ export default function CustomersScreen({
     setToastMessage(label("Customer saved", "Cliente guardado"));
     setShowToast(true);
 
+    // Normal section saves stay in this mounted list. Reuse the existing
+    // typeahead target behavior so the saved card, rather than the dashboard,
+    // becomes the user's immediate visual context. Estimator-origin saves keep
+    // their established builder handoff below.
+    if (!autoUseOnSave) {
+      const query = norm(q);
+      const savedText = norm(JSON.stringify(nextItem));
+      if (query && !savedText.includes(query)) setQ("");
+      if (Boolean(nextItem?.archived) !== Boolean(showArchived)) {
+        setShowArchived(Boolean(nextItem?.archived));
+      }
+      setHighlightCustomerId(id);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => setHighlightCustomerId(""), 2000);
+    }
+
     if (autoUseOnSave && typeof onDone === "function") {
       try {
         const payloadCustomer = { ...nextItem, ...toEstimatorFlat(nextItem) };

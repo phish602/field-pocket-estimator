@@ -279,3 +279,47 @@ describe("CustomersScreen typeahead dropdown", () => {
     expect(screen.getAllByText("John Smith").length).toBeGreaterThan(0);
   });
 });
+
+describe("CustomersScreen post-save continuity", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    seedProjects([]);
+    seedEstimates([]);
+    seedInvoices([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test("editing a normal customer save scrolls and highlights the saved card without triggering the estimator handoff", async () => {
+    const scrollIntoView = jest.fn();
+    const prev = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const onDone = jest.fn();
+    seedCustomers([createCustomer({
+      id: "cust_saved",
+      fullName: "Saved Customer",
+      name: "Saved Customer",
+      resService: { street: "123 Main St", city: "Phoenix", state: "AZ", zip: "85001" },
+    })]);
+
+    try {
+      render(<CustomersScreen lang="en" t={(key) => key} onDone={onDone} />);
+      await screen.findByText("Saved Customer");
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+      fireEvent.change(screen.getByDisplayValue("Saved Customer"), { target: { value: "Saved Customer Updated" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => {
+        const card = document.querySelector('[data-customer-card-id="cust_saved"]');
+        expect(card).toHaveAttribute("data-customer-card-highlighted", "true");
+      });
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(onDone).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = prev;
+    }
+  });
+});

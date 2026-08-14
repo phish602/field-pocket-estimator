@@ -148,7 +148,44 @@ describe("EstimatesScreen search typeahead", () => {
       });
       const card = document.querySelector('[data-estimate-card-id="est_approved"]');
       expect(card.getAttribute("data-estimate-card-highlighted")).toBe("true");
-      expect(scrollIntoView).toHaveBeenCalled();
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    } finally {
+      Element.prototype.scrollIntoView = prev;
+    }
+  });
+
+  test("a post-save target reveals, highlights, and consumes the exact estimate after relaxing only conflicting filters", async () => {
+    const scrollIntoView = jest.fn();
+    const prev = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const onPostSaveTargetConsumed = jest.fn();
+    const estimates = seedThree();
+
+    try {
+      seedEstimates(estimates);
+      render(
+        <EstimatesScreen
+          lang="en"
+          t={(k) => k}
+          history={estimates}
+          postSaveTarget={{
+            type: "estimate",
+            id: "est_approved",
+            filters: { searchQuery: "does not match", statusFilter: "pending", valueFilter: "small" },
+          }}
+          onPostSaveTargetConsumed={onPostSaveTargetConsumed}
+        />
+      );
+
+      await waitFor(() => {
+        const card = document.querySelector('[data-estimate-card-id="est_approved"]');
+        expect(card).toHaveAttribute("data-estimate-card-highlighted", "true");
+      });
+      expect(getSearchInput()).toHaveValue("");
+      expect(screen.getAllByRole("combobox")[0]).toHaveValue("all");
+      expect(screen.getAllByRole("combobox")[1]).toHaveValue("all");
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(onPostSaveTargetConsumed).toHaveBeenCalled();
     } finally {
       Element.prototype.scrollIntoView = prev;
     }
