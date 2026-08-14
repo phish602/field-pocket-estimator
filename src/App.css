@@ -1546,7 +1546,10 @@ body::before {
   color: #e8f1f5;
   padding: 6px 10px;
   border-radius: 8px;
-  font-size: 13px;
+  /* Must stay >= 16px: mobile WebKit zooms the page when a control smaller than
+     that receives focus, and it never restores the previous scale on blur, so the
+     zoom follows the user into every screen they navigate to next. */
+  font-size: 16px;
   backdrop-filter: blur(8px);
   outline: none;
   transition: all .15s ease;
