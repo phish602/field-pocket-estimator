@@ -32,7 +32,12 @@ export const INVOICE_DRILLDOWNS = {
 };
 
 export const PROJECT_DRILLDOWNS = {
+  // The Projects hero counts strictly active jobs, while Home and Snapshot
+  // count jobs in motion (active or still estimating). Both definitions already
+  // exist in the app, so each gets its own predicate rather than one being
+  // silently reused for the other.
   ACTIVE: "active",
+  IN_MOTION: "in-motion",
   BALANCE: "balance",
   OVERDUE: "overdue",
   READY_TO_INVOICE: "approved",
@@ -144,10 +149,24 @@ export function invoiceMatchesDrilldown(invoice, drilldown, options = {}) {
 // Projects are matched against the normalized rows the portfolio already
 // builds (status/totals/overdueCount/approvedEstCount), so the predicates are
 // the same expressions the hero stats reduce over.
+// Project rows reach this from two shapes: the Projects list flattens the
+// derived display status onto `status`, while Home keeps it on `_displayStatus`.
+// Both resolve to the same derived status here so one predicate serves both.
+export function projectDisplayStatusKey(project) {
+  return String(
+    project?._displayStatus?.key
+    || project?.displayStatus?.key
+    || project?.status
+    || ""
+  ).toLowerCase();
+}
+
 export function projectMatchesDrilldown(project, drilldown) {
   const key = String(drilldown || "").trim().toLowerCase();
   if (!key || key === "all") return true;
-  if (key === PROJECT_DRILLDOWNS.ACTIVE) return String(project?.status || "") === "active";
+  const status = projectDisplayStatusKey(project);
+  if (key === PROJECT_DRILLDOWNS.ACTIVE) return status === "active";
+  if (key === PROJECT_DRILLDOWNS.IN_MOTION) return status === "active" || status === "estimating";
   if (key === PROJECT_DRILLDOWNS.BALANCE) return toNum(project?.totals?.balanceRemaining) > 0;
   if (key === PROJECT_DRILLDOWNS.OVERDUE) return toNum(project?.overdueCount) > 0;
   if (key === PROJECT_DRILLDOWNS.READY_TO_INVOICE) return toNum(project?.approvedEstCount) > 0;
@@ -212,6 +231,7 @@ const DRILLDOWN_LABELS = {
   },
   [DRILLDOWN_SCOPES.PROJECTS]: {
     [PROJECT_DRILLDOWNS.ACTIVE]: { en: "Active jobs", es: "Trabajos activos" },
+    [PROJECT_DRILLDOWNS.IN_MOTION]: { en: "Jobs in motion", es: "Trabajos en curso" },
     [PROJECT_DRILLDOWNS.BALANCE]: { en: "Balance due", es: "Saldo pendiente" },
     [PROJECT_DRILLDOWNS.OVERDUE]: { en: "Overdue invoices", es: "Facturas vencidas" },
     [PROJECT_DRILLDOWNS.READY_TO_INVOICE]: { en: "Ready to invoice", es: "Listo para facturar" },
@@ -258,4 +278,20 @@ export function readDrilldownIntent(intent, scope) {
   if (!intent || typeof intent !== "object") return "";
   if (String(intent.scope || "") !== String(scope || "")) return "";
   return String(intent.drilldown || "").trim();
+}
+
+// When a dashboard card already identifies one exact record -- an at-risk
+// invoice, for instance -- the intent names that record instead of a subset, so
+// the destination opens straight onto it rather than a filtered list.
+export function createDrilldownRecordIntent(scope, recordId) {
+  const normalizedScope = String(scope || "").trim();
+  const normalizedId = String(recordId || "").trim();
+  if (!normalizedScope || !normalizedId) return null;
+  return { scope: normalizedScope, drilldown: "", recordId: normalizedId, seq: Date.now() };
+}
+
+export function readDrilldownRecordId(intent, scope) {
+  if (!intent || typeof intent !== "object") return "";
+  if (String(intent.scope || "") !== String(scope || "")) return "";
+  return String(intent.recordId || "").trim();
 }

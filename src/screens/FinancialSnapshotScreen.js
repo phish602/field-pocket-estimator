@@ -12,6 +12,22 @@ import {
 } from "../utils/invoices";
 import { readStoredProjects } from "../utils/projects";
 import { getEntitlementsFromSubscriptionState } from "../lib/subscriptionPlanState";
+import { ROUTES } from "../constants/routes";
+import {
+  DRILLDOWN_SCOPES,
+  ESTIMATE_DRILLDOWNS,
+  INVOICE_DRILLDOWNS,
+  PROJECT_DRILLDOWNS,
+} from "../utils/dashboardDrilldowns";
+
+// Snapshot's pipeline bucket keys map one-to-one onto the estimate lifecycle
+// statuses the Estimates screen already filters by.
+const PIPELINE_BUCKET_DRILLDOWNS = {
+  draft: ESTIMATE_DRILLDOWNS.DRAFT,
+  pending: ESTIMATE_DRILLDOWNS.AWAITING,
+  approved: ESTIMATE_DRILLDOWNS.APPROVED,
+  lost: ESTIMATE_DRILLDOWNS.LOST,
+};
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -775,7 +791,13 @@ function Bars({ data, height = 196, width = 320 }) {
   );
 }
 
-function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoiceFromEstimate = null }) {
+function FinancialSnapshotRealScreen({
+  lang = "en",
+  spinTick = 0,
+  onCreateInvoiceFromEstimate = null,
+  onOpenDrilldown = null,
+  onOpenInvoiceRecord = null,
+}) {
   const [range, setRange] = useState("ytd");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -1000,6 +1022,9 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
       const invoiceNumber = String(invoice?.invoiceNumber || invoice?.job?.docNumber || "").trim();
       const entry = {
         id: String(invoice?.id || invoiceNumber || `${customerName}-${balanceDue}`),
+        // Only a genuine stored invoice id can open an exact record; rows that
+        // fall back to a synthetic key stay non-interactive.
+        invoiceId: String(invoice?.id || "").trim(),
         invoiceNumber,
         invoiceLabel: invoiceNumber || (lang === "es" ? "Sin número" : "No number"),
         customerName,
@@ -1454,6 +1479,7 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
             ? `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} abiertas`
             : `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} open invoices`,
           tone: computed.invoiceTotals.outstandingValue > 0 ? "warn" : "ok",
+          drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.RECEIVABLES, destination: ROUTES.INVOICES },
         },
         {
           key: "overdue",
@@ -1465,6 +1491,7 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
               : `${computed.invoiceTotals.overdue} overdue`)
             : (lang === "es" ? "Al corriente" : "Caught up"),
           tone: computed.invoiceTotals.overdueValue > 0 ? "bad" : "ok",
+          drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.OVERDUE, destination: ROUTES.INVOICES },
         },
         {
           key: "paid",
@@ -1476,6 +1503,9 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
               : `${computed.invoiceTotals.paid} paid invoices`)
             : (lang === "es" ? "Sin pagos aún" : "No payments yet"),
           tone: computed.invoiceTotals.paidValue > 0 ? "ok" : "info",
+          // Collected sums every recorded payment, so it drills into every
+          // invoice that contributed one rather than only settled invoices.
+          drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.COLLECTED, destination: ROUTES.INVOICES },
         },
         {
           key: "projects",
@@ -1487,6 +1517,8 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
               : `${computed.approvedReadyCount} ready to invoice`)
             : (lang === "es" ? "Trabajos en movimiento" : "Jobs in motion"),
           tone: computed.projectCounts.active + computed.projectCounts.estimating > 0 ? "info" : "ok",
+          // Counts active plus estimating jobs, which is the "in motion" set.
+          drilldown: { scope: DRILLDOWN_SCOPES.PROJECTS, key: PROJECT_DRILLDOWNS.IN_MOTION, destination: ROUTES.PROJECTS },
         },
       ],
       drivers: [
@@ -1604,19 +1636,17 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
                 : item.tone === "info"
                 ? "rgba(59,130,246,0.22)"
                 : "rgba(34,197,94,0.2)";
-              return (
-                <div
-                  key={item.key}
-                  style={{
-                    minWidth: 0,
-                    display: "grid",
-                    gap: 6,
-                    padding: "12px 12px 11px",
-                    borderRadius: 14,
-                    border: `1px solid ${toneBorder}`,
-                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
-                  }}
-                >
+              const cardStyle = {
+                minWidth: 0,
+                display: "grid",
+                gap: 6,
+                padding: "12px 12px 11px",
+                borderRadius: 14,
+                border: `1px solid ${toneBorder}`,
+                background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+              };
+              const cardBody = (
+                <>
                   <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
                     {item.label}
                   </div>
@@ -1626,7 +1656,24 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
                   <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
                     {item.detail}
                   </div>
-                </div>
+                </>
+              );
+              const activate = item.drilldown && typeof onOpenDrilldown === "function"
+                ? () => onOpenDrilldown(item.drilldown.scope, item.drilldown.key, item.drilldown.destination)
+                : null;
+              if (!activate) {
+                return <div key={item.key} style={cardStyle}>{cardBody}</div>;
+              }
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={activate}
+                  aria-label={`${item.label}: ${item.value}. ${lang === "es" ? "Ver registros" : "Show these records"}`}
+                  style={{ ...cardStyle, textAlign: "left", cursor: "pointer", font: "inherit" }}
+                >
+                  {cardBody}
+                </button>
               );
             })}
           </div>
@@ -1791,8 +1838,9 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontWeight: 900, marginBottom: 8 }}>{lang === "es" ? "En riesgo / atender primero" : "At risk / needs attention"}</div>
                 <div style={{ display: "grid", gap: 8 }}>
-                  {computed.atRiskRows.map((row) => (
-                    <div key={`risk-${row.id}`} style={{ padding: "11px 12px", borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.20)" }}>
+                  {computed.atRiskRows.map((row) => {
+                    const riskStyle = { padding: "11px 12px", borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.20)" };
+                    const riskBody = (
                       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{row.customerName}</div>
@@ -1805,8 +1853,23 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
                           <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{row.dueDateLabel}</div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                    const canOpen = !!row.invoiceId && typeof onOpenInvoiceRecord === "function";
+                    if (!canOpen) {
+                      return <div key={`risk-${row.id}`} style={riskStyle}>{riskBody}</div>;
+                    }
+                    return (
+                      <button
+                        key={`risk-${row.id}`}
+                        type="button"
+                        onClick={() => onOpenInvoiceRecord(row.invoiceId)}
+                        aria-label={`${row.customerName} ${row.invoiceLabel}: ${fmtMoney(row.balanceDue)}. ${lang === "es" ? "Abrir esta factura" : "Open this invoice"}`}
+                        style={{ ...riskStyle, display: "block", width: "100%", textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }}
+                      >
+                        {riskBody}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -2086,18 +2149,38 @@ function FinancialSnapshotRealScreen({ lang = "en", spinTick = 0, onCreateInvoic
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))", gap: 8, marginBottom: 14 }}>
-          {computed.pipelineBuckets.map((bucket) => (
-            <div key={bucket.key} style={{ padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
-                <span style={{ width: 9, height: 9, borderRadius: 3, background: bucket.color, display: "inline-block", flexShrink: 0 }} />
-                <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(229,231,235,0.78)" }}>{bucket.label}</span>
-              </div>
-              <div style={{ fontSize: 14, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(bucket.value)}</div>
-              <div style={{ fontSize: 11, color: "rgba(229,231,235,0.40)", marginTop: 2 }}>
-                {bucket.count} {lang === "es" ? (bucket.count === 1 ? "estimado" : "estimados") : (bucket.count === 1 ? "estimate" : "estimates")}
-              </div>
-            </div>
-          ))}
+          {computed.pipelineBuckets.map((bucket) => {
+            const bucketStyle = { padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" };
+            const bucketBody = (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 3, background: bucket.color, display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(229,231,235,0.78)" }}>{bucket.label}</span>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(bucket.value)}</div>
+                <div style={{ fontSize: 11, color: "rgba(229,231,235,0.40)", marginTop: 2 }}>
+                  {bucket.count} {lang === "es" ? (bucket.count === 1 ? "estimado" : "estimados") : (bucket.count === 1 ? "estimate" : "estimates")}
+                </div>
+              </>
+            );
+            // Snapshot's pipeline buckets are the same lifecycle statuses the
+            // Estimates screen filters by, so each drills into that status.
+            const bucketDrilldown = PIPELINE_BUCKET_DRILLDOWNS[bucket.key] || "";
+            if (!bucketDrilldown || typeof onOpenDrilldown !== "function") {
+              return <div key={bucket.key} style={bucketStyle}>{bucketBody}</div>;
+            }
+            return (
+              <button
+                key={bucket.key}
+                type="button"
+                onClick={() => onOpenDrilldown(DRILLDOWN_SCOPES.ESTIMATES, bucketDrilldown, ROUTES.ESTIMATES)}
+                aria-label={`${bucket.label}: ${bucket.count}. ${lang === "es" ? "Ver estos estimados" : "Show these estimates"}`}
+                style={{ ...bucketStyle, display: "block", width: "100%", textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }}
+              >
+                {bucketBody}
+              </button>
+            );
+          })}
         </div>
 
         {computed.approvedReadyRows.length ? (

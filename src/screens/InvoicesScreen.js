@@ -35,6 +35,7 @@ import {
   isReceivableInvoice,
   invoiceBalanceRemaining,
   readDrilldownIntent,
+  readDrilldownRecordId,
 } from "../utils/dashboardDrilldowns";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
@@ -1584,6 +1585,27 @@ export default function InvoicesScreen({
     setMetricFilter(nextDrilldown);
     try { onDrilldownIntentConsumed?.(); } catch {}
   }, [drilldownIntent, onDrilldownIntentConsumed]);
+
+  // An exact-record intent names one invoice. Any filter that would hide it is
+  // relaxed -- and only those -- then the card is highlighted and scrolled to,
+  // reusing the same targeting Lane 2 uses after a save.
+  const consumedRecordSeqRef = useRef(0);
+  useEffect(() => {
+    const recordId = readDrilldownRecordId(drilldownIntent, DRILLDOWN_SCOPES.INVOICES);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!recordId || !seq || seq === consumedRecordSeqRef.current) return;
+    const target = (list || []).find((invoice) => String(invoice?.id || "").trim() === recordId);
+    if (!target) return;
+    consumedRecordSeqRef.current = seq;
+    setMetricFilter("");
+    if (statusFilter !== "all" && deriveInvoiceStatus(target) !== statusFilter) setStatusFilter("all");
+    if (Boolean(target?.archived) !== Boolean(showArchived)) setShowArchived(Boolean(target?.archived));
+    setQ("");
+    setHighlightInvoiceId(recordId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, list, onDrilldownIntentConsumed, showArchived, statusFilter]);
 
   const scrollToRecords = () => {
     const node = recordsSectionRef.current;

@@ -21,8 +21,10 @@ import {
   INVOICE_DRILLDOWNS,
   PROJECT_DRILLDOWNS,
   createDrilldownIntent,
+  createDrilldownRecordIntent,
   isOverdueInvoice,
   isReceivableInvoice,
+  projectMatchesDrilldown,
 } from "./utils/dashboardDrilldowns";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { requireCompanyProfile } from "./utils/guards";
@@ -661,10 +663,10 @@ function deriveHomeDashboardSummary({
     }
   }
 
-  const activeProjectCount = projectRecords.filter((project) => {
-    const key = String(project?._displayStatus?.key || "").toLowerCase();
-    return key === "active" || key === "estimating";
-  }).length;
+  // Same predicate the Projects screen filters by when this metric is tapped.
+  const activeProjectCount = projectRecords.filter(
+    (project) => projectMatchesDrilldown(project, PROJECT_DRILLDOWNS.IN_MOTION)
+  ).length;
 
   const stripeAccountId = String(companyProfile?.stripeAccountId || "").trim();
   const stripeConnected = /^acct_/i.test(stripeAccountId);
@@ -1678,8 +1680,10 @@ function HomeScreen({
         ? `${Number(dashboard.approvedEstimates)} approved ${Number(dashboard.approvedEstimates) === 1 ? "estimate" : "estimates"}`
         : "Recent jobs in motion",
       tone: Number(dashboard?.activeProjectCount || 0) > 0 ? "info" : "neutral",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.ACTIVE, ROUTES.PROJECTS),
-      actionLabel: "Show active projects",
+      // Home counts jobs that are active or still estimating, so it drills into
+      // that same "in motion" set rather than the narrower active-only one.
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.IN_MOTION, ROUTES.PROJECTS),
+      actionLabel: "Show projects in motion",
     },
   ];
   const nextSteps = Array.isArray(dashboard?.nextSteps) ? dashboard.nextSteps : [];
@@ -2740,7 +2744,7 @@ const [spinTick, setSpinTick] = useState(0);
     return deriveBusinessPulseCounts(estimateRecords, invoiceHistory);
   }, [estimateHistory, invoiceHistory]);
 
-  const recentProjects = useMemo(() => {
+  const normalizedProjects = useMemo(() => {
     try {
       const allProjects = Array.isArray(projectHistory) ? projectHistory : [];
       const customerRecords = Array.isArray(customerHistory) ? customerHistory : [];
@@ -2769,9 +2773,14 @@ const [spinTick, setSpinTick] = useState(0);
         if (pa !== pb) return pa - pb;
         return (b._latestActivityAt || 0) - (a._latestActivityAt || 0);
       });
-      return mapped.slice(0, 5);
+      return mapped;
     } catch { return []; }
   }, [customerHistory, projectHistory, estimateHistory, invoiceHistory]);
+
+  // Home lists the five highest-priority jobs, but its "Active projects" metric
+  // must count every job in motion -- otherwise the number would describe a
+  // five-row sample while the drill-down reveals the whole set.
+  const recentProjects = useMemo(() => normalizedProjects.slice(0, 5), [normalizedProjects]);
   const homeDashboardSummary = useMemo(() => {
     let companyProfile = {};
     try {
@@ -2782,11 +2791,11 @@ const [spinTick, setSpinTick] = useState(0);
     }
     return deriveHomeDashboardSummary({
       invoices: invoiceHistory,
-      projects: recentProjects,
+      projects: normalizedProjects,
       businessPulseCounts,
       companyProfile,
     });
-  }, [invoiceHistory, recentProjects, businessPulseCounts]);
+  }, [invoiceHistory, normalizedProjects, businessPulseCounts]);
 
   // Gate 17A.1a: one-time removal of Stripe identifiers left in legacy
   // subscription caches by pre-Gate-17A builds. Idempotent, touches only those
@@ -3004,6 +3013,17 @@ const [spinTick, setSpinTick] = useState(0);
   const consumeDashboardIntent = useCallback(() => {
     setDashboardIntent(null);
   }, []);
+
+  // Exact-record navigation from a dashboard card that already knows the
+  // record's identity. Reuses the same transient intent channel and the same
+  // Invoices destination rather than adding a second lookup path.
+  const openInvoiceRecord = useCallback((invoiceId, originRoute = "") => {
+    const intent = createDrilldownRecordIntent(DRILLDOWN_SCOPES.INVOICES, invoiceId);
+    if (!intent) return;
+    setDashboardIntent(intent);
+    setDashboardReturn(originRoute && originRoute !== ROUTES.INVOICES ? { destination: ROUTES.INVOICES, origin: originRoute } : null);
+    navigateTo(ROUTES.INVOICES);
+  }, [navigateTo]);
 
   const openDashboardDrilldown = useCallback((scope, drilldown, destination, originRoute = "") => {
     const intent = createDrilldownIntent(scope, drilldown);
@@ -4199,6 +4219,12 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       <FinancialSnapshotScreen
         subscriptionPlanState={snapshotSubscriptionPlanState}
         onOpenCompanyProfile={() => navigateToCompanyProfile()}
+        onOpenDrilldown={(scope, drilldown, destination) => {
+          openDashboardDrilldown(scope, drilldown, destination, ROUTES.SNAPSHOT);
+        }}
+        onOpenInvoiceRecord={(invoiceId) => {
+          openInvoiceRecord(invoiceId, ROUTES.SNAPSHOT);
+        }}
         onCreateInvoiceFromEstimate={(estimate) => {
           const estimateId = String(estimate?.id || "").trim();
           if (!estimateId) return false;
