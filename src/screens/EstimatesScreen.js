@@ -45,8 +45,6 @@ const STATUS_DRAFT = "draft";
 const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_LOST = "lost";
-const TOUCH_DRAG_HOLD_MS = 350;
-const TOUCH_DRAG_MOVE_THRESHOLD_PX = 10;
 const INVOICE_AMOUNT_MODE_AMOUNT = "amount";
 const INVOICE_AMOUNT_MODE_PERCENT = "percent";
 const INVOICE_COMPOSER_EPSILON = 0.005;
@@ -732,19 +730,18 @@ export default function EstimatesScreen({
   const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
   const [customerFilter, setCustomerFilter] = useState("all");
   const [valueFilter, setValueFilter] = useState(() => String(initialPostSaveFilters.valueFilter || "all"));
-  // Revenue pipeline drill-down. Kept separate from statusFilter/valueFilter
-  // because "ready for invoice" combines an approved status with remaining
-  // invoiceable value, which neither existing dimension expresses.
-  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.ESTIMATES));
+  // Revenue pipeline focus. This is deliberately NOT a list filter: the board
+  // is a status board, so hiding the statuses a metric does not match would
+  // make cards vanish out from under the user and collapse the layout. Focus
+  // only decides where to land and which cards to emphasize -- every estimate
+  // that was rendered before stays rendered.
+  const [pipelineFocus, setPipelineFocus] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.ESTIMATES));
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
-  const [draggingEstimateId, setDraggingEstimateId] = useState(null);
-  const [touchDraggingId, setTouchDraggingId] = useState(null);
-  const [touchDragPos, setTouchDragPos] = useState({ x: 0, y: 0 });
-  const touchStartTimer = useRef(null);
-  const touchGestureRef = useRef({ estimateId: "", startX: 0, startY: 0 });
   const estimateCardRefs = useRef({});
+  const sectionRefs = useRef({});
+  const pendingFocusScrollRef = useRef("");
   const highlightTimerRef = useRef(null);
   const typeaheadWrapRef = useRef(null);
   const cardActionIntentRef = useRef({ estimateId: "", action: "", setAt: 0 });
@@ -901,9 +898,6 @@ export default function EstimatesScreen({
 
   useEffect(
     () => () => {
-      if (touchStartTimer.current) {
-        clearTimeout(touchStartTimer.current);
-      }
       if (openEstimateNavRef.current?.rafId && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
         window.cancelAnimationFrame(openEstimateNavRef.current.rafId);
       }
@@ -913,12 +907,6 @@ export default function EstimatesScreen({
     },
     []
   );
-
-  const clearTouchStartTimer = () => {
-    if (!touchStartTimer.current) return;
-    clearTimeout(touchStartTimer.current);
-    touchStartTimer.current = null;
-  };
 
   const clearCardActionIntent = () => {
     cardActionIntentRef.current = {
@@ -978,23 +966,6 @@ export default function EstimatesScreen({
         clearCardActionIntent();
       }
     }, 0);
-  };
-
-  const resetTouchGesture = () => {
-    touchGestureRef.current = {
-      estimateId: "",
-      startX: 0,
-      startY: 0,
-    };
-  };
-
-  const isTouchDragBlockedTarget = (target) => {
-    if (!(target instanceof Element)) return false;
-    return Boolean(
-      target.closest(
-        "button, input, select, textarea, a, [role='button'], [data-estimate-details-panel='true']"
-      )
-    );
   };
 
   const displayedEstimates = (estimates || []).filter(
@@ -1133,16 +1104,12 @@ export default function EstimatesScreen({
       // The large band and the High value pipeline metric share one threshold.
       || (value === "large" && isHighValueEstimate(estimate));
 
-    const matchesDrilldown = estimateMatchesDrilldown(estimate, metricFilter, {
-      normalizeStatus: normalizeEstimateStatus,
-      remainingToInvoice: (record) => toNum(buildEstimateInvoiceSummary(record, invoices)?.remainingToInvoice),
-    });
-
+    // Pipeline focus is intentionally absent here. Visibility belongs to the
+    // real filters -- search, status, value, archived -- and nothing else.
     return (
       matchesText
       && matchesStatus
       && matchesValue
-      && matchesDrilldown
     );
   };
 
@@ -1226,24 +1193,20 @@ export default function EstimatesScreen({
       || (valueFilter === "medium" && total >= HIGH_VALUE_ESTIMATE_MIN / 10 && total < HIGH_VALUE_ESTIMATE_MIN)
       || (valueFilter === "large" && isHighValueEstimate(savedEstimate));
     if (!valueMatches) setValueFilter("all");
-    // Lane 2 rule applied to the pipeline drill-down: keep it while the saved
-    // estimate still belongs to the subset, relax it only when it would hide
-    // the record the user just saved.
-    const drilldownMatches = estimateMatchesDrilldown(savedEstimate, metricFilter, {
-      normalizeStatus: normalizeEstimateStatus,
-      remainingToInvoice: (record) => toNum(buildEstimateInvoiceSummary(record, invoices)?.remainingToInvoice),
-    });
-    if (metricFilter && !drilldownMatches) setMetricFilter("");
-  }, [estimateDisplayMeta, invoices, metricFilter, savedEstimate, searchQuery, showArchived, statusFilter, valueFilter]);
+    // No pipeline-focus relaxation is needed here: focus never hides a record,
+    // so a saved estimate stays on the board regardless of what is focused.
+  }, [estimateDisplayMeta, savedEstimate, searchQuery, showArchived, statusFilter, valueFilter]);
 
-  // Transient navigation context: applied once per intent, then released.
+  // Transient navigation context: applied once per intent, then released. A
+  // cross-screen drill-down focuses the matching bucket; it does not filter.
   const consumedDrilldownSeqRef = useRef(0);
   useEffect(() => {
     const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.ESTIMATES);
     const seq = Number(drilldownIntent?.seq || 0);
     if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
     consumedDrilldownSeqRef.current = seq;
-    setMetricFilter(nextDrilldown);
+    pendingFocusScrollRef.current = nextDrilldown;
+    setPipelineFocus(nextDrilldown);
     try { onDrilldownIntentConsumed?.(); } catch {}
   }, [drilldownIntent, onDrilldownIntentConsumed]);
 
@@ -1655,52 +1618,6 @@ export default function EstimatesScreen({
     return true;
   };
 
-  const moveEstimateToStatus = (estimateId, status) => {
-    const draggedId = String(estimateId || "").trim();
-    const movedEstimate = (estimates || []).find(
-      (e) => String(e?.id || "") === draggedId
-    );
-    const normalized = normalizeEstimateStatus(status);
-    if (!draggedId || movedEstimate?.archived) return;
-
-    setEstimates((prev) => {
-      const next = (Array.isArray(prev) ? prev : []).map((est) => {
-        if (String(est?.id || "") !== draggedId) return est;
-        return { ...est, status: normalized };
-      });
-      return next.slice().sort(sortEstimatesByDateDesc);
-    });
-
-    setExpanded({});
-
-    if (normalized === STATUS_APPROVED && movedEstimate && shouldShowApprovalInvoicePrompt(movedEstimate)) {
-      setTimeout(() => {
-        setInvoicePromptTarget(movedEstimate);
-      }, 0);
-    }
-
-    setExpanded((prev) => ({
-      ...prev,
-      [String(estimateId || "")]: false,
-    }));
-
-    setExpanded((prev) => {
-      if (!draggedId) return prev;
-      if (!prev[draggedId]) return prev;
-      const next = { ...prev };
-      delete next[draggedId];
-      return next;
-    });
-
-    try {
-      const existing = readSavedEstimatesList();
-      const next = existing.map((est) => {
-        if (String(est?.id || "").trim() !== draggedId) return est;
-        return { ...est, status: normalized };
-      });
-      writeStoredEstimatesPreservingLegacy(next);
-    } catch {}
-  };
 
   const onRequestDelete = (estimate) => {
     setDeleteTarget(estimate || null);
@@ -2052,36 +1969,69 @@ export default function EstimatesScreen({
     } catch {}
   };
 
+  // Pipeline focus deliberately does not count as an active filter: it never
+  // removes records, so it must never drive the "no matching estimates" state.
   const hasActiveFilters =
     String(searchQuery || "").trim().length > 0
     || statusFilter !== "all"
     || valueFilter !== "all"
-    || !!metricFilter
     || showArchived;
 
-  // The estimate board is already ref'd for layout; reuse it as the scroll
-  // target so a drill-down lands on the records rather than a new anchor.
-  const scrollToRecords = () => {
-    const node = boardRef.current;
-    if (!node || typeof node.scrollIntoView !== "function") return;
-    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
-    catch { try { node.scrollIntoView(); } catch {} }
-  };
+  // Which currently rendered estimates the focused metric is pointing at. Used
+  // for emphasis and for picking a landing target -- never for visibility.
+  const focusedEstimateIds = useMemo(() => {
+    const ids = new Set();
+    if (!pipelineFocus) return ids;
+    displayedEstimates.forEach((estimate) => {
+      const matches = estimateMatchesDrilldown(estimate, pipelineFocus, {
+        normalizeStatus: normalizeEstimateStatus,
+        remainingToInvoice: (record) => toNum(buildEstimateInvoiceSummary(record, invoices)?.remainingToInvoice),
+      });
+      if (matches) ids.add(String(estimate?.id || ""));
+    });
+    return ids;
+  }, [pipelineFocus, displayedEstimates, invoices]);
 
-  // Pipeline metrics summarize the estimates already visible, so tapping one
-  // narrows this list in place and brings the records into view rather than
-  // navigating. Tapping the active metric clears it.
-  const toggleMetricFilter = (nextKey) => {
-    const key = String(nextKey || "");
-    const willClear = metricFilter === key;
-    setMetricFilter(willClear ? "" : key);
-    if (!willClear) {
-      try {
-        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(scrollToRecords);
-        } else scrollToRecords();
-      } catch { scrollToRecords(); }
+  // The bucket a focus should land on. Awaiting and Ready-for-Invoice each have
+  // a home status section; High value can span statuses, so it lands on the
+  // first matching card instead of forcing one bucket to own it.
+  const focusLandingStatus = pipelineFocus === ESTIMATE_DRILLDOWNS.AWAITING
+    ? STATUS_PENDING
+    : pipelineFocus === ESTIMATE_DRILLDOWNS.READY_TO_INVOICE || pipelineFocus === ESTIMATE_DRILLDOWNS.APPROVED
+      ? STATUS_APPROVED
+      : pipelineFocus === ESTIMATE_DRILLDOWNS.LOST
+        ? STATUS_LOST
+        : pipelineFocus === ESTIMATE_DRILLDOWNS.DRAFT
+          ? STATUS_DRAFT
+          : "";
+
+  // One deterministic hop after the focus state commits. Board geometry does
+  // not change when focus changes, so there is nothing for a smooth animation
+  // to chase -- an immediate jump lands exactly where it was aimed.
+  useEffect(() => {
+    const requested = pendingFocusScrollRef.current;
+    if (!requested) return;
+    pendingFocusScrollRef.current = "";
+    let node = focusLandingStatus ? sectionRefs.current?.[focusLandingStatus] : null;
+    if (!node) {
+      const firstFocusedId = displayedEstimates
+        .map((estimate) => String(estimate?.id || ""))
+        .find((id) => focusedEstimateIds.has(id));
+      node = firstFocusedId ? estimateCardRefs.current?.[firstFocusedId] : null;
     }
+    if (!node) node = boardRef.current;
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  }, [pipelineFocus, focusLandingStatus, focusedEstimateIds, displayedEstimates]);
+
+  // Tapping a pipeline metric focuses the board on that subset; tapping the
+  // active one releases the focus. Nothing is added or removed from the board.
+  const togglePipelineFocus = (nextKey) => {
+    const key = String(nextKey || "");
+    const willClear = pipelineFocus === key;
+    pendingFocusScrollRef.current = willClear ? "" : key;
+    setPipelineFocus(willClear ? "" : key);
   };
   const hasNoMatchingResults = hasActiveFilters && visibleEstimatesCount === 0;
 
@@ -2531,7 +2481,7 @@ export default function EstimatesScreen({
                   : item.tone === "pending"
                   ? "rgba(59,130,246,0.22)"
                   : "rgba(255,255,255,0.1)";
-                const isActive = !!item.drilldown && metricFilter === item.drilldown;
+                const isActive = !!item.drilldown && pipelineFocus === item.drilldown;
                 const cardStyle = {
                   minWidth: 0,
                   display: "grid",
@@ -2572,9 +2522,9 @@ export default function EstimatesScreen({
                     key={item.key}
                     type="button"
                     className="pe-estimates-kpi-card"
-                    onClick={() => toggleMetricFilter(item.drilldown)}
+                    onClick={() => togglePipelineFocus(item.drilldown)}
                     aria-pressed={isActive}
-                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar filtro" : "Clear filter") : (lang === "es" ? "Filtrar estimados" : "Filter estimates")}`}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar enfoque" : "Clear focus") : (lang === "es" ? "Enfocar estimados" : "Focus these estimates")}`}
                     style={{
                       ...cardStyle,
                       textAlign: "left",
@@ -2795,17 +2745,17 @@ export default function EstimatesScreen({
                   setStatusFilter("all");
                   setValueFilter("all");
                   setShowArchived(false);
-                  setMetricFilter("");
+                  setPipelineFocus("");
                 }}
               >
                 Clear
               </button>
 
-              {metricFilter ? (
+              {pipelineFocus ? (
                 <button
                   type="button"
-                  onClick={() => setMetricFilter("")}
-                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  onClick={() => setPipelineFocus("")}
+                  aria-label={lang === "es" ? "Quitar enfoque del pipeline" : "Clear pipeline focus"}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -2820,7 +2770,12 @@ export default function EstimatesScreen({
                     color: "rgba(226,238,250,0.95)",
                   }}
                 >
-                  <span>{drilldownLabel(DRILLDOWN_SCOPES.ESTIMATES, metricFilter, lang)}</span>
+                  {/* "Focused", not "Showing": the rest of the board is still
+                      there, it just is not what this metric points at. */}
+                  <span style={{ opacity: 0.72, fontWeight: 700 }}>
+                    {lang === "es" ? "Enfocado" : "Focused"}
+                  </span>
+                  <span>{drilldownLabel(DRILLDOWN_SCOPES.ESTIMATES, pipelineFocus, lang)}</span>
                   <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
                 </button>
               ) : null}
@@ -2963,6 +2918,11 @@ export default function EstimatesScreen({
                   key={`section-${section.key}`}
                   className="pe-pipeline-section"
                   data-section-key={section.key}
+                  data-section-focused={focusLandingStatus === section.key ? "true" : undefined}
+                  ref={(node) => {
+                    if (node) sectionRefs.current[section.key] = node;
+                    else delete sectionRefs.current[section.key];
+                  }}
                   style={{
                     width: "100%",
                     minWidth: 0,
@@ -3033,28 +2993,15 @@ export default function EstimatesScreen({
                             ? (lang === "es" ? "Los aprobados con saldo por facturar muestran la siguiente acción primero." : "Approved estimates with value left to invoice surface the next action first.")
                             : section.key === STATUS_LOST
                             ? (lang === "es" ? "Los perdidos permanecen visibles para revisar ingresos caídos." : "Lost estimates stay visible so dropped revenue is easy to review.")
-                            : (lang === "es" ? "Arrastra aquí para mantener el pipeline y seguimiento al día." : "Drag here to keep follow-up and pipeline status current.")}
+                            : section.key === STATUS_PENDING
+                            ? (lang === "es" ? "Los estimados enviados esperan respuesta del cliente." : "Sent estimates are waiting on a customer response.")
+                            : (lang === "es" ? "Los borradores aún no se han enviado a un cliente." : "Drafts have not been sent to a customer yet.")}
                         </div>
                       </div>
                     </div>
 
                     <div
                       className="pe-pipeline-cards"
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-
-                        const draggedId =
-                          e.dataTransfer.getData("text/plain")
-                          || draggingEstimateId;
-
-                        if (!draggedId) return;
-
-                        setEstimateStatus({ id: draggedId }, section.key);
-                        setDraggingEstimateId(null);
-                      }}
                       style={{
                         display: "flex",
                         flexDirection: "column",
@@ -3281,7 +3228,7 @@ export default function EstimatesScreen({
 
               return (
                 <div
-                  className={`pe-card pe-saved-estimate-card pe-estimate-card ${draggingEstimateId === id ? "pe-dragging" : ""}`}
+                  className="pe-card pe-saved-estimate-card pe-estimate-card"
                   key={String(
                     e?.id
                     || e?.estimateId
@@ -3294,122 +3241,14 @@ export default function EstimatesScreen({
                   }}
                   data-estimate-card-id={id}
                   data-estimate-card-highlighted={isTypeaheadHighlighted ? "true" : undefined}
+                  data-estimate-card-focused={focusedEstimateIds.has(id) ? "true" : undefined}
                   style={isTypeaheadHighlighted
                     ? { ...card, border: "1px solid rgba(74,222,128,0.85)", boxShadow: "0 0 0 3px rgba(74,222,128,0.35), 0 18px 40px rgba(0,0,0,0.3)" }
-                    : card}
-                  draggable={!e?.archived}
-                  onTouchStart={(e) => {
-                    const touch = e.touches?.[0];
-                    if (!touch) return;
-
-                    clearTouchStartTimer();
-
-                    if (isTouchDragBlockedTarget(e.target)) {
-                      resetTouchGesture();
-                      return;
-                    }
-
-                    touchGestureRef.current = {
-                      estimateId: id,
-                      startX: touch.clientX,
-                      startY: touch.clientY,
-                    };
-
-                    touchStartTimer.current = setTimeout(() => {
-                      if (touchGestureRef.current.estimateId !== id) return;
-                      setTouchDraggingId(id);
-                      setTouchDragPos({
-                        x: touch.clientX,
-                        y: touch.clientY,
-                      });
-                      setDraggingEstimateId(id);
-                    }, TOUCH_DRAG_HOLD_MS);
-                  }}
-                  onTouchMove={(e) => {
-                    const touch = e.touches?.[0];
-                    if (!touch) return;
-
-                    if (!touchDraggingId) {
-                      const gesture = touchGestureRef.current;
-                      if (gesture.estimateId !== id) return;
-
-                      const movedX = Math.abs(touch.clientX - gesture.startX);
-                      const movedY = Math.abs(touch.clientY - gesture.startY);
-                      if (
-                        movedX > TOUCH_DRAG_MOVE_THRESHOLD_PX
-                        || movedY > TOUCH_DRAG_MOVE_THRESHOLD_PX
-                      ) {
-                        clearTouchStartTimer();
-                        resetTouchGesture();
-                      }
-                      return;
-                    }
-
-                    if (touchDraggingId !== id) return;
-                    e.preventDefault();
-
-                    setTouchDragPos({
-                      x: touch.clientX,
-                      y: touch.clientY,
-                    });
-                  }}
-                  onTouchEnd={(e) => {
-                    clearTouchStartTimer();
-                    resetTouchGesture();
-
-                    if (!touchDraggingId || touchDraggingId !== id) return;
-
-                    const touch = e.changedTouches?.[0];
-                    const clientX = touch?.clientX ?? touchDragPos.x;
-                    const clientY = touch?.clientY ?? touchDragPos.y;
-                    const el = document.elementFromPoint(clientX, clientY);
-                    const column = el?.closest(".pe-pipeline-section");
-
-                    if (column) {
-                      const status = column.getAttribute("data-section-key");
-                      moveEstimateToStatus(touchDraggingId, status);
-                    }
-
-                    setTouchDraggingId(null);
-                    setDraggingEstimateId(null);
-                  }}
-                  onTouchCancel={() => {
-                    clearTouchStartTimer();
-                    resetTouchGesture();
-                    setTouchDraggingId(null);
-                    setDraggingEstimateId(null);
-                  }}
-                  onDragStart={(e) => {
-                    e.dataTransfer.effectAllowed = "move";
-                    e.dataTransfer.setData("text/plain", id);
-
-                    const el = e.currentTarget;
-
-                    el.style.transform = "scale(1.03)";
-                    el.style.boxShadow = "0 16px 36px rgba(0,0,0,0.55)";
-                    el.style.opacity = "0.8";
-                    el.style.cursor = "grabbing";
-                    el.style.zIndex = "999";
-
-                    setDraggingEstimateId(id);
-                  }}
-                  onDragEnd={(e) => {
-                    const el = e.currentTarget;
-
-                    setDraggingEstimateId(null);
-
-                    if (el) {
-                      el.style.transform = "";
-                      el.style.boxShadow = "";
-                      el.style.opacity = "";
-                      el.style.zIndex = "";
-                      el.style.cursor = "grab";
-
-                      requestAnimationFrame(() => {
-                        el.style.cursor = "";
-                      });
-                    }
-                  }}
+                    : focusedEstimateIds.has(id)
+                      // Emphasis only -- unfocused cards keep their normal
+                      // appearance and their place on the board.
+                      ? { ...card, border: "1px solid rgba(96,165,250,0.72)", boxShadow: "0 0 0 2px rgba(96,165,250,0.24)" }
+                      : card}
                 >
                   <div className="pe-estimate-card-mainrow" style={row}>
                     <div className="pe-estimate-card-header" style={headerRow}>

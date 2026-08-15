@@ -1608,8 +1608,10 @@ function HomeScreen({
       sublabel: "estimates",
       value: Number(businessPulseCounts?.pendingEstimates || 0),
       tone: "estimate",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.AWAITING, ROUTES.ESTIMATES),
-      actionLabel: "Show estimates awaiting a response",
+      // This counter treats every not-yet-approved, not-lost estimate as
+      // pending, drafts included, so it focuses that same wider set.
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.OPEN, ROUTES.ESTIMATES),
+      actionLabel: "Show open estimates",
     },
     {
       key: "approved-estimates",

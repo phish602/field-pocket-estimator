@@ -45,6 +45,11 @@ export const PROJECT_DRILLDOWNS = {
 
 export const ESTIMATE_DRILLDOWNS = {
   AWAITING: "awaiting",
+  // Home's Business Pulse counts "pending" as anything not yet approved or
+  // lost, which includes drafts. That is a wider set than the Awaiting
+  // Response bucket, so it gets its own predicate rather than borrowing one
+  // that would point at fewer records than the number promised.
+  OPEN: "open",
   READY_TO_INVOICE: "approved-ready",
   HIGH_VALUE: "high-value",
   LOST: "lost",
@@ -189,6 +194,7 @@ export function estimateMatchesDrilldown(estimate, drilldown, options = {}) {
   const status = normalizeStatus(estimate?.status);
 
   if (key === ESTIMATE_DRILLDOWNS.AWAITING) return status === "pending";
+  if (key === ESTIMATE_DRILLDOWNS.OPEN) return status !== "approved" && status !== "lost";
   if (key === ESTIMATE_DRILLDOWNS.LOST) return status === "lost";
   if (key === ESTIMATE_DRILLDOWNS.DRAFT) return status === "draft";
   if (key === ESTIMATE_DRILLDOWNS.APPROVED) return status === "approved";
@@ -238,6 +244,7 @@ const DRILLDOWN_LABELS = {
   },
   [DRILLDOWN_SCOPES.ESTIMATES]: {
     [ESTIMATE_DRILLDOWNS.AWAITING]: { en: "Awaiting response", es: "Esperando respuesta" },
+    [ESTIMATE_DRILLDOWNS.OPEN]: { en: "Open estimates", es: "Estimados abiertos" },
     [ESTIMATE_DRILLDOWNS.READY_TO_INVOICE]: { en: "Ready for invoice", es: "Listo para facturar" },
     [ESTIMATE_DRILLDOWNS.HIGH_VALUE]: { en: "High value", es: "Alto valor" },
     [ESTIMATE_DRILLDOWNS.LOST]: { en: "Lost", es: "Perdidos" },
