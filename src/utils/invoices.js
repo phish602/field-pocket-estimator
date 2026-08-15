@@ -1682,6 +1682,22 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     return { ok: false, message: "This estimate has no remaining amount to invoice." };
   }
 
+  // Once part of an estimate has been invoiced, only the remainder may be
+  // billed -- but the full-estimate draft built below carries the estimate's
+  // own labor and material lines, so the calculation engine recomputes it back
+  // to the approved total no matter what invoiceTotal is set to. The remaining
+  // balance is therefore expressed the way this module already expresses a
+  // billable amount, through the existing amount-based draft, which prices a
+  // blanket line the engine reproduces exactly and allocates its financial
+  // summary to match. FINAL with no requested value resolves to
+  // summary.remainingToInvoice.
+  if (summary.invoicedTotal > 0) {
+    return createInvoiceDraftFromEstimate(estimate, invoices, {
+      ...options,
+      invoiceType: INVOICE_TYPES.FINAL,
+    });
+  }
+
   const now = Number(options?.nowTs) || Date.now();
   const invoiceNumber = asText(options?.invoiceNumber) || generateNextInvoiceNumber(invoices);
   const invoiceDate = normalizeIsoDate(options?.invoiceDate, todayISO());
