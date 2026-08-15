@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   readStoredProjects,
@@ -8,6 +8,13 @@ import {
   deriveProjectDisplayStatus,
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
+import {
+  DRILLDOWN_SCOPES,
+  PROJECT_DRILLDOWNS,
+  drilldownLabel,
+  projectMatchesDrilldown,
+  readDrilldownIntent,
+} from "../utils/dashboardDrilldowns";
 
 function readEstimates() {
   try {
@@ -255,11 +262,32 @@ const S = {
   },
 };
 
-export default function ProjectsScreen({ onOpenProjectDetail }) {
+export default function ProjectsScreen({
+  onOpenProjectDetail,
+  drilldownIntent = null,
+  onDrilldownIntentConsumed,
+}) {
   const [q, setQ] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
   const [activeColorLane, setActiveColorLane] = useState("all");
+  // Portfolio drill-down. Status chips and color lanes already own their own
+  // dimensions; this one covers the hero metrics, whose subsets (balance due,
+  // overdue exposure, ready to invoice) cut across both.
+  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.PROJECTS));
   const [refreshSeq, setRefreshSeq] = useState(0);
+  const recordsSectionRef = useRef(null);
+  const consumedDrilldownSeqRef = useRef(0);
+
+  // Transient navigation context: applied once, keyed by sequence, then handed
+  // back so an ordinary later visit to Projects never re-applies it.
+  useEffect(() => {
+    const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.PROJECTS);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
+    consumedDrilldownSeqRef.current = seq;
+    setMetricFilter(nextDrilldown);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, onDrilldownIntentConsumed]);
 
   useEffect(() => {
     const refresh = () => setRefreshSeq((prev) => prev + 1);
@@ -387,17 +415,21 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
   }, [baseFiltered]);
 
   const filtered = useMemo(() => {
-    if (activeColorLane === "all") return baseFiltered;
-    return baseFiltered.filter((p) => deriveProjectColorLane(p) === activeColorLane);
-  }, [baseFiltered, activeColorLane]);
+    const laneFiltered = activeColorLane === "all"
+      ? baseFiltered
+      : baseFiltered.filter((p) => deriveProjectColorLane(p) === activeColorLane);
+    if (!metricFilter) return laneFiltered;
+    return laneFiltered.filter((p) => projectMatchesDrilldown(p, metricFilter));
+  }, [baseFiltered, activeColorLane, metricFilter]);
 
+  // Each hero metric counts with the same predicate its card drills into.
   const portfolioSummary = useMemo(() => {
     const visible = filtered;
-    const activeProjects = visible.filter((proj) => proj.status === "active").length;
+    const activeProjects = visible.filter((proj) => projectMatchesDrilldown(proj, PROJECT_DRILLDOWNS.ACTIVE)).length;
     const balanceDue = visible.reduce((sum, proj) => sum + Number(proj?.totals?.balanceRemaining || 0), 0);
-    const overdueProjects = visible.filter((proj) => (proj.overdueCount || 0) > 0).length;
+    const overdueProjects = visible.filter((proj) => projectMatchesDrilldown(proj, PROJECT_DRILLDOWNS.OVERDUE)).length;
     const overdueInvoices = visible.reduce((sum, proj) => sum + Number(proj?.overdueCount || 0), 0);
-    const approvedReadyProjects = visible.filter((proj) => (proj.approvedEstCount || 0) > 0).length;
+    const approvedReadyProjects = visible.filter((proj) => projectMatchesDrilldown(proj, PROJECT_DRILLDOWNS.READY_TO_INVOICE)).length;
     const totalDocuments = visible.reduce(
       (sum, proj) => sum + Number(proj?.totals?.estimateCount || 0) + Number(proj?.totals?.invoiceCount || 0),
       0
@@ -415,6 +447,28 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
       highestBalanceProject,
     };
   }, [filtered]);
+
+  const scrollToRecords = () => {
+    const node = recordsSectionRef.current;
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  };
+
+  // Hero metrics describe the projects already visible, so tapping one filters
+  // in place and brings the matching rows up. Tapping the active one clears it.
+  const toggleMetricFilter = (nextKey) => {
+    const key = String(nextKey || "");
+    const willClear = metricFilter === key;
+    setMetricFilter(willClear ? "" : key);
+    if (!willClear) {
+      try {
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(scrollToRecords);
+        } else scrollToRecords();
+      } catch { scrollToRecords(); }
+    }
+  };
 
   if (!allData.length) {
     return (
@@ -485,19 +539,36 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
               color: "rgba(96,165,250,0.84)",
               border: "rgba(59,130,246,0.2)",
             },
-          ].map((item) => (
-            <div key={item.key} style={{ ...S.heroStat, border: `1px solid ${item.border}` }}>
-              <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
-                {item.label}
-              </div>
-              <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
-                {item.value}
-              </div>
-              <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
-                {item.detail}
-              </div>
-            </div>
-          ))}
+          ].map((item) => {
+            const isActive = metricFilter === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => toggleMetricFilter(item.key)}
+                aria-pressed={isActive}
+                aria-label={`${item.label}: ${item.value}. ${isActive ? "Clear filter" : "Filter projects"}`}
+                style={{
+                  ...S.heroStat,
+                  border: `1px solid ${isActive ? item.color : item.border}`,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  font: "inherit",
+                  boxShadow: isActive ? `inset 0 0 0 1px ${item.color}` : "none",
+                }}
+              >
+                <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                  {item.label}
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                  {item.value}
+                </div>
+                <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                  {item.detail}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -582,6 +653,36 @@ export default function ProjectsScreen({ onOpenProjectDetail }) {
           />
         </div>
       ) : null}
+
+      {metricFilter ? (
+        <div ref={recordsSectionRef} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>
+            Showing
+          </span>
+          <button
+            type="button"
+            onClick={() => setMetricFilter("")}
+            aria-label="Clear dashboard filter"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 10px",
+              borderRadius: 999,
+              fontSize: 11.5,
+              fontWeight: 800,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              border: "1px solid rgba(96,165,250,0.45)",
+              background: "rgba(59,130,246,0.14)",
+              color: "rgba(226,238,250,0.95)",
+            }}
+          >
+            <span>{drilldownLabel(DRILLDOWN_SCOPES.PROJECTS, metricFilter)}</span>
+            <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
+          </button>
+        </div>
+      ) : <div ref={recordsSectionRef} />}
 
       {filtered.length === 0 ? (
         <div style={{ ...S.emptyWrap, padding: "24px 16px" }}>

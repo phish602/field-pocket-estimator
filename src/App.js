@@ -15,6 +15,15 @@ import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import * as JobLearningDiagnosticsScreenMod from "./screens/JobLearningDiagnosticsScreen";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
+import {
+  DRILLDOWN_SCOPES,
+  ESTIMATE_DRILLDOWNS,
+  INVOICE_DRILLDOWNS,
+  PROJECT_DRILLDOWNS,
+  createDrilldownIntent,
+  isOverdueInvoice,
+  isReceivableInvoice,
+} from "./utils/dashboardDrilldowns";
 import { DEFAULT_STATE } from "./estimator/defaultState";
 import { requireCompanyProfile } from "./utils/guards";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "./utils/invoices";
@@ -610,12 +619,12 @@ function deriveBusinessPulseCounts(estimates, invoices) {
     else if (status !== "lost") counts.pendingEstimates += 1;
   }
 
+  // Counted with the same predicates the Invoices screen filters by, so the
+  // Business Pulse numbers and the records a tap reveals always agree.
   const invoiceRecords = Array.isArray(invoices) ? invoices : [];
   for (const invoice of invoiceRecords) {
-    const status = deriveInvoiceStatus(invoice);
-    if (status === INVOICE_STATUSES.PAID || status === INVOICE_STATUSES.VOID) continue;
-    counts.unpaidInvoices += 1;
-    if (status === INVOICE_STATUSES.OVERDUE) counts.overdueInvoices += 1;
+    if (isReceivableInvoice(invoice)) counts.unpaidInvoices += 1;
+    if (isOverdueInvoice(invoice)) counts.overdueInvoices += 1;
   }
 
   return counts;
@@ -1576,8 +1585,15 @@ function HomeScreen({
   onResumeLastEstimate,
   recentProjects,
   onOpenProjectDetail,
+  onOpenDrilldown,
 }) {
   const pressTimerRef = useRef(null);
+  // Home summarizes records that live on the canonical Invoices and Projects
+  // screens, so each metric navigates there carrying the subset it counted.
+  const drilldownFor = (scope, drilldown, destination) => {
+    if (typeof onOpenDrilldown !== "function") return null;
+    return () => onOpenDrilldown(scope, drilldown, destination);
+  };
   const didLongPressRef = useRef(false);
   const LONG_PRESS_MS = 650;
   const hasLiveDraft = Boolean(liveDraftResume);
@@ -1590,6 +1606,8 @@ function HomeScreen({
       sublabel: "estimates",
       value: Number(businessPulseCounts?.pendingEstimates || 0),
       tone: "estimate",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.AWAITING, ROUTES.ESTIMATES),
+      actionLabel: "Show estimates awaiting a response",
     },
     {
       key: "approved-estimates",
@@ -1597,6 +1615,8 @@ function HomeScreen({
       sublabel: "estimates",
       value: Number(businessPulseCounts?.approvedEstimates || 0),
       tone: "estimate",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.APPROVED, ROUTES.ESTIMATES),
+      actionLabel: "Show approved estimates",
     },
     {
       key: "unpaid-invoices",
@@ -1604,6 +1624,8 @@ function HomeScreen({
       sublabel: "invoices",
       value: Number(businessPulseCounts?.unpaidInvoices || 0),
       tone: "invoice",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES),
+      actionLabel: "Show unpaid invoices",
     },
     {
       key: "overdue-invoices",
@@ -1611,6 +1633,8 @@ function HomeScreen({
       sublabel: "invoices",
       value: Number(businessPulseCounts?.overdueInvoices || 0),
       tone: "invoice",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES),
+      actionLabel: "Show overdue invoices",
     },
   ];
   const dashboard = dashboardSummary && typeof dashboardSummary === "object" ? dashboardSummary : {};
@@ -1623,6 +1647,8 @@ function HomeScreen({
         ? `${Number(dashboard.unpaidInvoices)} open ${Number(dashboard.unpaidInvoices) === 1 ? "invoice" : "invoices"}`
         : "No open invoices",
       tone: Number(dashboard?.unpaidBalance || 0) > 0 ? "warning" : "neutral",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES),
+      actionLabel: "Show invoices with an open balance",
     },
     {
       key: "overdue",
@@ -1630,6 +1656,8 @@ function HomeScreen({
       value: Number(dashboard?.overdueInvoices || 0),
       detail: Number(dashboard?.overdueBalance || 0) > 0 ? homeMoney(dashboard.overdueBalance) : "Caught up",
       tone: Number(dashboard?.overdueInvoices || 0) > 0 ? "danger" : "neutral",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES),
+      actionLabel: "Show overdue invoices",
     },
     {
       key: "paid",
@@ -1637,6 +1665,10 @@ function HomeScreen({
       value: homeMoney(dashboard?.paidAmount || 0),
       detail: Number(dashboard?.paidAmount || 0) > 0 ? "Collected to date" : "No payments yet",
       tone: Number(dashboard?.paidAmount || 0) > 0 ? "good" : "neutral",
+      // This figure is money collected to date, so it drills into every invoice
+      // that recorded a payment rather than only fully settled ones.
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.COLLECTED, ROUTES.INVOICES),
+      actionLabel: "Show invoices with payments collected",
     },
     {
       key: "active-projects",
@@ -1646,6 +1678,8 @@ function HomeScreen({
         ? `${Number(dashboard.approvedEstimates)} approved ${Number(dashboard.approvedEstimates) === 1 ? "estimate" : "estimates"}`
         : "Recent jobs in motion",
       tone: Number(dashboard?.activeProjectCount || 0) > 0 ? "info" : "neutral",
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.ACTIVE, ROUTES.PROJECTS),
+      actionLabel: "Show active projects",
     },
   ];
   const nextSteps = Array.isArray(dashboard?.nextSteps) ? dashboard.nextSteps : [];
@@ -1796,22 +1830,19 @@ function HomeScreen({
                     : item.tone === "info"
                       ? { border: "rgba(59,130,246,0.24)", glow: "rgba(59,130,246,0.1)", value: "rgba(191,219,254,0.98)", tag: "rgba(96,165,250,0.84)" }
                       : { border: "rgba(255,255,255,0.1)", glow: "rgba(255,255,255,0.04)", value: "rgba(236,243,248,0.96)", tag: "rgba(203,213,225,0.78)" };
-              return (
-                <div
-                  key={item.key}
-                  className="pe-home-spotlight-card"
-                  style={{
-                    minWidth: 0,
-                    display: "grid",
-                    gap: 6,
-                    padding: "12px 12px 11px",
-                    borderRadius: 16,
-                    border: `1px solid ${toneStyles.border}`,
-                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.008)), rgba(7, 11, 16, 0.24)",
-                    boxShadow: `inset 0 1px 0 rgba(255,255,255,0.035), 0 10px 22px ${toneStyles.glow}`,
-                    textAlign: "left",
-                  }}
-                >
+              const cardStyle = {
+                minWidth: 0,
+                display: "grid",
+                gap: 6,
+                padding: "12px 12px 11px",
+                borderRadius: 16,
+                border: `1px solid ${toneStyles.border}`,
+                background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.008)), rgba(7, 11, 16, 0.24)",
+                boxShadow: `inset 0 1px 0 rgba(255,255,255,0.035), 0 10px 22px ${toneStyles.glow}`,
+                textAlign: "left",
+              };
+              const body = (
+                <>
                   <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: toneStyles.tag }}>
                     {item.label}
                   </div>
@@ -1821,7 +1852,28 @@ function HomeScreen({
                   <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(220,229,238,0.66)" }}>
                     {item.detail}
                   </div>
-                </div>
+                </>
+              );
+              // Only metrics with a real destination become controls; the rest
+              // stay presentational rather than looking falsely tappable.
+              if (typeof item.onActivate !== "function") {
+                return (
+                  <div key={item.key} className="pe-home-spotlight-card" style={cardStyle}>
+                    {body}
+                  </div>
+                );
+              }
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  className="pe-home-spotlight-card"
+                  onClick={item.onActivate}
+                  aria-label={item.actionLabel || `${item.label}: ${item.value}`}
+                  style={{ ...cardStyle, cursor: "pointer", font: "inherit", width: "100%" }}
+                >
+                  {body}
+                </button>
               );
             })}
           </div>
@@ -1868,13 +1920,35 @@ function HomeScreen({
         <div className="pe-card pe-home-pulse-panel" style={{ minWidth: 0 }}>
           <div className="pe-home-pulse-eyebrow">Business Pulse</div>
           <div className="pe-home-pulse-strip" role="list" aria-label="Business Pulse">
-            {pulseItems.map((item) => (
-              <div key={item.key} className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`} role="listitem" style={{ padding: "10px 10px 9px" }}>
-                <div className="pe-home-pulse-value">{item.value}</div>
-                <div className="pe-home-pulse-label">{item.label}</div>
-                <div style={{ fontSize: 10.5, lineHeight: 1.3, color: "rgba(190,205,218,0.52)" }}>{item.sublabel}</div>
-              </div>
-            ))}
+            {pulseItems.map((item) => {
+              const pulseBody = (
+                <>
+                  <div className="pe-home-pulse-value">{item.value}</div>
+                  <div className="pe-home-pulse-label">{item.label}</div>
+                  <div style={{ fontSize: 10.5, lineHeight: 1.3, color: "rgba(190,205,218,0.52)" }}>{item.sublabel}</div>
+                </>
+              );
+              if (typeof item.onActivate !== "function") {
+                return (
+                  <div key={item.key} className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`} role="listitem" style={{ padding: "10px 10px 9px" }}>
+                    {pulseBody}
+                  </div>
+                );
+              }
+              return (
+                <div key={item.key} role="listitem" style={{ display: "contents" }}>
+                  <button
+                    type="button"
+                    className={`pe-home-pulse-item pe-home-pulse-item--${item.tone}`}
+                    onClick={item.onActivate}
+                    aria-label={item.actionLabel || `${item.label} ${item.sublabel}: ${item.value}`}
+                    style={{ padding: "10px 10px 9px", cursor: "pointer", font: "inherit", textAlign: "center", width: "100%" }}
+                  >
+                    {pulseBody}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -2623,6 +2697,13 @@ function EstiPaidAppShell({
   // section.  It deliberately is not persisted: ordinary later navigation
   // should continue to reset to the normal section state.
   const [postSaveTarget, setPostSaveTarget] = useState(null);
+  // A dashboard drill-down intent is transient navigation context, exactly like
+  // the post-save target above: it says "open this destination showing this
+  // subset", the destination consumes it once, and it is never persisted.
+  // `dashboardReturn` remembers where the drill-down came from so leaving the
+  // destination lands back on the dashboard the user tapped.
+  const [dashboardIntent, setDashboardIntent] = useState(null);
+  const [dashboardReturn, setDashboardReturn] = useState(null);
   const documentEditReturnContextRef = useRef(null);
   const snapshotCompanyId = String(account?.company?.id || "").trim();
   const [snapshotSubscriptionPlanState, setSnapshotSubscriptionPlanState] = useState(() => (
@@ -2919,6 +3000,31 @@ const [spinTick, setSpinTick] = useState(0);
   const consumePostSaveTarget = useCallback(() => {
     setPostSaveTarget(null);
   }, []);
+
+  const consumeDashboardIntent = useCallback(() => {
+    setDashboardIntent(null);
+  }, []);
+
+  const openDashboardDrilldown = useCallback((scope, drilldown, destination, originRoute = "") => {
+    const intent = createDrilldownIntent(scope, drilldown);
+    if (!intent || !destination) return;
+    setDashboardIntent(intent);
+    setDashboardReturn(originRoute && originRoute !== destination ? { destination, origin: originRoute } : null);
+    navigateTo(destination);
+  }, [navigateTo]);
+
+  // The return hop only survives while the user is still on the destination the
+  // drill-down opened. Navigating anywhere else retires it, so a later ordinary
+  // visit never inherits a stale "back to dashboard" hop.
+  useEffect(() => {
+    if (!dashboardReturn) return;
+    if (activeTab !== dashboardReturn.destination) setDashboardReturn(null);
+  }, [activeTab, dashboardReturn]);
+
+  const resolveDashboardDoneRoute = useCallback((destination, fallback = ROUTES.HOME) => {
+    if (dashboardReturn?.destination === destination && dashboardReturn?.origin) return dashboardReturn.origin;
+    return fallback;
+  }, [dashboardReturn]);
 
   // Centralized guard for any flow that would replace/prefill the single shared
   // live estimator draft slot (Project/Customer "Start Estimate", Home AI Assist,
@@ -3908,6 +4014,9 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           } catch {}
         }}
         recentProjects={recentProjects}
+        onOpenDrilldown={(scope, drilldown, destination) => {
+          openDashboardDrilldown(scope, drilldown, destination, ROUTES.HOME);
+        }}
         onOpenProjectDetail={(projectId) => {
           openProjectDetail(projectId, ROUTES.HOME);
         }}
@@ -4027,10 +4136,12 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           spinTick={spinTick}
           postSaveTarget={postSaveTarget}
           onPostSaveTargetConsumed={consumePostSaveTarget}
+          drilldownIntent={dashboardIntent}
+          onDrilldownIntentConsumed={consumeDashboardIntent}
           onBeginInvoiceEdit={(invoice, filters) => {
             beginDocumentEditReturnContext("invoice", invoice?.id, filters);
           }}
-          onDone={() => navigateTo(ROUTES.HOME)}
+          onDone={() => navigateTo(resolveDashboardDoneRoute(ROUTES.INVOICES))}
           onOpenProjectDetail={(projectId) => {
             openProjectDetail(projectId, ROUTES.INVOICES);
           }}
@@ -4050,6 +4161,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     if (activeTab === ROUTES.PROJECTS) {
       return (
         <ProjectsScreen
+          drilldownIntent={dashboardIntent}
+          onDrilldownIntentConsumed={consumeDashboardIntent}
           onOpenProjectDetail={(projectId) => {
             openProjectDetail(projectId, ROUTES.PROJECTS);
           }}

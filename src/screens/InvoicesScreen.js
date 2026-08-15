@@ -24,6 +24,18 @@ import {
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import { getDocumentEditTarget } from "../lib/documentEditTarget";
+import {
+  DRILLDOWN_SCOPES,
+  INVOICE_DRILLDOWNS,
+  drilldownLabel,
+  invoiceMatchesDrilldown,
+  isOverdueInvoice,
+  isPaidInvoice,
+  isPaymentFollowUpInvoice,
+  isReceivableInvoice,
+  invoiceBalanceRemaining,
+  readDrilldownIntent,
+} from "../utils/dashboardDrilldowns";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -1146,6 +1158,24 @@ function getStatusConfirmationContent(nextStatus, lang) {
   return null;
 }
 
+// Resolves the Stripe session state the receivables board already reads for an
+// invoice: the newest still-actionable session, else the newest session at all.
+// Shared by the Payment Status metric and its drill-down filter so the count
+// and the filtered list can never resolve different session states.
+function resolveInvoiceStripeFollowUpState(sessions, invoice) {
+  const targetInvoiceId = String(invoice?.id || "").trim();
+  if (!targetInvoiceId) return "";
+  const forInvoice = (Array.isArray(sessions) ? sessions : [])
+    .filter((entry) => String(entry?.invoiceId || "").trim() === targetInvoiceId)
+    .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0));
+  const actionable = forInvoice.find((entry) => {
+    const state = getStripeSessionDisplayState(entry, invoice);
+    return state !== "synced" && state !== "stale";
+  }) || null;
+  const latest = actionable || forInvoice[0] || null;
+  return latest ? getStripeSessionDisplayState(latest, invoice) : "";
+}
+
 export default function InvoicesScreen({
   lang,
   t,
@@ -1154,6 +1184,8 @@ export default function InvoicesScreen({
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   onBeginInvoiceEdit,
+  drilldownIntent = null,
+  onDrilldownIntentConsumed,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "invoice" ? (postSaveTarget.filters || {}) : {};
@@ -1162,6 +1194,9 @@ export default function InvoicesScreen({
   const [highlightInvoiceId, setHighlightInvoiceId] = useState("");
   const [statusFilter, setStatusFilter] = useState(() => String(initialPostSaveFilters.statusFilter || "all"));
   const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
+  // Receivables drill-down. Separate from `statusFilter` because open balance
+  // and payment follow-up are derived subsets rather than stored statuses.
+  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.INVOICES));
   const [list, setList] = useState(() => readStoredInvoices());
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [expanded, setExpanded] = useState(() => ({}));
@@ -1191,6 +1226,7 @@ export default function InvoicesScreen({
   const invoiceCardRefs = useRef({});
   const highlightTimerRef = useRef(null);
   const typeaheadWrapRef = useRef(null);
+  const recordsSectionRef = useRef(null);
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
   const stripeCheckoutCreateLocksRef = useRef(new Set());
@@ -1442,11 +1478,17 @@ export default function InvoicesScreen({
     }));
   }, [list, metadataRefreshSeq]);
 
+  const resolveStripeFollowUpState = useMemo(
+    () => (invoice) => resolveInvoiceStripeFollowUpState(stripeCheckoutSessions, invoice),
+    [stripeCheckoutSessions]
+  );
+
   const filtered = useMemo(() => {
     const search = String(q || "").trim().toLowerCase();
     const filterStatus = String(statusFilter || "all").trim().toLowerCase();
     return (Array.isArray(list) ? list : []).filter((invoice) => {
       if (Boolean(invoice?.archived) !== Boolean(showArchived)) return false;
+      if (!invoiceMatchesDrilldown(invoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })) return false;
       const derivedStatus = deriveInvoiceStatus(invoice);
       const displayMeta = invoiceDisplayMeta.get(String(invoice?.id || "").trim()) || {};
       const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
@@ -1471,7 +1513,7 @@ export default function InvoicesScreen({
       const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
       return searchMatch && statusMatch;
     });
-  }, [invoiceDisplayMeta, list, q, showArchived, statusFilter]);
+  }, [invoiceDisplayMeta, list, metricFilter, q, resolveStripeFollowUpState, showArchived, statusFilter]);
 
   // Search typeahead: reuses the same `filtered` source (which already respects
   // the Show archived toggle and status filter). Selecting a row is view-only:
@@ -1522,7 +1564,49 @@ export default function InvoicesScreen({
     ].map((value) => String(value || "").toLowerCase());
     if (query && !searchText.some((value) => value.includes(query))) setQ("");
     if (statusFilter !== "all" && deriveInvoiceStatus(savedInvoice) !== statusFilter) setStatusFilter("all");
-  }, [invoiceDisplayMeta, q, savedInvoice, showArchived, statusFilter]);
+    // A dashboard drill-down is ordinary filter state here, so the Lane 2 rule
+    // applies to it too: keep it when the saved invoice still belongs to the
+    // subset, and relax only when it would hide the record the user just saved.
+    if (metricFilter && !invoiceMatchesDrilldown(savedInvoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })) {
+      setMetricFilter("");
+    }
+  }, [invoiceDisplayMeta, metricFilter, q, resolveStripeFollowUpState, savedInvoice, showArchived, statusFilter]);
+
+  // A cross-screen drill-down arrives as transient navigation context. It is
+  // applied once, keyed by its sequence, and handed back immediately so a later
+  // ordinary visit to Invoices never re-fires the same intent.
+  const consumedDrilldownSeqRef = useRef(0);
+  useEffect(() => {
+    const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.INVOICES);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
+    consumedDrilldownSeqRef.current = seq;
+    setMetricFilter(nextDrilldown);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, onDrilldownIntentConsumed]);
+
+  const scrollToRecords = () => {
+    const node = recordsSectionRef.current;
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  };
+
+  // Receivables metrics summarize the invoices already visible in this view, so
+  // tapping one filters in place and brings those records up rather than
+  // navigating anywhere. Tapping the active metric again clears it.
+  const toggleMetricFilter = (nextKey) => {
+    const key = String(nextKey || "");
+    const willClear = metricFilter === key;
+    setMetricFilter(willClear ? "" : key);
+    if (!willClear) {
+      try {
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(scrollToRecords);
+        } else scrollToRecords();
+      } catch { scrollToRecords(); }
+    }
+  };
 
   useEffect(() => {
     if (!savedInvoice || !filtered.some((invoice) => String(invoice?.id || "") === String(savedInvoice?.id || ""))) return;
@@ -1962,27 +2046,23 @@ export default function InvoicesScreen({
     let paidCount = 0;
     let stripeFollowUpCount = 0;
 
+    // Every counter below uses the same shared predicate its stat card drills
+    // into, so the number on the card and the records behind it always agree.
     filtered.forEach((invoice) => {
-      const derivedStatus = deriveInvoiceStatus(invoice);
-      const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
-      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || invoice?.total || 0);
       const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-      const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? Math.max(0, invoiceTotal - amountPaid));
-      const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
-      const latestStripeSession = latestActionableStripeSession || getLatestStripeCheckoutSessionForInvoice(String(invoice?.id || "").trim());
-      const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
+      const balanceRemaining = invoiceBalanceRemaining(invoice);
 
       paidAmount += amountPaid;
-      if (derivedStatus === INVOICE_STATUSES.PAID || paymentStatus === PAYMENT_STATUSES.PAID) paidCount += 1;
-      if (derivedStatus !== INVOICE_STATUSES.VOID && paymentStatus !== PAYMENT_STATUSES.VOID && balanceRemaining > 0) {
+      if (isPaidInvoice(invoice)) paidCount += 1;
+      if (isReceivableInvoice(invoice)) {
         openBalance += balanceRemaining;
         openCount += 1;
       }
-      if (derivedStatus === INVOICE_STATUSES.OVERDUE && balanceRemaining > 0) {
+      if (isOverdueInvoice(invoice)) {
         overdueBalance += balanceRemaining;
         overdueCount += 1;
       }
-      if (balanceRemaining > 0 && latestStripeSession && ["pending", "review", "expired"].includes(stripeSessionState)) {
+      if (isPaymentFollowUpInvoice(invoice, resolveStripeFollowUpState)) {
         stripeFollowUpCount += 1;
       }
     });
@@ -2036,7 +2116,7 @@ export default function InvoicesScreen({
       stripeFollowUpCount,
       nextAction,
     };
-  }, [filtered, lang, stripeCheckoutSessions]);
+  }, [filtered, lang, resolveStripeFollowUpState, stripeCheckoutSessions]);
 
   const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
     return findReusableStripeCheckoutSessionInEntries(stripeCheckoutSessions, invoice, balanceRemaining, currency, stripeAccountId);
@@ -2823,19 +2903,37 @@ export default function InvoicesScreen({
                   color: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(96,165,250,0.84)" : "rgba(203,213,225,0.78)",
                   border: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.1)",
                 },
-              ].map((item) => (
-                <div key={item.key} style={{ ...invoiceCockpitStatStyle, border: `1px solid ${item.border}` }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
-                    {item.label}
-                  </div>
-                  <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
-                    {item.value}
-                  </div>
-                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
-                    {item.detail}
-                  </div>
-                </div>
-              ))}
+              ].map((item) => {
+                const isActive = metricFilter === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleMetricFilter(item.key)}
+                    aria-pressed={isActive}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar filtro" : "Clear filter") : (lang === "es" ? "Filtrar facturas" : "Filter invoices")}`}
+                    style={{
+                      ...invoiceCockpitStatStyle,
+                      border: `1px solid ${isActive ? item.color : item.border}`,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      font: "inherit",
+                      background: isActive ? "rgba(255,255,255,0.06)" : (invoiceCockpitStatStyle?.background || "transparent"),
+                      boxShadow: isActive ? `inset 0 0 0 1px ${item.color}` : "none",
+                    }}
+                  >
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                      {item.label}
+                    </div>
+                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                      {item.value}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                      {item.detail}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -2993,10 +3091,33 @@ export default function InvoicesScreen({
                   setQ("");
                   setStatusFilter("all");
                   setShowArchived(false);
+                  setMetricFilter("");
                 }}
               >
                 {lang === "es" ? "Limpiar" : "Clear"}
               </button>
+
+              {metricFilter ? (
+                <button
+                  type="button"
+                  onClick={() => setMetricFilter("")}
+                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  style={{
+                    ...clearButtonStyle,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    borderColor: "rgba(96,165,250,0.45)",
+                    color: "rgba(226,238,250,0.95)",
+                    background: "rgba(59,130,246,0.14)",
+                  }}
+                >
+                  <span style={{ fontWeight: 800 }}>
+                    {drilldownLabel(DRILLDOWN_SCOPES.INVOICES, metricFilter, lang)}
+                  </span>
+                  <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
+                </button>
+              ) : null}
             </div>
             {stripeSyncOutcome?.message ? (
               <div
@@ -3041,7 +3162,7 @@ export default function InvoicesScreen({
             ) : null}
           </div>
 
-          <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+          <div ref={recordsSectionRef} className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
             <div style={invoiceSectionHeaderStyle}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
