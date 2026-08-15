@@ -267,6 +267,75 @@ describe("InvoicesScreen dashboard drill-downs", () => {
     }
   });
 
+  test("an active subset does not zero out its sibling tiles", async () => {
+    seedAll();
+    render(<InvoicesScreen lang="en" t={(key) => key} />);
+    await screen.findByText(/INV-0041/);
+
+    act(() => {
+      fireEvent.click(metricButton("Paid:"));
+    });
+    await waitFor(() => expect(visibleInvoiceNumbers()).toEqual(["INV-0043"]));
+
+    // The tiles describe the views available to switch to, so Overdue still
+    // reports the work waiting in it even though Paid is what is on screen.
+    const overdue = screen.getByRole("button", { name: /Overdue:/i });
+    expect(overdue).toHaveAttribute("aria-pressed", "false");
+    expect(overdue).not.toHaveTextContent(/^Overdue\s*\$0\.00/);
+    expect(screen.getByRole("button", { name: /Receivables:/i })).toBeInTheDocument();
+  });
+
+  test("one tap switches straight from Paid to Overdue", async () => {
+    seedAll();
+    render(<InvoicesScreen lang="en" t={(key) => key} />);
+    await screen.findByText(/INV-0041/);
+
+    act(() => {
+      fireEvent.click(metricButton("Paid:"));
+    });
+    await waitFor(() => expect(visibleInvoiceNumbers()).toEqual(["INV-0043"]));
+
+    // No trip through Clear in between.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /Overdue:/i }));
+    });
+
+    await waitFor(() => expect(visibleInvoiceNumbers()).toEqual(["INV-0042"]));
+    const pressed = screen.getAllByRole("button", { pressed: true });
+    expect(pressed).toHaveLength(1);
+    expect(pressed[0]).toHaveAccessibleName(/Overdue:/i);
+    // Exactly one context strip, describing the new subset.
+    expect(screen.getAllByRole("button", { name: /Clear dashboard filter/i })).toHaveLength(1);
+  });
+
+  test("switching subsets re-targets the first card of the new subset", async () => {
+    seedAll();
+    const scrollIntoView = jest.fn();
+    const prev = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(<InvoicesScreen lang="en" t={(key) => key} />);
+      await screen.findByText(/INV-0041/);
+
+      act(() => {
+        fireEvent.click(metricButton("Paid:"));
+      });
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(scrollIntoView.mock.instances.at(-1)).toBe(document.querySelector('[data-invoice-card-id="inv_paid"]'));
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /Overdue:/i }));
+      });
+      await waitFor(() => expect(visibleInvoiceNumbers()).toEqual(["INV-0042"]));
+      await waitFor(() => {
+        expect(scrollIntoView.mock.instances.at(-1)).toBe(document.querySelector('[data-invoice-card-id="inv_overdue"]'));
+      });
+    } finally {
+      Element.prototype.scrollIntoView = prev;
+    }
+  });
+
   test("a post-save target still wins over an active drill-down that would hide it", async () => {
     seedAll();
     render(

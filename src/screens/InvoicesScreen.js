@@ -1487,12 +1487,15 @@ export default function InvoicesScreen({
     [stripeCheckoutSessions]
   );
 
-  const filtered = useMemo(() => {
+  // Everything the user's ordinary filters allow, before any dashboard
+  // drill-down narrows it. The summary tiles read from this so that selecting
+  // one subset cannot zero out its siblings: the tiles describe the business
+  // views available to switch to, not the view currently on screen.
+  const baseFiltered = useMemo(() => {
     const search = String(q || "").trim().toLowerCase();
     const filterStatus = String(statusFilter || "all").trim().toLowerCase();
     return (Array.isArray(list) ? list : []).filter((invoice) => {
       if (Boolean(invoice?.archived) !== Boolean(showArchived)) return false;
-      if (!invoiceMatchesDrilldown(invoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })) return false;
       const derivedStatus = deriveInvoiceStatus(invoice);
       const displayMeta = invoiceDisplayMeta.get(String(invoice?.id || "").trim()) || {};
       const invoiceNumber = String(invoice?.invoiceNumber || "").toLowerCase();
@@ -1517,7 +1520,16 @@ export default function InvoicesScreen({
       const statusMatch = filterStatus === "all" || derivedStatus === filterStatus;
       return searchMatch && statusMatch;
     });
-  }, [invoiceDisplayMeta, list, metricFilter, q, resolveStripeFollowUpState, showArchived, statusFilter]);
+  }, [invoiceDisplayMeta, list, q, showArchived, statusFilter]);
+
+  // The rendered list: the base set narrowed by whichever dashboard subset is
+  // active. Only this feeds the cards on screen.
+  const filtered = useMemo(() => {
+    if (!metricFilter) return baseFiltered;
+    return baseFiltered.filter(
+      (invoice) => invoiceMatchesDrilldown(invoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })
+    );
+  }, [baseFiltered, metricFilter, resolveStripeFollowUpState]);
 
   // Search typeahead: reuses the same `filtered` source (which already respects
   // the Show archived toggle and status filter). Selecting a row is view-only:
@@ -2097,7 +2109,10 @@ export default function InvoicesScreen({
 
     // Every counter below uses the same shared predicate its stat card drills
     // into, so the number on the card and the records behind it always agree.
-    filtered.forEach((invoice) => {
+    // Counted over the pre-drill-down set: a tile has to keep showing the work
+    // waiting in it while a sibling subset is the one on screen, otherwise
+    // switching from Paid to Overdue would need a trip through Clear first.
+    baseFiltered.forEach((invoice) => {
       const amountPaid = roundCurrency(invoice?.amountPaid || 0);
       const balanceRemaining = invoiceBalanceRemaining(invoice);
 
@@ -2155,6 +2170,7 @@ export default function InvoicesScreen({
               };
 
     return {
+      // The only figure here that describes what is actually rendered.
       visibleCount: filtered.length,
       openBalance,
       openCount,
@@ -2165,7 +2181,7 @@ export default function InvoicesScreen({
       stripeFollowUpCount,
       nextAction,
     };
-  }, [filtered, lang, resolveStripeFollowUpState, stripeCheckoutSessions]);
+  }, [baseFiltered, filtered, lang, resolveStripeFollowUpState, stripeCheckoutSessions]);
 
   const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
     return findReusableStripeCheckoutSessionInEntries(stripeCheckoutSessions, invoice, balanceRemaining, currency, stripeAccountId);
