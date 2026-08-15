@@ -816,6 +816,10 @@ function FinancialSnapshotRealScreen({
   const [projects, setProjects] = useState([]);
   const [estimates, setEstimates] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  // True once the storage-backed sections have their rows. Snapshot renders its
+  // panels as empty headers first, so this is the point at which the page stops
+  // changing height -- the only honest moment to restore a scroll position.
+  const [snapshotDataLoaded, setSnapshotDataLoaded] = useState(false);
   const [invoiceDateFlags, setInvoiceDateFlags] = useState({});
   const [marginFilter, setMarginFilter] = useState("all");
   const [expandedMarginId, setExpandedMarginId] = useState(null);
@@ -865,6 +869,7 @@ function FinancialSnapshotRealScreen({
       setEstimates(readSavedEstimates());
       setInvoices(readStoredInvoices());
       setInvoiceDateFlags(buildInvoiceDateFlags());
+      setSnapshotDataLoaded(true);
     };
     refresh();
 
@@ -1372,41 +1377,37 @@ function FinancialSnapshotRealScreen({
 
   const title = lang === "es" ? "Resumen financiero" : "Financial Snapshot";
 
-  // Restores the section a Snapshot drill-down left from. The target panel may
-  // not exist yet on the first render after the hop, and the route change
-  // resets scroll, so the request is held until the section is actually in the
-  // DOM and then aimed once -- after a frame, so it lands on the settled
-  // layout rather than the one being replaced. Never persisted.
-  const pendingAnchorRef = useRef("");
+  // Restores the section a Snapshot drill-down left from.
+  //
+  // Measured on the running app: Snapshot first renders its panels as empty
+  // headers, then `refresh()` supplies the stored rows and the aging panel goes
+  // 228px -> 1448px and margin health 132px -> 585px. That pushes the Estimate
+  // Pipeline panel from 2274 down to 4152 -- so a scroll performed before the
+  // rows arrive is correct when it happens and ~1878px short a moment later.
+  //
+  // So the landing is tied to that data boundary rather than to a timer or a
+  // layout guess: aim whenever the target is available (which is enough for the
+  // shallow sections), and only report the request finished once the rows are
+  // in and the final aim has been made against the settled page.
   useEffect(() => {
     const anchor = String(returnAnchor || "");
     if (!anchor) return;
-    pendingAnchorRef.current = anchor;
-    try { onReturnAnchorConsumed?.(); } catch {}
-  }, [returnAnchor, onReturnAnchorConsumed]);
-
-  useEffect(() => {
-    const anchor = pendingAnchorRef.current;
-    if (!anchor) return undefined;
     const node = anchor === SNAPSHOT_ANCHORS.AT_RISK
       ? arRef.current
       : anchor === SNAPSHOT_ANCHORS.ESTIMATE_PIPELINE
         ? pipelineRef.current
         : cockpitRef.current;
-    // Not rendered yet: stay pending for the render that provides it.
-    if (!node || typeof node.scrollIntoView !== "function") return undefined;
-    pendingAnchorRef.current = "";
-    const aim = () => {
-      try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
-      catch { try { node.scrollIntoView(); } catch {} }
-    };
-    aim();
-    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") return undefined;
-    const frame = window.requestAnimationFrame(aim);
-    return () => {
-      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(frame);
-    };
-  }, [returnAnchor, computed]);
+    // Not rendered yet: hold the request for the render that provides it.
+    if (!node || typeof node.scrollIntoView !== "function") return;
+
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+
+    // Rows still to come: the page will grow under this landing, so keep the
+    // request open and land again on the render that brings them in.
+    if (!snapshotDataLoaded) return;
+    try { onReturnAnchorConsumed?.(); } catch {}
+  }, [returnAnchor, snapshotDataLoaded, computed, onReturnAnchorConsumed]);
 
   const insight = useMemo(() => {
     const allTimeLine = lang === "es"
