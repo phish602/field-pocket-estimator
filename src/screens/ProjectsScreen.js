@@ -744,6 +744,20 @@ export default function ProjectsScreen({
                     return S.card.background;
                   })(),
                 }}
+                // The whole card already opened Project Detail, but silently:
+                // no cursor, no role, no keyboard path. Same handler, now
+                // announced and reachable.
+                role={onOpenProjectDetail && proj.id ? "button" : undefined}
+                tabIndex={onOpenProjectDetail && proj.id ? 0 : undefined}
+                aria-label={onOpenProjectDetail && proj.id
+                  ? `${proj.projectName || proj.siteAddress || "Untitled Project"}. Open project detail`
+                  : undefined}
+                onKeyDown={(event) => {
+                  if (!onOpenProjectDetail || !proj.id) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  onOpenProjectDetail(proj.id);
+                }}
                 onClick={() => {
                   if (onOpenProjectDetail && proj.id) onOpenProjectDetail(proj.id);
                 }}
@@ -831,6 +845,11 @@ export default function ProjectsScreen({
                     </div>
                   ) : null}
                 </div>
+                {onOpenProjectDetail && proj.id ? (
+                  <div style={{ fontSize: 11.5, fontWeight: 800, color: "rgba(147,197,253,0.9)", letterSpacing: "0.04em" }}>
+                    Open project →
+                  </div>
+                ) : null}
               </div>
             );
           })}

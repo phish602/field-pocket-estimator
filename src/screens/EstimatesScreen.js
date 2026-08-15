@@ -2025,6 +2025,10 @@ export default function EstimatesScreen({
     catch { try { node.scrollIntoView(); } catch {} }
   }, [pipelineFocus, focusLandingStatus, focusedEstimateIds, displayedEstimates]);
 
+  // Only the Awaiting focus lifts status controls onto the card: it is the one
+  // pipeline subset whose next step is recording a customer's answer.
+  const isAwaitingFocus = pipelineFocus === ESTIMATE_DRILLDOWNS.AWAITING;
+
   // Tapping a pipeline metric focuses the board on that subset; tapping the
   // active one releases the focus. Nothing is added or removed from the board.
   const togglePipelineFocus = (nextKey) => {
@@ -3437,6 +3441,36 @@ export default function EstimatesScreen({
                         >
                           Project
                         </button>
+                      ) : null}
+                      {/* When the user focused "Awaiting response", the next
+                          step for these specific estimates is recording the
+                          customer's answer. Lift the existing status controls
+                          out of the details panel for the focused cards only --
+                          same setEstimateStatus handler, same archived guard,
+                          no new status values and no clutter on other cards. */}
+                      {isAwaitingFocus && focusedEstimateIds.has(id) && status === STATUS_PENDING && !e?.archived ? (
+                        <>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "approve")}
+                            onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "approve")}
+                            onClick={(evt) => runEstimateCardAction(evt, id, "approve", () => setEstimateStatus(e, STATUS_APPROVED))}
+                            style={estimateSecondaryActionStyle}
+                          >
+                            {lang === "es" ? "Marcar aprobado" : "Mark Approved"}
+                          </button>
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onPointerDown={(evt) => consumeEstimateActionEvent(evt, id, "lost")}
+                            onTouchStart={(evt) => consumeEstimateActionEvent(evt, id, "lost")}
+                            onClick={(evt) => runEstimateCardAction(evt, id, "lost", () => setEstimateStatus(e, STATUS_LOST))}
+                            style={estimateSecondaryActionStyle}
+                          >
+                            {lang === "es" ? "Marcar perdido" : "Mark Lost"}
+                          </button>
+                        </>
                       ) : null}
                     </div>
                   </div>

@@ -1479,6 +1479,8 @@ function FinancialSnapshotRealScreen({
             ? `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} abiertas`
             : `${computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial} open invoices`,
           tone: computed.invoiceTotals.outstandingValue > 0 ? "warn" : "ok",
+          count: computed.invoiceTotals.sent + computed.invoiceTotals.overdue + computed.invoiceTotals.partial,
+          actionLabel: lang === "es" ? "Ver cobros" : "View receivables",
           drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.RECEIVABLES, destination: ROUTES.INVOICES },
         },
         {
@@ -1491,6 +1493,8 @@ function FinancialSnapshotRealScreen({
               : `${computed.invoiceTotals.overdue} overdue`)
             : (lang === "es" ? "Al corriente" : "Caught up"),
           tone: computed.invoiceTotals.overdueValue > 0 ? "bad" : "ok",
+          count: computed.invoiceTotals.overdue,
+          actionLabel: lang === "es" ? "Ver vencidas" : "View overdue",
           drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.OVERDUE, destination: ROUTES.INVOICES },
         },
         {
@@ -1503,6 +1507,8 @@ function FinancialSnapshotRealScreen({
               : `${computed.invoiceTotals.paid} paid invoices`)
             : (lang === "es" ? "Sin pagos aún" : "No payments yet"),
           tone: computed.invoiceTotals.paidValue > 0 ? "ok" : "info",
+          count: computed.invoiceTotals.paidValue > 0 ? 1 : 0,
+          actionLabel: lang === "es" ? "Ver cobrado" : "View collected",
           // Collected sums every recorded payment, so it drills into every
           // invoice that contributed one rather than only settled invoices.
           drilldown: { scope: DRILLDOWN_SCOPES.INVOICES, key: INVOICE_DRILLDOWNS.COLLECTED, destination: ROUTES.INVOICES },
@@ -1517,6 +1523,8 @@ function FinancialSnapshotRealScreen({
               : `${computed.approvedReadyCount} ready to invoice`)
             : (lang === "es" ? "Trabajos en movimiento" : "Jobs in motion"),
           tone: computed.projectCounts.active + computed.projectCounts.estimating > 0 ? "info" : "ok",
+          count: computed.projectCounts.active + computed.projectCounts.estimating,
+          actionLabel: lang === "es" ? "Ver proyectos" : "View projects",
           // Counts active plus estimating jobs, which is the "in motion" set.
           drilldown: { scope: DRILLDOWN_SCOPES.PROJECTS, key: PROJECT_DRILLDOWNS.IN_MOTION, destination: ROUTES.PROJECTS },
         },
@@ -1658,7 +1666,11 @@ function FinancialSnapshotRealScreen({
                   </div>
                 </>
               );
-              const activate = item.drilldown && typeof onOpenDrilldown === "function"
+              // A metric with nothing behind it is not an entry point. Leaving
+              // it inert keeps "Caught up" honest instead of offering a tap
+              // that lands on an empty list.
+              const hasRecordsBehind = Number(item.count || 0) > 0;
+              const activate = item.drilldown && hasRecordsBehind && typeof onOpenDrilldown === "function"
                 ? () => onOpenDrilldown(item.drilldown.scope, item.drilldown.key, item.drilldown.destination)
                 : null;
               if (!activate) {
@@ -1673,6 +1685,9 @@ function FinancialSnapshotRealScreen({
                   style={{ ...cardStyle, textAlign: "left", cursor: "pointer", font: "inherit" }}
                 >
                   {cardBody}
+                  <div style={{ fontSize: 11, fontWeight: 800, color: toneColor, letterSpacing: "0.04em" }}>
+                    {item.actionLabel} →
+                  </div>
                 </button>
               );
             })}
@@ -1851,6 +1866,14 @@ function FinancialSnapshotRealScreen({
                         <div style={{ textAlign: "right" }}>
                           <div style={{ fontWeight: 900, color: "rgba(229,231,235,0.95)" }}>{fmtMoney(row.balanceDue)}</div>
                           <div className="pe-muted" style={{ marginTop: 2, fontSize: 12 }}>{row.dueDateLabel}</div>
+                          {/* Snapshot already knows exactly which invoice this
+                              is, so say so rather than leaving the card looking
+                              like a read-only statistic. */}
+                          {row.invoiceId && typeof onOpenInvoiceRecord === "function" ? (
+                            <div style={{ marginTop: 4, fontSize: 11.5, fontWeight: 800, color: "rgba(147,197,253,0.92)" }}>
+                              {lang === "es" ? "Abrir factura →" : "Open invoice →"}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     );

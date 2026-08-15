@@ -1592,8 +1592,10 @@ function HomeScreen({
   const pressTimerRef = useRef(null);
   // Home summarizes records that live on the canonical Invoices and Projects
   // screens, so each metric navigates there carrying the subset it counted.
-  const drilldownFor = (scope, drilldown, destination) => {
-    if (typeof onOpenDrilldown !== "function") return null;
+  // `hasRecords` keeps a metric inert when nothing is behind it: a zero should
+  // read as "caught up", not as an entry point into an empty list.
+  const drilldownFor = (scope, drilldown, destination, hasRecords = true) => {
+    if (typeof onOpenDrilldown !== "function" || !hasRecords) return null;
     return () => onOpenDrilldown(scope, drilldown, destination);
   };
   const didLongPressRef = useRef(false);
@@ -1610,7 +1612,7 @@ function HomeScreen({
       tone: "estimate",
       // This counter treats every not-yet-approved, not-lost estimate as
       // pending, drafts included, so it focuses that same wider set.
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.OPEN, ROUTES.ESTIMATES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.OPEN, ROUTES.ESTIMATES, Number(businessPulseCounts?.pendingEstimates || 0) > 0),
       actionLabel: "Show open estimates",
     },
     {
@@ -1619,7 +1621,7 @@ function HomeScreen({
       sublabel: "estimates",
       value: Number(businessPulseCounts?.approvedEstimates || 0),
       tone: "estimate",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.APPROVED, ROUTES.ESTIMATES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.APPROVED, ROUTES.ESTIMATES, Number(businessPulseCounts?.approvedEstimates || 0) > 0),
       actionLabel: "Show approved estimates",
     },
     {
@@ -1628,7 +1630,7 @@ function HomeScreen({
       sublabel: "invoices",
       value: Number(businessPulseCounts?.unpaidInvoices || 0),
       tone: "invoice",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES, Number(businessPulseCounts?.unpaidInvoices || 0) > 0),
       actionLabel: "Show unpaid invoices",
     },
     {
@@ -1637,7 +1639,7 @@ function HomeScreen({
       sublabel: "invoices",
       value: Number(businessPulseCounts?.overdueInvoices || 0),
       tone: "invoice",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES, Number(businessPulseCounts?.overdueInvoices || 0) > 0),
       actionLabel: "Show overdue invoices",
     },
   ];
@@ -1651,8 +1653,9 @@ function HomeScreen({
         ? `${Number(dashboard.unpaidInvoices)} open ${Number(dashboard.unpaidInvoices) === 1 ? "invoice" : "invoices"}`
         : "No open invoices",
       tone: Number(dashboard?.unpaidBalance || 0) > 0 ? "warning" : "neutral",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES, Number(dashboard?.unpaidInvoices || 0) > 0),
       actionLabel: "Show invoices with an open balance",
+      cue: "View receivables",
     },
     {
       key: "overdue",
@@ -1660,8 +1663,9 @@ function HomeScreen({
       value: Number(dashboard?.overdueInvoices || 0),
       detail: Number(dashboard?.overdueBalance || 0) > 0 ? homeMoney(dashboard.overdueBalance) : "Caught up",
       tone: Number(dashboard?.overdueInvoices || 0) > 0 ? "danger" : "neutral",
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES, Number(dashboard?.overdueInvoices || 0) > 0),
       actionLabel: "Show overdue invoices",
+      cue: "View overdue",
     },
     {
       key: "paid",
@@ -1671,8 +1675,9 @@ function HomeScreen({
       tone: Number(dashboard?.paidAmount || 0) > 0 ? "good" : "neutral",
       // This figure is money collected to date, so it drills into every invoice
       // that recorded a payment rather than only fully settled ones.
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.COLLECTED, ROUTES.INVOICES),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.COLLECTED, ROUTES.INVOICES, Number(dashboard?.paidAmount || 0) > 0),
       actionLabel: "Show invoices with payments collected",
+      cue: "View collected",
     },
     {
       key: "active-projects",
@@ -1684,8 +1689,9 @@ function HomeScreen({
       tone: Number(dashboard?.activeProjectCount || 0) > 0 ? "info" : "neutral",
       // Home counts jobs that are active or still estimating, so it drills into
       // that same "in motion" set rather than the narrower active-only one.
-      onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.IN_MOTION, ROUTES.PROJECTS),
+      onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.IN_MOTION, ROUTES.PROJECTS, Number(dashboard?.activeProjectCount || 0) > 0),
       actionLabel: "Show projects in motion",
+      cue: "View projects",
     },
   ];
   const nextSteps = Array.isArray(dashboard?.nextSteps) ? dashboard.nextSteps : [];
@@ -1879,6 +1885,11 @@ function HomeScreen({
                   style={{ ...cardStyle, cursor: "pointer", font: "inherit", width: "100%" }}
                 >
                   {body}
+                  {item.cue ? (
+                    <div style={{ fontSize: 10.5, fontWeight: 800, color: toneStyles.tag, letterSpacing: "0.04em" }}>
+                      {item.cue} →
+                    </div>
+                  ) : null}
                 </button>
               );
             })}

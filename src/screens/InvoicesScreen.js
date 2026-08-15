@@ -1607,6 +1607,11 @@ export default function InvoicesScreen({
     try { onDrilldownIntentConsumed?.(); } catch {}
   }, [drilldownIntent, list, onDrilldownIntentConsumed, showArchived, statusFilter]);
 
+  // True while the user is looking at money owed, which is the only context
+  // where the payment action is lifted onto the collapsed card.
+  const isReceivablesContext = metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
+    || metricFilter === INVOICE_DRILLDOWNS.OVERDUE;
+
   const scrollToRecords = () => {
     const node = recordsSectionRef.current;
     if (!node || typeof node.scrollIntoView !== "function") return;
@@ -2889,6 +2894,7 @@ export default function InvoicesScreen({
               {[
                 {
                   key: "receivables",
+                  count: invoiceBoardSummary.openCount,
                   label: lang === "es" ? "Cobros" : "Receivables",
                   value: moneyUSD(invoiceBoardSummary.openBalance),
                   detail: invoiceBoardSummary.openCount > 0
@@ -2899,6 +2905,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "overdue",
+                  count: invoiceBoardSummary.overdueCount,
                   label: lang === "es" ? "Cobro vencido" : "Overdue",
                   value: moneyUSD(invoiceBoardSummary.overdueBalance),
                   detail: invoiceBoardSummary.overdueCount > 0
@@ -2909,6 +2916,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "paid",
+                  count: invoiceBoardSummary.paidCount,
                   label: lang === "es" ? "Pagado" : "Paid",
                   value: moneyUSD(invoiceBoardSummary.paidAmount),
                   detail: `${invoiceBoardSummary.paidCount} ${invoiceBoardSummary.paidCount === 1 ? (lang === "es" ? "factura liquidada" : "paid invoice") : (lang === "es" ? "facturas liquidadas" : "paid invoices")}`,
@@ -2917,6 +2925,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "payment-status",
+                  count: invoiceBoardSummary.stripeFollowUpCount,
                   label: lang === "es" ? "Estado de pago" : "Payment Status",
                   value: String(invoiceBoardSummary.stripeFollowUpCount),
                   detail: invoiceBoardSummary.stripeFollowUpCount > 0
@@ -2927,6 +2936,24 @@ export default function InvoicesScreen({
                 },
               ].map((item) => {
                 const isActive = metricFilter === item.key;
+                // A tile with no records behind it is not a way in. Leaving it
+                // inert keeps the empty state honest rather than offering a tap
+                // that lands on nothing.
+                if (!isActive && Number(item.count || 0) <= 0) {
+                  return (
+                    <div key={item.key} style={{ ...invoiceCockpitStatStyle, border: `1px solid ${item.border}` }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                        {item.label}
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                        {item.value}
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                        {item.detail}
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <button
                     key={item.key}
@@ -3119,27 +3146,9 @@ export default function InvoicesScreen({
                 {lang === "es" ? "Limpiar" : "Clear"}
               </button>
 
-              {metricFilter ? (
-                <button
-                  type="button"
-                  onClick={() => setMetricFilter("")}
-                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
-                  style={{
-                    ...clearButtonStyle,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    borderColor: "rgba(96,165,250,0.45)",
-                    color: "rgba(226,238,250,0.95)",
-                    background: "rgba(59,130,246,0.14)",
-                  }}
-                >
-                  <span style={{ fontWeight: 800 }}>
-                    {drilldownLabel(DRILLDOWN_SCOPES.INVOICES, metricFilter, lang)}
-                  </span>
-                  <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
-                </button>
-              ) : null}
+              {/* The drill-down's own chip used to live here. The context strip
+                  above the records now states the same thing with its count and
+                  value, so a second clear control would just be noise. */}
             </div>
             {stripeSyncOutcome?.message ? (
               <div
@@ -3185,6 +3194,46 @@ export default function InvoicesScreen({
           </div>
 
           <div ref={recordsSectionRef} className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+            {/* Context strip: after a drill-down, say plainly which business
+                condition is on screen and what it is worth, so the list is not
+                just "some invoices". Clearing it is one tap away. */}
+            {metricFilter ? (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  padding: "9px 12px",
+                  borderRadius: 12,
+                  border: `1px solid ${metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(239,68,68,0.28)" : "rgba(96,165,250,0.3)"}`,
+                  background: metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(239,68,68,0.08)" : "rgba(59,130,246,0.08)",
+                }}
+              >
+                <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(248,113,113,0.9)" : "rgba(147,197,253,0.9)" }}>
+                    {drilldownLabel(DRILLDOWN_SCOPES.INVOICES, metricFilter, lang)}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(239,245,249,0.96)" }}>
+                    {`${filtered.length} ${filtered.length === 1 ? (lang === "es" ? "factura" : "invoice") : (lang === "es" ? "facturas" : "invoices")}`}
+                    {metricFilter === INVOICE_DRILLDOWNS.OVERDUE
+                      ? ` · ${moneyUSD(invoiceBoardSummary.overdueBalance)}`
+                      : metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
+                        ? ` · ${moneyUSD(invoiceBoardSummary.openBalance)}`
+                        : ""}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMetricFilter("")}
+                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  style={{ ...clearButtonStyle, flexShrink: 0, whiteSpace: "nowrap" }}
+                >
+                  {lang === "es" ? "Ver todas" : "Show all"}
+                </button>
+              </div>
+            ) : null}
             <div style={invoiceSectionHeaderStyle}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
@@ -3509,6 +3558,23 @@ export default function InvoicesScreen({
                           >
                             {lang === "es" ? "Abrir" : "Open"}
                           </button>
+                          {/* When the user drilled in on money owed, the next
+                              step is almost always taking a payment. Lift the
+                              existing action out of the details panel for that
+                              context only -- same handler, same guard, no
+                              second payment path and no clutter elsewhere. */}
+                          {isReceivablesContext && canTakePayment ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "payment")}
+                              onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "payment")}
+                              onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "payment", () => openPaymentModal(invoice))}
+                              style={invoiceSecondaryActionStyle}
+                            >
+                              {getPaymentActionLabel(invoice, lang)}
+                            </button>
+                          ) : null}
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
