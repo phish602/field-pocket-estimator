@@ -2619,6 +2619,11 @@ function EstiPaidAppShell({
 
   const [lang] = useState(() => getSavedLang());
   const [activeTab, setActiveTab] = useState(() => ROUTES.HOME);
+  // A save target lives only for the handoff back from the builder to its
+  // section.  It deliberately is not persisted: ordinary later navigation
+  // should continue to reset to the normal section state.
+  const [postSaveTarget, setPostSaveTarget] = useState(null);
+  const documentEditReturnContextRef = useRef(null);
   const snapshotCompanyId = String(account?.company?.id || "").trim();
   const [snapshotSubscriptionPlanState, setSnapshotSubscriptionPlanState] = useState(() => (
     auth?.configured && snapshotCompanyId ? getDefaultSubscriptionPlanState() : loadLocalSubscriptionPlanState()
@@ -2903,6 +2908,18 @@ const [spinTick, setSpinTick] = useState(0);
     navigateTo(ROUTES.PROJECT_DETAIL);
   }, [activeTab, navigateTo, resolveProjectDetailBackRoute]);
 
+  const beginDocumentEditReturnContext = useCallback((type, id, filters = {}) => {
+    const normalizedType = type === "invoice" ? "invoice" : "estimate";
+    const normalizedId = String(id || "").trim();
+    documentEditReturnContextRef.current = normalizedId
+      ? { type: normalizedType, id: normalizedId, filters: filters || {} }
+      : null;
+  }, []);
+
+  const consumePostSaveTarget = useCallback(() => {
+    setPostSaveTarget(null);
+  }, []);
+
   // Centralized guard for any flow that would replace/prefill the single shared
   // live estimator draft slot (Project/Customer "Start Estimate", Home AI Assist,
   // etc.). If the slot currently holds meaningful, unsaved content, defer the
@@ -3129,6 +3146,14 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
+      const savedId = String(event?.detail?.documentId || "").trim();
+      const context = documentEditReturnContextRef.current;
+      setPostSaveTarget(savedId ? {
+        type: "estimate",
+        id: savedId,
+        filters: context?.type === "estimate" && context?.id === savedId ? context.filters : {},
+      } : null);
+      documentEditReturnContextRef.current = null;
       try {
         navigateTo(ROUTES.ESTIMATES, {
           bypassDirtyGuard: true,
@@ -3148,6 +3173,14 @@ const [spinTick, setSpinTick] = useState(0);
           return;
         }
       }
+      const savedId = String(event?.detail?.documentId || "").trim();
+      const context = documentEditReturnContextRef.current;
+      setPostSaveTarget(savedId ? {
+        type: "invoice",
+        id: savedId,
+        filters: context?.type === "invoice" && context?.id === savedId ? context.filters : {},
+      } : null);
+      documentEditReturnContextRef.current = null;
       try {
         navigateTo(ROUTES.INVOICES, {
           bypassDirtyGuard: true,
@@ -3913,7 +3946,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           requestedInvoiceComposerEstimateId={requestedInvoiceComposerEstimateId}
           onInvoiceComposerRequestHandled={() => setRequestedInvoiceComposerEstimateId("")}
           onDone={() => navigateTo(ROUTES.HOME)}
-          onOpenEstimate={() => {
+          postSaveTarget={postSaveTarget}
+          onPostSaveTargetConsumed={consumePostSaveTarget}
+          onOpenEstimate={(estimate, filters) => {
+            beginDocumentEditReturnContext("estimate", estimate?.id, filters);
             clearProjectDetailReturnTarget();
             navigateTo(ROUTES.ESTIMATE_BUILDER);
           }}
@@ -3989,6 +4025,11 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           lang={lang}
           t={shellT}
           spinTick={spinTick}
+          postSaveTarget={postSaveTarget}
+          onPostSaveTargetConsumed={consumePostSaveTarget}
+          onBeginInvoiceEdit={(invoice, filters) => {
+            beginDocumentEditReturnContext("invoice", invoice?.id, filters);
+          }}
           onDone={() => navigateTo(ROUTES.HOME)}
           onOpenProjectDetail={(projectId) => {
             openProjectDetail(projectId, ROUTES.INVOICES);

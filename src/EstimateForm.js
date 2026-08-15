@@ -1571,6 +1571,7 @@ export default function EstimateForm(props) {
   const editSessionCleanupTimerRef = useRef(0);
   const finalizationPromiseRef = useRef(null);
   const finalizedEstimateTargetRef = useRef("");
+  const finalizedInvoiceTargetRef = useRef("");
   // Invoices this builder session itself saved (id and document number). A
   // stored invoice that this session just authored is a SUCCESSFUL save, not a
   // stale retained draft, so it must never take the "not found / switch to new
@@ -5180,7 +5181,7 @@ export default function EstimateForm(props) {
     pendingSpecialConditionsAutoCollapseRef.current = hasValidCommit;
   };
 
-  const exitBuilderAfterSave = ({ saveDocType, shouldClearCreateDraftAfterSave = false } = {}) => {
+  const exitBuilderAfterSave = ({ saveDocType, documentId = "", shouldClearCreateDraftAfterSave = false } = {}) => {
     try {
       const resolvedSaveDocType = saveDocType === "invoice" ? "invoice" : "estimate";
       const navEvent = isEditMode
@@ -5201,7 +5202,10 @@ export default function EstimateForm(props) {
         clearSuccessfulCreateDraftChamber();
       }
       window.dispatchEvent(new CustomEvent(navEvent, {
-        detail: { skipCreateDraftSave: shouldClearCreateDraftAfterSave },
+        detail: {
+          skipCreateDraftSave: shouldClearCreateDraftAfterSave,
+          documentId: String(documentId || (saveDocType === "invoice" ? finalizedInvoiceTargetRef.current || editingRecordId || state?.meta?.savedDocId || "" : finalizedEstimateTargetRef.current || editingRecordId || state?.meta?.savedDocId || "")).trim(),
+        },
       }));
     } catch {}
   };
@@ -5995,6 +5999,11 @@ export default function EstimateForm(props) {
     const saveResult = await onSaveNow({ exitAfterSave: false, showPrompt: false });
     if (saveResult?.ok && saveResult?.saveDocType === "estimate") {
       finalizedEstimateTargetRef.current = String(
+        saveResult?.documentId || saveResult?.documentNumber || ""
+      ).trim();
+    }
+    if (saveResult?.ok && saveResult?.saveDocType === "invoice") {
+      finalizedInvoiceTargetRef.current = String(
         saveResult?.documentId || saveResult?.documentNumber || ""
       ).trim();
     }

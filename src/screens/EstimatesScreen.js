@@ -709,15 +709,18 @@ export default function EstimatesScreen({
   spinTick = 0,
   requestedInvoiceComposerEstimateId = "",
   onInvoiceComposerRequestHandled,
+  postSaveTarget = null,
+  onPostSaveTargetConsumed,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
-  const [searchQuery, setSearchQuery] = useState("");
+  const initialPostSaveFilters = postSaveTarget?.type === "estimate" ? (postSaveTarget.filters || {}) : {};
+  const [searchQuery, setSearchQuery] = useState(() => String(initialPostSaveFilters.searchQuery || ""));
   const [typeaheadHidden, setTypeaheadHidden] = useState(false);
   const [highlightEstimateId, setHighlightEstimateId] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [showArchived, setShowArchived] = useState(false);
+  const [statusFilter, setStatusFilter] = useState(() => String(initialPostSaveFilters.statusFilter || "all"));
+  const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
   const [customerFilter, setCustomerFilter] = useState("all");
-  const [valueFilter, setValueFilter] = useState("all");
+  const [valueFilter, setValueFilter] = useState(() => String(initialPostSaveFilters.valueFilter || "all"));
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
@@ -1164,6 +1167,59 @@ export default function EstimatesScreen({
     highlightTimerRef.current = setTimeout(() => setHighlightEstimateId(""), 2000);
   };
 
+  const savedEstimate = postSaveTarget?.type === "estimate"
+    ? (estimates || []).find((estimate) => String(estimate?.id || "").trim() === String(postSaveTarget?.id || "").trim())
+    : null;
+
+  useEffect(() => {
+    if (!savedEstimate) return;
+    if (Boolean(savedEstimate?.archived) !== Boolean(showArchived)) {
+      setShowArchived(Boolean(savedEstimate?.archived));
+      return;
+    }
+
+    const meta = estimateDisplayMeta.get(String(savedEstimate?.id || "")) || {};
+    const query = String(searchQuery || "").trim().toLowerCase();
+    const searchText = [
+      savedEstimate?.name,
+      savedEstimate?.workTitle,
+      savedEstimate?.jobTitle,
+      savedEstimate?.jobName,
+      savedEstimate?.job?.title,
+      savedEstimate?.title,
+      meta.projectName,
+      savedEstimate?.projectName,
+      meta.customerName,
+      savedEstimate?.customerName,
+      savedEstimate?.customer?.name,
+      savedEstimate?.estimateNumber,
+    ].map((value) => String(value || "").toLowerCase());
+    if (query && !searchText.some((value) => value.includes(query))) setSearchQuery("");
+    if (statusFilter !== "all" && normalizeEstimateStatus(savedEstimate?.status) !== normalizeEstimateStatus(statusFilter)) {
+      setStatusFilter("all");
+    }
+    const total = toNum(savedEstimate?.total);
+    const valueMatches = valueFilter === "all"
+      || (valueFilter === "small" && total < 1000)
+      || (valueFilter === "medium" && total >= 1000 && total < 10000)
+      || (valueFilter === "large" && total >= 10000);
+    if (!valueMatches) setValueFilter("all");
+  }, [estimateDisplayMeta, savedEstimate, searchQuery, showArchived, statusFilter, valueFilter]);
+
+  useEffect(() => {
+    if (!savedEstimate || !visibleEstimates.some((estimate) => String(estimate?.id || "") === String(savedEstimate?.id || ""))) return;
+    const savedId = String(savedEstimate?.id || "").trim();
+    if (!savedId) return;
+    const node = estimateCardRefs.current?.[savedId];
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    setHighlightEstimateId(savedId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightEstimateId(""), 2000);
+    try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+    onPostSaveTargetConsumed?.();
+  }, [onPostSaveTargetConsumed, savedEstimate, showListSkeleton, visibleEstimates]);
+
   useEffect(() => {
     if (!highlightEstimateId) return;
     const node = estimateCardRefs.current?.[highlightEstimateId];
@@ -1406,7 +1462,14 @@ export default function EstimatesScreen({
     const finalizeOpen = () => {
       const timerId = window.setTimeout(() => {
         openEstimateNavRef.current = { estimateId: "", triggeredAt: 0, rafId: 0, timerId: 0 };
-        if (onOpenEstimate) onOpenEstimate(estimate);
+        if (onOpenEstimate) {
+          onOpenEstimate(estimate, {
+            searchQuery,
+            statusFilter,
+            showArchived,
+            valueFilter,
+          });
+        }
       }, 0);
       openEstimateNavRef.current = {
         ...openEstimateNavRef.current,
