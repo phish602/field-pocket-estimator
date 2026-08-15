@@ -1228,6 +1228,9 @@ export default function InvoicesScreen({
   const highlightTimerRef = useRef(null);
   const typeaheadWrapRef = useRef(null);
   const recordsSectionRef = useRef(null);
+  // Holds the drill-down that asked to land, until the first matching card is
+  // available to scroll to. One request produces exactly one landing.
+  const pendingLandingRef = useRef("");
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
   const stripeCheckoutCreateLocksRef = useRef(new Set());
@@ -1583,6 +1586,9 @@ export default function InvoicesScreen({
     if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
     consumedDrilldownSeqRef.current = seq;
     setMetricFilter(nextDrilldown);
+    // Arriving from Home or Snapshot lands the same way as tapping the metric
+    // here: on the first matching record, through one shared code path.
+    pendingLandingRef.current = nextDrilldown;
     try { onDrilldownIntentConsumed?.(); } catch {}
   }, [drilldownIntent, onDrilldownIntentConsumed]);
 
@@ -1612,13 +1618,6 @@ export default function InvoicesScreen({
   const isReceivablesContext = metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
     || metricFilter === INVOICE_DRILLDOWNS.OVERDUE;
 
-  const scrollToRecords = () => {
-    const node = recordsSectionRef.current;
-    if (!node || typeof node.scrollIntoView !== "function") return;
-    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
-    catch { try { node.scrollIntoView(); } catch {} }
-  };
-
   // Receivables metrics summarize the invoices already visible in this view, so
   // tapping one filters in place and brings those records up rather than
   // navigating anywhere. Tapping the active metric again clears it.
@@ -1626,14 +1625,37 @@ export default function InvoicesScreen({
     const key = String(nextKey || "");
     const willClear = metricFilter === key;
     setMetricFilter(willClear ? "" : key);
-    if (!willClear) {
-      try {
-        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(scrollToRecords);
-        } else scrollToRecords();
-      } catch { scrollToRecords(); }
-    }
+    // Clearing returns to the ordinary list; only a new drill-down asks to land.
+    pendingLandingRef.current = willClear ? "" : key;
   };
+
+  // The point of a drill-down is the record, not the section above it, so the
+  // landing target is the first invoice that actually matched. It runs once per
+  // requested drill-down, only after the filtered cards have committed to the
+  // DOM, and jumps rather than animating so nothing drifts as layout settles.
+  useEffect(() => {
+    if (!pendingLandingRef.current) return;
+    // A record the user just saved outranks a dashboard subset: Lane 2 owns the
+    // scroll in that case, so drop this request instead of fighting it.
+    if (savedInvoice) {
+      pendingLandingRef.current = "";
+      return;
+    }
+    // Nothing matched: there is no card to land on, and inventing a target
+    // would be worse than staying put.
+    if (!filtered.length) {
+      pendingLandingRef.current = "";
+      return;
+    }
+    const firstId = String(filtered[0]?.id || "").trim();
+    const node = firstId ? invoiceCardRefs.current?.[firstId] : null;
+    // The card has not mounted yet; keep the request pending for the render
+    // that provides it rather than falling back to a coarser target.
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    pendingLandingRef.current = "";
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  }, [filtered, metricFilter, savedInvoice, showListSkeleton]);
 
   useEffect(() => {
     if (!savedInvoice || !filtered.some((invoice) => String(invoice?.id || "") === String(savedInvoice?.id || ""))) return;
@@ -3230,7 +3252,10 @@ export default function InvoicesScreen({
                   aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
                   style={{ ...clearButtonStyle, flexShrink: 0, whiteSpace: "nowrap" }}
                 >
-                  {lang === "es" ? "Ver todas" : "Show all"}
+                  {/* "Show all" implied there were matching invoices still
+                      hidden. There are not -- this only drops the dashboard
+                      filter -- so it says what it does. */}
+                  {lang === "es" ? "Quitar filtro" : "Clear filter"}
                 </button>
               </div>
             ) : null}
@@ -3385,6 +3410,9 @@ export default function InvoicesScreen({
                     style={{
                       ...invoiceCardStyle,
                       cursor: "default",
+                      // Keeps a card scrolled to with block:"start" clear of the
+                      // app header instead of tucking under it.
+                      scrollMarginTop: 76,
                       border: `1px solid ${cardSurfaceTone.border}`,
                       background: cardSurfaceTone.background,
                       boxShadow: cardSurfaceTone.shadow,
