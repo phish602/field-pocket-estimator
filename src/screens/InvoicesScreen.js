@@ -24,6 +24,20 @@ import {
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import { getDocumentEditTarget } from "../lib/documentEditTarget";
+import SnapshotReturnBar from "../components/SnapshotReturnBar";
+import {
+  DRILLDOWN_SCOPES,
+  INVOICE_DRILLDOWNS,
+  drilldownLabel,
+  invoiceMatchesDrilldown,
+  isOverdueInvoice,
+  isPaidInvoice,
+  isPaymentFollowUpInvoice,
+  isReceivableInvoice,
+  invoiceBalanceRemaining,
+  readDrilldownIntent,
+  readDrilldownRecordId,
+} from "../utils/dashboardDrilldowns";
 
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
@@ -1146,6 +1160,24 @@ function getStatusConfirmationContent(nextStatus, lang) {
   return null;
 }
 
+// Resolves the Stripe session state the receivables board already reads for an
+// invoice: the newest still-actionable session, else the newest session at all.
+// Shared by the Payment Status metric and its drill-down filter so the count
+// and the filtered list can never resolve different session states.
+function resolveInvoiceStripeFollowUpState(sessions, invoice) {
+  const targetInvoiceId = String(invoice?.id || "").trim();
+  if (!targetInvoiceId) return "";
+  const forInvoice = (Array.isArray(sessions) ? sessions : [])
+    .filter((entry) => String(entry?.invoiceId || "").trim() === targetInvoiceId)
+    .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0));
+  const actionable = forInvoice.find((entry) => {
+    const state = getStripeSessionDisplayState(entry, invoice);
+    return state !== "synced" && state !== "stale";
+  }) || null;
+  const latest = actionable || forInvoice[0] || null;
+  return latest ? getStripeSessionDisplayState(latest, invoice) : "";
+}
+
 export default function InvoicesScreen({
   lang,
   t,
@@ -1154,6 +1186,10 @@ export default function InvoicesScreen({
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   onBeginInvoiceEdit,
+  drilldownIntent = null,
+  onDrilldownIntentConsumed,
+  snapshotReturn = null,
+  onReturnToSnapshot,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "invoice" ? (postSaveTarget.filters || {}) : {};
@@ -1162,6 +1198,9 @@ export default function InvoicesScreen({
   const [highlightInvoiceId, setHighlightInvoiceId] = useState("");
   const [statusFilter, setStatusFilter] = useState(() => String(initialPostSaveFilters.statusFilter || "all"));
   const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
+  // Receivables drill-down. Separate from `statusFilter` because open balance
+  // and payment follow-up are derived subsets rather than stored statuses.
+  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.INVOICES));
   const [list, setList] = useState(() => readStoredInvoices());
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [expanded, setExpanded] = useState(() => ({}));
@@ -1191,6 +1230,12 @@ export default function InvoicesScreen({
   const invoiceCardRefs = useRef({});
   const highlightTimerRef = useRef(null);
   const typeaheadWrapRef = useRef(null);
+  const recordsSectionRef = useRef(null);
+  // Holds the drill-down that asked to land, until the first matching card is
+  // available to scroll to. One request produces exactly one landing.
+  const pendingLandingRef = useRef("");
+  // Set when an exact record, rather than a subset, is the landing target.
+  const pendingRecordLandingRef = useRef("");
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
   const stripeCheckoutCreateLocksRef = useRef(new Set());
@@ -1442,7 +1487,16 @@ export default function InvoicesScreen({
     }));
   }, [list, metadataRefreshSeq]);
 
-  const filtered = useMemo(() => {
+  const resolveStripeFollowUpState = useMemo(
+    () => (invoice) => resolveInvoiceStripeFollowUpState(stripeCheckoutSessions, invoice),
+    [stripeCheckoutSessions]
+  );
+
+  // Everything the user's ordinary filters allow, before any dashboard
+  // drill-down narrows it. The summary tiles read from this so that selecting
+  // one subset cannot zero out its siblings: the tiles describe the business
+  // views available to switch to, not the view currently on screen.
+  const baseFiltered = useMemo(() => {
     const search = String(q || "").trim().toLowerCase();
     const filterStatus = String(statusFilter || "all").trim().toLowerCase();
     return (Array.isArray(list) ? list : []).filter((invoice) => {
@@ -1472,6 +1526,15 @@ export default function InvoicesScreen({
       return searchMatch && statusMatch;
     });
   }, [invoiceDisplayMeta, list, q, showArchived, statusFilter]);
+
+  // The rendered list: the base set narrowed by whichever dashboard subset is
+  // active. Only this feeds the cards on screen.
+  const filtered = useMemo(() => {
+    if (!metricFilter) return baseFiltered;
+    return baseFiltered.filter(
+      (invoice) => invoiceMatchesDrilldown(invoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })
+    );
+  }, [baseFiltered, metricFilter, resolveStripeFollowUpState]);
 
   // Search typeahead: reuses the same `filtered` source (which already respects
   // the Show archived toggle and status filter). Selecting a row is view-only:
@@ -1522,7 +1585,114 @@ export default function InvoicesScreen({
     ].map((value) => String(value || "").toLowerCase());
     if (query && !searchText.some((value) => value.includes(query))) setQ("");
     if (statusFilter !== "all" && deriveInvoiceStatus(savedInvoice) !== statusFilter) setStatusFilter("all");
-  }, [invoiceDisplayMeta, q, savedInvoice, showArchived, statusFilter]);
+    // A dashboard drill-down is ordinary filter state here, so the Lane 2 rule
+    // applies to it too: keep it when the saved invoice still belongs to the
+    // subset, and relax only when it would hide the record the user just saved.
+    if (metricFilter && !invoiceMatchesDrilldown(savedInvoice, metricFilter, { resolveSessionState: resolveStripeFollowUpState })) {
+      setMetricFilter("");
+    }
+  }, [invoiceDisplayMeta, metricFilter, q, resolveStripeFollowUpState, savedInvoice, showArchived, statusFilter]);
+
+  // A cross-screen drill-down arrives as transient navigation context. It is
+  // applied once, keyed by its sequence, and handed back immediately so a later
+  // ordinary visit to Invoices never re-fires the same intent.
+  const consumedDrilldownSeqRef = useRef(0);
+  useEffect(() => {
+    const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.INVOICES);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
+    consumedDrilldownSeqRef.current = seq;
+    setMetricFilter(nextDrilldown);
+    // Arriving from Home or Snapshot lands the same way as tapping the metric
+    // here: on the first matching record, through one shared code path.
+    pendingLandingRef.current = nextDrilldown;
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, onDrilldownIntentConsumed]);
+
+  // An exact-record intent names one invoice. Any filter that would hide it is
+  // relaxed -- and only those -- then the card is highlighted and scrolled to,
+  // reusing the same targeting Lane 2 uses after a save.
+  const consumedRecordSeqRef = useRef(0);
+  useEffect(() => {
+    const recordId = readDrilldownRecordId(drilldownIntent, DRILLDOWN_SCOPES.INVOICES);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!recordId || !seq || seq === consumedRecordSeqRef.current) return;
+    const target = (list || []).find((invoice) => String(invoice?.id || "").trim() === recordId);
+    if (!target) return;
+    consumedRecordSeqRef.current = seq;
+    setMetricFilter("");
+    if (statusFilter !== "all" && deriveInvoiceStatus(target) !== statusFilter) setStatusFilter("all");
+    if (Boolean(target?.archived) !== Boolean(showArchived)) setShowArchived(Boolean(target?.archived));
+    setQ("");
+    setHighlightInvoiceId(recordId);
+    // Snapshot already knows which invoice needs attention, so "Open invoice"
+    // should finish the job: the record's existing details panel opens for
+    // review. This is the same `expanded` state the Details button toggles --
+    // it is not the builder, and nothing is put into edit mode.
+    setExpanded({ [recordId]: true });
+    pendingRecordLandingRef.current = recordId;
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, list, onDrilldownIntentConsumed, showArchived, statusFilter]);
+
+  // True while the user is looking at money owed, which is the only context
+  // where the payment action is lifted onto the collapsed card.
+  const isReceivablesContext = metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
+    || metricFilter === INVOICE_DRILLDOWNS.OVERDUE;
+
+  // Receivables metrics summarize the invoices already visible in this view, so
+  // tapping one filters in place and brings those records up rather than
+  // navigating anywhere. Tapping the active metric again clears it.
+  const toggleMetricFilter = (nextKey) => {
+    const key = String(nextKey || "");
+    const willClear = metricFilter === key;
+    setMetricFilter(willClear ? "" : key);
+    // Clearing returns to the ordinary list; only a new drill-down asks to land.
+    pendingLandingRef.current = willClear ? "" : key;
+  };
+
+  // The point of a drill-down is the record, not the section above it, so the
+  // landing target is the first invoice that actually matched. It runs once per
+  // requested drill-down, only after the filtered cards have committed to the
+  // DOM, and jumps rather than animating so nothing drifts as layout settles.
+  // Exact-record landing: one jump onto the named card once it has rendered.
+  useEffect(() => {
+    const recordId = pendingRecordLandingRef.current;
+    if (!recordId) return;
+    if (!filtered.some((invoice) => String(invoice?.id || "").trim() === recordId)) return;
+    const node = invoiceCardRefs.current?.[recordId];
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    pendingRecordLandingRef.current = "";
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+    // showListSkeleton matters: the cards mount only once the list finishes
+    // loading, and without it a request made before that never gets retried.
+  }, [filtered, expanded, showListSkeleton]);
+
+  useEffect(() => {
+    if (!pendingLandingRef.current) return;
+    // A record the user just saved outranks a dashboard subset: Lane 2 owns the
+    // scroll in that case, so drop this request instead of fighting it.
+    if (savedInvoice) {
+      pendingLandingRef.current = "";
+      return;
+    }
+    // Nothing matched: there is no card to land on, and inventing a target
+    // would be worse than staying put.
+    if (!filtered.length) {
+      pendingLandingRef.current = "";
+      return;
+    }
+    const firstId = String(filtered[0]?.id || "").trim();
+    const node = firstId ? invoiceCardRefs.current?.[firstId] : null;
+    // The card has not mounted yet; keep the request pending for the render
+    // that provides it rather than falling back to a coarser target.
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    pendingLandingRef.current = "";
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  }, [filtered, metricFilter, savedInvoice, showListSkeleton]);
 
   useEffect(() => {
     if (!savedInvoice || !filtered.some((invoice) => String(invoice?.id || "") === String(savedInvoice?.id || ""))) return;
@@ -1540,6 +1710,9 @@ export default function InvoicesScreen({
 
   useEffect(() => {
     if (!highlightInvoiceId) return;
+    // An exact-record landing owns the scroll and does it deterministically;
+    // letting this smooth-centering run too would scroll the same card twice.
+    if (pendingRecordLandingRef.current) return;
     const node = invoiceCardRefs.current?.[highlightInvoiceId];
     if (node && typeof node.scrollIntoView === "function") {
       try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
@@ -1962,27 +2135,26 @@ export default function InvoicesScreen({
     let paidCount = 0;
     let stripeFollowUpCount = 0;
 
-    filtered.forEach((invoice) => {
-      const derivedStatus = deriveInvoiceStatus(invoice);
-      const paymentStatus = String(invoice?.paymentStatus || "").trim().toLowerCase();
-      const invoiceTotal = roundCurrency(invoice?.invoiceTotal || invoice?.total || 0);
+    // Every counter below uses the same shared predicate its stat card drills
+    // into, so the number on the card and the records behind it always agree.
+    // Counted over the pre-drill-down set: a tile has to keep showing the work
+    // waiting in it while a sibling subset is the one on screen, otherwise
+    // switching from Paid to Overdue would need a trip through Clear first.
+    baseFiltered.forEach((invoice) => {
       const amountPaid = roundCurrency(invoice?.amountPaid || 0);
-      const balanceRemaining = roundCurrency(invoice?.balanceRemaining ?? Math.max(0, invoiceTotal - amountPaid));
-      const latestActionableStripeSession = getLatestActionableStripeCheckoutSessionForInvoice(invoice);
-      const latestStripeSession = latestActionableStripeSession || getLatestStripeCheckoutSessionForInvoice(String(invoice?.id || "").trim());
-      const stripeSessionState = latestStripeSession ? getStripeSessionDisplayState(latestStripeSession, invoice) : "";
+      const balanceRemaining = invoiceBalanceRemaining(invoice);
 
       paidAmount += amountPaid;
-      if (derivedStatus === INVOICE_STATUSES.PAID || paymentStatus === PAYMENT_STATUSES.PAID) paidCount += 1;
-      if (derivedStatus !== INVOICE_STATUSES.VOID && paymentStatus !== PAYMENT_STATUSES.VOID && balanceRemaining > 0) {
+      if (isPaidInvoice(invoice)) paidCount += 1;
+      if (isReceivableInvoice(invoice)) {
         openBalance += balanceRemaining;
         openCount += 1;
       }
-      if (derivedStatus === INVOICE_STATUSES.OVERDUE && balanceRemaining > 0) {
+      if (isOverdueInvoice(invoice)) {
         overdueBalance += balanceRemaining;
         overdueCount += 1;
       }
-      if (balanceRemaining > 0 && latestStripeSession && ["pending", "review", "expired"].includes(stripeSessionState)) {
+      if (isPaymentFollowUpInvoice(invoice, resolveStripeFollowUpState)) {
         stripeFollowUpCount += 1;
       }
     });
@@ -2026,6 +2198,7 @@ export default function InvoicesScreen({
               };
 
     return {
+      // The only figure here that describes what is actually rendered.
       visibleCount: filtered.length,
       openBalance,
       openCount,
@@ -2036,7 +2209,7 @@ export default function InvoicesScreen({
       stripeFollowUpCount,
       nextAction,
     };
-  }, [filtered, lang, stripeCheckoutSessions]);
+  }, [baseFiltered, filtered, lang, resolveStripeFollowUpState, stripeCheckoutSessions]);
 
   const getReusableStripeCheckoutSessionForInvoice = (invoice, balanceRemaining, currency = "usd") => {
     return findReusableStripeCheckoutSessionInEntries(stripeCheckoutSessions, invoice, balanceRemaining, currency, stripeAccountId);
@@ -2787,6 +2960,7 @@ export default function InvoicesScreen({
               {[
                 {
                   key: "receivables",
+                  count: invoiceBoardSummary.openCount,
                   label: lang === "es" ? "Cobros" : "Receivables",
                   value: moneyUSD(invoiceBoardSummary.openBalance),
                   detail: invoiceBoardSummary.openCount > 0
@@ -2797,6 +2971,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "overdue",
+                  count: invoiceBoardSummary.overdueCount,
                   label: lang === "es" ? "Cobro vencido" : "Overdue",
                   value: moneyUSD(invoiceBoardSummary.overdueBalance),
                   detail: invoiceBoardSummary.overdueCount > 0
@@ -2807,6 +2982,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "paid",
+                  count: invoiceBoardSummary.paidCount,
                   label: lang === "es" ? "Pagado" : "Paid",
                   value: moneyUSD(invoiceBoardSummary.paidAmount),
                   detail: `${invoiceBoardSummary.paidCount} ${invoiceBoardSummary.paidCount === 1 ? (lang === "es" ? "factura liquidada" : "paid invoice") : (lang === "es" ? "facturas liquidadas" : "paid invoices")}`,
@@ -2815,6 +2991,7 @@ export default function InvoicesScreen({
                 },
                 {
                   key: "payment-status",
+                  count: invoiceBoardSummary.stripeFollowUpCount,
                   label: lang === "es" ? "Estado de pago" : "Payment Status",
                   value: String(invoiceBoardSummary.stripeFollowUpCount),
                   detail: invoiceBoardSummary.stripeFollowUpCount > 0
@@ -2823,19 +3000,55 @@ export default function InvoicesScreen({
                   color: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(96,165,250,0.84)" : "rgba(203,213,225,0.78)",
                   border: invoiceBoardSummary.stripeFollowUpCount > 0 ? "rgba(59,130,246,0.2)" : "rgba(255,255,255,0.1)",
                 },
-              ].map((item) => (
-                <div key={item.key} style={{ ...invoiceCockpitStatStyle, border: `1px solid ${item.border}` }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
-                    {item.label}
-                  </div>
-                  <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
-                    {item.value}
-                  </div>
-                  <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
-                    {item.detail}
-                  </div>
-                </div>
-              ))}
+              ].map((item) => {
+                const isActive = metricFilter === item.key;
+                // A tile with no records behind it is not a way in. Leaving it
+                // inert keeps the empty state honest rather than offering a tap
+                // that lands on nothing.
+                if (!isActive && Number(item.count || 0) <= 0) {
+                  return (
+                    <div key={item.key} style={{ ...invoiceCockpitStatStyle, border: `1px solid ${item.border}` }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                        {item.label}
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                        {item.value}
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                        {item.detail}
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleMetricFilter(item.key)}
+                    aria-pressed={isActive}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar filtro" : "Clear filter") : (lang === "es" ? "Filtrar facturas" : "Filter invoices")}`}
+                    style={{
+                      ...invoiceCockpitStatStyle,
+                      border: `1px solid ${isActive ? item.color : item.border}`,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      font: "inherit",
+                      background: isActive ? "rgba(255,255,255,0.06)" : (invoiceCockpitStatStyle?.background || "transparent"),
+                      boxShadow: isActive ? `inset 0 0 0 1px ${item.color}` : "none",
+                    }}
+                  >
+                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                      {item.label}
+                    </div>
+                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                      {item.value}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                      {item.detail}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -2993,10 +3206,15 @@ export default function InvoicesScreen({
                   setQ("");
                   setStatusFilter("all");
                   setShowArchived(false);
+                  setMetricFilter("");
                 }}
               >
                 {lang === "es" ? "Limpiar" : "Clear"}
               </button>
+
+              {/* The drill-down's own chip used to live here. The context strip
+                  above the records now states the same thing with its count and
+                  value, so a second clear control would just be noise. */}
             </div>
             {stripeSyncOutcome?.message ? (
               <div
@@ -3041,7 +3259,51 @@ export default function InvoicesScreen({
             ) : null}
           </div>
 
-          <div className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+          <div ref={recordsSectionRef} className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+            <SnapshotReturnBar snapshotReturn={snapshotReturn} onReturnToSnapshot={onReturnToSnapshot} lang={lang} />
+            {/* Context strip: after a drill-down, say plainly which business
+                condition is on screen and what it is worth, so the list is not
+                just "some invoices". Clearing it is one tap away. */}
+            {metricFilter ? (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  padding: "9px 12px",
+                  borderRadius: 12,
+                  border: `1px solid ${metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(239,68,68,0.28)" : "rgba(96,165,250,0.3)"}`,
+                  background: metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(239,68,68,0.08)" : "rgba(59,130,246,0.08)",
+                }}
+              >
+                <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: metricFilter === INVOICE_DRILLDOWNS.OVERDUE ? "rgba(248,113,113,0.9)" : "rgba(147,197,253,0.9)" }}>
+                    {drilldownLabel(DRILLDOWN_SCOPES.INVOICES, metricFilter, lang)}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(239,245,249,0.96)" }}>
+                    {`${filtered.length} ${filtered.length === 1 ? (lang === "es" ? "factura" : "invoice") : (lang === "es" ? "facturas" : "invoices")}`}
+                    {metricFilter === INVOICE_DRILLDOWNS.OVERDUE
+                      ? ` · ${moneyUSD(invoiceBoardSummary.overdueBalance)}`
+                      : metricFilter === INVOICE_DRILLDOWNS.RECEIVABLES
+                        ? ` · ${moneyUSD(invoiceBoardSummary.openBalance)}`
+                        : ""}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMetricFilter("")}
+                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  style={{ ...clearButtonStyle, flexShrink: 0, whiteSpace: "nowrap" }}
+                >
+                  {/* "Show all" implied there were matching invoices still
+                      hidden. There are not -- this only drops the dashboard
+                      filter -- so it says what it does. */}
+                  {lang === "es" ? "Quitar filtro" : "Clear filter"}
+                </button>
+              </div>
+            ) : null}
             <div style={invoiceSectionHeaderStyle}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
@@ -3193,6 +3455,9 @@ export default function InvoicesScreen({
                     style={{
                       ...invoiceCardStyle,
                       cursor: "default",
+                      // Keeps a card scrolled to with block:"start" clear of the
+                      // app header instead of tucking under it.
+                      scrollMarginTop: 76,
                       border: `1px solid ${cardSurfaceTone.border}`,
                       background: cardSurfaceTone.background,
                       boxShadow: cardSurfaceTone.shadow,
@@ -3366,6 +3631,23 @@ export default function InvoicesScreen({
                           >
                             {lang === "es" ? "Abrir" : "Open"}
                           </button>
+                          {/* When the user drilled in on money owed, the next
+                              step is almost always taking a payment. Lift the
+                              existing action out of the details panel for that
+                              context only -- same handler, same guard, no
+                              second payment path and no clutter elsewhere. */}
+                          {isReceivablesContext && canTakePayment ? (
+                            <button
+                              className="pe-btn pe-btn-ghost"
+                              type="button"
+                              onPointerDown={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "payment")}
+                              onTouchStart={(evt) => consumeInvoiceActionEvent(evt, invoiceId, "payment")}
+                              onClick={(evt) => runInvoiceCardAction(evt, invoiceId, "payment", () => openPaymentModal(invoice))}
+                              style={invoiceSecondaryActionStyle}
+                            >
+                              {getPaymentActionLabel(invoice, lang)}
+                            </button>
+                          ) : null}
                           <button
                             className="pe-btn pe-btn-ghost"
                             type="button"
