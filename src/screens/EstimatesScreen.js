@@ -35,6 +35,7 @@ import {
   isHighValueEstimate,
   readDrilldownIntent,
 } from "../utils/dashboardDrilldowns";
+import SnapshotReturnBar from "../components/SnapshotReturnBar";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -720,6 +721,8 @@ export default function EstimatesScreen({
   onPostSaveTargetConsumed,
   drilldownIntent = null,
   onDrilldownIntentConsumed,
+  snapshotReturn = null,
+  onReturnToSnapshot,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "estimate" ? (postSaveTarget.filters || {}) : {};
@@ -2400,6 +2403,7 @@ export default function EstimatesScreen({
             boxSizing: "border-box",
           }}
         >
+          <SnapshotReturnBar snapshotReturn={snapshotReturn} onReturnToSnapshot={onReturnToSnapshot} lang={lang} />
 
           <div
             className="pe-card pe-card-content"

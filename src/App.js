@@ -3030,19 +3030,23 @@ const [spinTick, setSpinTick] = useState(0);
   // Exact-record navigation from a dashboard card that already knows the
   // record's identity. Reuses the same transient intent channel and the same
   // Invoices destination rather than adding a second lookup path.
-  const openInvoiceRecord = useCallback((invoiceId, originRoute = "") => {
+  const openInvoiceRecord = useCallback((invoiceId, originRoute = "", originAnchor = "") => {
     const intent = createDrilldownRecordIntent(DRILLDOWN_SCOPES.INVOICES, invoiceId);
     if (!intent) return;
     setDashboardIntent(intent);
-    setDashboardReturn(originRoute && originRoute !== ROUTES.INVOICES ? { destination: ROUTES.INVOICES, origin: originRoute } : null);
+    setDashboardReturn(originRoute && originRoute !== ROUTES.INVOICES
+      ? { destination: ROUTES.INVOICES, origin: originRoute, anchor: String(originAnchor || "") }
+      : null);
     navigateTo(ROUTES.INVOICES);
   }, [navigateTo]);
 
-  const openDashboardDrilldown = useCallback((scope, drilldown, destination, originRoute = "") => {
+  const openDashboardDrilldown = useCallback((scope, drilldown, destination, originRoute = "", originAnchor = "") => {
     const intent = createDrilldownIntent(scope, drilldown);
     if (!intent || !destination) return;
     setDashboardIntent(intent);
-    setDashboardReturn(originRoute && originRoute !== destination ? { destination, origin: originRoute } : null);
+    setDashboardReturn(originRoute && originRoute !== destination
+      ? { destination, origin: originRoute, anchor: String(originAnchor || "") }
+      : null);
     navigateTo(destination);
   }, [navigateTo]);
 
@@ -3058,6 +3062,23 @@ const [spinTick, setSpinTick] = useState(0);
     if (dashboardReturn?.destination === destination && dashboardReturn?.origin) return dashboardReturn.origin;
     return fallback;
   }, [dashboardReturn]);
+
+  // A drill-down that came from Snapshot gets a way back to it, so reviewing a
+  // record does not end in a hunt through the menu. The control only exists
+  // while the user is on the destination that drill-down opened.
+  const snapshotReturn = useMemo(() => {
+    if (dashboardReturn?.origin !== ROUTES.SNAPSHOT) return null;
+    if (dashboardReturn?.destination !== activeTab) return null;
+    return { anchor: String(dashboardReturn?.anchor || "") };
+  }, [dashboardReturn, activeTab]);
+
+  // Consumed once by Snapshot to restore the section the drill-down left from.
+  const [snapshotReturnAnchor, setSnapshotReturnAnchor] = useState("");
+  const returnToSnapshot = useCallback(() => {
+    setSnapshotReturnAnchor(String(dashboardReturn?.anchor || ""));
+    setDashboardReturn(null);
+    navigateTo(ROUTES.SNAPSHOT);
+  }, [dashboardReturn, navigateTo]);
 
   // Centralized guard for any flow that would replace/prefill the single shared
   // live estimator draft slot (Project/Customer "Start Estimate", Home AI Assist,
@@ -4094,6 +4115,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           onPostSaveTargetConsumed={consumePostSaveTarget}
           drilldownIntent={dashboardIntent}
           onDrilldownIntentConsumed={consumeDashboardIntent}
+          snapshotReturn={snapshotReturn}
+          onReturnToSnapshot={returnToSnapshot}
           onOpenEstimate={(estimate, filters) => {
             beginDocumentEditReturnContext("estimate", estimate?.id, filters);
             clearProjectDetailReturnTarget();
@@ -4175,6 +4198,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           onPostSaveTargetConsumed={consumePostSaveTarget}
           drilldownIntent={dashboardIntent}
           onDrilldownIntentConsumed={consumeDashboardIntent}
+          snapshotReturn={snapshotReturn}
+          onReturnToSnapshot={returnToSnapshot}
           onBeginInvoiceEdit={(invoice, filters) => {
             beginDocumentEditReturnContext("invoice", invoice?.id, filters);
           }}
@@ -4200,6 +4225,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         <ProjectsScreen
           drilldownIntent={dashboardIntent}
           onDrilldownIntentConsumed={consumeDashboardIntent}
+          snapshotReturn={snapshotReturn}
+          onReturnToSnapshot={returnToSnapshot}
           onOpenProjectDetail={(projectId) => {
             openProjectDetail(projectId, ROUTES.PROJECTS);
           }}
@@ -4232,12 +4259,14 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       <FinancialSnapshotScreen
         subscriptionPlanState={snapshotSubscriptionPlanState}
         onOpenCompanyProfile={() => navigateToCompanyProfile()}
-        onOpenDrilldown={(scope, drilldown, destination) => {
-          openDashboardDrilldown(scope, drilldown, destination, ROUTES.SNAPSHOT);
+        onOpenDrilldown={(scope, drilldown, destination, originAnchor) => {
+          openDashboardDrilldown(scope, drilldown, destination, ROUTES.SNAPSHOT, originAnchor);
         }}
-        onOpenInvoiceRecord={(invoiceId) => {
-          openInvoiceRecord(invoiceId, ROUTES.SNAPSHOT);
+        onOpenInvoiceRecord={(invoiceId, originAnchor) => {
+          openInvoiceRecord(invoiceId, ROUTES.SNAPSHOT, originAnchor);
         }}
+        returnAnchor={snapshotReturnAnchor}
+        onReturnAnchorConsumed={() => setSnapshotReturnAnchor("")}
         onCreateInvoiceFromEstimate={(estimate) => {
           const estimateId = String(estimate?.id || "").trim();
           if (!estimateId) return false;

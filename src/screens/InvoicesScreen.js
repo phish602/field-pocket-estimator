@@ -24,6 +24,7 @@ import {
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import { getDocumentEditTarget } from "../lib/documentEditTarget";
+import SnapshotReturnBar from "../components/SnapshotReturnBar";
 import {
   DRILLDOWN_SCOPES,
   INVOICE_DRILLDOWNS,
@@ -1187,6 +1188,8 @@ export default function InvoicesScreen({
   onBeginInvoiceEdit,
   drilldownIntent = null,
   onDrilldownIntentConsumed,
+  snapshotReturn = null,
+  onReturnToSnapshot,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "invoice" ? (postSaveTarget.filters || {}) : {};
@@ -1231,6 +1234,8 @@ export default function InvoicesScreen({
   // Holds the drill-down that asked to land, until the first matching card is
   // available to scroll to. One request produces exactly one landing.
   const pendingLandingRef = useRef("");
+  // Set when an exact record, rather than a subset, is the landing target.
+  const pendingRecordLandingRef = useRef("");
   const cardActionIntentRef = useRef({ invoiceId: "", action: "", setAt: 0 });
   const stripeReturnNoticeKeyRef = useRef("");
   const stripeCheckoutCreateLocksRef = useRef(new Set());
@@ -1620,6 +1625,12 @@ export default function InvoicesScreen({
     if (Boolean(target?.archived) !== Boolean(showArchived)) setShowArchived(Boolean(target?.archived));
     setQ("");
     setHighlightInvoiceId(recordId);
+    // Snapshot already knows which invoice needs attention, so "Open invoice"
+    // should finish the job: the record's existing details panel opens for
+    // review. This is the same `expanded` state the Details button toggles --
+    // it is not the builder, and nothing is put into edit mode.
+    setExpanded({ [recordId]: true });
+    pendingRecordLandingRef.current = recordId;
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = setTimeout(() => setHighlightInvoiceId(""), 2000);
     try { onDrilldownIntentConsumed?.(); } catch {}
@@ -1645,6 +1656,20 @@ export default function InvoicesScreen({
   // landing target is the first invoice that actually matched. It runs once per
   // requested drill-down, only after the filtered cards have committed to the
   // DOM, and jumps rather than animating so nothing drifts as layout settles.
+  // Exact-record landing: one jump onto the named card once it has rendered.
+  useEffect(() => {
+    const recordId = pendingRecordLandingRef.current;
+    if (!recordId) return;
+    if (!filtered.some((invoice) => String(invoice?.id || "").trim() === recordId)) return;
+    const node = invoiceCardRefs.current?.[recordId];
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    pendingRecordLandingRef.current = "";
+    try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+    // showListSkeleton matters: the cards mount only once the list finishes
+    // loading, and without it a request made before that never gets retried.
+  }, [filtered, expanded, showListSkeleton]);
+
   useEffect(() => {
     if (!pendingLandingRef.current) return;
     // A record the user just saved outranks a dashboard subset: Lane 2 owns the
@@ -1685,6 +1710,9 @@ export default function InvoicesScreen({
 
   useEffect(() => {
     if (!highlightInvoiceId) return;
+    // An exact-record landing owns the scroll and does it deterministically;
+    // letting this smooth-centering run too would scroll the same card twice.
+    if (pendingRecordLandingRef.current) return;
     const node = invoiceCardRefs.current?.[highlightInvoiceId];
     if (node && typeof node.scrollIntoView === "function") {
       try { node.scrollIntoView({ behavior: "smooth", block: "center" }); }
@@ -3232,6 +3260,7 @@ export default function InvoicesScreen({
           </div>
 
           <div ref={recordsSectionRef} className={`ep-section-gap-sm ${showListSkeleton ? "" : "pe-content-fade-in"}`} style={{ display: "grid", gap: 10 }}>
+            <SnapshotReturnBar snapshotReturn={snapshotReturn} onReturnToSnapshot={onReturnToSnapshot} lang={lang} />
             {/* Context strip: after a drill-down, say plainly which business
                 condition is on screen and what it is worth, so the list is not
                 just "some invoices". Clearing it is one tap away. */}

@@ -15,6 +15,7 @@ import {
   projectMatchesDrilldown,
   readDrilldownIntent,
 } from "../utils/dashboardDrilldowns";
+import SnapshotReturnBar from "../components/SnapshotReturnBar";
 
 function readEstimates() {
   try {
@@ -266,6 +267,8 @@ export default function ProjectsScreen({
   onOpenProjectDetail,
   drilldownIntent = null,
   onDrilldownIntentConsumed,
+  snapshotReturn = null,
+  onReturnToSnapshot,
 }) {
   const [q, setQ] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
@@ -485,6 +488,7 @@ export default function ProjectsScreen({
 
   return (
     <div style={S.container}>
+      <SnapshotReturnBar snapshotReturn={snapshotReturn} onReturnToSnapshot={onReturnToSnapshot} />
       <div style={S.header}>
         <div style={S.title}>Projects</div>
         <div style={S.countBadge}>{chipCounts.all} project{chipCounts.all !== 1 ? "s" : ""}</div>

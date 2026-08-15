@@ -22,6 +22,14 @@ import {
 
 // Snapshot's pipeline bucket keys map one-to-one onto the estimate lifecycle
 // statuses the Estimates screen already filters by.
+// Stable internal ids for the sections a drill-down can leave from, so a
+// return lands where the user actually was rather than at the top.
+const SNAPSHOT_ANCHORS = {
+  ACTIVE_EXPOSURE: "active-exposure",
+  AT_RISK: "at-risk",
+  ESTIMATE_PIPELINE: "estimate-pipeline",
+};
+
 const PIPELINE_BUCKET_DRILLDOWNS = {
   draft: ESTIMATE_DRILLDOWNS.DRAFT,
   pending: ESTIMATE_DRILLDOWNS.AWAITING,
@@ -797,6 +805,8 @@ function FinancialSnapshotRealScreen({
   onCreateInvoiceFromEstimate = null,
   onOpenDrilldown = null,
   onOpenInvoiceRecord = null,
+  returnAnchor = "",
+  onReturnAnchorConsumed,
 }) {
   const [range, setRange] = useState("ytd");
   const [customStartDate, setCustomStartDate] = useState("");
@@ -818,6 +828,8 @@ function FinancialSnapshotRealScreen({
   const marginRef    = useRef(null);
   const pipelineRef  = useRef(null);
   const summaryRef   = useRef(null);
+  const cockpitRef   = useRef(null);
+
 
   const resolvedRange = useMemo(
     () => resolveSnapshotRange(range, customStartDate, customEndDate),
@@ -1360,6 +1372,42 @@ function FinancialSnapshotRealScreen({
 
   const title = lang === "es" ? "Resumen financiero" : "Financial Snapshot";
 
+  // Restores the section a Snapshot drill-down left from. The target panel may
+  // not exist yet on the first render after the hop, and the route change
+  // resets scroll, so the request is held until the section is actually in the
+  // DOM and then aimed once -- after a frame, so it lands on the settled
+  // layout rather than the one being replaced. Never persisted.
+  const pendingAnchorRef = useRef("");
+  useEffect(() => {
+    const anchor = String(returnAnchor || "");
+    if (!anchor) return;
+    pendingAnchorRef.current = anchor;
+    try { onReturnAnchorConsumed?.(); } catch {}
+  }, [returnAnchor, onReturnAnchorConsumed]);
+
+  useEffect(() => {
+    const anchor = pendingAnchorRef.current;
+    if (!anchor) return undefined;
+    const node = anchor === SNAPSHOT_ANCHORS.AT_RISK
+      ? arRef.current
+      : anchor === SNAPSHOT_ANCHORS.ESTIMATE_PIPELINE
+        ? pipelineRef.current
+        : cockpitRef.current;
+    // Not rendered yet: stay pending for the render that provides it.
+    if (!node || typeof node.scrollIntoView !== "function") return undefined;
+    pendingAnchorRef.current = "";
+    const aim = () => {
+      try { node.scrollIntoView({ behavior: "auto", block: "start" }); }
+      catch { try { node.scrollIntoView(); } catch {} }
+    };
+    aim();
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") return undefined;
+    const frame = window.requestAnimationFrame(aim);
+    return () => {
+      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(frame);
+    };
+  }, [returnAnchor, computed]);
+
   const insight = useMemo(() => {
     const allTimeLine = lang === "es"
       ? `Registros históricos: ${computed.customerCount} clientes, ${computed.projectCounts.total} proyectos, ${computed.estimateCounts.total} estimados, ${computed.invoiceTotals.total} facturas`
@@ -1602,6 +1650,7 @@ function FinancialSnapshotRealScreen({
         </div>
 
         <div
+          ref={cockpitRef}
           className="pe-card pe-card-content ep-glass-tile ep-tile-hover ep-section-gap-sm"
           style={{
             display: "grid",
@@ -1671,7 +1720,7 @@ function FinancialSnapshotRealScreen({
               // that lands on an empty list.
               const hasRecordsBehind = Number(item.count || 0) > 0;
               const activate = item.drilldown && hasRecordsBehind && typeof onOpenDrilldown === "function"
-                ? () => onOpenDrilldown(item.drilldown.scope, item.drilldown.key, item.drilldown.destination)
+                ? () => onOpenDrilldown(item.drilldown.scope, item.drilldown.key, item.drilldown.destination, SNAPSHOT_ANCHORS.ACTIVE_EXPOSURE)
                 : null;
               if (!activate) {
                 return <div key={item.key} style={cardStyle}>{cardBody}</div>;
@@ -1885,7 +1934,7 @@ function FinancialSnapshotRealScreen({
                       <button
                         key={`risk-${row.id}`}
                         type="button"
-                        onClick={() => onOpenInvoiceRecord(row.invoiceId)}
+                        onClick={() => onOpenInvoiceRecord(row.invoiceId, SNAPSHOT_ANCHORS.AT_RISK)}
                         aria-label={`${row.customerName} ${row.invoiceLabel}: ${fmtMoney(row.balanceDue)}. ${lang === "es" ? "Abrir esta factura" : "Open this invoice"}`}
                         style={{ ...riskStyle, display: "block", width: "100%", textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }}
                       >
@@ -2196,7 +2245,7 @@ function FinancialSnapshotRealScreen({
               <button
                 key={bucket.key}
                 type="button"
-                onClick={() => onOpenDrilldown(DRILLDOWN_SCOPES.ESTIMATES, bucketDrilldown, ROUTES.ESTIMATES)}
+                onClick={() => onOpenDrilldown(DRILLDOWN_SCOPES.ESTIMATES, bucketDrilldown, ROUTES.ESTIMATES, SNAPSHOT_ANCHORS.ESTIMATE_PIPELINE)}
                 aria-label={`${bucket.label}: ${bucket.count}. ${lang === "es" ? "Ver estos estimados" : "Show these estimates"}`}
                 style={{ ...bucketStyle, display: "block", width: "100%", textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }}
               >
