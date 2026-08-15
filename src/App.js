@@ -4026,6 +4026,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       return (
         <CustomersScreen
           lang={lang}
+          drilldownIntent={dashboardIntent}
+          onDrilldownIntentConsumed={consumeDashboardIntent}
           onDone={(p) => {
             try {
               const id = String(p?.id || "");
@@ -4054,9 +4056,11 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           history={estimateHistory}
           requestedInvoiceComposerEstimateId={requestedInvoiceComposerEstimateId}
           onInvoiceComposerRequestHandled={() => setRequestedInvoiceComposerEstimateId("")}
-          onDone={() => navigateTo(ROUTES.HOME)}
+          onDone={() => navigateTo(resolveDashboardDoneRoute(ROUTES.ESTIMATES))}
           postSaveTarget={postSaveTarget}
           onPostSaveTargetConsumed={consumePostSaveTarget}
+          drilldownIntent={dashboardIntent}
+          onDrilldownIntentConsumed={consumeDashboardIntent}
           onOpenEstimate={(estimate, filters) => {
             beginDocumentEditReturnContext("estimate", estimate?.id, filters);
             clearProjectDetailReturnTarget();

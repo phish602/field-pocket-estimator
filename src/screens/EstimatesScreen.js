@@ -26,6 +26,15 @@ import {
   resolveDocumentEditTarget,
   updateResolvedDocumentEditTarget,
 } from "../lib/documentEditTarget";
+import {
+  DRILLDOWN_SCOPES,
+  ESTIMATE_DRILLDOWNS,
+  HIGH_VALUE_ESTIMATE_MIN,
+  drilldownLabel,
+  estimateMatchesDrilldown,
+  isHighValueEstimate,
+  readDrilldownIntent,
+} from "../utils/dashboardDrilldowns";
 
 const ESTIMATES_SEARCH_KEY = "estipaid-estimates-search";
 const EDIT_ESTIMATE_TARGET_KEY = "estipaid-edit-estimate-target-v1";
@@ -711,6 +720,8 @@ export default function EstimatesScreen({
   onInvoiceComposerRequestHandled,
   postSaveTarget = null,
   onPostSaveTargetConsumed,
+  drilldownIntent = null,
+  onDrilldownIntentConsumed,
 }) {
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialPostSaveFilters = postSaveTarget?.type === "estimate" ? (postSaveTarget.filters || {}) : {};
@@ -721,6 +732,10 @@ export default function EstimatesScreen({
   const [showArchived, setShowArchived] = useState(() => Boolean(initialPostSaveFilters.showArchived));
   const [customerFilter, setCustomerFilter] = useState("all");
   const [valueFilter, setValueFilter] = useState(() => String(initialPostSaveFilters.valueFilter || "all"));
+  // Revenue pipeline drill-down. Kept separate from statusFilter/valueFilter
+  // because "ready for invoice" combines an approved status with remaining
+  // invoiceable value, which neither existing dimension expresses.
+  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.ESTIMATES));
   const [metadataRefreshSeq, setMetadataRefreshSeq] = useState(0);
   const [estimates, setEstimates] = useState(() => normalizeEstimateList(history));
   const [expanded, setExpanded] = useState(() => ({})); // { [id]: boolean }
@@ -1113,14 +1128,21 @@ export default function EstimatesScreen({
 
     const total = toNum(estimate?.total);
     const matchesValue = value === "all"
-      || (value === "small" && total < 1000)
-      || (value === "medium" && total >= 1000 && total < 10000)
-      || (value === "large" && total >= 10000);
+      || (value === "small" && total < HIGH_VALUE_ESTIMATE_MIN / 10)
+      || (value === "medium" && total >= HIGH_VALUE_ESTIMATE_MIN / 10 && total < HIGH_VALUE_ESTIMATE_MIN)
+      // The large band and the High value pipeline metric share one threshold.
+      || (value === "large" && isHighValueEstimate(estimate));
+
+    const matchesDrilldown = estimateMatchesDrilldown(estimate, metricFilter, {
+      normalizeStatus: normalizeEstimateStatus,
+      remainingToInvoice: (record) => toNum(buildEstimateInvoiceSummary(record, invoices)?.remainingToInvoice),
+    });
 
     return (
       matchesText
       && matchesStatus
       && matchesValue
+      && matchesDrilldown
     );
   };
 
@@ -1200,11 +1222,30 @@ export default function EstimatesScreen({
     }
     const total = toNum(savedEstimate?.total);
     const valueMatches = valueFilter === "all"
-      || (valueFilter === "small" && total < 1000)
-      || (valueFilter === "medium" && total >= 1000 && total < 10000)
-      || (valueFilter === "large" && total >= 10000);
+      || (valueFilter === "small" && total < HIGH_VALUE_ESTIMATE_MIN / 10)
+      || (valueFilter === "medium" && total >= HIGH_VALUE_ESTIMATE_MIN / 10 && total < HIGH_VALUE_ESTIMATE_MIN)
+      || (valueFilter === "large" && isHighValueEstimate(savedEstimate));
     if (!valueMatches) setValueFilter("all");
-  }, [estimateDisplayMeta, savedEstimate, searchQuery, showArchived, statusFilter, valueFilter]);
+    // Lane 2 rule applied to the pipeline drill-down: keep it while the saved
+    // estimate still belongs to the subset, relax it only when it would hide
+    // the record the user just saved.
+    const drilldownMatches = estimateMatchesDrilldown(savedEstimate, metricFilter, {
+      normalizeStatus: normalizeEstimateStatus,
+      remainingToInvoice: (record) => toNum(buildEstimateInvoiceSummary(record, invoices)?.remainingToInvoice),
+    });
+    if (metricFilter && !drilldownMatches) setMetricFilter("");
+  }, [estimateDisplayMeta, invoices, metricFilter, savedEstimate, searchQuery, showArchived, statusFilter, valueFilter]);
+
+  // Transient navigation context: applied once per intent, then released.
+  const consumedDrilldownSeqRef = useRef(0);
+  useEffect(() => {
+    const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.ESTIMATES);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
+    consumedDrilldownSeqRef.current = seq;
+    setMetricFilter(nextDrilldown);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, onDrilldownIntentConsumed]);
 
   useEffect(() => {
     if (!savedEstimate || !visibleEstimates.some((estimate) => String(estimate?.id || "") === String(savedEstimate?.id || ""))) return;
@@ -1264,7 +1305,7 @@ export default function EstimatesScreen({
       }
       return acc;
     }, { count: 0, value: 0 });
-    const highValueCount = visibleEstimates.filter((estimate) => toNum(estimate?.total) >= 10000).length;
+    const highValueCount = visibleEstimates.filter(isHighValueEstimate).length;
     const nextActions = [];
 
     if (approvedReady.count > 0) {
@@ -2015,7 +2056,33 @@ export default function EstimatesScreen({
     String(searchQuery || "").trim().length > 0
     || statusFilter !== "all"
     || valueFilter !== "all"
+    || !!metricFilter
     || showArchived;
+
+  // The estimate board is already ref'd for layout; reuse it as the scroll
+  // target so a drill-down lands on the records rather than a new anchor.
+  const scrollToRecords = () => {
+    const node = boardRef.current;
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  };
+
+  // Pipeline metrics summarize the estimates already visible, so tapping one
+  // narrows this list in place and brings the records into view rather than
+  // navigating. Tapping the active metric clears it.
+  const toggleMetricFilter = (nextKey) => {
+    const key = String(nextKey || "");
+    const willClear = metricFilter === key;
+    setMetricFilter(willClear ? "" : key);
+    if (!willClear) {
+      try {
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(scrollToRecords);
+        } else scrollToRecords();
+      } catch { scrollToRecords(); }
+    }
+  };
   const hasNoMatchingResults = hasActiveFilters && visibleEstimatesCount === 0;
 
   const onRevenueTileClick = (statusKey) => {
@@ -2420,6 +2487,9 @@ export default function EstimatesScreen({
             >
               {[
                 {
+                  // "Visible value" describes the whole current result set
+                  // rather than a subset, so it stays informational instead of
+                  // pretending to be a filter.
                   key: "visible-value",
                   label: lang === "es" ? "Valor visible" : "Visible value",
                   value: money(estimatePipelineSummary.totalValue),
@@ -2432,6 +2502,7 @@ export default function EstimatesScreen({
                   value: String(estimatePipelineSummary.pendingCount),
                   detail: money(estimatePipelineSummary.pendingValue),
                   tone: "pending",
+                  drilldown: ESTIMATE_DRILLDOWNS.AWAITING,
                 },
                 {
                   key: "approved-ready",
@@ -2439,6 +2510,7 @@ export default function EstimatesScreen({
                   value: money(estimatePipelineSummary.approvedReady.value),
                   detail: `${estimatePipelineSummary.approvedReady.count} ${estimatePipelineSummary.approvedReady.count === 1 ? (lang === "es" ? "estimado" : "estimate") : (lang === "es" ? "estimados" : "estimates")}`,
                   tone: "approved",
+                  drilldown: ESTIMATE_DRILLDOWNS.READY_TO_INVOICE,
                 },
                 {
                   key: "high-value",
@@ -2446,6 +2518,7 @@ export default function EstimatesScreen({
                   value: String(estimatePipelineSummary.highValueCount),
                   detail: lang === "es" ? "por encima de $10k" : "over $10k",
                   tone: "approved",
+                  drilldown: ESTIMATE_DRILLDOWNS.HIGH_VALUE,
                 },
               ].map((item) => {
                 const toneColor = item.tone === "approved"
@@ -2458,12 +2531,18 @@ export default function EstimatesScreen({
                   : item.tone === "pending"
                   ? "rgba(59,130,246,0.22)"
                   : "rgba(255,255,255,0.1)";
-                return (
-                  <div
-                    key={item.key}
-                    className="pe-estimates-kpi-card"
-                    style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${toneBorder}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}
-                  >
+                const isActive = !!item.drilldown && metricFilter === item.drilldown;
+                const cardStyle = {
+                  minWidth: 0,
+                  display: "grid",
+                  gap: 6,
+                  padding: "12px 12px 11px",
+                  borderRadius: 14,
+                  border: `1px solid ${isActive ? toneColor : toneBorder}`,
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+                };
+                const cardBody = (
+                  <>
                     <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: toneColor }}>
                       {item.label}
                     </div>
@@ -2479,7 +2558,33 @@ export default function EstimatesScreen({
                     >
                       {item.detail}
                     </div>
-                  </div>
+                  </>
+                );
+                if (!item.drilldown) {
+                  return (
+                    <div key={item.key} className="pe-estimates-kpi-card" style={cardStyle}>
+                      {cardBody}
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className="pe-estimates-kpi-card"
+                    onClick={() => toggleMetricFilter(item.drilldown)}
+                    aria-pressed={isActive}
+                    aria-label={`${item.label}: ${item.value}. ${isActive ? (lang === "es" ? "Quitar filtro" : "Clear filter") : (lang === "es" ? "Filtrar estimados" : "Filter estimates")}`}
+                    style={{
+                      ...cardStyle,
+                      textAlign: "left",
+                      cursor: "pointer",
+                      font: "inherit",
+                      boxShadow: isActive ? `inset 0 0 0 1px ${toneColor}` : "none",
+                    }}
+                  >
+                    {cardBody}
+                  </button>
                 );
               })}
             </div>
@@ -2690,10 +2795,35 @@ export default function EstimatesScreen({
                   setStatusFilter("all");
                   setValueFilter("all");
                   setShowArchived(false);
+                  setMetricFilter("");
                 }}
               >
                 Clear
               </button>
+
+              {metricFilter ? (
+                <button
+                  type="button"
+                  onClick={() => setMetricFilter("")}
+                  aria-label={lang === "es" ? "Quitar filtro del panel" : "Clear dashboard filter"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    fontWeight: 800,
+                    fontFamily: "inherit",
+                    cursor: "pointer",
+                    border: "1px solid rgba(96,165,250,0.45)",
+                    background: "rgba(59,130,246,0.14)",
+                    color: "rgba(226,238,250,0.95)",
+                  }}
+                >
+                  <span>{drilldownLabel(DRILLDOWN_SCOPES.ESTIMATES, metricFilter, lang)}</span>
+                  <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
+                </button>
+              ) : null}
             </div>
           </div>
 

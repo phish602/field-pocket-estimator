@@ -11,6 +11,13 @@ import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
+import {
+  CUSTOMER_DRILLDOWNS,
+  DRILLDOWN_SCOPES,
+  customerMatchesDrilldown,
+  drilldownLabel,
+  readDrilldownIntent,
+} from "../utils/dashboardDrilldowns";
 
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -589,6 +596,8 @@ export default function CustomersScreen({
   setSelectedCustomerId,
   onDone,
   onOpenProjectDetail,
+  drilldownIntent = null,
+  onDrilldownIntentConsumed,
 }) {
   const label = (en, es) => labelOf(lang, en, es);
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
@@ -606,6 +615,43 @@ export default function CustomersScreen({
   const [typeaheadHidden, setTypeaheadHidden] = useState(false);
   const [highlightCustomerId, setHighlightCustomerId] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  // Account Priority drill-down: which subset of customer accounts the header
+  // metrics are currently narrowing this list to.
+  const [metricFilter, setMetricFilter] = useState(() => readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.CUSTOMERS));
+  const recordsSectionRef = useRef(null);
+  const consumedDrilldownSeqRef = useRef(0);
+
+  useEffect(() => {
+    const nextDrilldown = readDrilldownIntent(drilldownIntent, DRILLDOWN_SCOPES.CUSTOMERS);
+    const seq = Number(drilldownIntent?.seq || 0);
+    if (!nextDrilldown || !seq || seq === consumedDrilldownSeqRef.current) return;
+    consumedDrilldownSeqRef.current = seq;
+    setMetricFilter(nextDrilldown);
+    try { onDrilldownIntentConsumed?.(); } catch {}
+  }, [drilldownIntent, onDrilldownIntentConsumed]);
+
+  const scrollToRecords = () => {
+    const node = recordsSectionRef.current;
+    if (!node || typeof node.scrollIntoView !== "function") return;
+    try { node.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    catch { try { node.scrollIntoView(); } catch {} }
+  };
+
+  // Account Priority metrics describe the customers already visible, so tapping
+  // one narrows this list in place and brings the accounts into view.
+  const toggleMetricFilter = (nextKey) => {
+    const key = String(nextKey || "");
+    if (!key) return;
+    const willClear = metricFilter === key;
+    setMetricFilter(willClear ? "" : key);
+    if (!willClear) {
+      try {
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(scrollToRecords);
+        } else scrollToRecords();
+      } catch { scrollToRecords(); }
+    }
+  };
   const cardRefs = useRef({});
   const highlightTimerRef = useRef(null);
   const typeaheadWrapRef = useRef(null);
@@ -917,9 +963,18 @@ export default function CustomersScreen({
     return showArchived ? arr : arr.filter((c) => !c?.archived);
   }, [list, showArchived]);
 
+  const drilldownList = useMemo(() => {
+    const arr = visibleList || [];
+    if (!metricFilter) return arr;
+    return arr.filter((customer) => customerMatchesDrilldown(customer, metricFilter, {
+      customerKpis,
+      customerProjectMeta,
+    }));
+  }, [visibleList, metricFilter, customerKpis, customerProjectMeta]);
+
   const filtered = useMemo(() => {
   const qq = norm(q);
-  const arr = visibleList || [];
+  const arr = drilldownList || [];
   if (!qq) return arr;
 
   const vals = [];
@@ -954,7 +1009,7 @@ export default function CustomersScreen({
     const blob = norm(vals.join(" "));
     return blob.includes(qq);
   });
-}, [visibleList, q]);
+}, [drilldownList, q]);
 
   const customerPortfolioSummary = useMemo(() => {
     const visible = filtered || [];
@@ -1146,6 +1201,11 @@ export default function CustomersScreen({
       if (query && !savedText.includes(query)) setQ("");
       if (Boolean(nextItem?.archived) !== Boolean(showArchived)) {
         setShowArchived(Boolean(nextItem?.archived));
+      }
+      // Same Lane 2 rule for the Account Priority drill-down: relax it only if
+      // it would hide the customer that was just saved.
+      if (metricFilter && !customerMatchesDrilldown(nextItem, metricFilter, { customerKpis, customerProjectMeta })) {
+        setMetricFilter("");
       }
       setHighlightCustomerId(id);
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -1503,15 +1563,20 @@ export default function CustomersScreen({
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
                 {[
                   {
+                    // "Visible customers" is the whole current result set, not
+                    // a subset, so it stays informational. Its one real action
+                    // is releasing an active drill-down back to everything.
                     key: "total-customers",
                     labelText: label("Visible customers", "Clientes visibles"),
                     value: String(customerPortfolioSummary.totalCustomers),
                     detail: `${customerPortfolioSummary.activeAccounts} ${label("active accounts", "cuentas activas")}`,
                     color: "rgba(96,165,250,0.86)",
                     border: "rgba(59,130,246,0.2)",
+                    resetsFilter: true,
                   },
                   {
                     key: "balance-due",
+                    drilldown: CUSTOMER_DRILLDOWNS.BALANCE_DUE,
                     labelText: label("Open balance due", "Saldo pendiente"),
                     value: moneyUSD(customerPortfolioSummary.balanceDue),
                     detail: customerPortfolioSummary.overdueAccounts > 0
@@ -1522,6 +1587,7 @@ export default function CustomersScreen({
                   },
                   {
                     key: "projects",
+                    drilldown: CUSTOMER_DRILLDOWNS.LINKED_PROJECTS,
                     labelText: label("Linked projects", "Proyectos vinculados"),
                     value: String(customerPortfolioSummary.linkedProjects),
                     detail: label("Across visible customer accounts", "En cuentas visibles de clientes"),
@@ -1530,26 +1596,93 @@ export default function CustomersScreen({
                   },
                   {
                     key: "open-docs",
+                    drilldown: CUSTOMER_DRILLDOWNS.OPEN_DOCUMENTS,
                     labelText: label("Open document activity", "Actividad de documentos"),
                     value: String(customerPortfolioSummary.openDocs),
                     detail: label("Estimates + unpaid invoices", "Estimados + facturas no pagadas"),
                     color: "rgba(191,219,254,0.84)",
                     border: "rgba(148,163,184,0.18)",
                   },
-                ].map((item) => (
-                  <div key={item.key} style={{ minWidth: 0, display: "grid", gap: 6, padding: "12px 12px 11px", borderRadius: 14, border: `1px solid ${item.border}`, background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)" }}>
-                    <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
-                      {item.labelText}
-                    </div>
-                    <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
-                      {item.value}
-                    </div>
-                    <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
-                      {item.detail}
-                    </div>
-                  </div>
-                ))}
+                ].map((item) => {
+                  const isActive = !!item.drilldown && metricFilter === item.drilldown;
+                  const cardStyle = {
+                    minWidth: 0,
+                    display: "grid",
+                    gap: 6,
+                    padding: "12px 12px 11px",
+                    borderRadius: 14,
+                    border: `1px solid ${isActive ? item.color : item.border}`,
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), rgba(7,11,16,0.22)",
+                  };
+                  const cardBody = (
+                    <>
+                      <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: item.color }}>
+                        {item.labelText}
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1 }}>
+                        {item.value}
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.4, color: "rgba(208,219,228,0.66)" }}>
+                        {item.detail}
+                      </div>
+                    </>
+                  );
+                  const canReset = item.resetsFilter && !!metricFilter;
+                  if (!item.drilldown && !canReset) {
+                    return <div key={item.key} style={cardStyle}>{cardBody}</div>;
+                  }
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => (canReset ? setMetricFilter("") : toggleMetricFilter(item.drilldown))}
+                      aria-pressed={isActive}
+                      aria-label={`${item.labelText}: ${item.value}. ${canReset || isActive ? label("Clear filter", "Quitar filtro") : label("Filter customers", "Filtrar clientes")}`}
+                      style={{
+                        ...cardStyle,
+                        textAlign: "left",
+                        cursor: "pointer",
+                        font: "inherit",
+                        boxShadow: isActive ? `inset 0 0 0 1px ${item.color}` : "none",
+                      }}
+                    >
+                      {cardBody}
+                    </button>
+                  );
+                })}
               </div>
+            </div>
+
+            <div ref={recordsSectionRef}>
+              {metricFilter ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>
+                    {label("Showing", "Mostrando")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMetricFilter("")}
+                    aria-label={label("Clear dashboard filter", "Quitar filtro del panel")}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 10px",
+                      borderRadius: 999,
+                      fontSize: 11.5,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      border: "1px solid rgba(96,165,250,0.45)",
+                      background: "rgba(59,130,246,0.14)",
+                      color: "rgba(226,238,250,0.95)",
+                    }}
+                  >
+                    <span>{drilldownLabel(DRILLDOWN_SCOPES.CUSTOMERS, metricFilter, lang)}</span>
+                    <span aria-hidden="true" style={{ opacity: 0.75 }}>✕</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {showListSkeleton ? (
