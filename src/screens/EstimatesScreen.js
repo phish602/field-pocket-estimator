@@ -715,8 +715,8 @@ export default function EstimatesScreen({
   onOpenEstimate,
   onOpenProjectDetail,
   spinTick = 0,
-  requestedInvoiceComposerEstimateId = "",
-  onInvoiceComposerRequestHandled,
+  requestedInvoiceBuilderEstimateId = "",
+  onInvoiceBuilderRequestHandled,
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   drilldownIntent = null,
@@ -1737,23 +1737,22 @@ export default function EstimatesScreen({
     return openInvoiceBuilderFromEstimate(exactApprovedEstimate);
   };
 
+  // Snapshot's "Create Invoice" asks for the same conversion the Estimates
+  // screen performs itself, so it launches the canonical builder rather than
+  // the quick composer. The builder re-resolves the stored estimate and applies
+  // its own approved/archived checks, its mutation guard, and its duplicate
+  // launch lock, so this bridge only has to name the estimate.
   useEffect(() => {
-    const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
+    const requestedId = String(requestedInvoiceBuilderEstimateId || "").trim();
     if (!requestedId) return;
     const target = (Array.isArray(estimates) ? estimates : []).find(
       (estimate) => String(estimate?.id || "").trim() === requestedId
     );
-    if (!target) {
-      if (typeof onInvoiceComposerRequestHandled === "function") {
-        onInvoiceComposerRequestHandled();
-      }
-      return;
+    if (target) openInvoiceBuilderFromEstimate(target);
+    if (typeof onInvoiceBuilderRequestHandled === "function") {
+      onInvoiceBuilderRequestHandled();
     }
-    openInvoiceComposer(target);
-    if (typeof onInvoiceComposerRequestHandled === "function") {
-      onInvoiceComposerRequestHandled();
-    }
-  }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
+  }, [requestedInvoiceBuilderEstimateId, estimates, onInvoiceBuilderRequestHandled]);
 
   const submitInvoiceComposer = async () => {
     if (!invoiceComposerTarget) return false;

@@ -2746,7 +2746,9 @@ const [spinTick, setSpinTick] = useState(0);
   const [customerHistory, setCustomerHistory] = useState(() => loadSavedCustomers());
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
-  const [requestedInvoiceComposerEstimateId, setRequestedInvoiceComposerEstimateId] = useState("");
+  // Names the estimate Snapshot asked to invoice. Transient launch intent only:
+  // the conversion itself stays in the Estimates screen's canonical builder.
+  const [requestedInvoiceBuilderEstimateId, setRequestedInvoiceBuilderEstimateId] = useState("");
   const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
   const [draftStorageVersion, setDraftStorageVersion] = useState(0);
   const liveDraftResumeMeta = useMemo(() => readLiveDraftResumeMeta(draftStorageVersion), [draftStorageVersion]);
@@ -4108,8 +4110,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           t={shellT}
           spinTick={spinTick}
           history={estimateHistory}
-          requestedInvoiceComposerEstimateId={requestedInvoiceComposerEstimateId}
-          onInvoiceComposerRequestHandled={() => setRequestedInvoiceComposerEstimateId("")}
+          requestedInvoiceBuilderEstimateId={requestedInvoiceBuilderEstimateId}
+          onInvoiceBuilderRequestHandled={() => setRequestedInvoiceBuilderEstimateId("")}
           onDone={() => navigateTo(resolveDashboardDoneRoute(ROUTES.ESTIMATES))}
           postSaveTarget={postSaveTarget}
           onPostSaveTargetConsumed={consumePostSaveTarget}
@@ -4274,7 +4276,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
             localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
             localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
           } catch {}
-          setRequestedInvoiceComposerEstimateId(estimateId);
+          setRequestedInvoiceBuilderEstimateId(estimateId);
           navigateTo(ROUTES.ESTIMATES);
           return true;
         }}
