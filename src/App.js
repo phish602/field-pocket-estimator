@@ -2746,9 +2746,12 @@ const [spinTick, setSpinTick] = useState(0);
   const [customerHistory, setCustomerHistory] = useState(() => loadSavedCustomers());
   const [estimateHistory, setEstimateHistory] = useState(() => loadSavedEstimates());
   const [invoiceHistory, setInvoiceHistory] = useState(() => readStoredInvoices());
-  // Names the estimate Snapshot asked to invoice. Transient launch intent only:
-  // the conversion itself stays in the Estimates screen's canonical builder.
-  const [requestedInvoiceBuilderEstimateId, setRequestedInvoiceBuilderEstimateId] = useState("");
+  // Names the estimate Snapshot asked to invoice and how to launch it:
+  // { estimateId, mode } where mode is "builder" (straight to the canonical
+  // builder) or "options" (open billing setup first). Transient launch intent
+  // only -- the conversion itself stays with the Estimates screen's canonical
+  // launcher, and nothing here is persisted.
+  const [invoiceLaunchRequest, setInvoiceLaunchRequest] = useState(null);
   const [projectHistory, setProjectHistory] = useState(() => readStoredProjects());
   const [draftStorageVersion, setDraftStorageVersion] = useState(0);
   const liveDraftResumeMeta = useMemo(() => readLiveDraftResumeMeta(draftStorageVersion), [draftStorageVersion]);
@@ -4110,8 +4113,8 @@ const [drawerOpen, setDrawerOpen] = useState(false);
           t={shellT}
           spinTick={spinTick}
           history={estimateHistory}
-          requestedInvoiceBuilderEstimateId={requestedInvoiceBuilderEstimateId}
-          onInvoiceBuilderRequestHandled={() => setRequestedInvoiceBuilderEstimateId("")}
+          invoiceLaunchRequest={invoiceLaunchRequest}
+          onInvoiceLaunchRequestHandled={() => setInvoiceLaunchRequest(null)}
           onDone={() => navigateTo(resolveDashboardDoneRoute(ROUTES.ESTIMATES))}
           postSaveTarget={postSaveTarget}
           onPostSaveTargetConsumed={consumePostSaveTarget}
@@ -4269,14 +4272,14 @@ const [drawerOpen, setDrawerOpen] = useState(false);
         }}
         returnAnchor={snapshotReturnAnchor}
         onReturnAnchorConsumed={() => setSnapshotReturnAnchor("")}
-        onCreateInvoiceFromEstimate={(estimate) => {
+        onCreateInvoiceFromEstimate={(estimate, mode = "builder") => {
           const estimateId = String(estimate?.id || "").trim();
           if (!estimateId) return false;
           try {
             localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
             localStorage.removeItem(EDIT_INVOICE_TARGET_KEY);
           } catch {}
-          setRequestedInvoiceBuilderEstimateId(estimateId);
+          setInvoiceLaunchRequest({ estimateId, mode });
           navigateTo(ROUTES.ESTIMATES);
           return true;
         }}

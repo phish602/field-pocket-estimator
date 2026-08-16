@@ -529,14 +529,6 @@ function resolveMaterialsMode(doc) {
   return "itemized";
 }
 
-function hasMeaningfulAdditionalCharges(doc) {
-  const items = Array.isArray(doc?.additionalCharges?.items) ? doc.additionalCharges.items : [];
-  return items.some((item) => {
-    const qty = toNum(item?.qty);
-    const priceEach = toNum(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice);
-    return (qty * priceEach) > 0;
-  });
-}
 
 function toEstimatorState(doc) {
   const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
@@ -714,8 +706,8 @@ export default function EstimatesScreen({
   onOpenEstimate,
   onOpenProjectDetail,
   spinTick = 0,
-  requestedInvoiceBuilderEstimateId = "",
-  onInvoiceBuilderRequestHandled,
+  invoiceLaunchRequest = null,
+  onInvoiceLaunchRequestHandled,
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   drilldownIntent = null,
@@ -1642,13 +1634,11 @@ export default function EstimatesScreen({
     setInvoiceComposerShowMore(false);
   };
 
-  const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
+  // Opens the inline billing setup on this estimate. Creation happens only in
+  // the canonical launcher once the user submits.
+  const openInvoiceSetup = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
     if (!estimate || estimate?.archived || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
       return false;
-    }
-
-    if (hasMeaningfulAdditionalCharges(estimate)) {
-      return openInvoiceBuilderFromEstimate(estimate);
     }
 
     const currentInvoices = readStoredInvoices();
@@ -1658,6 +1648,7 @@ export default function EstimatesScreen({
     }
 
     setInvoiceComposerTarget(estimate);
+    setExpanded((current) => ({ ...current, [String(estimate.id || "")]: true }));
     setInvoiceComposerForm(createInvoiceComposerForm(estimate, summary, invoiceType));
     setInvoiceComposerError("");
     setInvoiceComposerShowMore(false);
@@ -1693,7 +1684,12 @@ export default function EstimatesScreen({
       }
 
       const currentInvoices = readStoredInvoices();
-      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices, {
+        ...(billing?.invoiceType ? { invoiceType: billing.invoiceType } : {}),
+        ...(billing?.requestedValue ? { requestedValue: billing.requestedValue } : {}),
+        ...(billing?.dueDate ? { dueDate: billing.dueDate } : {}),
+        ...(billing?.note ? { note: billing.note } : {}),
+      });
       if (!created.ok || !created.draft) {
         reportError(created.message || "Unable to create an invoice from this estimate.");
         return false;
@@ -1782,54 +1778,44 @@ export default function EstimatesScreen({
   // its own approved/archived checks, its mutation guard, and its duplicate
   // launch lock, so this bridge only has to name the estimate.
   useEffect(() => {
-    const requestedId = String(requestedInvoiceBuilderEstimateId || "").trim();
+    const requestedId = String(invoiceLaunchRequest?.estimateId || "").trim();
     if (!requestedId) return;
     const target = (Array.isArray(estimates) ? estimates : []).find(
       (estimate) => String(estimate?.id || "").trim() === requestedId
     );
-    if (target) openInvoiceBuilderFromEstimate(target);
-    if (typeof onInvoiceBuilderRequestHandled === "function") {
-      onInvoiceBuilderRequestHandled();
+    if (target) {
+      // "options" opens the billing setup here; anything else goes straight to
+      // the canonical builder. Either way creation stays with the launcher.
+      if (String(invoiceLaunchRequest?.mode || "") === "options") openInvoiceSetup(target);
+      else openInvoiceBuilderFromEstimate(target);
     }
-  }, [requestedInvoiceBuilderEstimateId, estimates, onInvoiceBuilderRequestHandled]);
+    if (typeof onInvoiceLaunchRequestHandled === "function") {
+      onInvoiceLaunchRequestHandled();
+    }
+  }, [invoiceLaunchRequest, estimates, onInvoiceLaunchRequestHandled]);
 
-  const submitInvoiceComposer = async () => {
+  // Billing setup only. It collects the user's intent and hands it to the one
+  // canonical launcher above -- it does not create ids, authorize mutations,
+  // write invoices, set edit targets, or navigate. Those responsibilities moved
+  // out so there is a single creation owner.
+  const submitInvoiceSetup = async () => {
     if (!invoiceComposerTarget) return false;
+    setInvoiceComposerError("");
 
-    const currentInvoices = readStoredInvoices();
-    const created = createInvoiceDraftFromEstimate(invoiceComposerTarget, currentInvoices, {
+    const launched = await openInvoiceBuilderFromEstimate(invoiceComposerTarget, {
       invoiceType: invoiceComposerForm.invoiceType,
       requestedValue: buildComposerRequestedValue(invoiceComposerForm),
       dueDate: invoiceComposerForm.dueDate,
       note: invoiceComposerForm.note,
+      // Failures belong in the setup dialog so the user can correct the amount
+      // rather than being dropped somewhere with a screen-level message.
+      onError: (message) => setInvoiceComposerError(
+        message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
+      ),
     });
 
-    if (!created.ok || !created.draft) {
-      setInvoiceComposerError(
-        created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
-      );
-      return false;
-    }
-
-    const mutationAccess = await ensureCanMutateBusinessData("local_save");
-    if (!mutationAccess?.ok) {
-      setInvoiceComposerError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      return false;
-    }
-
-    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
-    setInvoices(nextInvoices);
+    if (!launched) return false;
     closeInvoiceComposer();
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:invoices-changed"));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
     return true;
   };
 
@@ -2411,6 +2397,63 @@ export default function EstimatesScreen({
     });
     setInvoiceComposerError("");
   };
+
+  const invoiceOptionsSetup = invoiceComposerTarget ? (
+    <section className="pe-card pe-card-content" data-invoice-options="true" aria-label={lang === "es" ? "Opciones de factura" : "Invoice Options"} style={{ marginTop: 10, display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={invoiceComposerToneLabelStyle}>{lang === "es" ? "Opciones de factura" : "Invoice Options"}</div>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>{invoiceComposerEstimateLabel}</div>
+          <div style={{ fontSize: 12.5, opacity: 0.74 }}>{lang === "es" ? "Elige cómo facturar antes de abrir el constructor." : "Choose how to bill before opening the builder."}</div>
+        </div>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={{ minHeight: 34, padding: "7px 10px" }}>{lang === "es" ? "Cancelar" : "Cancel"}</button>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={invoiceComposerSectionLabelStyle}>{lang === "es" ? "Tipo de factura" : "Invoice Type"}</div>
+        <div style={invoiceComposerSegmentWrapStyle}>
+          {invoiceComposerTypeOptions.map((option) => (
+            <button key={option.value} type="button" className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerTypeChange(option.value)} style={{ ...invoiceComposerSegmentBtnStyle, ...(invoiceComposerForm.invoiceType === option.value ? invoiceComposerSegmentBtnActiveStyle : invoiceComposerSegmentBtnIdleStyle) }}>{option.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={invoiceComposerFieldGridStyle}>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-amount">{lang === "es" ? "Monto de factura" : "Invoice Amount"}</label>
+          <div style={invoiceComposerAmountRowStyle}>
+            <input id="invoice-options-amount" type="text" inputMode="decimal" className="pe-input" value={invoiceComposerForm.amountValue} placeholder={invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL ? (lang === "es" ? "Dejar vacío para usar el saldo restante" : "Leave blank to use remaining balance") : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, amountValue: evt.target.value })); setInvoiceComposerError(""); }} style={{ width: "100%" }} />
+            <div style={invoiceComposerAmountModeWrapStyle}>
+              <button type="button" aria-label={lang === "es" ? "Monto en dólares" : "Dollar amount"} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_AMOUNT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_AMOUNT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>$</button>
+              <button type="button" aria-label={lang === "es" ? "Monto en porcentaje" : "Percent amount"} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_PERCENT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>%</button>
+            </div>
+          </div>
+          {invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT ? (
+            <div style={invoiceComposerPresetWrapStyle}>
+              {[10, 25, 50].map((percent) => {
+                const disabled = invoiceComposerAvailablePercent > 0 && percent > invoiceComposerAvailablePercent + INVOICE_COMPOSER_EPSILON;
+                const isActive = invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT && roundCurrency(toNum(invoiceComposerForm.amountValue)) === percent;
+                return <button key={`deposit-${percent}`} type="button" className="pe-btn pe-btn-ghost" disabled={disabled} onClick={() => { setInvoiceComposerForm((prev) => ({ ...prev, amountMode: INVOICE_AMOUNT_MODE_PERCENT, amountValue: String(percent) })); setInvoiceComposerError(""); }} style={{ ...invoiceComposerPresetBtnStyle, ...(isActive ? invoiceComposerPresetBtnActiveStyle : invoiceComposerPresetBtnIdleStyle) }}>{percent}%</button>;
+              })}
+            </div>
+          ) : null}
+        </div>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-due-date">{lang === "es" ? "Fecha de vencimiento" : "Due Date"}</label>
+          <input id="invoice-options-due-date" type="date" className="pe-input" value={invoiceComposerForm.dueDate} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, dueDate: evt.target.value })); setInvoiceComposerError(""); }} />
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-note">{lang === "es" ? "Nota" : "Note"}</label>
+          <textarea id="invoice-options-note" className="pe-input pe-textarea" value={invoiceComposerForm.note} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, note: evt.target.value })); setInvoiceComposerError(""); }} rows={3} placeholder={lang === "es" ? "Nota opcional para esta factura" : "Optional note for this invoice"} style={{ minHeight: 72, resize: "vertical" }} />
+        </div>
+      </div>
+      <div style={invoiceComposerSummaryCardStyle}>
+        <div style={invoiceComposerSectionLabelStyle}>{lang === "es" ? "Resumen de facturación" : "Billing Summary"}</div>
+        <div style={invoiceComposerSummaryGridStyle}>{invoiceComposerSummaryItems.map((item) => <div key={item.key} style={{ ...invoiceComposerSummaryItemStyle, ...(item.tone === "primary" ? invoiceComposerSummaryItemPrimaryStyle : item.tone === "remaining" ? invoiceComposerSummaryItemRemainingStyle : null) }}><div style={{ fontSize: 12.5, opacity: 0.72 }}>{item.label}</div><div style={invoiceComposerSummaryValueStyle}>{item.value}</div></div>)}</div>
+      </div>
+      {invoiceComposerMessage ? <div role="alert" style={{ fontSize: 13, color: "rgba(254, 202, 202, 0.95)", border: "1px solid rgba(248,113,113,0.36)", background: "rgba(127,29,29,0.18)", borderRadius: 12, padding: "10px 12px" }}>{invoiceComposerMessage}</div> : null}
+      <div style={invoiceComposerFooterStyle}>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>{lang === "es" ? "Cancelar" : "Cancel"}</button>
+        <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>{lang === "es" ? "Continuar al constructor" : "Continue to Invoice Builder"}</button>
+      </div>
+    </section>
+  ) : null;
 
   return (
     <section className="pe-section">
@@ -3600,6 +3643,19 @@ export default function EstimatesScreen({
                             {lang === "es" ? "Convertir en factura" : "Convert to Invoice"}
                           </button>
                         ) : null}
+                        {/* Secondary: for a deposit, a progress draw, or a
+                            specific amount/percent. The primary action above
+                            stays one click. */}
+                        {status === STATUS_APPROVED && !e?.archived ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => openInvoiceSetup(e)}
+                            disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
+                          >
+                            {lang === "es" ? "Opciones de factura" : "Invoice Options"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
 
@@ -3624,6 +3680,8 @@ export default function EstimatesScreen({
                         </div>
                       </div>
                     ) : null}
+
+                    {status === STATUS_APPROVED && String(invoiceComposerTarget?.id || "") === id ? invoiceOptionsSetup : null}
 
                     {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
@@ -3906,7 +3964,9 @@ export default function EstimatesScreen({
           </div>
         </div>
       ) : null}
-      {invoiceComposerTarget ? (
+      {/* Legacy Quick Composer retained as inactive source-only code while the
+          live Invoice Options workflow renders inline in its estimate card. */}
+      {false && invoiceComposerTarget ? (
         <div
           role="dialog"
           aria-modal="true"
@@ -4182,7 +4242,7 @@ export default function EstimatesScreen({
               <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>
                 {lang === "es" ? "Cancelar" : "Cancel"}
               </button>
-              <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
+              <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>
                 {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
               </button>
             </div>

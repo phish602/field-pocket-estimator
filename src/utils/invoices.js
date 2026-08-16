@@ -1740,19 +1740,29 @@ export function createInvoiceBuilderDraftFromEstimate(estimate, invoices, option
     return { ok: false, message: "This estimate has no remaining amount to invoice." };
   }
 
-  // Once part of an estimate has been invoiced, only the remainder may be
-  // billed -- but the full-estimate draft built below carries the estimate's
-  // own labor and material lines, so the calculation engine recomputes it back
-  // to the approved total no matter what invoiceTotal is set to. The remaining
-  // balance is therefore expressed the way this module already expresses a
-  // billable amount, through the existing amount-based draft, which prices a
-  // blanket line the engine reproduces exactly and allocates its financial
-  // summary to match. FINAL with no requested value resolves to
-  // summary.remainingToInvoice.
-  if (summary.invoicedTotal > 0) {
+  // Two cases bill something other than the whole estimate, and both are
+  // expressed the way this module already expresses a billable amount: the
+  // existing amount-based draft, which prices a blanket line the calculation
+  // engine reproduces exactly and allocates its financial summary to match.
+  // The full-estimate draft built below cannot represent either, because it
+  // carries the estimate's own labor and material lines and the engine
+  // recomputes those back to the approved total whatever invoiceTotal says.
+  //
+  // 1. The caller asked for a specific billing intent -- a deposit, a progress
+  //    draw, a dollar amount or a percent. That request is authoritative even
+  //    on a first invoice.
+  const requestedBilling = asText(options?.requestedValue);
+  const requestedType = asText(options?.invoiceType);
+  const hasExplicitBilling = !!requestedBilling
+    || (!!requestedType && requestedType.toLowerCase() !== INVOICE_TYPES.FINAL);
+
+  // 2. Part of the estimate is already invoiced, so only the remainder is
+  //    available. FINAL with no requested value resolves to
+  //    summary.remainingToInvoice.
+  if (hasExplicitBilling || summary.invoicedTotal > 0) {
     return createInvoiceDraftFromEstimate(estimate, invoices, {
       ...options,
-      invoiceType: INVOICE_TYPES.FINAL,
+      invoiceType: requestedType || INVOICE_TYPES.FINAL,
     });
   }
 

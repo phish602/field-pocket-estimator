@@ -82,18 +82,34 @@ export function hasEmptyCoreBusinessSnapshot(snapshot) {
 // OPERATION OWNERSHIP (core state + queue)
 // ---------------------------------------------------------------------------
 
-// ANY pending generation counts, deliberately. This is the protective reading the
-// restore prompt already used: whether backup is currently *eligible* to run (not
-// deferred, not conflicted) is backup's own rule and stays in useCloudAutoBackup.
-// Ownership answers precedence, not eligibility -- so a deferred or conflicted
-// queue still blocks recovery from overwriting the local work it represents.
+// ANY pending generation counts when deciding whether an EMPTY device can recover.
+// This is the protective reading the restore prompt already used: a user who just
+// deleted their final record must never be mistaken for a fresh device.
 export function hasPendingLocalBackup(queueState) {
   return Boolean(queueState?.pending);
+}
+
+// `remote_changed` is terminal review state, not queued backup work: the backup
+// worker deliberately will not retry it. On an established device, keeping that
+// state owned by backup would deadlock the safe, local-only convergence that
+// imports proven cloud-only additions and verifies the result. A true `conflict`
+// remains review-only because convergence cannot choose between competing edits.
+function remoteChangedReviewNeedsConvergence(queueState) {
+  return String(queueState?.status || "") === "remote_changed";
 }
 
 // The single precedence rule. `coreEmpty` must be a POSITIVE proof of emptiness;
 // anything unproven or unreadable must arrive here as false.
 function resolveOwner(coreEmpty, queueState) {
+  // Pending work always wins while core data is empty, including terminal review
+  // states. That preserves deletion-to-empty safety and keeps recovery from
+  // overwriting the local mutation represented by the queue.
+  if (coreEmpty && hasPendingLocalBackup(queueState)) return CLOUD_OPERATION_OWNER.BACKUP;
+  // An established device can safely let the existing convergence transaction
+  // resolve a cloud-only review. It performs no cloud writes, journals its local
+  // apply, strictly verifies, then clears this exact queue revision only on
+  // success.
+  if (remoteChangedReviewNeedsConvergence(queueState)) return CLOUD_OPERATION_OWNER.CONVERGENCE;
   if (hasPendingLocalBackup(queueState)) return CLOUD_OPERATION_OWNER.BACKUP;
   if (coreEmpty) return CLOUD_OPERATION_OWNER.RECOVERY;
   return CLOUD_OPERATION_OWNER.CONVERGENCE;
