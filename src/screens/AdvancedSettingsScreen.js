@@ -16,7 +16,7 @@ import {
 import { createSupabaseMigrationPreview } from "../lib/supabaseMigrationPreview";
 import { isSupabaseMigrationPreviewReady, runSupabaseMigrationWrite } from "../lib/supabaseMigrationWriter";
 import { runSupabaseCloudVerification } from "../lib/supabaseCloudVerification";
-import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult, requestCloudConvergence } from "../lib/supabaseCloudConvergence";
+import { CLOUD_CONVERGENCE_RESULT_EVENT, getLastCloudConvergenceResult } from "../lib/supabaseCloudConvergence";
 import {
   previewSupabaseCloudRestore,
   executeSupabaseCloudRestore,
@@ -52,7 +52,6 @@ import {
 import CloudConfirmDialog from "../components/CloudConfirmDialog";
 import {
   buildCloudRestoreConfirmationDialog,
-  buildPartialSnapshotRecheckMessage,
   getCloudRestoreAvailability,
 } from "../lib/cloudRestoreUi";
 import { VAULT_COMPATIBILITY_GUARD_KEY } from "../lib/vaultCompatibilityGuard";
@@ -62,27 +61,6 @@ const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
-}
-
-// Requests a fresh automatic-convergence attempt and resolves with the next safe
-// result event, or the last known result after a bounded timeout. Never calls
-// Restore/Replace -- it only asks the automatic hook to try again.
-function requestAndAwaitCloudConvergence(timeoutMs = 8000) {
-  return new Promise((resolve) => {
-    let settled = false;
-    let timer = null;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      if (timer) { clearTimeout(timer); timer = null; }
-      try { window.removeEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult); } catch {}
-      resolve(value);
-    };
-    const onResult = (event) => finish(event?.detail || getLastCloudConvergenceResult() || null);
-    try { window.addEventListener(CLOUD_CONVERGENCE_RESULT_EVENT, onResult); } catch { finish(getLastCloudConvergenceResult() || null); return; }
-    requestCloudConvergence();
-    timer = setTimeout(() => finish(getLastCloudConvergenceResult() || null), timeoutMs);
-  });
 }
 
 // Tables the deliberate "Replace Cloud Backup With This Device" action is
@@ -1098,53 +1076,17 @@ export default function AdvancedSettingsScreen({
     try {
       setOnboardingStatusBusy(true);
       setCloudStatusMessage("");
-      // First ask the automatic hook to actually attempt convergence (import the
-      // eligible cloud-only records), then await its safe result, THEN re-verify.
-      // This never invokes manual Restore or Replace.
-      const convergence = await requestAndAwaitCloudConvergence();
-      if (convergence) setConvergenceResult(convergence);
+      // Recheck is intentionally observational: it must not request
+      // convergence, preview restore eligibility, or trigger recovery work.
       const result = await checkSupabaseCloudOnboardingStatus({
         storageSnapshot: localStorage,
         configured: isSupabaseReady,
         user,
         company,
         role: accountRole,
+        allowAutomaticSafeRepair: false,
       });
       setOnboardingStatus(result);
-      const nextDecision = getCloudDataDecision({
-        localIntegrity: result?.preview?.integrity || null,
-        cloudVerification: result?.verification || null,
-        queueState: autoBackupQueueState,
-        onboardingStatus: result,
-        restorePreview: null,
-        workerRunning: autoBackupRunning,
-        restoredRecently: restoreResult?.status === CLOUD_RESTORE_STATUS.RESTORED,
-      });
-      if (nextDecision.screenState === LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA) {
-        try {
-          const nextRestorePreview = await loadRestorePreview({ allowPartialLocalSnapshot: true });
-          setRestorePreview(nextRestorePreview);
-          const nextRestoreAvailability = getCloudRestoreAvailability({
-            restorePreview: nextRestorePreview,
-            partialLocalSnapshot: true,
-          });
-          setCloudStatusMessage(buildPartialSnapshotRecheckMessage({
-            restoreAvailable: nextRestoreAvailability.available,
-            blockedReason: nextRestoreAvailability.blockedReason,
-          }));
-        } catch {
-          setRestorePreview({
-            status: CLOUD_RESTORE_STATUS.ERROR,
-            eligible: false,
-            error: "Unable to check restore eligibility.",
-            noWritesPerformed: true,
-          });
-          setCloudStatusMessage(buildPartialSnapshotRecheckMessage({
-            restoreAvailable: false,
-            blockedReason: "Unable to check whether cloud backup can rebuild the missing local estimates.",
-          }));
-        }
-      }
     } catch {
       setOnboardingStatus({
         status: CLOUD_ONBOARDING_STATUS.ERROR,

@@ -2,10 +2,11 @@ jest.mock("./supabaseClient", () => ({ getSupabaseClient: jest.fn(() => null) })
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
-import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, recoverInterruptedCloudConvergence, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 import { getSupabaseClient } from "./supabaseClient";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
+import { LOCAL_DEVICE_ID_KEY } from "./supabaseDeviceLock";
 
 const invoice = (id) => ({ id, customerId: "customer-1", projectId: "project-1", sourceEstimateId: "estimate-1", invoiceNumber: id, invoiceTotal: 10, amountPaid: 0, balanceRemaining: 10, status: "sent", paymentStatus: "unpaid", lineItems: [{ id: `${id}-line`, description: "Labor", quantity: 1, price: 10, total: 10 }], payments: [] });
 const baseLocal = () => ({ customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }], estimates: [{ id: "estimate-1", customerId: "customer-1", projectId: "project-1" }], invoices: [invoice("invoice-1")], companyProfile: null, settings: null, scopeTemplates: [] });
@@ -40,6 +41,195 @@ function estimateEvidence(row, overrides = {}) {
 }
 
 beforeEach(() => localStorage.clear());
+
+function writeRollbackJournal({ companyId = "company-1", userId = "user-1", deviceId = "device-1", queueRevision = 0, previous = {} } = {}) {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify({
+    version: 1, companyId, userId, deviceId, queueRevision, previous,
+  }));
+}
+
+function recoveryContext(overrides = {}) {
+  return { storage: localStorage, companyId: "company-1", userId: "user-1", deviceId: "device-1", ...overrides };
+}
+
+test("a stale rollback journal is archived without erasing newer work and the same convergence can continue", async () => {
+  const current = {
+    ...baseLocal(),
+    estimates: [estimate("estimate-new")],
+    invoices: [{ ...invoice("invoice-new"), sourceEstimateId: "estimate-new" }],
+  };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 2);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const estimatesBefore = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+  const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+  writeRollbackJournal({
+    queueRevision: 1,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: JSON.stringify([estimate("estimate-before")]),
+      [STORAGE_KEYS.INVOICES]: JSON.stringify([invoice("invoice-before")]),
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: false, retired: true, code: "journal_revision_mismatch" }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(estimatesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  const vault = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(vault.retiredJournals).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      classificationCode: "journal_revision_mismatch",
+      currentQueueRevision: 2,
+      journalQueueRevision: 1,
+      journal: expect.objectContaining({ previous: expect.objectContaining({
+        [STORAGE_KEYS.ESTIMATES]: expect.any(String),
+        [STORAGE_KEYS.INVOICES]: expect.any(String),
+      }) }),
+    }),
+  ]));
+
+  const sameState = { estimates: localStorage.getItem(STORAGE_KEYS.ESTIMATES), invoices: localStorage.getItem(STORAGE_KEYS.INVOICES) };
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual({ ok: true, recovered: false });
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toHaveLength(1);
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(sameState.estimates);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(sameState.invoices);
+
+  const convergence = await runSupabaseCloudConvergence({
+    ...recoveryContext(),
+    configured: true,
+    user: { id: "user-1" },
+    company: { id: "company-1" },
+    cloudSnapshot: { ok: true, mapped: current, supplemental: { status: "missing" }, uuidMaps: {} },
+    verifyCloud: jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], repairs: [] })),
+  });
+  expect(convergence).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
+});
+
+test("ordinary conflict recording preserves prior retired-journal evidence", async () => {
+  const current = { ...emptySnapshot(), customers: [{ id: "customer-new", fullName: "Accepted newer work" }] };
+  const originalJournal = {
+    version: 1,
+    companyId: "company-1",
+    userId: "user-1",
+    deviceId: "device-1",
+    queueRevision: 1,
+    previous: {
+      [STORAGE_KEYS.CUSTOMERS]: JSON.stringify([{ id: "customer-before", fullName: "Before" }]),
+    },
+  };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 2);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const customersBefore = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
+  localStorage.setItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL, JSON.stringify(originalJournal));
+
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual(expect.objectContaining({
+    ok: true,
+    recovered: false,
+    retired: true,
+    code: "journal_revision_mismatch",
+  }));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toBe(customersBefore);
+  const retiredVault = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(retiredVault.retiredJournals).toHaveLength(1);
+  expect(retiredVault.retiredJournals[0].journal).toEqual(originalJournal);
+  const retiredEvidence = retiredVault.retiredJournals[0];
+
+  setBaseline({ customers: [{ id: "customer-new", fullName: "Baseline" }] });
+  const cloud = { ...emptySnapshot(), customers: [{ id: "customer-new", fullName: "Cloud conflict" }] };
+  const options = {
+    ...recoveryContext(),
+    configured: true,
+    user: { id: "user-1" },
+    company: { id: "company-1" },
+    cloudSnapshot: { ok: true, mapped: cloud, supplemental: { status: "missing" }, uuidMaps: { customers: { "customer-new": uuid(1) } } },
+  };
+
+  expect(await runSupabaseCloudConvergence(options)).toEqual(expect.objectContaining({ ok: false, status: "conflict" }));
+  let afterConflict = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(afterConflict.entries).toEqual(expect.arrayContaining([
+    expect.objectContaining({ entityFamily: "customers", stableIdentity: "customer-new" }),
+  ]));
+  expect(afterConflict.retiredJournals).toHaveLength(1);
+  expect(afterConflict.retiredJournals[0]).toEqual(retiredEvidence);
+  expect(afterConflict.retiredJournals[0].journal).toEqual(originalJournal);
+
+  expect(await runSupabaseCloudConvergence(options)).toEqual(expect.objectContaining({ ok: false, status: "conflict" }));
+  afterConflict = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT));
+  expect(afterConflict.retiredJournals).toHaveLength(1);
+  expect(afterConflict.retiredJournals[0]).toEqual(retiredEvidence);
+  expect(afterConflict.retiredJournals[0].journal).toEqual(originalJournal);
+});
+
+test.each([
+  ["company", { companyId: "other-company" }, "journal_company_mismatch"],
+  ["user", { userId: "other-user" }, "journal_user_mismatch"],
+  ["device", { deviceId: "other-device" }, "journal_device_mismatch"],
+])("a %s-mismatched journal is archived without restoring business data", (_label, journalIdentity, expectedCode) => {
+  const current = { ...baseLocal(), estimates: [estimate("estimate-current")], invoices: [invoice("invoice-current")] };
+  setLocalSnapshot(current);
+  setVerifiedCleanQueue("company-1", 4);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const estimatesBefore = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+  const invoicesBefore = localStorage.getItem(STORAGE_KEYS.INVOICES);
+  writeRollbackJournal({
+    ...journalIdentity,
+    queueRevision: 4,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: JSON.stringify([estimate("estimate-before")]),
+      [STORAGE_KEYS.INVOICES]: JSON.stringify([invoice("invoice-before")]),
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: false, retired: true, code: expectedCode }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(estimatesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(invoicesBefore);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toEqual(expect.arrayContaining([
+    expect.objectContaining({ classificationCode: expectedCode, journal: expect.objectContaining(journalIdentity) }),
+  ]));
+  expect(recoverInterruptedCloudConvergence(recoveryContext())).toEqual({ ok: true, recovered: false });
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).retiredJournals).toHaveLength(1);
+});
+
+test("a matching interrupted transaction still restores its prior snapshot", () => {
+  setLocalSnapshot({ ...baseLocal(), estimates: [estimate("estimate-current")], invoices: [invoice("invoice-current")] });
+  setVerifiedCleanQueue("company-1", 5);
+  localStorage.setItem(LOCAL_DEVICE_ID_KEY, "device-1");
+  const previousEstimates = JSON.stringify([estimate("estimate-before")]);
+  const previousInvoices = JSON.stringify([invoice("invoice-before")]);
+  writeRollbackJournal({
+    queueRevision: 5,
+    previous: {
+      [STORAGE_KEYS.ESTIMATES]: previousEstimates,
+      [STORAGE_KEYS.INVOICES]: previousInvoices,
+    },
+  });
+
+  const result = recoverInterruptedCloudConvergence(recoveryContext());
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, recovered: true }));
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBe(previousEstimates);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBe(previousInvoices);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).toBeNull();
+});
+
+test("an ambiguous journal remains active and blocking", () => {
+  setLocalSnapshot(baseLocal());
+  setVerifiedCleanQueue("company-1", 6);
+  writeRollbackJournal({ queueRevision: 6, previous: { [STORAGE_KEYS.INVOICES]: JSON.stringify([]) } });
+
+  const result = recoverInterruptedCloudConvergence({ storage: localStorage, companyId: "company-1" });
+
+  expect(result).toEqual(expect.objectContaining({ ok: false, code: "journal_recovery_context_missing" }));
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_CONVERGENCE_JOURNAL)).not.toBeNull();
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBeNull();
+});
 
 test("no-baseline cloud-only invoice graph appends without changing existing local invoices", () => {
   const local = baseLocal(); const cloud = { ...baseLocal(), invoices: [invoice("invoice-1"), invoice("invoice-2")] };
@@ -285,7 +475,12 @@ test("binding to a different existing customer row blocks and leaves active arra
 
 test("vault write failure restores the exact prior vault string and preserves customer/project arrays", async () => {
   const customer = { id: "c", fullName: "Private" }; setLocalSnapshot(emptySnapshot()); setBaseline({ customers: [customer] });
-  const priorVault = JSON.stringify({ version: 1, companyId: "company-1", entries: [{ key: "prior" }] }); localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, priorVault);
+  const priorVault = JSON.stringify({
+    version: 1,
+    companyId: "company-1",
+    entries: [{ key: "prior" }],
+    retiredJournals: [{ key: "retired-prior", classificationCode: "journal_revision_mismatch", journal: { version: 1, previous: { keep: "this evidence" } } }],
+  }); localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, priorVault);
   let failOnce = true;
   const storage = {
     getItem: (key) => localStorage.getItem(key), removeItem: (key) => localStorage.removeItem(key),

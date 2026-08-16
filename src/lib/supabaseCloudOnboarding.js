@@ -633,16 +633,16 @@ export async function removePreservedOlderCloudEstimates({
   });
 }
 
-// Phase A: status check. Runs migration preview and, when the only problem
-// is an already-classified safe local metadata repair, finishes that repair
-// plus one guarded backup attempt automatically before returning a user-
-// facing status. Otherwise it remains read-only.
+// Phase A: status check. It normally runs migration preview and can opt into
+// one already-classified safe metadata repair plus a guarded backup attempt.
+// Callers that need a strictly observational check disable that opt-in.
 export async function checkSupabaseCloudOnboardingStatus({
   storageSnapshot,
   configured = false,
   user = null,
   company = null,
   role = "",
+  allowAutomaticSafeRepair = true,
 } = {}) {
   const gated = gateBasicPrerequisites({ configured, user, company });
   if (gated) return buildStatusResult(gated);
@@ -655,6 +655,17 @@ export async function checkSupabaseCloudOnboardingStatus({
       return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, { preview });
     }
     if (hasAutomaticSafeRepairCandidate(preview)) {
+      if (!allowAutomaticSafeRepair) {
+        return buildStatusResult(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION, {
+          preview,
+          error: "Local metadata needs repair before cloud backup can continue.",
+          noWritesPerformed: true,
+          automaticSafeRepair: buildAutomaticSafeRepairState({
+            skipped: true,
+            technicalDetail: "Automatic safe repair is disabled for this observational status check.",
+          }),
+        });
+      }
       const runKey = `${asText(company?.id)}:${asText(user?.id)}:${JSON.stringify(
         (Array.isArray(preview?.integrity?.safeRepairs) ? preview.integrity.safeRepairs : []).map((issue) => ({
           code: asText(issue?.code),

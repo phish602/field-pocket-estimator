@@ -57,6 +57,7 @@ export const CLOUD_RESTORE_STATUS = {
   NO_CLOUD_DATA: "no_cloud_data",
   ELIGIBLE: "eligible",
   RESTORED: "restored",
+  RECOVERED_UNVERIFIED: "recovered_unverified",
   DEVICE_LOCKED: "device_locked",
   BLOCKED_UNSUPPORTED_SHAPE: "blocked_unsupported_shape",
   RUN_LOCK_BUSY: "run_lock_busy",
@@ -582,6 +583,7 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
     projectId: projectIdByCloudId.get(asText(row?.project_id)) || "",
     sourceEstimateId: asText(row?.source_estimate_legacy_id) || "",
     invoiceNumber: row?.invoice_number || "",
+    estimateNumber: row?.estimate_number || "",
     status: row?.status || "draft",
     paymentStatus: row?.payment_status || "unpaid",
     invoiceTotal: row?.total_amount ?? 0,
@@ -590,6 +592,7 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
     date: row?.invoice_date || "",
     dueDate: row?.due_date || "",
     notes: row?.notes || "",
+    terms: row?.terms || "",
     lineItems: lineItemsByInvoiceCloudId.get(cloudId) || [],
     payments: paymentsByInvoiceCloudId.get(cloudId) || [],
   };
@@ -1101,13 +1104,6 @@ async function executeSupabaseCloudRestoreOwned({
     });
   }
 
-  // The local write succeeded, so remember each restored record's cloud UUID.
-  // Guarded: this must never turn a successful restore into a failure.
-  const assetBindingCapture = captureRestoredCloudAssetBindings({
-    companyId,
-    fetched,
-    restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
-  });
   // A cloud-origin local write is not, by itself, proof that the complete
   // writer/verifier contract round-trips. Capture the durable three-way
   // baseline only after a strict read-only comparison says every record (and
@@ -1119,7 +1115,13 @@ async function executeSupabaseCloudRestoreOwned({
     verification = await runSupabaseCloudVerification({ storageSnapshot: storage, configured, user, company });
     const hasVerificationWarning = Array.isArray(verification?.notices)
       && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
-    if (verification?.ok && verification?.allMatched && !hasVerificationWarning && !(verification?.availableRepairs?.length)) {
+    if (
+      verification?.ok
+      && verification?.allMatched
+      && !hasVerificationWarning
+      && !(verification?.availableRepairs?.length || verification?.repairs?.length)
+      && !(verification?.blockers?.length)
+    ) {
       baselineCapture = captureVerifiedCloudSyncBaseline({
         storage,
         companyId,
@@ -1141,8 +1143,57 @@ async function executeSupabaseCloudRestoreOwned({
     values: payload,
   });
 
-  // A successful restore makes local data equal to cloud by definition --
-  // there is nothing dirty to back up, so clear (not mark) the queue.
+  const verificationHasWarning = Array.isArray(verification?.notices)
+    && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
+  const verificationHasBlocker = Array.isArray(verification?.blockers) && verification.blockers.length > 0;
+  const verificationHasRepair = Boolean(verification?.availableRepairs?.length || verification?.repairs?.length);
+  const verifiedCompletion = Boolean(
+    verification?.ok
+    && verification?.allMatched
+    && !verificationHasWarning
+    && !verificationHasBlocker
+    && !verificationHasRepair
+  );
+
+  // Keep a valuable local reconstruction when strict comparison does not
+  // prove equality, but never let it inherit clean-success queue, baseline,
+  // event, or UI semantics.
+  if (!verifiedCompletion) {
+    return buildExecuteResult(CLOUD_RESTORE_STATUS.RECOVERED_UNVERIFIED, {
+      restored: false,
+      localRecoveryApplied: true,
+      error: "Recovery copied data to this device, but cloud verification still needs attention.",
+      partial: blockers.length > 0,
+      blockers,
+      notices: appBundle.status === "available"
+        ? [...appBundle.notices]
+        : [...appBundle.notices, buildSupplementalRestoreCoverageNotice()],
+      appBundleRestored: appBundle.status === "available",
+      appBundleSummary: appBundle.captureSummary,
+      baselineCaptured: false,
+      verification,
+      noWritesPerformed: false,
+      noExistingLocalDataOverwritten: !overwritingExistingLocalData,
+      restoredCounts: {
+        customers: payload.customers.length,
+        projects: payload.projects.length,
+        invoices: payload.invoices.length,
+        estimates: payload.estimates.length,
+      },
+    });
+  }
+
+  // Record bindings only after strict comparison has established that this is
+  // a completed restore. Binding capture is local metadata, but it must not
+  // make an unverified reconstruction look finalized.
+  const assetBindingCapture = captureRestoredCloudAssetBindings({
+    companyId,
+    fetched,
+    restorableEstimateRows: estimateRestoreState.restorableEstimateRows,
+  });
+
+  // Strict verification above proved this restore equals cloud, so there is
+  // nothing dirty to back up and the queue may now be cleared.
   const queueAccess = await ensureCurrentDeviceCanApplyLocalRestore({
     configured,
     user,

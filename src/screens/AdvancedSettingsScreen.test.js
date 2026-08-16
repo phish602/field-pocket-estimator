@@ -1334,7 +1334,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.queryByText("Cloud data restored to this device.")).not.toBeInTheDocument();
   });
 
-  test("Recheck Cloud Status requests automatic convergence before re-running verification", async () => {
+  test("Recheck Cloud Status performs only an observational status check", async () => {
     mockSignedInWithCompany();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
       onboardingVersion: "supabase-cloud-onboarding-v1",
@@ -1354,12 +1354,14 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     try {
       await act(async () => { render(<AdvancedSettingsScreen />); });
       const callsBefore = checkSupabaseCloudOnboardingStatus.mock.calls.length;
+      const restoreCallsBefore = previewSupabaseCloudRestore.mock.calls.length;
       await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" })); });
-      // Convergence is requested first (finding 3 fix: not verification-only).
-      await waitFor(() => expect(requestSeen).toHaveBeenCalled());
-      // Resolving the safe result then triggers a fresh verification.
-      await act(async () => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } })); });
       await waitFor(() => expect(checkSupabaseCloudOnboardingStatus.mock.calls.length).toBeGreaterThan(callsBefore));
+      expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({
+        allowAutomaticSafeRepair: false,
+      }));
+      expect(requestSeen).not.toHaveBeenCalled();
+      expect(previewSupabaseCloudRestore.mock.calls.length).toBe(restoreCallsBefore);
     } finally {
       window.removeEventListener("estipaid:cloud-convergence-request", requestSeen);
     }
@@ -1401,13 +1403,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
     });
-    // Recheck now first requests automatic convergence and awaits its result;
-    // resolve that wait (no convergence hook is mounted in this screen-only test).
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } }));
-    });
 
-    expect(await screen.findByText("Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records.")).toBeInTheDocument();
+    expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({ allowAutomaticSafeRepair: false }));
+    expect(screen.queryByText("Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records.")).not.toBeInTheDocument();
     expect(screen.getByText("This device has a partial local snapshot.")).toBeInTheDocument();
   });
 
@@ -1455,11 +1453,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
     });
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } }));
-    });
 
-    expect(await screen.findByText("Recheck complete. Cloud backup still cannot rebuild the missing local estimates. Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).toBeInTheDocument();
+    expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({ allowAutomaticSafeRepair: false }));
+    expect(screen.queryByText("Recheck complete. Cloud backup still cannot rebuild the missing local estimates. Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).not.toBeInTheDocument();
+    expect(screen.getByText("Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).toBeInTheDocument();
   });
 
   test("shows the calm automatic backup running status while the background worker is backing up", async () => {

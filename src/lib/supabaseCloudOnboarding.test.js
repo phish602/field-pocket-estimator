@@ -427,6 +427,36 @@ describe("supabaseCloudOnboarding", () => {
       }));
     });
 
+    test("observational status checks never repair or back up a safe-repair candidate", async () => {
+      const setItemSpy = jest.fn();
+      mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
+        integrity: buildIntegrity({
+          safeRepairs: [{ code: "estimate_project_stale", details: { count: 2, entityIds: ["est_1", "est_2"] } }],
+          backupReadiness: {
+            blocked: false,
+            safe: false,
+            canProceedAfterSafeRepair: true,
+            firstBlocker: null,
+          },
+        }),
+      }));
+
+      const result = await checkSupabaseCloudOnboardingStatus({
+        ...baseContext,
+        storageSnapshot: { getItem: () => null, setItem: setItemSpy, removeItem: jest.fn() },
+        allowAutomaticSafeRepair: false,
+      });
+
+      expect(result.status).toBe(CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION);
+      expect(result.noWritesPerformed).toBe(true);
+      expect(result.automaticSafeRepair).toEqual(expect.objectContaining({ attempted: false, skipped: true }));
+      expect(mockRepairStoredLocalDataIntegrity).not.toHaveBeenCalled();
+      expect(mockRunSupabaseMigrationWrite).not.toHaveBeenCalled();
+      expect(mockRunSupabaseCloudVerification).not.toHaveBeenCalled();
+      expect(mockEnsureCurrentDeviceCanWriteCloud).not.toHaveBeenCalled();
+      expect(setItemSpy).not.toHaveBeenCalled();
+    });
+
     test("safe metadata repair failure reports contractor-safe needs_attention without writing cloud data", async () => {
       mockCreateSupabaseMigrationPreview.mockResolvedValue(buildPreview({
         integrity: buildIntegrity({
