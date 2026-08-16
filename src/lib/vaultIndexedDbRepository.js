@@ -185,6 +185,23 @@ const RUNTIME_RESTORE_RECORD_FIELDS = Object.freeze([
   "ciphertext",
   "iv",
 ]);
+const RUNTIME_BATCH_FIELDS = Object.freeze([
+  "workspaceTag",
+  "expectedCatalogRevision",
+  "runtimeGeneration",
+  "runtimeSchemaVersion",
+  "records",
+  "catalogCiphertext",
+  "catalogIv",
+]);
+const RUNTIME_BATCH_RECORD_FIELDS = Object.freeze([
+  "logicalKey",
+  "expectedRecordRevision",
+  "blobId",
+  "recordSchemaVersion",
+  "ciphertext",
+  "iv",
+]);
 const MANIFEST_FIELDS = Object.freeze([
   "version",
   "transitionId",
@@ -690,6 +707,43 @@ function requireRuntimeRestoreBatch(input) {
     catalogCiphertext: catalogEnvelope.ciphertext,
     catalogIv: catalogEnvelope.iv,
   };
+}
+
+function requireRuntimeRecordBatch(input) {
+  requireExactShape(input, RUNTIME_BATCH_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  const workspaceTag = requireWorkspaceTag(input.workspaceTag, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (!isSafeInteger(input.expectedCatalogRevision, 1, MAX_REVISION)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  if (!isSafeInteger(input.runtimeGeneration, 1, MAX_REVISION) || !isSafeInteger(input.runtimeSchemaVersion, 1, 1)) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  }
+  const records = input.records;
+  if (!Array.isArray(records) || records.length < 1 || records.length > LOGICAL_KEYS.size) {
+    throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+  }
+  const seen = new Set();
+  const validatedRecords = records.map((record) => {
+    requireExactShape(record, RUNTIME_BATCH_RECORD_FIELDS, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+    const logicalKey = requireLogicalKey(record.logicalKey, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+    if (seen.has(logicalKey)) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+    seen.add(logicalKey);
+    if (record.expectedRecordRevision !== null && !isSafeInteger(record.expectedRecordRevision, 1, MAX_REVISION)) {
+      throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT);
+    }
+    const ciphertext = record.ciphertext;
+    if (!(ciphertext instanceof Uint8Array) || Object.getPrototypeOf(ciphertext) !== Uint8Array.prototype || ciphertext.length < 16 || ciphertext.length > 1048576) {
+      throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+    }
+    return {
+      logicalKey,
+      expectedRecordRevision: record.expectedRecordRevision,
+      blobId: requireBlobId(record.blobId, VAULT_REPOSITORY_ERROR_CODES.INVALID_INPUT),
+      recordSchemaVersion: isSafeInteger(record.recordSchemaVersion, 1, 1) ? 1 : (() => { throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA); })(),
+      ciphertext: new Uint8Array(ciphertext),
+      iv: requireUint8Array(record.iv, 12, VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA),
+    };
+  });
+  const catalog = requireRuntimeEnvelope(input, VAULT_REPOSITORY_ERROR_CODES.INVALID_SCHEMA);
+  return { workspaceTag, expectedCatalogRevision: input.expectedCatalogRevision, runtimeGeneration: input.runtimeGeneration, runtimeSchemaVersion: 1, records: validatedRecords, catalogCiphertext: catalog.ciphertext, catalogIv: catalog.iv };
 }
 
 function cloneMetadata(value) {
@@ -1661,6 +1715,77 @@ export function createVaultIndexedDbRepository(options = {}) {
       } finally {
         if (database) database.close();
       }
+    },
+
+    // Normal-runtime atomic multi-key replacement. Every record update and the
+    // catalog CAS live in one IndexedDB transaction; callers receive no result
+    // until that transaction completes.
+    async commitRuntimeRecordBatch(input) {
+      const caller = requireRuntimeRecordBatch(input);
+      let database;
+      try {
+        database = await openExisting(caller.workspaceTag);
+        const transaction = database.transaction([WORKSPACE_VAULT_RECORDS_STORE, WORKSPACE_VAULT_MIGRATION_STORE], "readwrite");
+        const state = { error: null };
+        const completed = transactionCompletion(transaction, state);
+        let result = null;
+        try {
+          const recordsStore = transaction.objectStore(WORKSPACE_VAULT_RECORDS_STORE);
+          const migrationStore = transaction.objectStore(WORKSPACE_VAULT_MIGRATION_STORE);
+          const catalogRequest = migrationStore.get(RUNTIME_CATALOG_KEY);
+          catalogRequest.onsuccess = () => {
+            try {
+              if (catalogRequest.result === undefined) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.DATABASE_NOT_FOUND);
+              const currentCatalog = requirePersistedRuntimeCatalog(catalogRequest.result);
+              if (currentCatalog.revision !== caller.expectedCatalogRevision || currentCatalog.runtimeGeneration !== caller.runtimeGeneration) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+              if (currentCatalog.revision === MAX_REVISION) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.REVISION_OVERFLOW);
+              const allRequest = recordsStore.getAll();
+              allRequest.onsuccess = () => {
+                try {
+                  const existingByKey = new Map((Array.isArray(allRequest.result) ? allRequest.result : []).map((record) => [record.logicalKey, record]));
+                  const timestamp = clockTimestamp(clock, Date.parse(currentCatalog.updatedAt) + 1);
+                  const nextRecords = caller.records.map((entry) => {
+                    const raw = existingByKey.get(entry.logicalKey);
+                    if (entry.expectedRecordRevision === null) {
+                      if (raw !== undefined) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+                    } else {
+                      if (raw === undefined) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+                      const previous = requirePersistedRecord(raw, entry.logicalKey);
+                      if (previous.revision !== entry.expectedRecordRevision || previous.revision === MAX_REVISION) throw repositoryError(VAULT_REPOSITORY_ERROR_CODES.CONFLICT);
+                    }
+                    const previous = raw === undefined ? null : requirePersistedRecord(raw, entry.logicalKey);
+                    return {
+                      version: 1, logicalKey: entry.logicalKey, blobId: entry.blobId,
+                      revision: previous ? previous.revision + 1 : 1,
+                      recordSchemaVersion: 1, ciphertext: new Uint8Array(entry.ciphertext), iv: new Uint8Array(entry.iv),
+                      createdAt: previous ? previous.createdAt : timestamp, updatedAt: timestamp,
+                    };
+                  });
+                  const nextCatalog = {
+                    version: 1, runtimeGeneration: currentCatalog.runtimeGeneration, revision: currentCatalog.revision + 1,
+                    runtimeSchemaVersion: 1, ciphertext: new Uint8Array(caller.catalogCiphertext), iv: new Uint8Array(caller.catalogIv),
+                    createdAt: currentCatalog.createdAt, updatedAt: timestamp,
+                  };
+                  nextRecords.forEach((record) => {
+                    const put = recordsStore.put(record);
+                    put.onerror = () => abortWith(transaction, state, put.error);
+                  });
+                  const putCatalog = migrationStore.put(nextCatalog, RUNTIME_CATALOG_KEY);
+                  putCatalog.onerror = () => abortWith(transaction, state, putCatalog.error);
+                  result = { records: nextRecords, catalog: nextCatalog };
+                } catch (error) { abortWith(transaction, state, error); }
+              };
+              allRequest.onerror = () => abortWith(transaction, state, allRequest.error);
+            } catch (error) { abortWith(transaction, state, error); }
+          };
+          catalogRequest.onerror = () => abortWith(transaction, state, catalogRequest.error);
+        } catch (error) { abortWith(transaction, state, error); }
+        await completed;
+        return result === null ? null : Object.freeze({
+          records: Object.freeze(result.records.map((record) => Object.freeze(cloneRecord(record)))),
+          catalog: Object.freeze(cloneRuntimeCatalog(result.catalog)),
+        });
+      } finally { if (database) database.close(); }
     },
 
     async commitRuntimeRecordSet(input) {

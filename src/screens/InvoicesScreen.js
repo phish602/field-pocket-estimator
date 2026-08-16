@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import {
   addManualInvoicePayment,
   appendStripeInvoicePayment,
+  commitStoredInvoices,
   backfillStripeInvoicePaymentDetails,
   INVOICE_STATUSES,
   PAYMENT_STATUSES,
@@ -1880,8 +1881,8 @@ export default function InvoicesScreen({
     } catch {}
   };
 
-  const persistInvoices = (nextInvoices, nextToast = "") => {
-    const normalized = writeStoredInvoices(nextInvoices);
+  const persistInvoices = async (nextInvoices, nextToast = "") => {
+    const normalized = (await commitStoredInvoices(nextInvoices, { source: "InvoicesScreen.persistInvoices" })).invoices;
     setList(normalized);
     if (nextToast) {
       setToastMessage(nextToast);
@@ -2373,7 +2374,7 @@ export default function InvoicesScreen({
       }
       return { ...entry, archived: true, archivedAt: new Date().toISOString() };
     });
-    persistInvoices(next);
+    await persistInvoices(next);
   };
 
   const duplicateInvoice = async (invoice) => {
@@ -2389,7 +2390,7 @@ export default function InvoicesScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    persistInvoices(
+    await persistInvoices(
       [duplicated.draft, ...currentInvoices],
       lang === "es" ? "Factura duplicada" : "Invoice duplicated"
     );
@@ -2415,7 +2416,7 @@ export default function InvoicesScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return null;
     }
-    const normalizedInvoices = persistInvoices(nextInvoices);
+    const normalizedInvoices = await persistInvoices(nextInvoices);
     const updatedInvoice = normalizedInvoices.find((entry) => String(entry?.id || "").trim() === invoiceId) || null;
     if (!updatedInvoice) return;
     const normalizedNextStatus = String(nextStatus || "").trim().toLowerCase();
@@ -2537,7 +2538,7 @@ export default function InvoicesScreen({
         setPaymentError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return;
       }
-      persistInvoices(
+      await persistInvoices(
         nextInvoices,
         fullyPaid
           ? (lang === "es" ? "Pago final registrado" : "Final payment recorded")
@@ -2840,7 +2841,7 @@ export default function InvoicesScreen({
             const nextInvoices = currentInvoices.map((entry) => (
               String(entry?.id || "").trim() === invoiceId ? backfillResult.invoice : entry
             ));
-            persistInvoices(
+            await persistInvoices(
               nextInvoices,
               lang === "es" ? "Detalles de Stripe actualizados" : "Stripe details refreshed"
             );
@@ -2886,7 +2887,7 @@ export default function InvoicesScreen({
       const nextInvoices = currentInvoices.map((entry) => (
         String(entry?.id || "").trim() === invoiceId ? result.invoice : entry
       ));
-      persistInvoices(
+      await persistInvoices(
         nextInvoices,
         String(result.invoice?.paymentStatus || "").trim().toLowerCase() === PAYMENT_STATUSES.PAID
           ? (lang === "es" ? "Pago de Stripe sincronizado" : "Stripe payment synced")

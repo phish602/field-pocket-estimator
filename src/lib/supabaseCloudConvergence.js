@@ -611,6 +611,21 @@ function planSupplemental(local, cloud, baseline, plan) {
   operationForFamily("scopeTemplates", localTemplates, cloudTemplates, baseTemplates, plan, null, plan.bootstrap);
 }
 
+function invoicesWithMatchedLegacyEstimateNumbers(snapshot = {}, cloudInvoices = []) {
+  const estimatesById = new Map(asArray(snapshot.estimates).map((estimate) => [entityId(estimate), estimate]));
+  const cloudById = new Map(asArray(cloudInvoices).map((invoice) => [entityId(invoice), invoice]));
+  const invoices = asArray(snapshot.invoices).map((invoice) => {
+    if (asText(invoice?.estimateNumber)) return invoice;
+    const cloudInvoice = cloudById.get(entityId(invoice));
+    const cloudEstimateNumber = asText(cloudInvoice?.estimateNumber);
+    if (!cloudEstimateNumber) return invoice;
+    const linkedEstimate = estimatesById.get(asText(invoice?.sourceEstimateId || invoice?.sourceEstimateLegacyId));
+    const estimateNumber = linkedEstimate ? asText(buildPersistedEstimateContract(mapLocalEstimateToBackendEstimate(linkedEstimate, {})).estimate_number) : "";
+    return estimateNumber === cloudEstimateNumber ? { ...invoice, estimateNumber } : invoice;
+  });
+  return { ...snapshot, invoices };
+}
+
 export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = null, cloudSnapshot = null, companyId = "", storage } = {}) {
   const plan = {
     version: CLOUD_CONVERGENCE_VERSION, safe: false, classifications: [], conflicts: [], additions: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] },
@@ -645,15 +660,17 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     ...(localProjectIdByCloudId.has(asText(invoice?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(invoice.projectId)) } : {}),
     ...(localEstimateIdByCloudId.has(asText(invoice?.sourceEstimateId)) ? { sourceEstimateId: localEstimateIdByCloudId.get(asText(invoice.sourceEstimateId)) } : {}),
   }));
-  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(local.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
-  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(local.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const localForInvoiceComparison = invoicesWithMatchedLegacyEstimateNumbers(local, cloudInvoices);
+  const baselineForInvoiceComparison = baseline ? invoicesWithMatchedLegacyEstimateNumbers(baseline, cloudInvoices) : null;
+  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(localForInvoiceComparison.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(localForInvoiceComparison.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
   const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || []), ...(invoiceBindings?.codes || []), ...(paymentBindings?.codes || [])];
   if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code: plan.bootstrap ? "baseline_bootstrap_binding_conflict" : code }))); return plan; }
   if (customerBindings || projectBindings || estimateBindings || invoiceBindings || paymentBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []), ...(invoiceBindings?.entries || []), ...(paymentBindings?.entries || []));
   operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs, plan.bootstrap);
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs, plan.bootstrap);
   operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs, plan.bootstrap);
-  operationForFamily("invoices", asArray(local.invoices), cloudInvoices, asArray(baseline?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
+  operationForFamily("invoices", asArray(localForInvoiceComparison.invoices), cloudInvoices, asArray(baselineForInvoiceComparison?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
   // Additions and replacements must always prove restore-payload + child evidence.
   [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
     const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);
@@ -745,9 +762,82 @@ function verifyLocalApply({ before, writes, storage, localBefore, plan, expected
 
 function readJournal(storage) { try { const raw = readRaw(storage, JOURNAL_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
 function writeJournal(storage, journal) { const value = JSON.stringify(journal); return writeRaw(storage, JOURNAL_KEY, value); }
-export function recoverInterruptedCloudConvergence({ storage = localStorage } = {}) {
+function journalRecoveryMismatchCode({ journal, storage, companyId, userId, deviceId }) {
+  if (!asText(companyId) || !asText(userId) || !asText(deviceId)) return "journal_recovery_context_missing";
+  if (!asText(journal?.companyId) || !asText(journal?.userId) || !asText(journal?.deviceId)) return "journal_identity_missing";
+  if (asText(journal.companyId) !== asText(companyId)) return "journal_company_mismatch";
+  if (asText(journal.userId) !== asText(userId)) return "journal_user_mismatch";
+  if (asText(journal.deviceId) !== asText(deviceId)) return "journal_device_mismatch";
+  if (!Number.isFinite(Number(journal?.queueRevision)) || queueRevision(storage) !== Number(journal.queueRevision)) return "journal_revision_mismatch";
+  return "";
+}
+
+const RETIRABLE_JOURNAL_MISMATCH_CODES = new Set([
+  "journal_company_mismatch",
+  "journal_user_mismatch",
+  "journal_device_mismatch",
+  "journal_revision_mismatch",
+]);
+
+function retireInapplicableJournal({ storage, journal, companyId, userId, deviceId, code }) {
+  // A conclusively stale journal cannot authorize rollback, but its complete
+  // contents remain valuable recovery evidence. Archive it in the existing
+  // conflict vault before releasing the active transaction slot.
+  try {
+    const current = JSON.parse(readRaw(storage, VAULT_KEY) || "{\"version\":1,\"companyId\":\"\",\"entries\":[]}");
+    if (!current || typeof current !== "object" || Array.isArray(current)) return false;
+    if (current.companyId && asText(current.companyId) !== asText(companyId)) return false;
+    const key = stableCloudSyncHash({ journal, code });
+    const retiredJournals = asArray(current.retiredJournals);
+    if (!retiredJournals.some((candidate) => candidate?.key === key)) {
+      retiredJournals.push({
+        key,
+        classificationCode: code,
+        detectedAt: now(),
+        journalVersion: journal?.version ?? null,
+        attemptId: asText(journal?.attemptId),
+        journalCompanyId: asText(journal?.companyId),
+        journalUserId: asText(journal?.userId),
+        journalDeviceId: asText(journal?.deviceId),
+        journalQueueRevision: Number(journal?.queueRevision),
+        currentCompanyId: asText(companyId),
+        currentUserId: asText(userId),
+        currentDeviceId: asText(deviceId),
+        currentQueueRevision: queueRevision(storage),
+        journal,
+      });
+    }
+    const nextVault = {
+      ...current,
+      version: CLOUD_CONVERGENCE_VERSION,
+      companyId: asText(companyId),
+      entries: asArray(current.entries),
+      retiredJournals,
+    };
+    if (!writeRaw(storage, VAULT_KEY, JSON.stringify(nextVault))) return false;
+    const persistedVault = JSON.parse(readRaw(storage, VAULT_KEY) || "{}");
+    if (!asArray(persistedVault?.retiredJournals).some((candidate) => candidate?.key === key && candidate?.journal && candidate?.classificationCode === code)) return false;
+    storage.removeItem(JOURNAL_KEY);
+    return readRaw(storage, JOURNAL_KEY) === null;
+  } catch {
+    return false;
+  }
+}
+
+export function recoverInterruptedCloudConvergence({ storage = localStorage, companyId = "", userId = "", deviceId = "" } = {}) {
   const journal = readJournal(storage);
   if (!journal) return { ok: true, recovered: false };
+  const mismatchCode = journalRecoveryMismatchCode({ journal, storage, companyId, userId, deviceId });
+  // Only an identity or queue-revision mismatch proves this record cannot be
+  // the current rollback transaction. Ambiguous/malformed journals remain
+  // active and blocking rather than being guessed away.
+  if (mismatchCode) {
+    if (!RETIRABLE_JOURNAL_MISMATCH_CODES.has(mismatchCode)) return { ok: false, recovered: false, code: mismatchCode };
+    const retired = retireInapplicableJournal({ storage, journal, companyId, userId, deviceId, code: mismatchCode });
+    return retired
+      ? { ok: true, recovered: false, retired: true, code: mismatchCode }
+      : { ok: false, recovered: false, code: "journal_retirement_failed" };
+  }
   try {
     Object.entries(journal.previous || {}).forEach(([key, value]) => { if (value === null) storage.removeItem(key); else storage.setItem(key, value); });
     const valid = Object.entries(journal.previous || {}).every(([key, value]) => readRaw(storage, key) === value);
@@ -788,7 +878,14 @@ function recordConflicts({ storage, companyId, plan, baseline, local, cloud, clo
       const entry = conflictVaultEntry({ companyId, conflict, baseline, local, cloud, cloudSnapshot, attemptId });
       if (!entries.some((candidate) => candidate.key === entry.key)) entries.push(entry);
     });
-    return writeRaw(storage, VAULT_KEY, JSON.stringify({ version: CLOUD_CONVERGENCE_VERSION, companyId, entries }));
+    // Conflict recording is additive: preserve existing recovery evidence and
+    // any future vault metadata while replacing only the de-duplicated entries.
+    return writeRaw(storage, VAULT_KEY, JSON.stringify({
+      ...current,
+      version: CLOUD_CONVERGENCE_VERSION,
+      companyId,
+      entries,
+    }));
   } catch { return false; }
 }
 
@@ -848,7 +945,9 @@ export async function runSupabaseCloudConvergence(options = {}) {
 async function runCloudConvergenceAttempt({ storage = localStorage, configured = false, user = null, company = null, cloudSnapshot = null, deviceAccess = null, completionDeviceAccess = null, verifyCloud = runSupabaseCloudVerification } = {}) {
   const companyId = asText(company?.id); const userId = asText(user?.id);
   if (!configured || !companyId || !userId) return { ok: false, status: "unavailable", code: "prerequisites_missing", noWritesPerformed: true };
-  const recovered = recoverInterruptedCloudConvergence({ storage });
+  const deviceId = getOrCreateLocalDeviceId(storage);
+  const journalContext = { storage, companyId, userId, deviceId };
+  const recovered = recoverInterruptedCloudConvergence(journalContext);
   if (!recovered.ok) return { ok: false, status: "critical", code: recovered.code, noWritesPerformed: true };
   const local = localSnapshot(storage);
   const snapshot = cloudSnapshot || await readSupabaseCloudConvergenceSnapshot({ configured, user, company });
@@ -874,11 +973,11 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId, storage });
   const attemptId = stableCloudSyncHash({ companyId, userId, queueRevision: beforeQueueRevision, local, cloud: snapshot.mapped, baseline: baseline?.version || 0 });
   if (!plan.safe) {
-    const vaultJournal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous: { [VAULT_KEY]: beforeValues[VAULT_KEY] }, plannedFamilies: [VAULT_KEY] };
+    const vaultJournal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous: { [VAULT_KEY]: beforeValues[VAULT_KEY] }, plannedFamilies: [VAULT_KEY] };
     if (!writeJournal(storage, vaultJournal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
     const recorded = recordConflicts({ storage, companyId, plan, baseline: baseline?.snapshots || null, local, cloud: snapshot.mapped, cloudSnapshot: snapshot, attemptId });
     if (!recorded) {
-      const rollback = recoverInterruptedCloudConvergence({ storage });
+      const rollback = recoverInterruptedCloudConvergence(journalContext);
       return { ok: false, status: rollback.ok ? "rolled_back" : "critical_local_recovery_required", code: rollback.ok ? "conflict_vault_write_failed" : rollback.code, noWritesPerformed: true };
     }
     storage.removeItem(JOURNAL_KEY);
@@ -958,7 +1057,7 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     metadataRecovery: metadataStage.attempted,
   });
   const previous = rollbackKeys.reduce((out, key) => ({ ...out, [key]: beforeValues[key] ?? readRaw(storage, key) }), {});
-  const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId: getOrCreateLocalDeviceId(storage), attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
+  const journal = { version: CLOUD_CONVERGENCE_VERSION, companyId, userId, deviceId, attemptId, createdAt: now(), queueRevision: beforeQueueRevision, previous, plannedFamilies: Object.keys(writes) };
   if (!writeJournal(storage, journal)) return { ok: false, status: "critical", code: "journal_write_failed", noWritesPerformed: true };
   try {
     if (bindingEntries.length) {
@@ -993,7 +1092,7 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     // screens without a full reload. Never returned on a rolled-back path.
     return { ok: true, status: "converged", imported: Object.values(plan.additions).reduce((count, rows) => count + rows.length, 0), localOnly: plan.localOnly, bootstrap: plan.bootstrap, bootstrapReason: plan.bootstrapReason || "", noCloudWritesPerformed: true, changedFamilies: convergenceChangedFamilies(writes, plan), ...metadataReport };
   } catch (error) {
-    const rollback = recoverInterruptedCloudConvergence({ storage });
+    const rollback = recoverInterruptedCloudConvergence(journalContext);
     if (!rollback.ok) return { ok: false, status: "critical_local_recovery_required", code: rollback.code, noCloudWritesPerformed: true };
     return { ok: false, status: "rolled_back", code: asText(error?.message) || "convergence_failed", noCloudWritesPerformed: true };
   }

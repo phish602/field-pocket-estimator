@@ -913,14 +913,16 @@ function FinancialSnapshotRealScreen({
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const handleCreateInvoiceFromEstimate = (estimate) => {
+  // Snapshot only names the estimate and how to launch it. It never creates
+  // invoices itself; "options" opens the shared billing setup on Estimates.
+  const handleCreateInvoiceFromEstimate = (estimate, mode = "builder") => {
     if (!estimate || normalizeEstimateStatus(estimate?.status) !== "approved") {
       return false;
     }
     if (typeof onCreateInvoiceFromEstimate !== "function") {
       return false;
     }
-    return onCreateInvoiceFromEstimate(estimate) !== false;
+    return onCreateInvoiceFromEstimate(estimate, mode) !== false;
   };
 
   const computed = useMemo(() => {
@@ -2281,6 +2283,15 @@ function FinancialSnapshotRealScreen({
                       style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.30)", color: "rgba(187,247,208,0.95)", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
                     >
                       {lang === "es" ? "Crear factura" : "Create Invoice"}
+                    </button>
+                    {/* Secondary: deposit / progress / amount / percent. Uses
+                        the same setup and the same creation owner. */}
+                    <button
+                      type="button"
+                      onClick={() => handleCreateInvoiceFromEstimate(row.sourceEstimate, "options")}
+                      style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(148,163,184,0.32)", color: "rgba(226,238,250,0.92)", fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+                    >
+                      {lang === "es" ? "Opciones de factura" : "Invoice Options"}
                     </button>
                   </div>
                 </div>

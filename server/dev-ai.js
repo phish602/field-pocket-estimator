@@ -7,6 +7,11 @@ const { fetch } = require("undici");
 const { createExpressStripeSubscriptionWebhookHandler } = require("./stripeSubscriptionWebhook");
 const { createExpressSubscriptionCheckoutHandler } = require("./stripeSubscriptionCheckout");
 const { createExpressStaleInvoiceLineItemRepairHandler } = require("./staleInvoiceLineItemRepair");
+// Vercel serves api/entitlements/resolve.js automatically; the local dev server
+// has to mount the same handler itself or entitlement resolution 404s and the
+// browser fails closed to free. This registers the existing handler unchanged --
+// it adds no entitlement logic and relaxes no authority check.
+const entitlementsResolveApi = require("../api/entitlements/resolve");
 
 const app = express();
 // This route must stay ahead of express.json so Stripe verifies the exact bytes it signed.
@@ -17,6 +22,7 @@ app.post(
 );
 app.use(express.json({ limit: "1mb" }));
 app.post("/api/stripe/create-subscription-checkout", createExpressSubscriptionCheckoutHandler());
+app.post("/api/entitlements/resolve", entitlementsResolveApi);
 // The LOCAL dev bridge may only ever repair the local Supabase instance. This is
 // enforced inside the handler as well as by scripts/start-dev-ai-local.js, so a
 // stray SUPABASE_URL in the shell cannot point this destructive route at a

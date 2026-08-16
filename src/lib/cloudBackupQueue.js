@@ -9,6 +9,7 @@
 // into a caller's local save flow.
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { runtimeCommitAtomicRecords } from "./vaultRuntimeStore";
 
 export const CLOUD_BACKUP_QUEUE_SCHEMA_VERSION = "2.0.0";
 
@@ -312,6 +313,51 @@ export function buildBackupDirtyEvent(input = {}) {
     documentId: String(input?.documentId || "").trim(),
     createdAt: Number.isFinite(createdAtCandidate) && createdAtCandidate > 0 ? createdAtCandidate : nowTs(),
   };
+}
+
+function buildNextDirtyQueueState(current, normalizedEvent, revision) {
+  const ts = nowTs();
+  return {
+    ...current,
+    pending: true,
+    status: CLOUD_BACKUP_STATUS.PENDING,
+    localMutationRevision: revision,
+    syncingRevision: null,
+    reasons: dedupeStrings([...current.reasons, normalizedEvent.reason], MAX_RECENT_REASONS),
+    domains: dedupeStrings([...current.domains, ...normalizedEvent.domains], MAX_DOMAINS),
+    severity: higherSeverity(current.severity, normalizedEvent.severity),
+    priority: higherPriority(current.priority, normalizedEvent.priority),
+    createdAt: current.pending && current.createdAt ? current.createdAt : ts,
+    updatedAt: ts,
+    lastQueuedAt: ts,
+    nextRetryAt: null,
+    retryCount: 0,
+    lastErrorCode: "",
+    companyId: String(normalizedEvent.companyId || current.companyId || "").trim(),
+    activeDeviceId: String(normalizedEvent.activeDeviceId || current.activeDeviceId || "").trim(),
+    source: normalizedEvent.source || current.source,
+    documentId: normalizedEvent.documentId || current.documentId,
+  };
+}
+
+// The only normal business-mutation entry point. It stages all supplied
+// serialized post-state keys plus one next queue revision and asks the vault
+// runtime to atomically commit and publish them. No business event or cloud
+// observer can see this revision before every key in the set is durable.
+export async function commitAtomicCloudQueuedBusinessMutation({ writes = [], event = {} } = {}) {
+  const current = readCloudBackupQueueState();
+  const revision = Number(current.localMutationRevision || 0) + 1;
+  const queue = buildNextDirtyQueueState(current, buildBackupDirtyEvent(event), revision);
+  const byKey = new Map();
+  (Array.isArray(writes) ? writes : []).forEach((write) => {
+    const key = String(write?.key || "").trim();
+    if (!key || key === STORAGE_KEYS.CLOUD_BACKUP_QUEUE || typeof write?.value !== "string") throw new Error("invalid_atomic_business_write");
+    byKey.set(key, write.value);
+  });
+  if (byKey.size < 1) throw new Error("invalid_atomic_business_write");
+  byKey.set(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify(queue));
+  await runtimeCommitAtomicRecords([...byKey.entries()].map(([logicalKey, value]) => ({ logicalKey, value })));
+  return Object.freeze({ ok: true, revision, queue, keys: Object.freeze([...byKey.keys()]) });
 }
 
 /**

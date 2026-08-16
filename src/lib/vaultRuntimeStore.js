@@ -683,6 +683,103 @@ export function runtimeClear() {
   return true;
 }
 
+// Commits a complete logical business post-state as one encrypted vault
+// transaction. Unlike runtimeSetItem, this stages values off-cache and does
+// not publish an observable partial workspace before the repository CAS has
+// committed every replacement record and the matching catalog.
+export async function runtimeCommitAtomicRecords(records) {
+  const session = active;
+  if (!session || session.blocked || session.frozen) throw new Error(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
+  const requested = Array.isArray(records) ? records : [];
+  if (requested.length < 1) throw new Error(VAULT_RUNTIME_ERROR_CODES.STORAGE_OPERATION_FAILED);
+  const byKey = new Map();
+  requested.forEach((entry) => {
+    const logicalKey = String(entry?.logicalKey || "");
+    if (!APPROVED.has(logicalKey) || typeof entry?.value !== "string" || byKey.has(logicalKey)) {
+      throw new Error(VAULT_RUNTIME_ERROR_CODES.UNSUPPORTED_KEY);
+    }
+    byKey.set(logicalKey, entry.value);
+  });
+
+  const drained = await flushVaultRuntime();
+  if (active !== session || drained?.state !== "ready") throw new Error(drained?.code || VAULT_RUNTIME_ERROR_CODES.DURABILITY_FAILED);
+  const frozen = freezeVaultRuntimeMutations();
+  const lease = frozen.lease;
+  if (!lease || active !== session || !leaseOwnsActiveSession(lease)) throw new Error(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
+
+  const previousCache = new Map(session.cache);
+  const previousMeta = new Map(session.meta);
+  const previousCatalogRevision = session.catalogRevision;
+  const encryptedRecords = [];
+  const nextEntries = [...previousMeta.entries()]
+    .filter(([key]) => !byKey.has(key))
+    .map(([key, value]) => ({ key, ...value }));
+
+  try {
+    const applied = await runWithActiveVaultDek({
+      workspaceTag: session.workspaceTag,
+      operation: async (dek) => {
+        for (const [logicalKey, value] of byKey.entries()) {
+          const plain = utf8Bytes(value);
+          try {
+            const blobId = randomBlobId();
+            const envelope = await encryptBytes(dek, plain, recordAadFor({ userId: session.userId, companyId: session.companyId, logicalKey, blobId }));
+            const previous = previousMeta.get(logicalKey) || null;
+            const digest = await digestBytes(plain);
+            encryptedRecords.push({
+              logicalKey,
+              expectedRecordRevision: previous ? previous.revision : null,
+              blobId,
+              recordSchemaVersion: RECORD_SCHEMA_VERSION,
+              ciphertext: envelope.ciphertext,
+              iv: envelope.iv,
+            });
+            nextEntries.push({ key: logicalKey, blobId, byteLength: plain.length, digest, revision: previous ? previous.revision + 1 : 1 });
+          } finally { plain.fill(0); }
+        }
+        if (active !== session || !leaseOwnsActiveSession(lease)) return false;
+        const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, catalogRevision: previousCatalogRevision + 1, entries: nextEntries });
+        const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: session.userId, companyId: session.companyId, catalog });
+        const committed = await session.repository.commitRuntimeRecordBatch({
+          workspaceTag: session.workspaceTag,
+          expectedCatalogRevision: previousCatalogRevision,
+          runtimeGeneration: session.runtimeGeneration,
+          runtimeSchemaVersion: RUNTIME_SCHEMA_VERSION,
+          records: encryptedRecords,
+          catalogCiphertext: catalogEnvelope.ciphertext,
+          catalogIv: catalogEnvelope.iv,
+        });
+        if (!committed || committed.records.length !== encryptedRecords.length) throw new Error("COMMIT_REJECTED");
+        return committed;
+      },
+    });
+    if (!applied || active !== session || !leaseOwnsActiveSession(lease)) throw new Error(VAULT_RUNTIME_ERROR_CODES.STALE_SESSION);
+    const committedByKey = new Map(applied.records.map((record) => [record.logicalKey, record]));
+    const nextCache = new Map(previousCache);
+    const nextMeta = new Map(previousMeta);
+    byKey.forEach((value, logicalKey) => {
+      const record = committedByKey.get(logicalKey);
+      const entry = nextEntries.find((candidate) => candidate.key === logicalKey);
+      if (!record || !entry) throw new Error(VAULT_RUNTIME_ERROR_CODES.DURABILITY_FAILED);
+      nextCache.set(logicalKey, value);
+      nextMeta.set(logicalKey, { blobId: record.blobId, revision: record.revision, byteLength: entry.byteLength, digest: entry.digest });
+    });
+    // Publish the complete cache only after the one transaction has committed.
+    session.cache = nextCache;
+    session.meta = nextMeta;
+    session.catalogRevision = applied.catalog.revision;
+    unfreezeVaultRuntimeMutations(lease);
+    dispatchChangedLogicalKeys(previousCache, nextCache);
+    publishCommit(session);
+    previousCache.clear();
+    return Object.freeze({ ok: true, catalogRevision: session.catalogRevision, keys: Object.freeze([...byKey.keys()]) });
+  } catch (error) {
+    if (leaseOwnsActiveSession(lease)) unfreezeVaultRuntimeMutations(lease);
+    if (active === session && error?.message !== VAULT_RUNTIME_ERROR_CODES.STALE_SESSION) block(error?.code === "CONFLICT" ? VAULT_RUNTIME_ERROR_CODES.CONFLICT : VAULT_RUNTIME_ERROR_CODES.DURABILITY_FAILED);
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Durability queue
 // ---------------------------------------------------------------------------

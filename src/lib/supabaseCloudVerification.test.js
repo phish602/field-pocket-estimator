@@ -199,6 +199,20 @@ describe("supabaseCloudVerification", () => {
     ]));
   });
 
+  test("derives a missing legacy local invoice estimate number from its linked estimate", async () => {
+    const localData = defaultLocalData();
+    expect(localData.invoices[0].estimateNumber).toBeUndefined();
+    const cloudRows = writerShapedCloudRows(localData);
+    cloudRows.invoices[0].estimate_number = "EST-1";
+
+    const result = await verifyCloud({ localData, cloudRows });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+    expect(result.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "invoices", status: "matched", semanticMismatchFields: [] }),
+    ]));
+  });
+
   test("performs select-only reads and never calls any write method", async () => {
     const mockClient = createMockClient(defaultMatchingRows());
     mockGetSupabaseClient.mockReturnValue(mockClient);
@@ -625,6 +639,7 @@ function writerShapedCloudRows(localData) {
     };
   });
   const estIdBy = Object.fromEntries(estimates.map((r) => [r.legacy_local_id, r.id]));
+  const estimateNumberByLegacyId = Object.fromEntries(estimates.map((row) => [row.legacy_local_id, row.estimate_number]));
   const invoices = draft.invoices.map((invoice, i) => ({
     id: `db_inv_${i}`,
     legacy_local_id: invoice.legacy_local_id,
@@ -633,7 +648,7 @@ function writerShapedCloudRows(localData) {
     estimate_id: estIdBy[invoice.source_estimate_legacy_local_id] || null,
     source_estimate_legacy_id: invoice.source_estimate_legacy_local_id || null,
     invoice_number: invoice.invoice_number || null,
-    estimate_number: invoice.estimate_number || null,
+    estimate_number: invoice.estimate_number || estimateNumberByLegacyId[invoice.source_estimate_legacy_local_id] || null,
     status: invoice.status || "draft",
     payment_status: invoice.payment_status || "unpaid",
     invoice_date: invoice.invoice_date || null,

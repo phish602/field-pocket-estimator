@@ -257,6 +257,35 @@ test("automatic recovery completes after its own restoring rerender and hands co
   }
 });
 
+test("a post-write verification mismatch keeps recovery visible and does not request success continuation", async () => {
+  previewSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+    eligible: true,
+    partial: false,
+    fullyRestorable: true,
+    blockers: [],
+    notices: [],
+  });
+  executeSupabaseCloudRestore.mockResolvedValue({
+    status: CLOUD_RESTORE_STATUS.RECOVERED_UNVERIFIED,
+    restored: false,
+    localRecoveryApplied: true,
+    error: "Recovery copied data to this device, but cloud verification still needs attention.",
+  });
+  const convergenceRequested = jest.fn();
+  window.addEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  try {
+    await renderAndSettle();
+
+    await waitFor(() => expect(executeSupabaseCloudRestore).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("cloud-home-restore-prompt")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Recovery copied data to this device, but cloud verification still needs attention.");
+    expect(convergenceRequested).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("estipaid:cloud-convergence-request", convergenceRequested);
+  }
+});
+
 test("automatic recovery clears restoring after a deferred failure while mounted", async () => {
   previewSupabaseCloudRestore.mockResolvedValue({
     status: CLOUD_RESTORE_STATUS.ELIGIBLE,

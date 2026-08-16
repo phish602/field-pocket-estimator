@@ -68,6 +68,7 @@ import {
   allocateFinancialSummaryFromSource,
   buildFinancialSummaryFromComputed,
   createInvoiceBuilderDraftFromEstimate,
+  commitStoredInvoices,
   generateNextInvoiceNumber,
   normalizeInvoiceRecord,
   readStoredInvoices,
@@ -84,7 +85,7 @@ import {
 } from "./utils/projects";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
-import { markCloudBackupDirty } from "./lib/cloudBackupQueue";
+import { commitAtomicCloudQueuedBusinessMutation } from "./lib/cloudBackupQueue";
 import { useBusinessMutationGuard } from "./lib/BusinessMutationGuardContext";
 import {
   resolveDocumentEditTarget,
@@ -710,7 +711,7 @@ function findStoredInvoiceForExport(editingId, candidateState) {
   }) || null;
 }
 
-function writeStoredEstimatesLocal(nextEstimates) {
+async function writeStoredEstimatesLocal(nextEstimates, event = {}) {
   const collectLegacyInvoiceIdentityKeys = (record) => {
     const keys = new Set();
     const id = String(record?.id || "").trim();
@@ -751,16 +752,14 @@ function writeStoredEstimatesLocal(nextEstimates) {
       });
     }
   } catch {}
-  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...(Array.isArray(nextEstimates) ? nextEstimates : []), ...legacyInvoiceRecords]));
+  const serialized = JSON.stringify([...(Array.isArray(nextEstimates) ? nextEstimates : []), ...legacyInvoiceRecords]);
+  await commitAtomicCloudQueuedBusinessMutation({
+    writes: [{ key: ESTIMATES_KEY, value: serialized }, ...(Array.isArray(event.additionalWrites) ? event.additionalWrites : [])],
+    event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesLocal", ...event },
+  });
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
-  markCloudBackupDirty({
-    reason: "estimate_data_saved",
-    domains: ["estimates"],
-    severity: "money_critical",
-    source: "writeStoredEstimatesLocal",
-  });
 }
 
 function hasExplicitInternalCostInputs(doc) {
@@ -5100,7 +5099,7 @@ export default function EstimateForm(props) {
         const existingInvoices = readStoredInvoices();
         const nextInvoices = existingInvoices.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
         if (nextInvoices.length !== existingInvoices.length) {
-          writeStoredInvoices(nextInvoices);
+          await commitStoredInvoices(nextInvoices, { source: "EstimateForm.cancelInvoiceDraft", documentId: editingRecordId });
           try {
             window.dispatchEvent(new Event("estipaid:invoices-changed"));
           } catch {}
@@ -5110,7 +5109,7 @@ export default function EstimateForm(props) {
         const existingEstimates = readSavedDocList(ESTIMATES_KEY);
         const nextEstimates = existingEstimates.filter((entry) => String(entry?.id || "").trim() !== editingRecordId);
         if (nextEstimates.length !== existingEstimates.length) {
-          writeStoredEstimatesLocal(nextEstimates);
+          await writeStoredEstimatesLocal(nextEstimates, { source: "EstimateForm.cancelInvoiceDraft" });
         }
       } catch {}
     }
@@ -5650,14 +5649,17 @@ export default function EstimateForm(props) {
           );
         }
 
-        writeStoredProjects(nextProjects);
         // The resolver already identified the exact existing object. Replace
         // that object directly so editing its display number cannot append a
         // second Invoice or overwrite a different same-number record.
         const nextInvoices = existingMatch
           ? [savedInvoice, ...existingInvoices.filter((entry) => entry !== existingMatch)]
           : upsertSavedDoc(existingInvoices, savedInvoice, "invoiceNumber");
-        writeStoredInvoices(nextInvoices);
+        await commitStoredInvoices(nextInvoices, {
+          source: "EstimateForm.saveInvoice", documentId: recordId,
+          ...(shouldPromoteIdlessLegacyInvoice ? { migrateLegacyInvoiceTarget: editingRecordId } : {}),
+          additionalWrites: [{ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify(nextProjects) }],
+        });
         // Claim this invoice for the session BEFORE anything can react to the
         // new stored record, so the retained-draft recovery can tell a
         // successful save apart from a stale ghost draft.
@@ -5694,7 +5696,7 @@ export default function EstimateForm(props) {
           return String(entry?.invoiceNumber || "").trim() !== invoiceNumber;
         });
         if (filteredEstimates.length !== existingEstimates.length) {
-          writeStoredEstimatesLocal(filteredEstimates);
+          await writeStoredEstimatesLocal(filteredEstimates, { source: "EstimateForm.removeInvoiceShadow" });
         }
       } else {
         const savedEstimate = {
@@ -5716,11 +5718,11 @@ export default function EstimateForm(props) {
           removedProjectId: "",
           reason: "orphan-cleanup-disabled-safety",
         };
-        writeStoredProjects(reassignmentCleanup.projects);
-        try {
-          window.dispatchEvent(new Event("estipaid:projects-changed"));
-        } catch {}
-        writeStoredEstimatesLocal(nextEstimates);
+        await writeStoredEstimatesLocal(nextEstimates, {
+          source: "EstimateForm.saveEstimate", documentId: recordId,
+          additionalWrites: [{ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify(reassignmentCleanup.projects) }],
+        });
+        try { window.dispatchEvent(new Event("estipaid:projects-changed")); } catch {}
         captureDocumentSave({
           docType: "estimate",
           mode: isEditMode ? "edit" : "create",
@@ -5743,7 +5745,7 @@ export default function EstimateForm(props) {
 
         const filteredInvoices = existingInvoices.filter((x) => String(x?.id || "").trim() !== recordId);
         if (filteredInvoices.length !== existingInvoices.length) {
-          writeStoredInvoices(filteredInvoices);
+          await commitStoredInvoices(filteredInvoices, { source: "EstimateForm.removeInvoiceShadow", documentId: recordId });
           try {
             window.dispatchEvent(new Event("estipaid:invoices-changed"));
           } catch {}
@@ -5816,7 +5818,7 @@ export default function EstimateForm(props) {
       }
     }
 
-    const durableEstimate = resolveDocumentEditTarget(
+    const durableEstimate = options?.approvedEstimate || resolveDocumentEditTarget(
       readSavedDocList(ESTIMATES_KEY),
       estimateTarget,
       "estimate"
@@ -5836,7 +5838,10 @@ export default function EstimateForm(props) {
 
     let nextInvoices;
     try {
-      nextInvoices = writeStoredInvoices([conversion.draft, ...currentInvoices]);
+      nextInvoices = (await commitStoredInvoices([conversion.draft, ...currentInvoices], {
+        source: "EstimateForm.convertApprovedEstimate", documentId: conversion.draft.id,
+        additionalWrites: Array.isArray(options?.additionalWrites) ? options.additionalWrites : [],
+      })).invoices;
     } catch (error) {
       return {
         ok: false,
@@ -5912,7 +5917,7 @@ export default function EstimateForm(props) {
     }
 
     try {
-      writeStoredEstimatesLocal(update.records);
+      await writeStoredEstimatesLocal(update.records, { source: "EstimateForm.updateEstimateStatus", documentId: estimateTarget });
     } catch (error) {
       return {
         ok: false,
@@ -5963,25 +5968,17 @@ export default function EstimateForm(props) {
       return { ok: false, message: "Unable to approve this estimate because its identity is missing or ambiguous." };
     }
 
-    try {
-      writeStoredEstimatesLocal(approval.records);
-    } catch (error) {
-      return {
-        ok: false,
-        message: isStorageQuotaExceededError(error) ? STORAGE_FULL_MESSAGE : "Unable to save the approved estimate.",
-      };
-    }
-
-    const durableEstimate = resolveDocumentEditTarget(
-      readSavedDocList(ESTIMATES_KEY),
-      estimateTarget,
-      "estimate"
-    );
-    if (!durableEstimate || String(durableEstimate?.status || "").trim().toLowerCase() !== "approved") {
+    const approvedEstimate = resolveDocumentEditTarget(approval.records, estimateTarget, "estimate");
+    if (!approvedEstimate || String(approvedEstimate?.status || "").trim().toLowerCase() !== "approved") {
       return { ok: false, message: "The approved estimate could not be verified." };
     }
-    patch("status", "approved");
-    return convertApprovedEstimate(estimateTarget, { mutationAccessChecked: true });
+    const converted = await convertApprovedEstimate(estimateTarget, {
+      mutationAccessChecked: true,
+      approvedEstimate,
+      additionalWrites: [{ key: ESTIMATES_KEY, value: JSON.stringify(approval.records) }],
+    });
+    if (converted?.ok) patch("status", "approved");
+    return converted;
   };
 
   const runFinalizationTask = (createTask) => {

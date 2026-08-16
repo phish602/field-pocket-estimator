@@ -22,6 +22,7 @@ import {
   recordCloudConvergenceResult,
   CLOUD_CONVERGENCE_REQUEST_EVENT,
 } from "./supabaseCloudConvergence";
+import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
 
 // Bounded automatic retry for TEMPORARY failures only (never conflicts, deletion
 // ambiguity, malformed cloud data, or critical rollback failures).
@@ -211,7 +212,12 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
 
         // Recover an interrupted journal BEFORE acting; a failed recovery is a
         // critical (non-retryable) local-recovery situation, not a transient skip.
-        const recovered = recoverInterruptedCloudConvergence({ storage: localStorage });
+        const recovered = recoverInterruptedCloudConvergence({
+          storage: localStorage,
+          companyId: cmp.id,
+          userId: usr.id,
+          deviceId: getOrCreateLocalDeviceId(localStorage),
+        });
         if (!recovered.ok) { record({ status: "critical", code: recovered.code || "unresolved_journal", stage: "journal_recovery", retryable: false }); return; }
         if (disposed) return;
 
@@ -314,6 +320,17 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
     const onPageShow = () => schedulePassiveFresh();
     const onOnline = () => scheduleBypassFresh();
     const onExplicitRequest = () => scheduleBypassFresh();
+    // A backup attempt can classify its pending generation as `remote_changed`
+    // after this hook has already yielded to BACKUP. Queue writes already publish
+    // this app-local event; consume that terminal transition directly rather than
+    // waiting for a focus/reload after the bounded pending-backup retry budget.
+    // The next scan still asks the shared ownership rule, so ordinary pending
+    // writes, true conflicts, and empty-device deletion safety stay unchanged.
+    const onCloudBackupQueueChanged = (event) => {
+      if (event?.detail?.key !== STORAGE_KEYS.CLOUD_BACKUP_QUEUE) return;
+      if (String(readCloudBackupQueueState()?.status || "") !== "remote_changed") return;
+      scheduleBypassFresh();
+    };
     const onVisibility = () => { if (typeof document === "undefined" || document.visibilityState === "visible") schedulePassiveFresh(); };
 
     // Run on mount / whenever the device lock becomes ready + active.
@@ -324,6 +341,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
       window.addEventListener("pageshow", onPageShow);
       window.addEventListener("online", onOnline);
       window.addEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
+      window.addEventListener("pe-localstorage", onCloudBackupQueueChanged);
       if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
         document.addEventListener("visibilitychange", onVisibility);
       }
@@ -337,6 +355,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         window.removeEventListener("pageshow", onPageShow);
         window.removeEventListener("online", onOnline);
         window.removeEventListener(CLOUD_CONVERGENCE_REQUEST_EVENT, onExplicitRequest);
+        window.removeEventListener("pe-localstorage", onCloudBackupQueueChanged);
         if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
           document.removeEventListener("visibilitychange", onVisibility);
         }

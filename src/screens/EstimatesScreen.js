@@ -7,6 +7,7 @@ import {
   buildEstimateInvoiceSummary,
   INVOICE_TYPES,
   createInvoiceBuilderDraftFromEstimate,
+  commitStoredInvoices,
   createInvoiceDraftFromEstimate,
   readStoredInvoices,
   roundCurrency,
@@ -18,7 +19,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
@@ -204,19 +205,17 @@ function readLegacyInvoiceEstimateRecords() {
   }
 }
 
-function writeStoredEstimatesPreservingLegacy(nextEstimates) {
+async function writeStoredEstimatesPreservingLegacy(nextEstimates, event = {}) {
   const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
   const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
-  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]));
+  const value = JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]);
+  await commitAtomicCloudQueuedBusinessMutation({
+    writes: [{ key: ESTIMATES_KEY, value }],
+    event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesPreservingLegacy", ...event },
+  });
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
-  markCloudBackupDirty({
-    reason: "estimate_data_saved",
-    domains: ["estimates"],
-    severity: "money_critical",
-    source: "writeStoredEstimatesPreservingLegacy",
-  });
 }
 
 function readCustomers() {
@@ -530,14 +529,6 @@ function resolveMaterialsMode(doc) {
   return "itemized";
 }
 
-function hasMeaningfulAdditionalCharges(doc) {
-  const items = Array.isArray(doc?.additionalCharges?.items) ? doc.additionalCharges.items : [];
-  return items.some((item) => {
-    const qty = toNum(item?.qty);
-    const priceEach = toNum(item?.priceEach ?? item?.charge ?? item?.amount ?? item?.unitPrice);
-    return (qty * priceEach) > 0;
-  });
-}
 
 function toEstimatorState(doc) {
   const laborLines = Array.isArray(doc?.labor?.lines) ? doc.labor.lines : (Array.isArray(doc?.laborLines) ? doc.laborLines : []);
@@ -715,8 +706,8 @@ export default function EstimatesScreen({
   onOpenEstimate,
   onOpenProjectDetail,
   spinTick = 0,
-  requestedInvoiceComposerEstimateId = "",
-  onInvoiceComposerRequestHandled,
+  invoiceLaunchRequest = null,
+  onInvoiceLaunchRequestHandled,
   postSaveTarget = null,
   onPostSaveTargetConsumed,
   drilldownIntent = null,
@@ -948,7 +939,7 @@ export default function EstimatesScreen({
     }
   };
 
-  const runEstimateCardAction = (event, estimateId, action, handler) => {
+  const runEstimateCardAction = async (event, estimateId, action, handler) => {
     consumeEstimateActionEvent(event, estimateId, action, { preventDefault: true });
     const currentIntent = getCardActionIntent();
     const normalizedEstimateId = String(estimateId || "").trim();
@@ -959,7 +950,7 @@ export default function EstimatesScreen({
     ) {
       return;
     }
-    handler();
+    await handler();
     window.setTimeout(() => {
       const latestIntent = getCardActionIntent();
       if (
@@ -1504,7 +1495,7 @@ export default function EstimatesScreen({
     finalizeOpen();
   };
 
-  const setEstimateStatus = (estimate, nextStatus, options = {}) => {
+  const setEstimateStatus = async (estimate, nextStatus, options = {}) => {
     const normalized = normalizeEstimateStatus(nextStatus);
     const target = getDocumentEditTarget(estimate, "estimate");
     const existing = readSavedEstimatesList();
@@ -1534,7 +1525,7 @@ export default function EstimatesScreen({
         setOpenErrorMessage("Unable to update this estimate because its identity is missing or ambiguous.");
         return false;
       }
-      writeStoredEstimatesPreservingLegacy(update.records);
+      await writeStoredEstimatesPreservingLegacy(update.records, { source: "EstimatesScreen.setEstimateStatus", documentId: target });
     } catch {
       setOpenErrorMessage("Unable to save the estimate status.");
       return false;
@@ -1585,7 +1576,7 @@ export default function EstimatesScreen({
   // (approved/accepted, converted, invoice-linked, or archived) and after an
   // explicit confirmation. This exists so estimates that were only "Awaiting
   // Response" because the app lacked a draft stage can be corrected.
-  const moveEstimateToDraft = (estimate) => {
+  const moveEstimateToDraft = async (estimate) => {
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
     const stored = readSavedEstimatesList().find((item) => (
@@ -1609,7 +1600,7 @@ export default function EstimatesScreen({
       : "Move Estimate Back to Draft?\n\nOnly do this if this estimate has not been sent to the customer.\n\nDraft estimates can be deleted.");
     if (!confirmed) return;
 
-    setEstimateStatus(estimate, STATUS_DRAFT);
+    await setEstimateStatus(estimate, STATUS_DRAFT);
   };
 
   const shouldShowApprovalInvoicePrompt = (estimate) => {
@@ -1643,13 +1634,11 @@ export default function EstimatesScreen({
     setInvoiceComposerShowMore(false);
   };
 
-  const openInvoiceComposer = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
+  // Opens the inline billing setup on this estimate. Creation happens only in
+  // the canonical launcher once the user submits.
+  const openInvoiceSetup = (estimate, invoiceType = INVOICE_TYPES.FINAL) => {
     if (!estimate || estimate?.archived || normalizeEstimateStatus(estimate?.status) !== STATUS_APPROVED) {
       return false;
-    }
-
-    if (hasMeaningfulAdditionalCharges(estimate)) {
-      return openInvoiceBuilderFromEstimate(estimate);
     }
 
     const currentInvoices = readStoredInvoices();
@@ -1659,6 +1648,7 @@ export default function EstimatesScreen({
     }
 
     setInvoiceComposerTarget(estimate);
+    setExpanded((current) => ({ ...current, [String(estimate.id || "")]: true }));
     setInvoiceComposerForm(createInvoiceComposerForm(estimate, summary, invoiceType));
     setInvoiceComposerError("");
     setInvoiceComposerShowMore(false);
@@ -1673,30 +1663,53 @@ export default function EstimatesScreen({
     return resolved;
   };
 
-  const openInvoiceBuilderFromEstimate = (estimate) => {
+  // The single owner of estimate-to-invoice creation. `billing` is optional:
+  // without it the draft defaults to the full estimate or its remaining
+  // balance, and with it the user's chosen deposit/progress/amount/percent is
+  // honored. Everything downstream -- resolution, the mutation guard, the
+  // write, the edit target, navigation and the duplicate-launch lock -- happens
+  // here and nowhere else, so the billing setup never has to repeat any of it.
+  const openInvoiceBuilderFromEstimate = (estimate, billing = null) => {
     if (invoiceBuilderLaunchPromiseRef.current) return invoiceBuilderLaunchPromiseRef.current;
+    const reportError = typeof billing?.onError === "function" ? billing.onError : setOpenErrorMessage;
     const task = (async () => {
-      const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
-      if (!target) return false;
+      const target = billing?.approvedEstimate || resolveApprovedEstimateForInvoiceLaunch(estimate);
+      if (target?.archived || normalizeEstimateStatus(target?.status) !== STATUS_APPROVED) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
+      if (!target) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
 
       const currentInvoices = readStoredInvoices();
-      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
+      const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices, {
+        ...(billing?.invoiceType ? { invoiceType: billing.invoiceType } : {}),
+        ...(billing?.requestedValue ? { requestedValue: billing.requestedValue } : {}),
+        ...(billing?.dueDate ? { dueDate: billing.dueDate } : {}),
+        ...(billing?.note ? { note: billing.note } : {}),
+      });
       if (!created.ok || !created.draft) {
-        setOpenErrorMessage(created.message || "Unable to create an invoice from this estimate.");
+        reportError(created.message || "Unable to create an invoice from this estimate.");
         return false;
       }
 
       const mutationAccess = await ensureCanMutateBusinessData("local_save");
       if (!mutationAccess?.ok) {
-        window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        reportError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return false;
       }
 
       let nextInvoices;
       try {
-        nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+        nextInvoices = (await commitStoredInvoices([created.draft, ...currentInvoices], {
+          source: "EstimatesScreen.convertEstimate",
+          documentId: created.draft.id,
+          ...(Array.isArray(billing?.additionalWrites) ? { additionalWrites: billing.additionalWrites } : {}),
+        })).invoices;
       } catch {
-        setOpenErrorMessage("Unable to save the invoice. The estimate was not changed.");
+        reportError("Unable to save the invoice. The estimate was not changed.");
         return false;
       }
       setInvoices(nextInvoices);
@@ -1727,71 +1740,82 @@ export default function EstimatesScreen({
   };
 
   const approveAndConvertEstimate = async (estimate) => {
-    const approved = setEstimateStatus(estimate, STATUS_APPROVED, { showInvoicePrompt: false });
-    if (!approved) return false;
-    const exactApprovedEstimate = resolveApprovedEstimateForInvoiceLaunch(estimate);
-    if (!exactApprovedEstimate) {
+    const target = getDocumentEditTarget(estimate, "estimate");
+    const existing = readSavedEstimatesList();
+    const update = updateResolvedDocumentEditTarget(
+      existing,
+      target,
+      "estimate",
+      (item) => ({ ...item, status: STATUS_APPROVED })
+    );
+    if (!update?.record || update.record.archived) {
       setOpenErrorMessage("The approved estimate could not be verified for conversion.");
       return false;
     }
-    return openInvoiceBuilderFromEstimate(exactApprovedEstimate);
+
+    const committed = await openInvoiceBuilderFromEstimate(update.record, {
+      approvedEstimate: update.record,
+      additionalWrites: [{
+        key: ESTIMATES_KEY,
+        value: JSON.stringify([...update.records, ...readLegacyInvoiceEstimateRecords()]),
+      }],
+    });
+    if (!committed) return false;
+
+    setEstimates((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list
+        .map((item) => (getDocumentEditTarget(item, "estimate") === target ? { ...item, status: STATUS_APPROVED } : item))
+        .sort(sortEstimatesByDateDesc);
+    });
+    setExpanded({});
+    return true;
   };
 
+  // Snapshot's "Create Invoice" asks for the same conversion the Estimates
+  // screen performs itself, so it launches the canonical builder rather than
+  // the quick composer. The builder re-resolves the stored estimate and applies
+  // its own approved/archived checks, its mutation guard, and its duplicate
+  // launch lock, so this bridge only has to name the estimate.
   useEffect(() => {
-    const requestedId = String(requestedInvoiceComposerEstimateId || "").trim();
+    const requestedId = String(invoiceLaunchRequest?.estimateId || "").trim();
     if (!requestedId) return;
     const target = (Array.isArray(estimates) ? estimates : []).find(
       (estimate) => String(estimate?.id || "").trim() === requestedId
     );
-    if (!target) {
-      if (typeof onInvoiceComposerRequestHandled === "function") {
-        onInvoiceComposerRequestHandled();
-      }
-      return;
+    if (target) {
+      // "options" opens the billing setup here; anything else goes straight to
+      // the canonical builder. Either way creation stays with the launcher.
+      if (String(invoiceLaunchRequest?.mode || "") === "options") openInvoiceSetup(target);
+      else openInvoiceBuilderFromEstimate(target);
     }
-    openInvoiceComposer(target);
-    if (typeof onInvoiceComposerRequestHandled === "function") {
-      onInvoiceComposerRequestHandled();
+    if (typeof onInvoiceLaunchRequestHandled === "function") {
+      onInvoiceLaunchRequestHandled();
     }
-  }, [requestedInvoiceComposerEstimateId, estimates, onInvoiceComposerRequestHandled]);
+  }, [invoiceLaunchRequest, estimates, onInvoiceLaunchRequestHandled]);
 
-  const submitInvoiceComposer = async () => {
+  // Billing setup only. It collects the user's intent and hands it to the one
+  // canonical launcher above -- it does not create ids, authorize mutations,
+  // write invoices, set edit targets, or navigate. Those responsibilities moved
+  // out so there is a single creation owner.
+  const submitInvoiceSetup = async () => {
     if (!invoiceComposerTarget) return false;
+    setInvoiceComposerError("");
 
-    const currentInvoices = readStoredInvoices();
-    const created = createInvoiceDraftFromEstimate(invoiceComposerTarget, currentInvoices, {
+    const launched = await openInvoiceBuilderFromEstimate(invoiceComposerTarget, {
       invoiceType: invoiceComposerForm.invoiceType,
       requestedValue: buildComposerRequestedValue(invoiceComposerForm),
       dueDate: invoiceComposerForm.dueDate,
       note: invoiceComposerForm.note,
+      // Failures belong in the setup dialog so the user can correct the amount
+      // rather than being dropped somewhere with a screen-level message.
+      onError: (message) => setInvoiceComposerError(
+        message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
+      ),
     });
 
-    if (!created.ok || !created.draft) {
-      setInvoiceComposerError(
-        created?.message || (lang === "es" ? "No se pudo crear la factura." : "Unable to create invoice.")
-      );
-      return false;
-    }
-
-    const mutationAccess = await ensureCanMutateBusinessData("local_save");
-    if (!mutationAccess?.ok) {
-      setInvoiceComposerError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
-      return false;
-    }
-
-    const nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
-    setInvoices(nextInvoices);
+    if (!launched) return false;
     closeInvoiceComposer();
-    try {
-      localStorage.removeItem(EDIT_ESTIMATE_TARGET_KEY);
-      localStorage.setItem(EDIT_INVOICE_TARGET_KEY, String(created.draft.id || ""));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:invoices-changed"));
-    } catch {}
-    try {
-      window.dispatchEvent(new Event("estipaid:navigate-invoice-builder"));
-    } catch {}
     return true;
   };
 
@@ -1823,7 +1847,7 @@ export default function EstimatesScreen({
       const { archived, archivedAt, ...rest } = item;
       return rest;
     });
-    writeStoredEstimatesPreservingLegacy(next);
+    await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.restoreEstimate", documentId: targetId });
   };
 
   const onConfirmDelete = async () => {
@@ -1855,13 +1879,13 @@ export default function EstimatesScreen({
           : String(item?.id || "").trim() === deletedId;
         return matches ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.archiveEstimate", documentId: deletedId });
     } else {
       const next = existing.filter((item) => {
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.deleteEstimate", documentId: deletedId });
       removeCloudAssetBinding("estimate", deletedId);
 
       if (deletedId) {
@@ -1954,7 +1978,7 @@ export default function EstimatesScreen({
         window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return;
       }
-      writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
+      await writeStoredEstimatesPreservingLegacy([duplicate, ...existing], { source: "EstimatesScreen.duplicateEstimate", documentId: duplicate.id });
 
       setExpanded({});
 
@@ -2373,6 +2397,63 @@ export default function EstimatesScreen({
     });
     setInvoiceComposerError("");
   };
+
+  const invoiceOptionsSetup = invoiceComposerTarget ? (
+    <section className="pe-card pe-card-content" data-invoice-options="true" aria-label={lang === "es" ? "Opciones de factura" : "Invoice Options"} style={{ marginTop: 10, display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={invoiceComposerToneLabelStyle}>{lang === "es" ? "Opciones de factura" : "Invoice Options"}</div>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>{invoiceComposerEstimateLabel}</div>
+          <div style={{ fontSize: 12.5, opacity: 0.74 }}>{lang === "es" ? "Elige cómo facturar antes de abrir el constructor." : "Choose how to bill before opening the builder."}</div>
+        </div>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={{ minHeight: 34, padding: "7px 10px" }}>{lang === "es" ? "Cancelar" : "Cancel"}</button>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={invoiceComposerSectionLabelStyle}>{lang === "es" ? "Tipo de factura" : "Invoice Type"}</div>
+        <div style={invoiceComposerSegmentWrapStyle}>
+          {invoiceComposerTypeOptions.map((option) => (
+            <button key={option.value} type="button" className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerTypeChange(option.value)} style={{ ...invoiceComposerSegmentBtnStyle, ...(invoiceComposerForm.invoiceType === option.value ? invoiceComposerSegmentBtnActiveStyle : invoiceComposerSegmentBtnIdleStyle) }}>{option.label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={invoiceComposerFieldGridStyle}>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-amount">{lang === "es" ? "Monto de factura" : "Invoice Amount"}</label>
+          <div style={invoiceComposerAmountRowStyle}>
+            <input id="invoice-options-amount" type="text" inputMode="decimal" className="pe-input" value={invoiceComposerForm.amountValue} placeholder={invoiceComposerForm.invoiceType === INVOICE_TYPES.FINAL ? (lang === "es" ? "Dejar vacío para usar el saldo restante" : "Leave blank to use remaining balance") : (invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? "25" : "2500")} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, amountValue: evt.target.value })); setInvoiceComposerError(""); }} style={{ width: "100%" }} />
+            <div style={invoiceComposerAmountModeWrapStyle}>
+              <button type="button" aria-label={lang === "es" ? "Monto en dólares" : "Dollar amount"} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_AMOUNT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_AMOUNT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>$</button>
+              <button type="button" aria-label={lang === "es" ? "Monto en porcentaje" : "Percent amount"} className="pe-btn pe-btn-ghost" onClick={() => handleInvoiceComposerAmountModeChange(INVOICE_AMOUNT_MODE_PERCENT)} style={{ ...invoiceComposerModeBtnStyle, ...(invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT ? invoiceComposerModeBtnActiveStyle : invoiceComposerModeBtnIdleStyle) }}>%</button>
+            </div>
+          </div>
+          {invoiceComposerForm.invoiceType === INVOICE_TYPES.DEPOSIT ? (
+            <div style={invoiceComposerPresetWrapStyle}>
+              {[10, 25, 50].map((percent) => {
+                const disabled = invoiceComposerAvailablePercent > 0 && percent > invoiceComposerAvailablePercent + INVOICE_COMPOSER_EPSILON;
+                const isActive = invoiceComposerForm.amountMode === INVOICE_AMOUNT_MODE_PERCENT && roundCurrency(toNum(invoiceComposerForm.amountValue)) === percent;
+                return <button key={`deposit-${percent}`} type="button" className="pe-btn pe-btn-ghost" disabled={disabled} onClick={() => { setInvoiceComposerForm((prev) => ({ ...prev, amountMode: INVOICE_AMOUNT_MODE_PERCENT, amountValue: String(percent) })); setInvoiceComposerError(""); }} style={{ ...invoiceComposerPresetBtnStyle, ...(isActive ? invoiceComposerPresetBtnActiveStyle : invoiceComposerPresetBtnIdleStyle) }}>{percent}%</button>;
+              })}
+            </div>
+          ) : null}
+        </div>
+        <div style={invoiceComposerFieldBlockStyle}>
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-due-date">{lang === "es" ? "Fecha de vencimiento" : "Due Date"}</label>
+          <input id="invoice-options-due-date" type="date" className="pe-input" value={invoiceComposerForm.dueDate} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, dueDate: evt.target.value })); setInvoiceComposerError(""); }} />
+          <label style={invoiceComposerSectionLabelStyle} htmlFor="invoice-options-note">{lang === "es" ? "Nota" : "Note"}</label>
+          <textarea id="invoice-options-note" className="pe-input pe-textarea" value={invoiceComposerForm.note} onChange={(evt) => { setInvoiceComposerForm((prev) => ({ ...prev, note: evt.target.value })); setInvoiceComposerError(""); }} rows={3} placeholder={lang === "es" ? "Nota opcional para esta factura" : "Optional note for this invoice"} style={{ minHeight: 72, resize: "vertical" }} />
+        </div>
+      </div>
+      <div style={invoiceComposerSummaryCardStyle}>
+        <div style={invoiceComposerSectionLabelStyle}>{lang === "es" ? "Resumen de facturación" : "Billing Summary"}</div>
+        <div style={invoiceComposerSummaryGridStyle}>{invoiceComposerSummaryItems.map((item) => <div key={item.key} style={{ ...invoiceComposerSummaryItemStyle, ...(item.tone === "primary" ? invoiceComposerSummaryItemPrimaryStyle : item.tone === "remaining" ? invoiceComposerSummaryItemRemainingStyle : null) }}><div style={{ fontSize: 12.5, opacity: 0.72 }}>{item.label}</div><div style={invoiceComposerSummaryValueStyle}>{item.value}</div></div>)}</div>
+      </div>
+      {invoiceComposerMessage ? <div role="alert" style={{ fontSize: 13, color: "rgba(254, 202, 202, 0.95)", border: "1px solid rgba(248,113,113,0.36)", background: "rgba(127,29,29,0.18)", borderRadius: 12, padding: "10px 12px" }}>{invoiceComposerMessage}</div> : null}
+      <div style={invoiceComposerFooterStyle}>
+        <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>{lang === "es" ? "Cancelar" : "Cancel"}</button>
+        <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>{lang === "es" ? "Continuar al constructor" : "Continue to Invoice Builder"}</button>
+      </div>
+    </section>
+  ) : null;
 
   return (
     <section className="pe-section">
@@ -3562,6 +3643,19 @@ export default function EstimatesScreen({
                             {lang === "es" ? "Convertir en factura" : "Convert to Invoice"}
                           </button>
                         ) : null}
+                        {/* Secondary: for a deposit, a progress draw, or a
+                            specific amount/percent. The primary action above
+                            stays one click. */}
+                        {status === STATUS_APPROVED && !e?.archived ? (
+                          <button
+                            className="pe-btn pe-btn-ghost"
+                            type="button"
+                            onClick={() => openInvoiceSetup(e)}
+                            disabled={Number(invoiceSummary?.remainingToInvoice || 0) <= 0}
+                          >
+                            {lang === "es" ? "Opciones de factura" : "Invoice Options"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
 
@@ -3586,6 +3680,8 @@ export default function EstimatesScreen({
                         </div>
                       </div>
                     ) : null}
+
+                    {status === STATUS_APPROVED && String(invoiceComposerTarget?.id || "") === id ? invoiceOptionsSetup : null}
 
                     {/* TOTALS */}
                     <div className="pe-card pe-card-content" style={{ ...subCard, marginTop: 10 }}>
@@ -3868,7 +3964,9 @@ export default function EstimatesScreen({
           </div>
         </div>
       ) : null}
-      {invoiceComposerTarget ? (
+      {/* Legacy Quick Composer retained as inactive source-only code while the
+          live Invoice Options workflow renders inline in its estimate card. */}
+      {false && invoiceComposerTarget ? (
         <div
           role="dialog"
           aria-modal="true"
@@ -4144,7 +4242,7 @@ export default function EstimatesScreen({
               <button type="button" className="pe-btn pe-btn-ghost" onClick={closeInvoiceComposer} style={invoiceComposerFooterBtnStyle}>
                 {lang === "es" ? "Cancelar" : "Cancel"}
               </button>
-              <button type="button" className="pe-btn" onClick={submitInvoiceComposer} style={invoiceComposerPrimaryBtnStyle}>
+              <button type="button" className="pe-btn" onClick={submitInvoiceSetup} style={invoiceComposerPrimaryBtnStyle}>
                 {lang === "es" ? "Crear borrador" : "Create Draft Invoice"}
               </button>
             </div>

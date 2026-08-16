@@ -203,13 +203,97 @@ beforeEach(() => {
   });
 });
 
+describe("AdvancedSettingsScreen developer migration tools visibility", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  function setNodeEnv(value) {
+    Object.defineProperty(process.env, "NODE_ENV", {
+      configurable: true,
+      value,
+    });
+  }
+
+  function arrangeEmptyDeviceCloudRestore() {
+    useSupabaseAuth.mockReturnValue(buildAuthState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      userEmail: "owner@example.com",
+      session: { user: { id: "user_1", email: "owner@example.com" } },
+    }));
+    useSupabaseAccount.mockReturnValue(buildAccountState({
+      configured: true,
+      user: { id: "user_1", email: "owner@example.com" },
+      companyUser: { company_id: "company_1", role: "owner" },
+      membership: { company_id: "company_1", role: "owner" },
+      company: { id: "company_1", name: "Field Pocket LLC" },
+      role: "owner",
+      hasCompany: true,
+    }));
+    useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
+    checkSupabaseCloudOnboardingStatus.mockResolvedValue({
+      onboardingVersion: "supabase-cloud-onboarding-v1",
+      status: CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE,
+      preview: null,
+      verification: null,
+      writeResult: null,
+      noWritesPerformed: true,
+    });
+    previewSupabaseCloudRestore.mockResolvedValue({
+      restoreVersion: "supabase-cloud-restore-v1",
+      status: CLOUD_RESTORE_STATUS.ELIGIBLE,
+      eligible: true,
+      partial: false,
+      cloudCounts: {},
+      localCounts: {},
+      blockers: [],
+      notices: [],
+      noWritesPerformed: true,
+    });
+  }
+
+  beforeEach(() => {
+    setNodeEnv("development");
+    arrangeEmptyDeviceCloudRestore();
+  });
+
+  afterEach(() => {
+    setNodeEnv(originalNodeEnv);
+  });
+
+  test("renders Developer Migration Tools and normal Cloud Backup / Restore in development", async () => {
+    await act(async () => {
+      render(<AdvancedSettingsScreen />);
+    });
+
+    expect(screen.getByText("Developer Migration Tools")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview Local Data Migration" })).toBeInTheDocument();
+    expect(screen.getByText("Cloud Backup")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud Data to This Device" })).toBeInTheDocument();
+  });
+
+  test("does not render Developer Migration Tools in production while retaining normal Cloud Backup / Restore", async () => {
+    setNodeEnv("production");
+
+    await act(async () => {
+      render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
+    });
+
+    expect(screen.queryByText("Developer Migration Tools")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Preview Local Data Migration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Migrate Local Data to Cloud" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Verify Cloud Data" })).not.toBeInTheDocument();
+    expect(screen.getByText("Cloud Backup")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore Cloud Data to This Device" })).toBeInTheDocument();
+  });
+});
+
 describe("AdvancedSettingsScreen development sample data controls", () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
     Object.defineProperty(process.env, "NODE_ENV", {
       configurable: true,
-      value: "production",
+      value: "development",
     });
     seedDevSampleData.mockReset();
     clearDevSampleData.mockReset();
@@ -230,7 +314,7 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     jest.restoreAllMocks();
   });
 
-  test("hides Development Sample Data when developer tools are disabled in a production build", () => {
+  test("hides Development Sample Data when developer tools are explicitly disabled", () => {
     render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
 
     expect(screen.queryByText("Development Sample Data")).not.toBeInTheDocument();
@@ -238,7 +322,7 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     expect(screen.queryByRole("button", { name: "Clear Sample Data" })).not.toBeInTheDocument();
   });
 
-  test("shows Development Sample Data when developer tools are enabled in a production build", () => {
+  test("shows Development Sample Data when developer tools are enabled in development", () => {
     render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
 
     expect(screen.getByText("Development Sample Data")).toBeInTheDocument();
@@ -246,7 +330,7 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     expect(screen.getByRole("button", { name: "Clear Sample Data" })).toBeInTheDocument();
   });
 
-  test("loads canonical sample data through the developer-tools gate in a production build", () => {
+  test("loads canonical sample data through the developer-tools gate in development", () => {
     render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
 
     fireEvent.click(screen.getByRole("button", { name: "Load / Refresh Sample Data" }));
@@ -254,7 +338,7 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     expect(seedDevSampleData).toHaveBeenCalledTimes(1);
   });
 
-  test("clears canonical sample data through the developer-tools gate in a production build", () => {
+  test("clears canonical sample data through the developer-tools gate in development", () => {
     render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
 
     fireEvent.click(screen.getByRole("button", { name: "Clear Sample Data" }));
@@ -1334,7 +1418,7 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     expect(screen.queryByText("Cloud data restored to this device.")).not.toBeInTheDocument();
   });
 
-  test("Recheck Cloud Status requests automatic convergence before re-running verification", async () => {
+  test("Recheck Cloud Status performs only an observational status check", async () => {
     mockSignedInWithCompany();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({
       onboardingVersion: "supabase-cloud-onboarding-v1",
@@ -1354,12 +1438,14 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     try {
       await act(async () => { render(<AdvancedSettingsScreen />); });
       const callsBefore = checkSupabaseCloudOnboardingStatus.mock.calls.length;
+      const restoreCallsBefore = previewSupabaseCloudRestore.mock.calls.length;
       await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" })); });
-      // Convergence is requested first (finding 3 fix: not verification-only).
-      await waitFor(() => expect(requestSeen).toHaveBeenCalled());
-      // Resolving the safe result then triggers a fresh verification.
-      await act(async () => { window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } })); });
       await waitFor(() => expect(checkSupabaseCloudOnboardingStatus.mock.calls.length).toBeGreaterThan(callsBefore));
+      expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({
+        allowAutomaticSafeRepair: false,
+      }));
+      expect(requestSeen).not.toHaveBeenCalled();
+      expect(previewSupabaseCloudRestore.mock.calls.length).toBe(restoreCallsBefore);
     } finally {
       window.removeEventListener("estipaid:cloud-convergence-request", requestSeen);
     }
@@ -1401,13 +1487,9 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
     });
-    // Recheck now first requests automatic convergence and awaits its result;
-    // resolve that wait (no convergence hook is mounted in this screen-only test).
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } }));
-    });
 
-    expect(await screen.findByText("Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records.")).toBeInTheDocument();
+    expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({ allowAutomaticSafeRepair: false }));
+    expect(screen.queryByText("Recheck complete. This device still has invoices but no local estimates. Restore cloud data to this device to rebuild the missing local records.")).not.toBeInTheDocument();
     expect(screen.getByText("This device has a partial local snapshot.")).toBeInTheDocument();
   });
 
@@ -1455,11 +1537,10 @@ describe("AdvancedSettingsScreen diagnostics export", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Recheck Cloud Status" }));
     });
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("estipaid:cloud-convergence-result", { detail: { ok: true, status: "matched" } }));
-    });
 
-    expect(await screen.findByText("Recheck complete. Cloud backup still cannot rebuild the missing local estimates. Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).toBeInTheDocument();
+    expect(checkSupabaseCloudOnboardingStatus.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({ allowAutomaticSafeRepair: false }));
+    expect(screen.queryByText("Recheck complete. Cloud backup still cannot rebuild the missing local estimates. Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).not.toBeInTheDocument();
+    expect(screen.getByText("Cloud backup cannot safely rebuild this device because one or more linked estimates are missing valid restore data.")).toBeInTheDocument();
   });
 
   test("shows the calm automatic backup running status while the background worker is backing up", async () => {

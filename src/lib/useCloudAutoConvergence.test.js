@@ -38,6 +38,24 @@ test("runs once for an authenticated, ready, active, unlocked device without use
   expect(isCloudOperationRunLocked()).toBe(false); // lock released after the run
 });
 
+test("a retired stale journal does not become a critical recovery block", async () => {
+  recoverInterruptedCloudConvergence.mockReturnValue({
+    ok: true,
+    recovered: false,
+    retired: true,
+    code: "journal_revision_mismatch",
+  });
+
+  renderHook(() => useCloudAutoConvergence(props()));
+
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  expect(recoverInterruptedCloudConvergence).toHaveBeenCalledWith(expect.objectContaining({
+    companyId: "company-1",
+    userId: "user-1",
+  }));
+  expect(isCloudOperationRunLocked()).toBe(false);
+});
+
 test("an empty fresh device yields startup ownership until recovery populates local core and explicitly hands convergence off", async () => {
   // Production ordering: convergence mounts before the asynchronously-loaded
   // restore preview has established that this is a fully restorable device.
@@ -102,6 +120,40 @@ test("yields to pending local backup work without taking the shared run lock", a
   expect(isCloudOperationRunLocked()).toBe(false);
   expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
   resetCloudOperationRunLockForTests();
+});
+
+test("runs the existing safe convergence path for an established remote_changed review", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...raw, pending: true, status: "remote_changed" }));
+
+  renderHook(() => useCloudAutoConvergence(props()));
+
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  expect(isCloudOperationRunLocked()).toBe(false);
+});
+
+test("a terminal remote_changed queue transition re-enters convergence without a reload or focus event", async () => {
+  // This is the persisted runtime sequence: convergence initially yields to a
+  // normal pending backup, then that backup reaches terminal remote review.
+  // The queue event must re-evaluate ownership immediately instead of leaving
+  // the last published result at local_backup_pending until the next lifecycle
+  // event happens to arrive.
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+
+  const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...raw, pending: true, status: "remote_changed" }));
+  act(() => {
+    window.dispatchEvent(new CustomEvent("pe-localstorage", {
+      detail: { key: STORAGE_KEYS.CLOUD_BACKUP_QUEUE },
+    }));
+  });
+
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  expect(isCloudOperationRunLocked()).toBe(false);
 });
 
 test("full ownership handoff: recovery -> convergence -> backup -> convergence, from local state alone", async () => {
