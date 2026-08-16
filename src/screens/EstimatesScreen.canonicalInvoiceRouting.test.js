@@ -1,5 +1,25 @@
 import React from "react";
-import { render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+// This is a routing suite.  The real encrypted runtime/queue transaction is
+// covered by its dedicated tests; here the boundary is an async durable commit
+// that mirrors the exact serialized writes a screen caller supplies.
+jest.mock("../lib/cloudBackupQueue", () => {
+  const actual = jest.requireActual("../lib/cloudBackupQueue");
+
+  return {
+    ...actual,
+    commitAtomicCloudQueuedBusinessMutation: async ({ writes = [] }) => {
+      writes.forEach(({ key, value }) => globalThis.localStorage.setItem(key, value));
+      return {
+        ok: true,
+        revision: 1,
+        queue: {},
+        keys: writes.map(({ key }) => key),
+      };
+    },
+  };
+});
 
 import EstimatesScreen from "./EstimatesScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
@@ -43,33 +63,37 @@ function renderScreen(props = {}) {
   return render(<EstimatesScreen lang="en" t={(k) => k} history={ALL} {...props} />);
 }
 
-// The quick composer's only visible marker: its modal names the requested
-// amount. The canonical builder never renders it.
-function quickComposerOpen(container) {
-  return /Requested amount|Invoice composer/i.test(container.textContent || "");
+function launchRequest(estimateId, mode = "builder") {
+  return { estimateId, mode };
+}
+
+function invoiceOptions(container) {
+  return container.querySelector("[data-invoice-options='true']");
 }
 
 describe("Snapshot invoice requests route through the canonical builder", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+  });
   afterEach(() => localStorage.clear());
 
   test("a request creates the invoice draft through the canonical path, not the composer", async () => {
     seed();
-    const onInvoiceBuilderRequestHandled = jest.fn();
+    const onInvoiceLaunchRequestHandled = jest.fn();
     const navigated = jest.fn();
     window.addEventListener("estipaid:navigate-invoice-builder", navigated);
 
     try {
       const { container } = renderScreen({
-        requestedInvoiceBuilderEstimateId: "est_approved",
-        onInvoiceBuilderRequestHandled,
+        invoiceLaunchRequest: launchRequest("est_approved"),
+        onInvoiceLaunchRequestHandled,
       });
 
       // The canonical launch is what writes the draft and asks for the builder.
       await waitFor(() => expect(storedInvoices()).toHaveLength(1));
       await waitFor(() => expect(navigated).toHaveBeenCalled());
-      expect(quickComposerOpen(container)).toBe(false);
-      expect(onInvoiceBuilderRequestHandled).toHaveBeenCalled();
+      expect(container.querySelector("[role='dialog'][aria-label='Create invoice']")).toBeNull();
+      expect(onInvoiceLaunchRequestHandled).toHaveBeenCalled();
     } finally {
       window.removeEventListener("estipaid:navigate-invoice-builder", navigated);
     }
@@ -78,8 +102,8 @@ describe("Snapshot invoice requests route through the canonical builder", () => 
   test("the requested id selects that estimate and no other", async () => {
     seed();
     renderScreen({
-      requestedInvoiceBuilderEstimateId: "est_other",
-      onInvoiceBuilderRequestHandled: jest.fn(),
+      invoiceLaunchRequest: launchRequest("est_other"),
+      onInvoiceLaunchRequestHandled: jest.fn(),
     });
 
     await waitFor(() => expect(storedInvoices()).toHaveLength(1));
@@ -95,23 +119,23 @@ describe("Snapshot invoice requests route through the canonical builder", () => 
     ["an estimate that does not exist", "est_missing"],
   ])("%s creates nothing and still releases the request", async (_label, requestedId) => {
     seed();
-    const onInvoiceBuilderRequestHandled = jest.fn();
+    const onInvoiceLaunchRequestHandled = jest.fn();
     const { container } = renderScreen({
-      requestedInvoiceBuilderEstimateId: requestedId,
-      onInvoiceBuilderRequestHandled,
+      invoiceLaunchRequest: launchRequest(requestedId),
+      onInvoiceLaunchRequestHandled,
     });
 
-    await waitFor(() => expect(onInvoiceBuilderRequestHandled).toHaveBeenCalled());
+    await waitFor(() => expect(onInvoiceLaunchRequestHandled).toHaveBeenCalled());
     expect(storedInvoices()).toHaveLength(0);
-    expect(quickComposerOpen(container)).toBe(false);
+    expect(container.querySelector("[role='dialog'][aria-label='Create invoice']")).toBeNull();
   });
 
   test("re-rendering the same request does not create a second draft", async () => {
     seed();
-    const onInvoiceBuilderRequestHandled = jest.fn();
+    const onInvoiceLaunchRequestHandled = jest.fn();
     const { rerender } = renderScreen({
-      requestedInvoiceBuilderEstimateId: "est_approved",
-      onInvoiceBuilderRequestHandled,
+      invoiceLaunchRequest: launchRequest("est_approved"),
+      onInvoiceLaunchRequestHandled,
     });
 
     await waitFor(() => expect(storedInvoices()).toHaveLength(1));
@@ -123,8 +147,8 @@ describe("Snapshot invoice requests route through the canonical builder", () => 
         lang="en"
         t={(k) => k}
         history={ALL}
-        requestedInvoiceBuilderEstimateId=""
-        onInvoiceBuilderRequestHandled={onInvoiceBuilderRequestHandled}
+        invoiceLaunchRequest={null}
+        onInvoiceLaunchRequestHandled={onInvoiceLaunchRequestHandled}
       />
     );
 
@@ -134,8 +158,8 @@ describe("Snapshot invoice requests route through the canonical builder", () => 
   test("the created draft carries the estimate linkage the builder relies on", async () => {
     seed();
     renderScreen({
-      requestedInvoiceBuilderEstimateId: "est_approved",
-      onInvoiceBuilderRequestHandled: jest.fn(),
+      invoiceLaunchRequest: launchRequest("est_approved"),
+      onInvoiceLaunchRequestHandled: jest.fn(),
     });
 
     await waitFor(() => expect(storedInvoices()).toHaveLength(1));
@@ -147,5 +171,87 @@ describe("Snapshot invoice requests route through the canonical builder", () => 
     expect(created.projectName).toBe("Bathroom remodel");
     expect(created.id).toBeTruthy();
     expect(created.id).not.toBe("est_approved");
+  });
+});
+
+describe("billing setup collects intent and delegates creation", () => {
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  test("an options request opens setup instead of creating anything", async () => {
+    seed();
+    const onInvoiceLaunchRequestHandled = jest.fn();
+    const { container } = renderScreen({
+      invoiceLaunchRequest: launchRequest("est_approved", "options"),
+      onInvoiceLaunchRequestHandled,
+    });
+
+    await waitFor(() => expect(onInvoiceLaunchRequestHandled).toHaveBeenCalled());
+    // Setup is intent collection only: nothing is written until the user submits.
+    expect(storedInvoices()).toHaveLength(0);
+    await waitFor(() => expect(invoiceOptions(container)).not.toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Create invoice" })).toBeNull();
+    expect(invoiceOptions(container).textContent).toContain("Bathroom remodel");
+  });
+
+  test("submitting setup produces exactly one draft carrying the chosen intent", async () => {
+    seed();
+    const { container } = renderScreen({
+      invoiceLaunchRequest: launchRequest("est_approved", "options"),
+      onInvoiceLaunchRequestHandled: jest.fn(),
+    });
+
+    await waitFor(() => expect(invoiceOptions(container)).not.toBeNull());
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Deposit" })));
+    await screen.findByRole("button", { name: "25%" });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "25%" })));
+
+    const submit = screen.getByRole("button", { name: /^(Continue to Invoice Builder|Continuar al constructor)$/i });
+    await act(async () => {
+      fireEvent.click(submit);
+    });
+
+    await waitFor(() => expect(storedInvoices()).toHaveLength(1));
+    const created = storedInvoices()[0];
+    expect(String(created.sourceEstimateId)).toBe("est_approved");
+    expect(created.status).toBe("draft");
+    expect(created.invoiceType).toBe("deposit");
+    expect(created.invoiceMeta?.amountMode).toBe("percent");
+    expect(created.invoiceMeta?.requestedPercent).toBe(25);
+    // Same canonical shape the builder launch produces.
+    expect(created.meta?.ephemeralDraft).toBe(true);
+  });
+
+  test("the primary Convert action remains a direct canonical launch", async () => {
+    seed();
+    const { container } = renderScreen();
+
+    await waitFor(() => expect(container.querySelector("[data-estimate-card-id='est_approved']")).not.toBeNull());
+    const approvedCard = container.querySelector("[data-estimate-card-id='est_approved']");
+    await act(async () => {
+      fireEvent.click(within(approvedCard).getByRole("button", { name: "Details" }));
+    });
+    await within(approvedCard).findByRole("button", { name: "Convert to Invoice" });
+    await act(async () => {
+      fireEvent.click(within(approvedCard).getByRole("button", { name: "Convert to Invoice" }));
+    });
+
+    await waitFor(() => expect(storedInvoices()).toHaveLength(1));
+    expect(invoiceOptions(container)).toBeNull();
+    expect(container.querySelector("[role='dialog'][aria-label='Create invoice']")).toBeNull();
+  });
+
+  test("cancelling inline options changes no business data", async () => {
+    seed();
+    const { container } = renderScreen({
+      invoiceLaunchRequest: launchRequest("est_approved", "options"),
+      onInvoiceLaunchRequestHandled: jest.fn(),
+    });
+
+    await waitFor(() => expect(invoiceOptions(container)).not.toBeNull());
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
+    expect(invoiceOptions(container)).toBeNull();
+    expect(storedInvoices()).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual(ALL);
   });
 });

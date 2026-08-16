@@ -435,6 +435,7 @@ test("repository constructor validates strict injections", () => {
   // and the empty-workspace atomic recovery batch.
   expect(Object.keys(repository(factory)).sort()).toEqual([
     "commitRuntimeClear",
+    "commitRuntimeRecordBatch",
     "commitRuntimeRecordRemove",
     "commitRuntimeRecordSet",
     "commitRuntimeRestoreBatch",

@@ -5,8 +5,8 @@ import { DEFAULT_STATE } from "../estimator/defaultState";
 import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getDocumentEditTarget, resolveDocumentEditTarget } from "../lib/documentEditTarget";
-import { appendAuditEvents, createStoredAuditEvent } from "./auditStore";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { appendAuditEvents, buildAuditStorePayload, createStoredAuditEvent, readStoredAuditEvents } from "./auditStore";
+import { commitAtomicCloudQueuedBusinessMutation, markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import {
   backfillProjectCollections,
   createProjectRecord,
@@ -979,6 +979,64 @@ export function readStoredInvoices() {
   } catch {
     return [];
   }
+}
+
+function legacyInvoiceMatchesTarget(invoice, target) {
+  const normalizedTarget = asText(target);
+  if (!normalizedTarget) return false;
+  return collectInvoiceIdentityKeys(invoice).has(`id:${normalizedTarget}`)
+    || collectInvoiceIdentityKeys(invoice).has(`invoiceNumber:${normalizedTarget}`)
+    || collectInvoiceIdentityKeys(invoice).has(`docNumber:${normalizedTarget}`);
+}
+
+function invoiceMatchesLegacyRecord(invoice, legacyInvoice) {
+  const invoiceKeys = collectInvoiceIdentityKeys(invoice);
+  const legacyKeys = collectInvoiceIdentityKeys(legacyInvoice);
+  return [...invoiceKeys].some((key) => legacyKeys.has(key));
+}
+
+function buildInvoiceAtomicWrites(invoices, event = {}) {
+  // Compatibility reads can render old invoice-shaped Estimate records, but a
+  // normal Invoice mutation must never quietly promote or rewrite one. Only an
+  // explicit legacy edit names a migration target, which is then moved in the
+  // same durable batch as its canonical replacement.
+  const previousInvoices = normalizeInvoiceList(readStoredArray(INVOICES_KEY), resolveInvoiceNormalizationOptions());
+  const legacyInvoices = readLegacyEstimateInvoices();
+  const migrationTarget = asText(event?.migrateLegacyInvoiceTarget);
+  const migratableLegacyInvoices = migrationTarget
+    ? legacyInvoices.filter((invoice) => legacyInvoiceMatchesTarget(invoice, migrationTarget))
+    : [];
+  const normalInvoices = normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions())
+    .filter((invoice) => !legacyInvoices.some((legacyInvoice) => (
+      invoiceMatchesLegacyRecord(invoice, legacyInvoice)
+      && !migratableLegacyInvoices.some((migratable) => invoiceMatchesLegacyRecord(invoice, migratable))
+    )));
+  const next = promoteInvoiceCanonicalIdentity(normalInvoices);
+  const sync = backfillProjectCollections({ customers: readStoredCustomers(), projects: readStoredProjects(), invoices: next });
+  const writes = [{ key: INVOICES_KEY, value: JSON.stringify(sync.invoices) }];
+  if (migratableLegacyInvoices.length > 0) {
+    const estimateRecords = readStoredArray(STORAGE_KEYS.ESTIMATES);
+    const nextEstimateRecords = estimateRecords.filter((record) => !migratableLegacyInvoices.some((legacyInvoice) => (
+      invoiceMatchesLegacyRecord(record, legacyInvoice)
+    )));
+    if (nextEstimateRecords.length !== estimateRecords.length) {
+      writes.push({ key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify(nextEstimateRecords) });
+    }
+  }
+  if (sync.changed) writes.push({ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify(sync.projects) });
+  const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
+  if (auditEvents.length) writes.push({ key: STORAGE_KEYS.AUDIT_EVENTS, value: JSON.stringify(buildAuditStorePayload([...readStoredAuditEvents(), ...auditEvents])) });
+  return { invoices: sync.invoices, writes };
+}
+
+export async function commitStoredInvoices(invoices, event = {}) {
+  const plan = buildInvoiceAtomicWrites(invoices, event);
+  const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
+  const committed = await commitAtomicCloudQueuedBusinessMutation({
+    writes: [...plan.writes, ...additionalWrites],
+    event: { reason: "invoice_data_saved", domains: ["invoices", "invoice_payments"], severity: "money_critical", source: "commitStoredInvoices", ...event },
+  });
+  return { ...committed, invoices: plan.invoices };
 }
 
 export function writeStoredInvoices(invoices) {

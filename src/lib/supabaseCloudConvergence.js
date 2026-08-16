@@ -611,6 +611,21 @@ function planSupplemental(local, cloud, baseline, plan) {
   operationForFamily("scopeTemplates", localTemplates, cloudTemplates, baseTemplates, plan, null, plan.bootstrap);
 }
 
+function invoicesWithMatchedLegacyEstimateNumbers(snapshot = {}, cloudInvoices = []) {
+  const estimatesById = new Map(asArray(snapshot.estimates).map((estimate) => [entityId(estimate), estimate]));
+  const cloudById = new Map(asArray(cloudInvoices).map((invoice) => [entityId(invoice), invoice]));
+  const invoices = asArray(snapshot.invoices).map((invoice) => {
+    if (asText(invoice?.estimateNumber)) return invoice;
+    const cloudInvoice = cloudById.get(entityId(invoice));
+    const cloudEstimateNumber = asText(cloudInvoice?.estimateNumber);
+    if (!cloudEstimateNumber) return invoice;
+    const linkedEstimate = estimatesById.get(asText(invoice?.sourceEstimateId || invoice?.sourceEstimateLegacyId));
+    const estimateNumber = linkedEstimate ? asText(buildPersistedEstimateContract(mapLocalEstimateToBackendEstimate(linkedEstimate, {})).estimate_number) : "";
+    return estimateNumber === cloudEstimateNumber ? { ...invoice, estimateNumber } : invoice;
+  });
+  return { ...snapshot, invoices };
+}
+
 export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = null, cloudSnapshot = null, companyId = "", storage } = {}) {
   const plan = {
     version: CLOUD_CONVERGENCE_VERSION, safe: false, classifications: [], conflicts: [], additions: { customers: [], projects: [], estimates: [], invoices: [], scopeTemplates: [] },
@@ -645,15 +660,17 @@ export function buildCloudConvergencePlan({ local = {}, cloud = {}, baseline = n
     ...(localProjectIdByCloudId.has(asText(invoice?.projectId)) ? { projectId: localProjectIdByCloudId.get(asText(invoice.projectId)) } : {}),
     ...(localEstimateIdByCloudId.has(asText(invoice?.sourceEstimateId)) ? { sourceEstimateId: localEstimateIdByCloudId.get(asText(invoice.sourceEstimateId)) } : {}),
   }));
-  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(local.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
-  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(local.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const localForInvoiceComparison = invoicesWithMatchedLegacyEstimateNumbers(local, cloudInvoices);
+  const baselineForInvoiceComparison = baseline ? invoicesWithMatchedLegacyEstimateNumbers(baseline, cloudInvoices) : null;
+  const invoiceBindings = cloudSnapshot?.uuidMaps ? bindingResolutionForFamily({ family: "invoices", local: asArray(localForInvoiceComparison.invoices), cloud: cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
+  const paymentBindings = cloudSnapshot?.uuidMaps ? paymentBindingResolution({ localInvoices: asArray(localForInvoiceComparison.invoices), cloudInvoices, cloudSnapshot, bindings, companyId, bootstrap: plan.bootstrap }) : null;
   const bindingCodes = [...(customerBindings?.codes || []), ...(projectBindings?.codes || []), ...(estimateBindings?.codes || []), ...(invoiceBindings?.codes || []), ...(paymentBindings?.codes || [])];
   if (bindingCodes.length) { plan.conflicts.push(...bindingCodes.map((code) => ({ family: "bindings", code: plan.bootstrap ? "baseline_bootstrap_binding_conflict" : code }))); return plan; }
   if (customerBindings || projectBindings || estimateBindings || invoiceBindings || paymentBindings) plan.bindingEntries.push(...(customerBindings?.entries || []), ...(projectBindings?.entries || []), ...(estimateBindings?.entries || []), ...(invoiceBindings?.entries || []), ...(paymentBindings?.entries || []));
   operationForFamily("customers", asArray(local.customers), asArray(cloud.customers), asArray(baseline?.customers), plan, customerBindings?.pairs, plan.bootstrap);
   operationForFamily("projects", asArray(local.projects), cloudProjects, asArray(baseline?.projects), plan, projectBindings?.pairs, plan.bootstrap);
   operationForFamily("estimates", asArray(local.estimates), cloudEstimates, asArray(baseline?.estimates), plan, estimateBindings?.pairs, plan.bootstrap);
-  operationForFamily("invoices", asArray(local.invoices), cloudInvoices, asArray(baseline?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
+  operationForFamily("invoices", asArray(localForInvoiceComparison.invoices), cloudInvoices, asArray(baselineForInvoiceComparison?.invoices), plan, invoiceBindings?.pairs, plan.bootstrap);
   // Additions and replacements must always prove restore-payload + child evidence.
   [...(plan.additions.estimates || []), ...(plan.replacements.estimates || [])].forEach((estimate) => {
     const code = estimateEvidenceCode(estimate, cloudSnapshot?.estimateEvidence?.[entityId(estimate)]);

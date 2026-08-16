@@ -7,6 +7,7 @@ import {
   buildEstimateInvoiceSummary,
   INVOICE_TYPES,
   createInvoiceBuilderDraftFromEstimate,
+  commitStoredInvoices,
   createInvoiceDraftFromEstimate,
   readStoredInvoices,
   roundCurrency,
@@ -18,7 +19,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
@@ -204,19 +205,17 @@ function readLegacyInvoiceEstimateRecords() {
   }
 }
 
-function writeStoredEstimatesPreservingLegacy(nextEstimates) {
+async function writeStoredEstimatesPreservingLegacy(nextEstimates, event = {}) {
   const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
   const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
-  localStorage.setItem(ESTIMATES_KEY, JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]));
+  const value = JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]);
+  await commitAtomicCloudQueuedBusinessMutation({
+    writes: [{ key: ESTIMATES_KEY, value }],
+    event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesPreservingLegacy", ...event },
+  });
   try {
     window.dispatchEvent(new Event("estipaid:estimates-changed"));
   } catch {}
-  markCloudBackupDirty({
-    reason: "estimate_data_saved",
-    domains: ["estimates"],
-    severity: "money_critical",
-    source: "writeStoredEstimatesPreservingLegacy",
-  });
 }
 
 function readCustomers() {
@@ -948,7 +947,7 @@ export default function EstimatesScreen({
     }
   };
 
-  const runEstimateCardAction = (event, estimateId, action, handler) => {
+  const runEstimateCardAction = async (event, estimateId, action, handler) => {
     consumeEstimateActionEvent(event, estimateId, action, { preventDefault: true });
     const currentIntent = getCardActionIntent();
     const normalizedEstimateId = String(estimateId || "").trim();
@@ -959,7 +958,7 @@ export default function EstimatesScreen({
     ) {
       return;
     }
-    handler();
+    await handler();
     window.setTimeout(() => {
       const latestIntent = getCardActionIntent();
       if (
@@ -1504,7 +1503,7 @@ export default function EstimatesScreen({
     finalizeOpen();
   };
 
-  const setEstimateStatus = (estimate, nextStatus, options = {}) => {
+  const setEstimateStatus = async (estimate, nextStatus, options = {}) => {
     const normalized = normalizeEstimateStatus(nextStatus);
     const target = getDocumentEditTarget(estimate, "estimate");
     const existing = readSavedEstimatesList();
@@ -1534,7 +1533,7 @@ export default function EstimatesScreen({
         setOpenErrorMessage("Unable to update this estimate because its identity is missing or ambiguous.");
         return false;
       }
-      writeStoredEstimatesPreservingLegacy(update.records);
+      await writeStoredEstimatesPreservingLegacy(update.records, { source: "EstimatesScreen.setEstimateStatus", documentId: target });
     } catch {
       setOpenErrorMessage("Unable to save the estimate status.");
       return false;
@@ -1585,7 +1584,7 @@ export default function EstimatesScreen({
   // (approved/accepted, converted, invoice-linked, or archived) and after an
   // explicit confirmation. This exists so estimates that were only "Awaiting
   // Response" because the app lacked a draft stage can be corrected.
-  const moveEstimateToDraft = (estimate) => {
+  const moveEstimateToDraft = async (estimate) => {
     const targetIdentity = estimateIdentity(estimate);
     const targetId = String(estimate?.id || "").trim();
     const stored = readSavedEstimatesList().find((item) => (
@@ -1609,7 +1608,7 @@ export default function EstimatesScreen({
       : "Move Estimate Back to Draft?\n\nOnly do this if this estimate has not been sent to the customer.\n\nDraft estimates can be deleted.");
     if (!confirmed) return;
 
-    setEstimateStatus(estimate, STATUS_DRAFT);
+    await setEstimateStatus(estimate, STATUS_DRAFT);
   };
 
   const shouldShowApprovalInvoicePrompt = (estimate) => {
@@ -1673,30 +1672,48 @@ export default function EstimatesScreen({
     return resolved;
   };
 
-  const openInvoiceBuilderFromEstimate = (estimate) => {
+  // The single owner of estimate-to-invoice creation. `billing` is optional:
+  // without it the draft defaults to the full estimate or its remaining
+  // balance, and with it the user's chosen deposit/progress/amount/percent is
+  // honored. Everything downstream -- resolution, the mutation guard, the
+  // write, the edit target, navigation and the duplicate-launch lock -- happens
+  // here and nowhere else, so the billing setup never has to repeat any of it.
+  const openInvoiceBuilderFromEstimate = (estimate, billing = null) => {
     if (invoiceBuilderLaunchPromiseRef.current) return invoiceBuilderLaunchPromiseRef.current;
+    const reportError = typeof billing?.onError === "function" ? billing.onError : setOpenErrorMessage;
     const task = (async () => {
-      const target = resolveApprovedEstimateForInvoiceLaunch(estimate);
-      if (!target) return false;
+      const target = billing?.approvedEstimate || resolveApprovedEstimateForInvoiceLaunch(estimate);
+      if (target?.archived || normalizeEstimateStatus(target?.status) !== STATUS_APPROVED) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
+      if (!target) {
+        reportError("This estimate is no longer available to invoice.");
+        return false;
+      }
 
       const currentInvoices = readStoredInvoices();
       const created = createInvoiceBuilderDraftFromEstimate(target, currentInvoices);
       if (!created.ok || !created.draft) {
-        setOpenErrorMessage(created.message || "Unable to create an invoice from this estimate.");
+        reportError(created.message || "Unable to create an invoice from this estimate.");
         return false;
       }
 
       const mutationAccess = await ensureCanMutateBusinessData("local_save");
       if (!mutationAccess?.ok) {
-        window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
+        reportError(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return false;
       }
 
       let nextInvoices;
       try {
-        nextInvoices = writeStoredInvoices([created.draft, ...currentInvoices]);
+        nextInvoices = (await commitStoredInvoices([created.draft, ...currentInvoices], {
+          source: "EstimatesScreen.convertEstimate",
+          documentId: created.draft.id,
+          ...(Array.isArray(billing?.additionalWrites) ? { additionalWrites: billing.additionalWrites } : {}),
+        })).invoices;
       } catch {
-        setOpenErrorMessage("Unable to save the invoice. The estimate was not changed.");
+        reportError("Unable to save the invoice. The estimate was not changed.");
         return false;
       }
       setInvoices(nextInvoices);
@@ -1727,14 +1744,36 @@ export default function EstimatesScreen({
   };
 
   const approveAndConvertEstimate = async (estimate) => {
-    const approved = setEstimateStatus(estimate, STATUS_APPROVED, { showInvoicePrompt: false });
-    if (!approved) return false;
-    const exactApprovedEstimate = resolveApprovedEstimateForInvoiceLaunch(estimate);
-    if (!exactApprovedEstimate) {
+    const target = getDocumentEditTarget(estimate, "estimate");
+    const existing = readSavedEstimatesList();
+    const update = updateResolvedDocumentEditTarget(
+      existing,
+      target,
+      "estimate",
+      (item) => ({ ...item, status: STATUS_APPROVED })
+    );
+    if (!update?.record || update.record.archived) {
       setOpenErrorMessage("The approved estimate could not be verified for conversion.");
       return false;
     }
-    return openInvoiceBuilderFromEstimate(exactApprovedEstimate);
+
+    const committed = await openInvoiceBuilderFromEstimate(update.record, {
+      approvedEstimate: update.record,
+      additionalWrites: [{
+        key: ESTIMATES_KEY,
+        value: JSON.stringify([...update.records, ...readLegacyInvoiceEstimateRecords()]),
+      }],
+    });
+    if (!committed) return false;
+
+    setEstimates((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list
+        .map((item) => (getDocumentEditTarget(item, "estimate") === target ? { ...item, status: STATUS_APPROVED } : item))
+        .sort(sortEstimatesByDateDesc);
+    });
+    setExpanded({});
+    return true;
   };
 
   // Snapshot's "Create Invoice" asks for the same conversion the Estimates
@@ -1822,7 +1861,7 @@ export default function EstimatesScreen({
       const { archived, archivedAt, ...rest } = item;
       return rest;
     });
-    writeStoredEstimatesPreservingLegacy(next);
+    await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.restoreEstimate", documentId: targetId });
   };
 
   const onConfirmDelete = async () => {
@@ -1854,13 +1893,13 @@ export default function EstimatesScreen({
           : String(item?.id || "").trim() === deletedId;
         return matches ? { ...item, archived: true, archivedAt: new Date().toISOString() } : item;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.archiveEstimate", documentId: deletedId });
     } else {
       const next = existing.filter((item) => {
         if (targetIdentity) return estimateIdentity(item) !== targetIdentity;
         return String(item?.id || "").trim() !== deletedId;
       });
-      writeStoredEstimatesPreservingLegacy(next);
+      await writeStoredEstimatesPreservingLegacy(next, { source: "EstimatesScreen.deleteEstimate", documentId: deletedId });
       removeCloudAssetBinding("estimate", deletedId);
 
       if (deletedId) {
@@ -1953,7 +1992,7 @@ export default function EstimatesScreen({
         window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
         return;
       }
-      writeStoredEstimatesPreservingLegacy([duplicate, ...existing]);
+      await writeStoredEstimatesPreservingLegacy([duplicate, ...existing], { source: "EstimatesScreen.duplicateEstimate", documentId: duplicate.id });
 
       setExpanded({});
 

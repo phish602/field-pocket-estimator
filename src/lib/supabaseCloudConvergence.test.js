@@ -107,6 +107,24 @@ test("a stale rollback journal is archived without erasing newer work and the sa
   expect(convergence).toEqual(expect.objectContaining({ ok: true, status: "matched" }));
 });
 
+test("legacy invoices without estimateNumber converge when their linked estimate supplies the canonical number", () => {
+  const local = {
+    ...baseLocal(),
+    estimates: [estimate("estimate-1", { estimateNumber: "EST-2613" })],
+    invoices: [{ ...invoice("invoice-1"), estimateNumber: "" }],
+  };
+  const cloud = {
+    ...local,
+    invoices: [{ ...local.invoices[0], estimateNumber: "EST-2613" }],
+  };
+
+  const plan = buildCloudConvergencePlan({ local, cloud, baseline: local });
+
+  expect(plan.safe).toBe(true);
+  expect(plan.conflicts).toEqual([]);
+  expect(plan.replacements.invoices).toEqual([]);
+});
+
 test("ordinary conflict recording preserves prior retired-journal evidence", async () => {
   const current = { ...emptySnapshot(), customers: [{ id: "customer-new", fullName: "Accepted newer work" }] };
   const originalJournal = {
