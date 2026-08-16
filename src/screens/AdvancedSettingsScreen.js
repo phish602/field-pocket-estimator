@@ -57,7 +57,6 @@ import {
 import { VAULT_COMPATIBILITY_GUARD_KEY } from "../lib/vaultCompatibilityGuard";
 
 const ESTIPAID_PREFIX = "estipaid-";
-const DEV_CLOUD_TOOLS_FLAG = "estipaid-dev-cloud-tools-v1";
 
 function asObject(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -204,17 +203,12 @@ function inferWorkspaceName() {
 }
 
 function resolveDeveloperCloudToolsEnabled(explicitValue) {
+  // Developer migration controls are for local development only. A production
+  // build must not expose them, including through a legacy local flag, URL, or
+  // an explicit render prop.
+  if (process.env.NODE_ENV === "production") return false;
   if (typeof explicitValue === "boolean") return explicitValue;
-  try {
-    if (localStorage.getItem(DEV_CLOUD_TOOLS_FLAG) === "1") return true;
-  } catch {}
-  try {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search || "");
-      if (params.get("devCloudTools") === "1") return true;
-    }
-  } catch {}
-  return false;
+  return process.env.NODE_ENV === "development";
 }
 
 function SettingRow({ title, hint, control }) {
