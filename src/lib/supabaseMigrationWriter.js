@@ -86,6 +86,9 @@ const COUNTED_TABLES = [
 ];
 const PROJECT_STATUS_MAP = new Map([
   ["active", "active"],
+  // A real app lifecycle status, persisted as itself. Folding it into "active"
+  // made a fresh-device restore bring every estimating project back as Active.
+  ["estimating", "estimating"],
   ["completed", "completed"],
   ["archived", "archived"],
   ["draft", "draft"],
@@ -542,6 +545,7 @@ function mapInvoicePaymentPayloads(draft, invoiceIdByLegacyId, userId) {
     method: payment?.method || null,
     status: payment?.status || null,
     paid_at: payment?.paid_at || null,
+    notes: payment?.notes || null,
     created_by: userId,
     updated_by: userId,
   }));

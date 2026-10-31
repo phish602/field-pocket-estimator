@@ -574,14 +574,19 @@ function persistedPaymentDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
-function mapCloudPayment(row) {
-  return {
+export function mapCloudPayment(row) {
+  const payment = {
     id: requireLegacyId(row, "invoice_payments"),
     amount: row?.amount ?? null,
     method: row?.method || "",
     status: row?.status || "paid",
     paidAt: persistedPaymentDate(row?.paid_at) || null,
   };
+  // The contractor's payment note, persisted in invoice_payments.notes and read
+  // back under the local field name the invoice normalizer already owns.
+  const note = asText(row?.notes);
+  if (note) payment.note = note;
+  return payment;
 }
 
 // Restores the estimate from its restore_payload verbatim -- the payload

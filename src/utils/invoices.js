@@ -734,6 +734,55 @@ function partitionThinInvoiceLineItems(source) {
   };
 }
 
+// A thin cloud-restored invoice carries its persisted parent total but none of
+// the cost fields the financial summary reads: its internal costs survive only
+// on the restored children (hours x trueRateInternal, qty x unitCostInternal).
+// Reading the summary from the thin record alone priced that missing cost as
+// zero, so a restored 33% invoice reported a 100% margin. Price the cost basis
+// from the rebuilt sections through the same engine that priced the original.
+// Revenue stays the persisted parent total, and a record that already carries
+// its own cost is left exactly as it is.
+function withThinRestoredCostBasis(source, thinSections, additionalChargeItems) {
+  const directCost = firstFiniteNumber(
+    source?.financials?.totalCost,
+    source?.totals?.totalCost,
+    source?.totalCost,
+    source?.internalCost
+  );
+  if (directCost !== null) return source;
+  try {
+    const sourceLabor = source?.labor && typeof source.labor === "object" ? source.labor : {};
+    const sourceMaterials = source?.materials && typeof source.materials === "object" ? source.materials : {};
+    const computed = computeTotals(toEstimatorState({
+      labor: {
+        hazardPct: DEFAULT_STATE?.labor?.hazardPct ?? 0,
+        riskPct: DEFAULT_STATE?.labor?.riskPct ?? 0,
+        multiplier: DEFAULT_STATE?.labor?.multiplier ?? 1,
+        ...sourceLabor,
+        lines: thinSections.labor,
+      },
+      materials: { ...sourceMaterials, items: thinSections.materials },
+      additionalCharges: { items: additionalChargeItems },
+      ui: { materialsMode: thinSections.materials.length > 0 ? "itemized" : resolveMaterialsMode(source) },
+    }));
+    const basis = buildFinancialSummaryFromComputed(computed);
+    return {
+      ...source,
+      financials: {
+        ...(source?.financials || {}),
+        totalCost: basis.totalCost,
+        laborRevenue: basis.laborRevenue,
+        laborCost: basis.laborCost,
+        materialsRevenue: basis.materialsRevenue,
+        materialsCost: basis.materialsCost,
+        additionalChargesRevenue: basis.additionalChargesRevenue,
+      },
+    };
+  } catch {
+    return source;
+  }
+}
+
 // Unchanged historical mapping for kind-less legacy thin rows. Preserved exactly
 // (including its qty >= 1 clamp and its unit-into-note fold) so pre-contract
 // records keep behaving the way they always have.
@@ -1080,6 +1129,35 @@ function buildInvoiceLedgerMutations(previousInvoices, nextInvoices, event = {})
   return [...deletes, ...upserts];
 }
 
+// Saving an invoice re-derives its project, which advances the project's local
+// activity clock (updatedAt) to the invoice's save time. That clock orders
+// projects on this device but is not part of the persisted cloud project row,
+// so an upsert whose only difference is updatedAt rewrites an identical row and
+// re-verifies it on every invoice save. Any other project change still queues.
+function projectChangedBeyondActivityClock(previous, next) {
+  if (!previous || !next) return true;
+  const { updatedAt: previousUpdatedAt, ...previousRest } = previous;
+  const { updatedAt: nextUpdatedAt, ...nextRest } = next;
+  return !cloudSyncEqual(previousRest, nextRest);
+}
+
+function buildInvoiceProjectLedgerMutations(plan, event = {}) {
+  if (!plan.projectChanged) return [];
+  const previousById = new Map((Array.isArray(plan.previousProjects) ? plan.previousProjects : [])
+    .map((project) => [asText(project?.id), project]));
+  return buildCollectionCloudMutationPlan({
+    previous: plan.previousProjects,
+    next: plan.projects,
+    entityType: CLOUD_MUTATION_ENTITY.PROJECT,
+    companyId: event?.companyId,
+    reason: "project_backfilled_from_invoice",
+    source: asText(event?.source) || "commitStoredInvoices",
+  }).mutations.filter((mutation) => (
+    mutation.operation !== CLOUD_MUTATION_OPERATION.UPSERT
+    || projectChangedBeyondActivityClock(previousById.get(asText(mutation.documentId)), mutation.payload)
+  ));
+}
+
 export async function commitStoredInvoices(invoices, event = {}) {
   const plan = buildInvoiceAtomicWrites(invoices, event);
   const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
@@ -1099,14 +1177,7 @@ export async function commitStoredInvoices(invoices, event = {}) {
   const ledgerMutations = [
     ...estimateMutations,
     ...buildInvoiceLedgerMutations(plan.previousInvoices, plan.invoices, event),
-    ...(plan.projectChanged ? buildCollectionCloudMutationPlan({
-      previous: plan.previousProjects,
-      next: plan.projects,
-      entityType: CLOUD_MUTATION_ENTITY.PROJECT,
-      companyId: event?.companyId,
-      reason: "project_backfilled_from_invoice",
-      source: asText(event?.source) || "commitStoredInvoices",
-    }).mutations : []),
+    ...buildInvoiceProjectLedgerMutations(plan, event),
   ];
   const allWritesAlreadyStored = writes.every((write) => {
     try { return localStorage.getItem(write.key) === write.value; } catch { return false; }
@@ -1284,9 +1355,10 @@ export function normalizeInvoiceRecord(record, options = {}) {
   const normalizedAdditionalCharges = normalizeAdditionalChargeItems(
     thinSections.charges.length > 0 ? thinSections.charges : source?.additionalCharges?.items
   );
-  const financialSummary = extractFinancialSummaryFromDoc(source, {
-    approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
-  });
+  const financialSummary = extractFinancialSummaryFromDoc(
+    hasThinChildren ? withThinRestoredCostBasis(source, thinSections, normalizedAdditionalCharges) : source,
+    { approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal }
+  );
   const projectAddress = asText(
     source?.projectAddress
     || source?.customer?.projectAddress

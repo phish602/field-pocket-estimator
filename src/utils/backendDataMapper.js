@@ -580,6 +580,10 @@ export function mapLocalInvoicePaymentToBackendPayment(payment, invoice, context
     method: pickText(source?.method),
     status: normalizePaymentStatus(source?.status, { payment: source, invoice: targetInvoice }),
     paid_at: toIsoTimestamp(source?.paidAt || source?.date),
+    // Only the contractor's own payment note (the `note` field the payment form
+    // records and the invoice normalizer keeps). Raw provider/import fields such
+    // as `notes` and `stripePayload` are still never carried forward.
+    notes: pickText(source?.note),
     ...mapCommonTimelineFields(source),
   };
 

@@ -105,6 +105,7 @@ jest.mock("../lib/supabaseCloudRestore", () => ({
   previewSupabaseCloudRestore: jest.fn(),
   executeSupabaseCloudRestore: jest.fn(),
   exportSupabaseCloudBackupArtifact: jest.fn(),
+  getLastCloudRestoreCompleteAt: jest.fn(() => 0),
   CLOUD_RESTORE_STATUS: {
     SIGNED_OUT: "signed_out",
     NO_WORKSPACE: "no_workspace",
@@ -287,7 +288,11 @@ describe("AdvancedSettingsScreen developer migration tools visibility", () => {
   });
 });
 
-describe("AdvancedSettingsScreen development sample data controls", () => {
+// The legacy sample-data loader wrote business collections straight into
+// localStorage, outside the atomic persistence owners and the mutation ledger.
+// It is retired: Settings must not offer it in any environment, and test data
+// is now created through the normal UI on a disposable account.
+describe("AdvancedSettingsScreen retired sample data controls", () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
@@ -297,13 +302,9 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     });
     seedDevSampleData.mockReset();
     clearDevSampleData.mockReset();
-    seedDevSampleData.mockReturnValue({ customers: 6, estimates: 8, invoices: 8 });
-    clearDevSampleData.mockReturnValue({ clearedCustomers: 6, clearedEstimates: 8, clearedInvoices: 8 });
     useSupabaseAuth.mockReturnValue(buildAuthState());
     useSupabaseAccount.mockReturnValue(buildAccountState());
     useSupabaseWorkspaceBootstrap.mockReturnValue(buildWorkspaceBootstrapState());
-    jest.spyOn(window, "alert").mockImplementation(() => {});
-    jest.spyOn(window, "confirm").mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -314,37 +315,25 @@ describe("AdvancedSettingsScreen development sample data controls", () => {
     jest.restoreAllMocks();
   });
 
-  test("hides Development Sample Data when developer tools are explicitly disabled", () => {
-    render(<AdvancedSettingsScreen developerCloudToolsEnabled={false} />);
+  test.each([
+    ["by default", {}],
+    ["with developer tools enabled", { developerCloudToolsEnabled: true }],
+  ])("does not offer sample data load or clear in development %s", (_label, props) => {
+    render(<AdvancedSettingsScreen {...props} />);
 
     expect(screen.queryByText("Development Sample Data")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Load / Refresh Sample Data" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Clear Sample Data" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /sample data/i })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/sample[\s-]data/i);
+    expect(seedDevSampleData).not.toHaveBeenCalled();
+    expect(clearDevSampleData).not.toHaveBeenCalled();
   });
 
-  test("shows Development Sample Data when developer tools are enabled in development", () => {
+  test("keeps the supported backup and diagnostics tools", () => {
     render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
 
-    expect(screen.getByText("Development Sample Data")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Load / Refresh Sample Data" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Clear Sample Data" })).toBeInTheDocument();
-  });
-
-  test("loads canonical sample data through the developer-tools gate in development", () => {
-    render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Load / Refresh Sample Data" }));
-
-    expect(seedDevSampleData).toHaveBeenCalledTimes(1);
-  });
-
-  test("clears canonical sample data through the developer-tools gate in development", () => {
-    render(<AdvancedSettingsScreen developerCloudToolsEnabled />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Clear Sample Data" }));
-
-    expect(window.confirm).toHaveBeenCalledTimes(1);
-    expect(clearDevSampleData).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Export Diagnostics" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download Cloud Backup JSON" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import Backup JSON" })).toBeInTheDocument();
   });
 });
 

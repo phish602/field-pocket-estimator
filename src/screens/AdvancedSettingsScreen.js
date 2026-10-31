@@ -1,6 +1,5 @@
 import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { buildBackupJsonImportPlan, applyBackupJsonImportPlan } from "../lib/backupJsonImport";
-import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
 import { triggerCloudBackupExportDownload } from "../lib/cloudBackupExportDownload";
 import { buildDiagnosticBundle } from "../utils/supportDiagnostics";
@@ -177,17 +176,7 @@ function downloadJson(payload, filename) {
   }, 3000);
 }
 
-function resolveDeveloperCloudToolsEnabled(explicitValue) {
-  // Developer migration controls are for local development only. A production
-  // build must not expose them, including through a legacy local flag, URL, or
-  // an explicit render prop.
-  if (process.env.NODE_ENV === "production") return false;
-  if (typeof explicitValue === "boolean") return explicitValue;
-  return process.env.NODE_ENV === "development";
-}
-
 export default function AdvancedSettingsScreen({
-  developerCloudToolsEnabled,
   spinTick = 0,
   onOpenCompanyProfile = null,
   onOpenTemplates = null,
@@ -212,7 +201,6 @@ export default function AdvancedSettingsScreen({
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const importInputRef = useRef(null);
   const diagnosticsMessageTimerRef = useRef(null);
-  const showDeveloperCloudTools = resolveDeveloperCloudToolsEnabled(developerCloudToolsEnabled);
   const exportData = () => {
     try {
       setBusyLabel("Exporting...");
@@ -340,35 +328,6 @@ export default function AdvancedSettingsScreen({
       showDiagnosticsMessage("Unable to export diagnostics.");
     } finally {
       setDiagnosticsBusy(false);
-    }
-  };
-  const loadDevSampleData = () => {
-    if (!showDeveloperCloudTools) return;
-    try {
-      setBusyLabel("Loading sample data...");
-      const result = seedDevSampleData();
-      window.alert(
-        `Loaded sample data: ${Number(result?.customers || 0)} customers, ${Number(result?.estimates || 0)} estimates, ${Number(result?.invoices || 0)} invoices.`
-      );
-    } catch (error) {
-      window.alert(error?.message || "Sample data load failed.");
-    } finally {
-      setBusyLabel("");
-    }
-  };
-  const clearOnlyDevSampleData = () => {
-    if (!showDeveloperCloudTools) return;
-    if (!window.confirm("Remove seeded sample customers, estimates, and invoices only?")) return;
-    try {
-      setBusyLabel("Clearing sample data...");
-      const result = clearDevSampleData();
-      window.alert(
-        `Removed sample data: ${Number(result?.clearedCustomers || 0)} customers, ${Number(result?.clearedEstimates || 0)} estimates, ${Number(result?.clearedInvoices || 0)} invoices.`
-      );
-    } catch (error) {
-      window.alert(error?.message || "Sample data clear failed.");
-    } finally {
-      setBusyLabel("");
     }
   };
   const importJsonFile = async (file) => {
@@ -1114,7 +1073,7 @@ export default function AdvancedSettingsScreen({
           >
             <div className="pe-field-label" style={{ marginBottom: 2 }}>Developer Tools</div>
             <div className="pe-field-helper" style={{ marginTop: -4 }}>
-              Internal and support tools for raw app data, diagnostics, and local sample-data workflows.
+              Internal and support tools for raw app data, diagnostics, and backups.
             </div>
 
             <div style={{ display: "grid", gap: 8 }}>
@@ -1149,23 +1108,6 @@ export default function AdvancedSettingsScreen({
                   Import Backup JSON
                 </button>
               </div>
-
-              {showDeveloperCloudTools ? (
-                <div style={{ display: "grid", gap: 8, paddingTop: 8, borderTop: "1px solid rgba(148,163,184,0.18)" }}>
-                  <div className="pe-field-label" style={{ marginBottom: 0 }}>Development Sample Data</div>
-                  <div className="pe-field-helper">
-                    Loads deterministic development fixtures into normal EstiPaid storage for controlled testing.
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button type="button" className="pe-btn pe-btn-ghost" onClick={loadDevSampleData}>
-                      Load / Refresh Sample Data
-                    </button>
-                    <button type="button" className="pe-btn pe-btn-ghost" onClick={clearOnlyDevSampleData}>
-                      Clear Sample Data
-                    </button>
-                  </div>
-                </div>
-              ) : null}
 
               <div className="pe-field-helper" style={{ marginTop: 2 }}>
                 Diagnostics exports create a redacted support bundle. Cloud Backup JSON downloads this workspace&apos;s records from Supabase. This Device Backup JSON exports only data currently stored on this device — it does not download your cloud backup, and it will be empty if this device is empty. Import Backup JSON accepts cloud, device, and raw app data backup files and previews record counts before writing.
