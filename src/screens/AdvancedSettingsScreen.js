@@ -1,4 +1,4 @@
-import { markCloudBackupDirty, readCloudBackupQueueState, markCloudBackupSyncing, applyCloudBackupResultToQueue, CLOUD_BACKUP_STATUS } from "../lib/cloudBackupQueue";
+import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
 import { buildBackupJsonImportPlan, applyBackupJsonImportPlan } from "../lib/backupJsonImport";
 import { clearDevSampleData, seedDevSampleData } from "../utils/devSampleData";
 import { triggerLocalStorageExportDownload } from "../lib/localStorageExportDownload";
@@ -25,7 +25,6 @@ import {
   exportSupabaseCloudBackupArtifact,
   CLOUD_RESTORE_STATUS,
   CLOUD_BACKUP_EXPORT_STATUS,
-  CLOUD_RESTORE_STOPPED_MESSAGE,
 } from "../lib/supabaseCloudRestore";
 import { checkSupabaseCloudOnboardingStatus, CLOUD_ONBOARDING_STATUS } from "../lib/supabaseCloudOnboarding";
 import { LOCAL_DATA_DECISION } from "../lib/localDataIntegrity";
@@ -207,7 +206,7 @@ export default function AdvancedSettingsScreen({
     }
   }, []);
 
-  const [busyLabel, setBusyLabel] = useState("");
+  const [, setBusyLabel] = useState("");
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [cloudExportBusy, setCloudExportBusy] = useState(false);
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
