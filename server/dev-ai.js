@@ -4248,7 +4248,7 @@ function buildDashBriefProviderTransformPrompts(sourceText = "", { stricter = fa
     "Then output one blank line.",
     "Then output one short summary paragraph after the blank line.",
     "Preserve the source meaning and real work steps.",
-    "Do not invent work, exclusions, pricing, approvals, legal language, code or compliance language, markdown fences, headings, or JSON.",
+    "Do not invent work, locations, equipment configurations, site conditions, exclusions, pricing, approvals, legal language, code or compliance language, markdown fences, headings, or JSON.",
     stricter ? "The previous answer was malformed. Follow the exact required shape this time." : "",
   ].filter(Boolean).join("\n");
   const userPrompt = [
@@ -7240,7 +7240,7 @@ function buildScopeAssistSystemPrompt({ context } = {}) {
     "Do not answer with vague filler that could fit almost any job.",
     "Do not use generic exclusion boilerplate unless it is tied to the actual prompt.",
     "Always name the actual work item, surface, asset, or area implied by the prompt.",
-    "When the prompt is rough, infer the likely contractor workflow, access, prep, verification, cleanup, and scope boundaries from the raw words and soft cues.",
+    "When the prompt is rough, infer the likely contractor workflow, prep, verification, cleanup, and scope boundaries from the raw words and soft cues.",
     "Default to outcome=\"scope\" and only use outcome=\"clarify\" when a real missing detail would make the draft misleading.",
     "Only use outcome=\"clarify\" when the prompt is truly too empty or useless to interpret into real work.",
     "For outcome=\"scope\", scopeNotes must be job-specific, contractor-ready, and materially more useful than a wrapper sentence.",
@@ -7252,6 +7252,7 @@ function buildScopeAssistSystemPrompt({ context } = {}) {
     "For outcome=\"clarify\", ask at most one concise question and list only truly missing fields that block a safe draft.",
     "Do not include dollar amounts, hourly rates, or pricing.",
     "Do not invent measurements, quantities, product systems, or technical requirements not stated or clearly implied by the user.",
+    "Use only job details supplied by the user or already present in the current scope. Do not invent the installation location, elevation, mounting position, equipment configuration, access conditions, or site conditions.",
     "Keep the result clean, readable, practical, and ready to drop into a first-pass estimate.",
     "Preserve existing scope notes when refining and improve only what the user asked to change.",
     "Use realistic work language such as remove, replace, install, repair, patch, test, verify, prepare, set, align, finish, and inspect when naturally supported.",
@@ -7316,6 +7317,7 @@ function buildScopeAssistSystemPrompt({ context } = {}) {
       "Preserve the same trade or action identity when the current draft uses explicit trade-specific wording.",
       "Preserve critical source anchor terms for the action, object, and location when they carry the job meaning.",
       "Preserve the actual job scope and any inclusions or exclusions already implied by the current draft.",
+      "Keep every distinct work step from the current draft. Compress the wording, not the work.",
       "Default to one compact paragraph for this Shorter refine result.",
       "Do not use multiple paragraphs unless the source draft is unusually dense and separating 2 short paragraphs is truly necessary to preserve meaning after compression.",
       "Do not expand, re-fullify, or restate the scope more broadly than the current draft.",
@@ -7423,8 +7425,8 @@ function buildScopeAssistUserPrompt({ userInput = "", context = {} } = {}) {
           "EXTRACTION PATTERN EXAMPLES (reference only — use the pattern, not this content):\n" +
           "\n" +
           "Example 1 — HVAC preventive maintenance:\n" +
-          "Source prose: \"Annual HVAC preventive maintenance on rooftop unit. Technician will check refrigerant levels and recharge if low, clean condenser and evaporator coils, test and calibrate thermostat, lubricate fan motors and bearings, replace air filters, and verify all electrical connections and controls.\"\n" +
-          "Opening overview sentence to SKIP for bullets: \"Annual HVAC preventive maintenance on rooftop unit.\"\n" +
+          "Source prose: \"Annual HVAC preventive maintenance on the existing unit. Technician will check refrigerant levels and recharge if low, clean condenser and evaporator coils, test and calibrate thermostat, lubricate fan motors and bearings, replace air filters, and verify all electrical connections and controls.\"\n" +
+          "Opening overview sentence to SKIP for bullets: \"Annual HVAC preventive maintenance on the existing unit.\"\n" +
           "Correct bullets extracted from procedural steps only:\n" +
           "- Check refrigerant levels; recharge if low\n" +
           "- Clean condenser and evaporator coils\n" +
@@ -7432,7 +7434,7 @@ function buildScopeAssistUserPrompt({ userInput = "", context = {} } = {}) {
           "- Lubricate fan motors and bearings\n" +
           "- Replace air filters and confirm unit operation\n" +
           "\n" +
-          "Annual HVAC PM completed on rooftop unit. Refrigerant checked, coils cleaned, thermostat calibrated, motors lubricated, and filters replaced.\n" +
+          "Annual HVAC PM completed on the existing unit. Refrigerant checked, coils cleaned, thermostat calibrated, motors lubricated, and filters replaced.\n" +
           "\n" +
           "Example 2 — water heater replacement:\n" +
           "Source prose: \"Replace existing 40-gallon water heater with new unit. Disconnect and remove old heater, position and secure new unit, reconnect supply and return water lines, check all connections for leaks, restore power, and test for proper operation.\"\n" +
@@ -7498,6 +7500,7 @@ function buildScopeAssistUserPrompt({ userInput = "", context = {} } = {}) {
       parts.push("Rewrite the current scope as a materially shorter version of itself.");
       parts.push("The output must be meaningfully shorter than the input draft in actual wording, not just shorter-looking because of line breaks or paragraph changes.");
       parts.push("Aim to reduce word count by roughly 30 to 45 percent when possible without losing core scope meaning.");
+      parts.push("Keep every distinct work step from the current draft. Compress the wording, not the work.");
       parts.push("Preserve the same job meaning, scope intent, and estimate-ready usefulness.");
       parts.push("Preserve the same trade or action identity from the current draft when it is explicitly named.");
       if (sourceAnchors.anchorTerms.length) {
@@ -7518,15 +7521,21 @@ function buildScopeAssistUserPrompt({ userInput = "", context = {} } = {}) {
       }
     } else {
       if (context?.sourceScopePrompt) parts.push(`Original scope request: ${context.sourceScopePrompt}`);
-      if (context?.currentScopeNotes && context?.ignoreCurrentScope !== true) {
-        parts.push(`Existing scope notes for background only; do not copy verbatim: ${context.currentScopeNotes}`);
+      const revisingCurrentScope = Boolean(context?.currentScopeNotes && context?.ignoreCurrentScope !== true);
+      if (revisingCurrentScope) {
+        parts.push(`Current scope to revise (source of truth for job details): ${context.currentScopeNotes}`);
       }
       if (context?.scopeInputAnalysis?.coreScopeText) parts.push(`Core scope text: ${context.scopeInputAnalysis.coreScopeText}`);
       parts.push(`Raw scope prompt: ${scopePromptBasis || "(none provided)"}`);
       parts.push("Assume the prompt describes real contractor work even if it is rough, casual, shorthand, or does not fit a neat trade bucket.");
       parts.push("Prefer drafting over clarifying unless the prompt is truly too empty to interpret.");
       parts.push("Write natural contractor-style scope notes that sound ready to paste into an estimate.");
-      parts.push("Make this a fuller first-pass scope note with enough practical detail to feel usable and professional.");
+      if (revisingCurrentScope) {
+        parts.push("Apply the revision request to the current scope. Keep its existing job details and meaning, and change only what the request asks for.");
+        parts.push("Do not introduce an installation location, elevation, mounting position, equipment configuration, or site condition that is not in the current scope or the revision request.");
+      } else {
+        parts.push("Make this a fuller first-pass scope note with enough practical detail to feel usable and professional.");
+      }
       if (shouldForceTwoParagraphs) {
         parts.push("Return exactly 2 short paragraphs separated by one blank line for this job.");
       } else {
@@ -7588,6 +7597,7 @@ function buildScopeAssistUserPrompt({ userInput = "", context = {} } = {}) {
       parts.push("Rewrite the current scope as a materially shorter version of itself.");
       parts.push("The output must be meaningfully shorter than the input draft in actual wording, not just shorter-looking because of line breaks or paragraph changes.");
       parts.push("Aim to reduce word count by roughly 30 to 45 percent when possible without losing core scope meaning.");
+      parts.push("Keep every distinct work step from the current draft. Compress the wording, not the work.");
       parts.push("Preserve the same job meaning, scope intent, and estimate-ready usefulness.");
       parts.push("Preserve the same trade or action identity from the current draft when it is explicitly named.");
       if (sourceAnchors.anchorTerms.length) {
@@ -7883,6 +7893,15 @@ async function withCoalescedScopeAssistRequest(fingerprint, trace, task) {
   return promise;
 }
 
+// Shared by itemized and blanket materials. Grounds suggestions in the
+// supplied scope and keeps reusable contractor tools out of job materials.
+const MATERIALS_ASSIST_GROUNDING_RULES = [
+  "- Job materials are components permanently installed on this job and supplies consumed by it",
+  "- Do not list reusable contractor tools, testing instruments, test-gas cylinders, or rented equipment as materials unless the scope explicitly says to charge for them",
+  "- Include every major component the scope says will be installed or replaced",
+  "- Do not add components, sizes, ratings, quantities, or installation conditions that the scope does not state or clearly require",
+];
+
 const AI_ASSIST_SECTIONS = {
   scope: {
     buildSystemPrompt({ context } = {}) {
@@ -8025,6 +8044,8 @@ const AI_ASSIST_SECTIONS = {
           "Rules:",
           "- Return 1 to 8 draft material rows maximum",
           "- proposedLines must be materials only, never labor",
+          ...MATERIALS_ASSIST_GROUNDING_RULES,
+          "- List the major components the scope says will be installed or replaced before any minor supplies",
           "- The scope may be plumbing, electrical, flooring, drywall, painting, finish work, demolition, or another trade",
           "- Propose only materials and supplies directly relevant to the described job or scope",
           "- If the user already listed specific materials, follow that list first and only add closely related common supplies when clearly helpful",
@@ -8045,11 +8066,13 @@ const AI_ASSIST_SECTIONS = {
         'Return ONLY valid JSON matching this exact schema: {"responseType":"blanketSuggestion","suggestedAmount":number,"assumptionsSummary":"string","includedCategories":["string"]}',
         "Rules:",
         "- suggestedAmount must be one positive number representing a rough pre-markup base amount for the blanket materials field",
+        "- This allowance covers materials only. Labor is never part of it, so do not include labor, removal, installation, testing, or other work activities in the amount, the assumptions, or the categories",
+        ...MATERIALS_ASSIST_GROUNDING_RULES,
         "- Base the allowance only on the described job or scope, regardless of trade",
         "- The scope may be plumbing, electrical, flooring, drywall, painting, finish work, demolition, or another trade",
         "- Frame the result as an allowance, not exact purchasing math",
-        "- assumptionsSummary should briefly explain what the allowance assumes",
-        "- includedCategories should be short material categories that the allowance carries",
+        "- assumptionsSummary should briefly explain which materials the allowance assumes, and must not contradict includedCategories",
+        "- includedCategories should be short material categories that the allowance carries, never services or work activities",
         "- Do not return itemized rows in blanket mode",
         "- Do not default to paint or coatings unless the estimate context points there",
         "- Do not invent SKU numbers, vendor names, or exact purchasing quotes",
