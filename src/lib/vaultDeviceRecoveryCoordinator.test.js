@@ -207,7 +207,9 @@ test("refreshes cloud and device evidence before one local reset", async () => {
 
   expect(local.deriveWorkspaceTag).toHaveBeenCalledTimes(3);
   expect(local.preview).toHaveBeenCalledTimes(2);
-  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  // Three ownership reads: prepare, under-lease refresh, and the commit-boundary
+  // re-proof taken after the async snapshot step and before the reset itself.
+  expect(local.verifyDevice).toHaveBeenCalledTimes(3);
   expect(local.executeReset).toHaveBeenCalledTimes(1);
 
   const resetInput = local.executeReset.mock.calls[0][0];
@@ -429,8 +431,11 @@ test("identity and capability revalidation failures retain the prepared proof", 
 test("device verification failure retains the prepared proof", async () => {
   const local = dependencies({
     verifyDevice: jest.fn()
+      // prepare, first execution's refresh (a different device, so blocked),
+      // then the second execution's refresh AND its commit-boundary re-proof.
       .mockResolvedValueOnce(deviceVerification("device-1"))
       .mockResolvedValueOnce(deviceVerification("device-2"))
+      .mockResolvedValueOnce(deviceVerification("device-1"))
       .mockResolvedValueOnce(deviceVerification("device-1")),
   });
   const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
@@ -606,12 +611,18 @@ test("final cloud and device refresh execute while the recovery lease is held", 
       .mockImplementationOnce(async () => {
         expect(held).toBe(true);
         return deviceVerification();
+      })
+      // The commit-boundary re-proof must also happen under the held lease.
+      .mockImplementationOnce(async () => {
+        expect(held).toBe(true);
+        return deviceVerification();
       }),
   });
   const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
   await executePreparedCurrentDeviceRecoveryReset(executeInput(prepared.proof), local);
   expect(local.preview).toHaveBeenCalledTimes(2);
-  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  // Prepare, under-lease refresh, and the commit-boundary re-proof.
+  expect(local.verifyDevice).toHaveBeenCalledTimes(3);
 });
 
 test("continuation refreshes evidence under lease and cannot authorize an initial reset", async () => {
@@ -629,9 +640,13 @@ test("continuation refreshes evidence under lease and cannot authorize an initia
       expect(held).toBe(true);
       return preview();
     }),
+    // A production-authorized device always carries its lease generation, and
+    // the continuation commit boundary now requires one. Every call asserts the
+    // lease is held, so this also proves the commit-boundary proof is taken
+    // inside the recovery lease.
     verifyDevice: jest.fn(async () => {
       expect(held).toBe(true);
-      return deviceVerification();
+      return deviceVerificationAt(5);
     }),
   });
   const result = await resumeCurrentDeviceRecoveryReset(
@@ -642,4 +657,202 @@ test("continuation refreshes evidence under lease and cannot authorize an initia
   expect(local.executeReset).toHaveBeenCalledWith(
     expect.objectContaining({ continuation: true })
   );
+});
+
+// START-FENCE: the ownership fingerprint compared before the destructive vault
+// reset described WHICH device owned the workspace, not WHICH GENERATION. That
+// makes A(v5) -> B(v6) -> A(v7) fingerprint-identical to A(v5): the reset would
+// still run, against a workspace the newer generation has already touched.
+// Wiping the local vault is unrecoverable, so the generation is now part of the
+// fingerprint AND re-proved immediately before the reset call.
+function deviceVerificationAt(lockVersion, activeDeviceId = "device-1") {
+  return {
+    ok: true,
+    code: "",
+    deviceLockLost: false,
+    access: {
+      isActive: true,
+      isLocked: false,
+      status: "active",
+      localDeviceId: "device-1",
+      activeDeviceState: { activeDeviceId, lockVersion },
+      fence: { companyId: "company-1", deviceId: activeDeviceId, lockVersion },
+    },
+    error: "",
+  };
+}
+
+test("recovery START fence: a same-owner heartbeat keeps the same generation and still resets", async () => {
+  // A heartbeat by the current owner does not advance lockVersion.
+  const local = dependencies({
+    verifyDevice: jest.fn().mockResolvedValue(deviceVerificationAt(5)),
+  });
+
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+  const result = await executePreparedCurrentDeviceRecoveryReset(executeInput(prepared.proof), local);
+
+  expect(result).toEqual(resetSuccess());
+  expect(local.executeReset).toHaveBeenCalledTimes(1);
+});
+
+test("recovery START fence: A(v5) -> B(v6) -> A(v7) cannot reset the local vault", async () => {
+  // Same device id at both reads -- only the generation differs, which is
+  // exactly what the old fingerprint could not see.
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(7)),
+  });
+
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+  const result = await executePreparedCurrentDeviceRecoveryReset(executeInput(prepared.proof), local);
+
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  // FORBIDDEN: the unrecoverable local wipe.
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("recovery START fence: a generation change after the snapshot step still blocks the reset", async () => {
+  // The under-lease refresh agrees, so the run reaches the snapshot/preview
+  // step and would previously have gone straight into executeReset. The
+  // commit-boundary re-proof is the only thing that stops it.
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(7)),
+  });
+
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+  const result = await executePreparedCurrentDeviceRecoveryReset(executeInput(prepared.proof), local);
+
+  // It genuinely reached the boundary: the third ownership read happened.
+  expect(local.verifyDevice).toHaveBeenCalledTimes(3);
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("recovery START fence: a takeover by another device cannot reset the local vault", async () => {
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(6, "device-2")),
+  });
+
+  const prepared = await prepareCurrentDeviceRecovery(prepareInput(), local);
+  const result = await executePreparedCurrentDeviceRecoveryReset(executeInput(prepared.proof), local);
+
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+// START-FENCE (continuation): resumeCurrentDeviceRecoveryReset awaits either
+// prepareFinalSnapshot or the preview fallback AFTER its initial device
+// authorization, then calls the second destructive executeReset. Without a
+// re-proof at that boundary, A(v5) -> B(v6) -> A(v7) reaches the wipe with an
+// ownership object describing an operation that no longer owns the workspace.
+// Both evidence branches converge on one guard, so these prove that guard.
+function resumeSnapshot() {
+  return { ok: true, code: "", authorizationPreview: preview() };
+}
+
+test("continuation START fence: a stable generation reaches the reset exactly once", async () => {
+  const local = dependencies({
+    verifyDevice: jest.fn().mockResolvedValue(deviceVerificationAt(5)),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(prepareInput(), local);
+
+  expect(result).toEqual(resetSuccess());
+  // The async continuation evidence step ran, and so did the commit-boundary
+  // proof after it -- two ownership reads, one reset.
+  expect(local.preview).toHaveBeenCalledTimes(1);
+  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  expect(local.executeReset).toHaveBeenCalledTimes(1);
+});
+
+test("continuation START fence: A(v5) -> B(v6) -> A(v7) never invokes executeReset", async () => {
+  // Same device id at both reads. Only the generation differs, which is exactly
+  // what an ownership check without lockVersion cannot see.
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(7)),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(prepareInput(), local);
+
+  // It genuinely reached the post-await commit boundary.
+  expect(local.preview).toHaveBeenCalledTimes(1);
+  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  // FORBIDDEN: the unrecoverable local vault wipe.
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("continuation START fence: a takeover by another device never invokes executeReset", async () => {
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(6, "device-2")),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(prepareInput(), local);
+
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("continuation START fence: an unprovable generation fails closed", async () => {
+  // Ownership that carries no lockVersion proves nothing about the generation.
+  // Matching absence against absence must not read as continuous ownership.
+  const local = dependencies({
+    verifyDevice: jest.fn().mockResolvedValue(deviceVerification()),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(prepareInput(), local);
+
+  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("continuation START fence: the prepareFinalSnapshot branch passes through the same guard", async () => {
+  // The other evidence branch. prepareFinalSnapshot replaces the preview call
+  // entirely, so proving preview was never used proves this test took that
+  // branch -- and it is stopped by the same commit-boundary proof.
+  const prepareFinalSnapshot = jest.fn(async () => resumeSnapshot());
+  const local = dependencies({
+    verifyDevice: jest.fn()
+      .mockResolvedValueOnce(deviceVerificationAt(5))
+      .mockResolvedValue(deviceVerificationAt(7)),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(
+    prepareInput({ prepareFinalSnapshot }),
+    local
+  );
+
+  expect(prepareFinalSnapshot).toHaveBeenCalledTimes(1);
+  expect(local.preview).not.toHaveBeenCalled();
+  expect(local.verifyDevice).toHaveBeenCalledTimes(2);
+  expect(result.code).toBe(VAULT_DEVICE_RECOVERY_COORDINATOR_CODES.OWNERSHIP_CHANGED);
+  expect(local.executeReset).not.toHaveBeenCalled();
+});
+
+test("continuation START fence: the prepareFinalSnapshot branch still resets at a stable generation", async () => {
+  // The positive control for that branch: without it, the test above would
+  // also pass on a continuation that never reached the boundary at all.
+  const prepareFinalSnapshot = jest.fn(async () => resumeSnapshot());
+  const local = dependencies({
+    verifyDevice: jest.fn().mockResolvedValue(deviceVerificationAt(5)),
+  });
+
+  const result = await resumeCurrentDeviceRecoveryReset(
+    prepareInput({ prepareFinalSnapshot }),
+    local
+  );
+
+  expect(result).toEqual(resetSuccess());
+  expect(local.executeReset).toHaveBeenCalledTimes(1);
 });

@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
 import { readStoredProjects, buildNormalizedProjectView, deriveProjectDisplayStatus } from "../utils/projects";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitStoredCustomerCollectionMutation } from "../lib/businessCloudMutationOwners";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
@@ -165,17 +165,17 @@ function readCustomers() {
   return (Array.isArray(arr) ? arr : []).filter(Boolean);
 }
 
-function persistCustomers(list) {
+async function persistCustomers(list, event = {}) {
   const safe = Array.isArray(list) ? list : [];
   try {
-    localStorage.setItem(CUSTOMERS_KEY, JSON.stringify(safe));
-    markCloudBackupDirty({
-      reason: "customer_data_saved",
-      domains: ["customers"],
-      severity: "normal",
-      source: "persistCustomers",
+    const committed = await commitStoredCustomerCollectionMutation({
+      previousCustomers: readCustomers(),
+      nextCustomers: safe,
+      event: { reason: "customer_data_saved", source: "CustomersScreen.persistCustomers", ...event },
     });
+    return committed.records;
   } catch {}
+  return null;
 }
 
 function buildId() {
@@ -1182,7 +1182,7 @@ export default function CustomersScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    persistCustomers(next);
+    await persistCustomers(next, { reason: "customer_saved" });
 
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
@@ -1256,7 +1256,7 @@ export default function CustomersScreen({
       return;
     }
     const next = (Array.isArray(list) ? list : []).filter((c) => String(c?.id || "") !== sid);
-    persistCustomers(next);
+    await persistCustomers(next, { reason: "customer_deleted" });
     removeCloudAssetBinding("customer", sid);
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
@@ -1288,7 +1288,7 @@ export default function CustomersScreen({
         ? { ...c, archived: true, archivedAt: new Date().toISOString() }
         : c
     ));
-    persistCustomers(next);
+    await persistCustomers(next, { reason: "customer_archived" });
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
@@ -1317,7 +1317,7 @@ export default function CustomersScreen({
       delete clone.archivedAt;
       return clone;
     });
-    persistCustomers(next);
+    await persistCustomers(next, { reason: "customer_restored" });
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     window.dispatchEvent(new Event("estipaid:customers-changed"));
@@ -1333,7 +1333,7 @@ export default function CustomersScreen({
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    persistCustomers(next);
+    await persistCustomers(next, { reason: "customer_last_used_saved" });
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
 

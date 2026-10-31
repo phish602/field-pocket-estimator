@@ -85,7 +85,7 @@ import {
 } from "./utils/projects";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { BUILDER_INTENTS, ROUTES } from "./constants/routes";
-import { commitAtomicCloudQueuedBusinessMutation } from "./lib/cloudBackupQueue";
+import { commitStoredEstimateCollectionMutation } from "./lib/estimateCloudMutationPlan";
 import { useBusinessMutationGuard } from "./lib/BusinessMutationGuardContext";
 import {
   resolveDocumentEditTarget,
@@ -711,7 +711,7 @@ function findStoredInvoiceForExport(editingId, candidateState) {
   }) || null;
 }
 
-async function writeStoredEstimatesLocal(nextEstimates, event = {}) {
+export async function writeStoredEstimatesLocal(nextEstimates, event = {}) {
   const collectLegacyInvoiceIdentityKeys = (record) => {
     const keys = new Set();
     const id = String(record?.id || "").trim();
@@ -737,10 +737,12 @@ async function writeStoredEstimatesLocal(nextEstimates, event = {}) {
     return keys;
   };
   let legacyInvoiceRecords = [];
+  let previousEstimateRecords = [];
   try {
     const raw = localStorage.getItem(ESTIMATES_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     if (Array.isArray(parsed)) {
+      previousEstimateRecords = parsed.filter((record) => String(record?.docType || "estimate").toLowerCase() !== "invoice");
       const seen = new Set();
       legacyInvoiceRecords = parsed.filter((record) => {
         if (String(record?.docType || "estimate").toLowerCase() !== "invoice") return false;
@@ -752,8 +754,11 @@ async function writeStoredEstimatesLocal(nextEstimates, event = {}) {
       });
     }
   } catch {}
-  const serialized = JSON.stringify([...(Array.isArray(nextEstimates) ? nextEstimates : []), ...legacyInvoiceRecords]);
-  await commitAtomicCloudQueuedBusinessMutation({
+  const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
+  const serialized = JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]);
+  await commitStoredEstimateCollectionMutation({
+    previousEstimates: previousEstimateRecords,
+    nextEstimates: estimateRecords,
     writes: [{ key: ESTIMATES_KEY, value: serialized }, ...(Array.isArray(event.additionalWrites) ? event.additionalWrites : [])],
     event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesLocal", ...event },
   });
@@ -3836,7 +3841,7 @@ export default function EstimateForm(props) {
         setSavePrompt({ tone: "error", message: mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device." });
         return;
       }
-      const nextTemplates = writeStoredScopeTemplates([template, ...scopeTemplates], { throwOnError: true });
+      const nextTemplates = await writeStoredScopeTemplates([template, ...scopeTemplates], { throwOnError: true });
       setScopeTemplates(nextTemplates);
       setSavePrompt({ tone: "success", message: "Template saved" });
       try {

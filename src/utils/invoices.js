@@ -6,12 +6,15 @@ import { computeTotals } from "../estimator/engine";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { getDocumentEditTarget, resolveDocumentEditTarget } from "../lib/documentEditTarget";
 import { appendAuditEvents, buildAuditStorePayload, createStoredAuditEvent, readStoredAuditEvents } from "./auditStore";
-import { commitAtomicCloudQueuedBusinessMutation, markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
+import { CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "../lib/cloudMutationLedger";
+import { buildCollectionCloudMutationPlan } from "../lib/businessCloudMutationOwners";
+import { normalizeInvoiceContract } from "../lib/supabaseCloudConvergence";
+import { cloudSyncEqual } from "../lib/cloudSyncBaseline";
 import {
   backfillProjectCollections,
   createProjectRecord,
   readStoredProjects,
-  writeStoredProjects,
 } from "./projects";
 import {
   INVOICE_STATUSES,
@@ -1012,7 +1015,8 @@ function buildInvoiceAtomicWrites(invoices, event = {}) {
       && !migratableLegacyInvoices.some((migratable) => invoiceMatchesLegacyRecord(invoice, migratable))
     )));
   const next = promoteInvoiceCanonicalIdentity(normalInvoices);
-  const sync = backfillProjectCollections({ customers: readStoredCustomers(), projects: readStoredProjects(), invoices: next });
+  const previousProjects = readStoredProjects();
+  const sync = backfillProjectCollections({ customers: readStoredCustomers(), projects: previousProjects, invoices: next });
   const writes = [{ key: INVOICES_KEY, value: JSON.stringify(sync.invoices) }];
   if (migratableLegacyInvoices.length > 0) {
     const estimateRecords = readStoredArray(STORAGE_KEYS.ESTIMATES);
@@ -1026,47 +1030,75 @@ function buildInvoiceAtomicWrites(invoices, event = {}) {
   if (sync.changed) writes.push({ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify(sync.projects) });
   const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
   if (auditEvents.length) writes.push({ key: STORAGE_KEYS.AUDIT_EVENTS, value: JSON.stringify(buildAuditStorePayload([...readStoredAuditEvents(), ...auditEvents])) });
-  return { invoices: sync.invoices, writes };
+  return { previousInvoices, previousProjects, projects: sync.projects, projectChanged: sync.changed, invoices: sync.invoices, writes };
+}
+
+function buildInvoiceLedgerMutations(previousInvoices, nextInvoices, event = {}) {
+  const previousById = new Map((Array.isArray(previousInvoices) ? previousInvoices : []).map((invoice) => [asText(invoice?.id), invoice]));
+  const nextById = new Map((Array.isArray(nextInvoices) ? nextInvoices : []).map((invoice) => [asText(invoice?.id), invoice]).filter(([id]) => Boolean(id)));
+  const upserts = (Array.isArray(nextInvoices) ? nextInvoices : []).flatMap((invoice) => {
+    const documentId = asText(invoice?.id);
+    if (!documentId) return [];
+    const previous = previousById.get(documentId);
+    if (previous && cloudSyncEqual(normalizeInvoiceContract(previous), normalizeInvoiceContract(invoice))) return [];
+    return [{
+      companyId: asText(event?.companyId),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: asText(event?.reason) || "invoice_data_saved",
+      source: asText(event?.source) || "commitStoredInvoices",
+      payload: deepClone(invoice),
+    }];
+  });
+  const deletes = [...previousById.entries()].flatMap(([documentId]) => {
+    if (!documentId || nextById.has(documentId)) return [];
+    return [{
+      companyId: asText(event?.companyId),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.DELETE,
+      reason: asText(event?.reason) || "invoice_deleted",
+      source: asText(event?.source) || "commitStoredInvoices",
+      payload: { id: documentId, legacyLocalId: documentId },
+    }];
+  });
+  return [...deletes, ...upserts];
 }
 
 export async function commitStoredInvoices(invoices, event = {}) {
   const plan = buildInvoiceAtomicWrites(invoices, event);
   const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
+  const writes = [...plan.writes, ...additionalWrites];
+  const ledgerMutations = [
+    ...buildInvoiceLedgerMutations(plan.previousInvoices, plan.invoices, event),
+    ...(plan.projectChanged ? buildCollectionCloudMutationPlan({
+      previous: plan.previousProjects,
+      next: plan.projects,
+      entityType: CLOUD_MUTATION_ENTITY.PROJECT,
+      companyId: event?.companyId,
+      reason: "project_backfilled_from_invoice",
+      source: asText(event?.source) || "commitStoredInvoices",
+    }).mutations : []),
+  ];
+  const allWritesAlreadyStored = writes.every((write) => {
+    try { return localStorage.getItem(write.key) === write.value; } catch { return false; }
+  });
+  if (ledgerMutations.length === 0 && additionalWrites.length === 0 && allWritesAlreadyStored) {
+    return { ok: true, noOp: true, ledgerBacked: false, mutations: [], keys: [], invoices: plan.invoices };
+  }
   const committed = await commitAtomicCloudQueuedBusinessMutation({
-    writes: [...plan.writes, ...additionalWrites],
+    writes,
     event: { reason: "invoice_data_saved", domains: ["invoices", "invoice_payments"], severity: "money_critical", source: "commitStoredInvoices", ...event },
+    ledgerMutations,
+    skipGlobalQueue: true,
   });
   return { ...committed, invoices: plan.invoices };
 }
 
-export function writeStoredInvoices(invoices) {
-  const previousInvoices = readStoredInvoices();
-  // Promote BEFORE the project backfill and before legacy reconciliation, so
-  // both see the canonical id this write is committing to.
-  const next = promoteInvoiceCanonicalIdentity(
-    normalizeInvoiceList(invoices, resolveInvoiceNormalizationOptions())
-  );
-  const sync = backfillProjectCollections({
-    customers: readStoredCustomers(),
-    projects: readStoredProjects(),
-    invoices: next,
-  });
-  if (sync.changed) {
-    writeStoredProjects(sync.projects);
-  }
-  localStorage.setItem(INVOICES_KEY, JSON.stringify(sync.invoices));
-  reconcileLegacyEstimateInvoices(sync.invoices);
-  try {
-    const auditEvents = buildInvoiceAuditEvents(previousInvoices, sync.invoices);
-    if (auditEvents.length > 0) appendAuditEvents(auditEvents);
-  } catch {}
-  markCloudBackupDirty({
-    reason: "invoice_data_saved",
-    domains: ["invoices", "invoice_payments"],
-    severity: "money_critical",
-    source: "writeStoredInvoices",
-  });
-  return sync.invoices;
+export async function writeStoredInvoices(invoices) {
+  const committed = await commitStoredInvoices(invoices, { source: "writeStoredInvoices" });
+  return committed.invoices;
 }
 
 export function buildEstimateInvoiceSnapshot(estimate) {
@@ -2060,6 +2092,10 @@ export function addManualInvoicePayment(invoice, paymentInput = {}, options = {}
     }),
   };
 }
+
+
+
+
 
 export function appendStripeInvoicePayment(invoice, paymentInput = {}, options = {}) {
   const source = normalizeInvoiceRecord(invoice);

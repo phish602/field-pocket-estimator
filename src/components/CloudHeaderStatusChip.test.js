@@ -3,6 +3,7 @@ import CloudHeaderStatusChip from "./CloudHeaderStatusChip";
 import {
   markCloudBackupDirty,
   clearCloudBackupDirty,
+  markCloudBackupReviewRequired,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
@@ -98,13 +99,14 @@ afterEach(() => {
   setViewportWidth(1024);
 });
 
-test("shows Cloud OK when verification confirms cloud current", async () => {
+test("shows Cloud connected from observational status without queue proof", async () => {
+  checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "established_workspace" });
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud connected");
 });
 
-test("shows Device locked and explains it on click when this device is locked", async () => {
+test("shows canonical Sync issue and explains it on click when this device is locked", async () => {
   useDeviceLockStatus.mockReturnValue({
     loading: false,
     ready: true,
@@ -117,21 +119,21 @@ test("shows Device locked and explains it on click when this device is locked", 
   await renderAndSettle();
   fireEvent.click(screen.getByTestId("cloud-header-status-chip"));
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Device locked");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Sync issue");
   expect(alertSpy).toHaveBeenCalledTimes(1);
 
   alertSpy.mockRestore();
 });
 
-test("shows Backup pending when the queue is dirty", async () => {
+test("shows Pending when the queue is dirty", async () => {
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup pending");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Pending");
 });
 
-test("shows Backing up... when the auto-backup worker reports it is running", async () => {
+test("shows Syncing when the auto-backup worker reports it is running", async () => {
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
   await renderAndSettle();
@@ -139,7 +141,7 @@ test("shows Backing up... when the auto-backup worker reports it is running", as
     window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
   });
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up...");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Syncing");
 });
 
 test("shows Cloud OK after a successful backup is confirmed", async () => {
@@ -150,12 +152,33 @@ test("shows Cloud OK after a successful backup is confirmed", async () => {
   expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
 });
 
-test("shows Backup issue for a failed state", async () => {
+test("historical review evidence cannot hide or poison a verified Cloud OK header", async () => {
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    schemaVersion: "2.0.0", pending: true, status: "conflict", reasons: [], domains: [],
+    companyId: "company_1", localMutationRevision: 4, syncingRevision: null,
+    lastVerifiedAt: 123, lastError: "Preserved historical evidence",
+  }));
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud OK");
+});
+
+test("a new current terminal review surfaces Sync issue", async () => {
+  markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+  markCloudBackupReviewRequired("Current conflict", { status: "conflict" });
+
+  await renderAndSettle();
+
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Sync issue");
+});
+
+test("shows Sync issue for a failed state", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Sync issue");
 });
 
 test("does not get stuck on Pending when a local blocker exists alongside a dirty backup queue", async () => {
@@ -177,11 +200,11 @@ test("does not get stuck on Pending when a local blocker exists alongside a dirt
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Sync issue");
   expect(screen.queryByText("Backup pending")).not.toBeInTheDocument();
 });
 
-test("does not get stuck on Pending when repairable stale metadata exists alongside a dirty backup queue", async () => {
+test("repairable stale metadata keeps the dirty backup queue Pending instead of showing Backup issue", async () => {
   localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "cust_1", name: "Acme Co" }]));
   localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([{ id: "proj_1", customerId: "cust_1", projectName: "Roof Repair" }]));
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([{ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100 }]));
@@ -199,8 +222,8 @@ test("does not get stuck on Pending when repairable stale metadata exists alongs
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup issue");
-  expect(screen.queryByText("Backup pending")).not.toBeInTheDocument();
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Pending");
+  expect(screen.queryByText("Sync issue")).not.toBeInTheDocument();
 });
 
 test("shows Restore when cloud restore is safely available", async () => {
@@ -217,7 +240,7 @@ test("backup pending takes priority over restore available", async () => {
 
   await renderAndSettle();
 
-  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backup pending");
+  expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Pending");
   expect(screen.queryByText("Restore")).not.toBeInTheDocument();
 });
 
@@ -234,7 +257,7 @@ test("tapping the chip dispatches the show-restore-prompt event", async () => {
   dispatchSpy.mockRestore();
 });
 
-test("tapping a mismatch chip routes to cloud settings", async () => {
+test("tapping a generic mismatch-derived issue routes to cloud settings", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   const dispatchSpy = jest.spyOn(window, "dispatchEvent");
 
@@ -247,14 +270,14 @@ test("tapping a mismatch chip routes to cloud settings", async () => {
   dispatchSpy.mockRestore();
 });
 
-test("does not show Pending or Cloud OK when a cloud/local mismatch exists, even with a dirty queue", async () => {
+test("shows generic Backup issue for mismatch even with a dirty queue", async () => {
   checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
   markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
   await renderAndSettle();
 
   const chip = screen.getByTestId("cloud-header-status-chip");
-  expect(chip).toHaveTextContent("Data mismatch");
+  expect(chip).toHaveTextContent("Sync issue");
   expect(chip).not.toHaveTextContent("Backup pending");
   expect(chip).not.toHaveTextContent("Cloud OK");
 });
@@ -290,7 +313,7 @@ describe("compact mobile copy on narrow viewports", () => {
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Pending");
   });
 
-  test("shows Backing up instead of the full 'Backing up...' copy", async () => {
+  test("shows Syncing", async () => {
     markCloudBackupDirty({ reason: "test_edit", severity: "normal" });
 
     await renderAndSettle();
@@ -298,16 +321,16 @@ describe("compact mobile copy on narrow viewports", () => {
       window.dispatchEvent(new CustomEvent(CLOUD_AUTO_BACKUP_RUNNING_EVENT, { detail: { running: true } }));
     });
 
-    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Backing up");
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Syncing");
   });
 
-  test("shows the full 'Backup issue' copy on narrow viewports -- never abbreviated to 'Issue'", async () => {
+  test("shows the full 'Sync issue' copy on narrow viewports", async () => {
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION });
 
     await renderAndSettle();
 
     const chip = screen.getByTestId("cloud-header-status-chip");
-    expect(chip).toHaveTextContent("Backup issue");
+    expect(chip).toHaveTextContent("Sync issue");
     expect(chip.textContent.trim()).not.toBe("Issue");
   });
 
@@ -319,23 +342,23 @@ describe("compact mobile copy on narrow viewports", () => {
     expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restore");
   });
 
-  test("shows the full 'Data mismatch' copy on narrow viewports -- never abbreviated to 'Mismatch'", async () => {
+  test("shows the full generic Sync issue copy on narrow viewports", async () => {
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH });
 
     await renderAndSettle();
 
     const chip = screen.getByTestId("cloud-header-status-chip");
-    expect(chip).toHaveTextContent("Data mismatch");
+    expect(chip).toHaveTextContent("Sync issue");
     expect(chip.textContent.trim()).not.toBe("Mismatch");
   });
 
-  test("still shows Restored (already short) after a completed restore", async () => {
+  test("keeps the connected indicator after a completed restore without proof", async () => {
     await renderAndSettle();
     act(() => {
       window.dispatchEvent(new CustomEvent("estipaid:cloud-restore-complete", { detail: { restored: true } }));
     });
 
-    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Restored");
+    expect(screen.getByTestId("cloud-header-status-chip")).toHaveTextContent("Cloud connected");
   });
 
   test("running state gets a little extra breathing room over other narrow states", async () => {

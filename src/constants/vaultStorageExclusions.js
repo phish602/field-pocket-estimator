@@ -12,6 +12,8 @@ export const EXCLUDED_FROM_MIGRATION = Object.freeze({
   "estipaid-lang": "device-global: a device keeps its language across accounts",
   "estipaid-device-id-v1": "device-global: stable device identity, not workspace data",
   "estipaid-vault-guard-v1": "device-global compatibility guard; migration writes it, never migrates it",
+  "estipaid-browser-surface-owner-v1":
+    "device-global browser-surface coordination metadata; contains no business data or account secret and must remain readable before/while vault state changes",
   "estipaid-vault-idle-lock-minutes":
     "vault UI preference that must stay readable while the vault is LOCKED; encrypting it would make it unreadable exactly when it is needed. Documented as non-secret and identity-free.",
   "estipaid-storage-migrated-v1": "bookkeeping flag from the pre-ISO-14D storage migration; carries no business content",

@@ -6,6 +6,7 @@ jest.mock("./supabaseClient", () => ({
 }));
 
 jest.mock("./supabaseDeviceLock", () => ({
+  ...jest.requireActual("./supabaseDeviceLock"),
   ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
 }));
 
@@ -125,7 +126,7 @@ describe("supabaseEstimateRestorePayload", () => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false, fence: { companyId: "company_1", deviceId: "device_a", lockVersion: 5 } }, error: "" });
   });
 
   describe("buildEstimateRestorePayload", () => {
@@ -262,7 +263,7 @@ describe("supabaseEstimateRestorePayload", () => {
       const mockClient = createMockClient({ cloudRows: [{ id: "db_est_1", legacy_local_id: "est_1" }] });
       mockGetSupabaseClient.mockReturnValue(mockClient);
       mockEnsureCurrentDeviceCanWriteCloud
-        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false, fence: { companyId: "company_1", deviceId: "device_a", lockVersion: 5 } }, error: "" })
         .mockResolvedValueOnce({
           ok: false,
           code: "device_lock_lost",

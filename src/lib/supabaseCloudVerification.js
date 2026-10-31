@@ -241,6 +241,20 @@ function sameChildContract(expected, cloud, { parentColumn, includeLineRole }) {
     === JSON.stringify(fields.map((field) => normalizedChildValue(cloud?.[field])));
 }
 
+// Narrow exports for targeted mutation verification. Keeping normalization and
+// field vocabularies here preserves one semantic comparison owner.
+export function comparePersistedCloudSemanticContract(table, expected, cloud) {
+  return compareSemanticContract(expected, cloud, SEMANTIC_FIELDS[table] || []);
+}
+
+export function samePersistedInvoiceLineItemContract(expected, cloud) {
+  return sameChildContract(expected, cloud, { parentColumn: "invoice_id", includeLineRole: false });
+}
+
+export function samePersistedEstimateLineItemContract(expected, cloud) {
+  return sameChildContract(expected, cloud, { parentColumn: "estimate_id", includeLineRole: true });
+}
+
 // Expected cloud child rows are built from the SHARED line-item contract, so the
 // verifier's identity + metadata match exactly what the migration writer
 // persisted (sanitized parent segment, whole-parent stable index, and
@@ -365,7 +379,7 @@ function classifyExtraInvoiceLineItems(extraRows, parentCloudRows, localParentLe
       && parsed.parentSegment === sanitizeLineItemParentSegment(parentLegacyId)
       && isProvenEmptyInvoiceLineItemPlaceholder(row)
     ) {
-      repairable.push({ rowId, legacyId });
+      repairable.push({ rowId, legacyId, parentLegacyId });
       return;
     }
     unresolved.push(legacyId || "missing");
@@ -683,6 +697,7 @@ export async function runSupabaseCloudVerification({
         count: extraClassification.repairable.length,
         rowIds: extraClassification.repairable.map((entry) => entry.rowId).sort(),
         legacyIds: extraClassification.repairable.map((entry) => entry.legacyId).sort(),
+        parentLegacyIds: [...new Set(extraClassification.repairable.map((entry) => entry.parentLegacyId).filter(Boolean))].sort(),
       });
     }
     // A table is repairable-only when its ENTIRE mismatch is the proven blank

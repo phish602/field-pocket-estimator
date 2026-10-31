@@ -6,10 +6,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
 import { tryAcquireCloudOperationRunLock, releaseCloudOperationRunLock } from "./cloudOperationRunLock";
 import {
-  markCloudBackupDirty,
   readCloudBackupQueueState,
-  CLOUD_BACKUP_SEVERITY,
-  CLOUD_BACKUP_PRIORITY,
 } from "./cloudBackupQueue";
 import { STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR } from "./supabaseCloudVerification";
 import {
@@ -23,6 +20,12 @@ import {
   CLOUD_CONVERGENCE_REQUEST_EVENT,
 } from "./supabaseCloudConvergence";
 import { getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import {
+  appendCloudMutationsDurably,
+  CLOUD_MUTATION_ENTITY,
+  CLOUD_MUTATION_OPERATION,
+  readCloudMutationLedger,
+} from "./cloudMutationLedger";
 
 // Bounded automatic retry for TEMPORARY failures only (never conflicts, deletion
 // ambiguity, malformed cloud data, or critical rollback failures).
@@ -50,7 +53,7 @@ function online() { try { return typeof navigator === "undefined" || navigator.o
 function resolveLocalOperationOwner(storage) {
   try {
     const { snapshot } = buildLocalSnapshotFromStorage(storage);
-    return resolveOperationOwnerFromSnapshot({ snapshot, queueState: readCloudBackupQueueState() });
+    return resolveOperationOwnerFromSnapshot({ snapshot, queueState: readCloudBackupQueueState(), mutationLedger: readCloudMutationLedger() });
   } catch {
     // A malformed/unreadable local snapshot must retain the established safe
     // convergence behavior rather than silently suppressing recovery checks.
@@ -68,29 +71,31 @@ export const STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON = "stale_invoice_line_i
 // mismatch is the repairable blank-invoice-child class, the only action taken
 // here is enqueuing existing backup work, exactly as a normal user edit would.
 // Returns true when a queue entry was created.
-export function requestStaleInvoiceLineItemRepairBackup(result) {
+export async function requestStaleInvoiceLineItemRepairBackup(result, { companyId = "", storage = localStorage } = {}) {
   const mismatch = result?.mismatch;
   if (result?.status !== "mismatch" || result?.code !== "verification_mismatch") return false;
   if (mismatch?.repairableMismatchOnly !== true) return false;
   const repairTypes = Array.isArray(mismatch?.repairTypes) ? mismatch.repairTypes : [];
   if (!repairTypes.includes(STALE_INVOICE_LINE_ITEM_PLACEHOLDER_REPAIR)) return false;
-  // Loop protection via the EXISTING queue: if a generation carrying this exact
-  // repair reason is still pending, the worker has not drained it yet and a
-  // second identical request would only churn the queue revision.
-  try {
-    const queue = readCloudBackupQueueState();
-    if (queue?.pending && Array.isArray(queue?.reasons)
-      && queue.reasons.includes(STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON)) {
-      return false;
-    }
-  } catch { return false; }
-  markCloudBackupDirty({
-    reason: STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
-    domains: ["invoices", "invoice_line_items"],
-    severity: CLOUD_BACKUP_SEVERITY.MONEY_CRITICAL,
-    priority: CLOUD_BACKUP_PRIORITY.IMMEDIATE,
-    source: "cloud_convergence_repairable_mismatch",
+  const ids = [...new Set((Array.isArray(mismatch?.repairDocumentIds) ? mismatch.repairDocumentIds : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return false;
+  const { snapshot } = buildLocalSnapshotFromStorage(storage);
+  const invoices = new Map((Array.isArray(snapshot?.invoices) ? snapshot.invoices : []).map((invoice) => [String(invoice?.id || "").trim(), invoice]));
+  const mutations = ids.flatMap((documentId) => {
+    const invoice = invoices.get(documentId);
+    if (!invoice) return [];
+    return [{
+      companyId: String(companyId || "").trim(),
+      entityType: CLOUD_MUTATION_ENTITY.INVOICE,
+      documentId,
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: STALE_INVOICE_LINE_ITEM_REPAIR_QUEUE_REASON,
+      source: "cloud_convergence_repairable_mismatch",
+      payload: JSON.parse(JSON.stringify(invoice)),
+    }];
   });
+  if (mutations.length !== ids.length) return false;
+  await appendCloudMutationsDurably(mutations);
   return true;
 }
 
@@ -250,7 +255,7 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
             // A settled cycle re-arms the repair bridge, so a genuinely new
             // repairable mismatch later can still queue exactly one request.
             repairQueuedRef.current = false;
-          } else if (!repairQueuedRef.current && requestStaleInvoiceLineItemRepairBackup(result)) {
+          } else if (!repairQueuedRef.current && await requestStaleInvoiceLineItemRepairBackup(result, { companyId: cmp.id, storage: localStorage })) {
             // One queue entry per repair cycle. The existing auto-backup worker
             // picks it up and runs the existing writer + server repair path.
             repairQueuedRef.current = true;

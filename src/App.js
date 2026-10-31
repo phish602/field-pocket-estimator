@@ -49,6 +49,7 @@ import VaultCompatibilityGate from "./screens/VaultCompatibilityGate";
 import VaultRuntimeGate from "./screens/VaultRuntimeGate";
 import VaultRecoveryGate from "./screens/VaultRecoveryGate";
 import useVaultRuntimeActivation from "./lib/useVaultRuntimeActivation";
+import useBrowserSurfaceAuthority from "./lib/useBrowserSurfaceAuthority";
 import useVaultDeviceRecovery from "./lib/useVaultDeviceRecovery";
 import useDeviceLockStatus from "./lib/useDeviceLockStatus";
 import useVaultSession from "./lib/useVaultSession";
@@ -64,9 +65,11 @@ import {
   writeVaultIdleLockMinutes,
 } from "./lib/vaultIdleLockSettings";
 import { BusinessMutationGuardProvider } from "./lib/BusinessMutationGuardContext";
+import BrowserSurfaceGate from "./components/BrowserSurfaceGate";
 import {
   activateAccountScopedLocalStorage,
   deactivateAccountScopedLocalStorage,
+  isAuthoritativeVaultRuntimeInstalled,
   setActiveWorkspaceVaultCompatibility,
 } from "./lib/accountScopedLocalStorage";
 import { getDefaultSubscriptionPlanState, loadLocalSubscriptionPlanState } from "./lib/subscriptionPlanState";
@@ -2609,6 +2612,7 @@ function EstiPaidAppShell({
   account = null,
   deviceLock = null,
   authoritativeStorageReady = false,
+  onPrepareCloudRestore = null,
   vaultIdleLockMinutes = DEFAULT_VAULT_IDLE_LOCK_MINUTES,
   onVaultIdleLockMinutesChange = null,
   onVaultLockNow = null,
@@ -4250,6 +4254,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     if (activeTab === ROUTES.COMPANY_PROFILE) return CompanyProfileScreen ? <CompanyProfileScreen authoritativeStorageReady={authoritativeStorageReady} supabaseConfigured={Boolean(auth?.configured)} companyId={String(account?.company?.id || "")} accessToken={String(auth?.session?.access_token || "")} /> : <HomeScreen spinTick={spinTick} onLogoTap={handleHomeLogoTap} onLogoLongPress={handleHomeLogoLongPress} liveDraftResume={liveDraftResumeMeta} businessPulseCounts={businessPulseCounts} dashboardSummary={homeDashboardSummary} onResumeLastEstimate={() => { try { window.dispatchEvent(new CustomEvent("pe-shell-action", { detail: { action: "continueLast" } })); } catch {} }} recentProjects={recentProjects} onOpenProjectDetail={(projectId) => { openProjectDetail(projectId, ROUTES.HOME); }} />;
     if (activeTab === ROUTES.ADVANCED) return AdvancedSettingsScreen ? (
       <AdvancedSettingsScreen
+        onPrepareCloudRestore={onPrepareCloudRestore}
         onOpenCompanyProfile={() => navigateToCompanyProfile()}
         onOpenTemplates={() => navigateTo(ROUTES.TEMPLATES)}
         onOpenSnapshot={() => navigateTo(ROUTES.SNAPSHOT)}
@@ -5051,9 +5056,22 @@ export default function App() {
     return written;
   }, [workspaceIdentity, workspaceReady]);
 
+  // Which BROWSER TAB is the live EstiPaid surface. Called unconditionally and
+  // deliberately independent of auth, company, vault, and device state: it is
+  // device-local browser coordination that must resolve before business work,
+  // and it performs no network call of any kind.
+  const browserSurface = useBrowserSurfaceAuthority();
+  const browserOperational = Boolean(browserSurface.ready && browserSurface.isActive);
+
   // ISO-16: the single production owner of the encrypted runtime lifecycle.
   // Called unconditionally (Rules of Hooks) and self-gates internally. It is the
   // ONLY normal-runtime path that can invoke the migration orchestrator.
+  //
+  // The runtime is bound to the CURRENT browser ownership claim: a verified
+  // runtime stays ready for as long as that claim stands, and a new claim (Use
+  // This Tab) reports not-ready until the latest encrypted state is re-verified
+  // for it. That one derived readiness is what gates the shell and both cloud
+  // workers below; there is no separate App-level handoff state.
   const vaultRuntime = useVaultRuntimeActivation({
     enabled: Boolean(
       !VAULT_BRIDGE_RELEASE
@@ -5065,18 +5083,34 @@ export default function App() {
     userId: auth.user?.id,
     companyId: account.company?.id,
     vaultUnlocked: vault?.capability?.state === "unlocked",
+    browserOwnershipToken: browserOperational ? browserSurface.claimToken || "" : "",
   });
 
   // The shell requires the exact workspace ready, the exact vault unlocked, AND
   // a verified authoritative runtime installed for that same workspace. An
   // "unlocked" capability alone is never sufficient.
+  // The runtime HOOK reporting "ready" is not proof that the authoritative
+  // adapter is actually installed for this workspace. A dev HMR remount resets
+  // the facade module (adapter -> null) while the hook state survives, and the
+  // facade then answers every read with "nothing". That absence previously read
+  // as a genuinely empty workspace. This is the facade's own predicate and the
+  // single existing authority on whether encrypted business data is readable.
+  // Deliberately just "is an authoritative adapter installed". Binding it to the
+  // derived workspace tag here would couple the shell decision to an async
+  // derivation; the facade already re-checks the adapter against the ACTIVE
+  // workspace on every read, so tag binding is enforced where reads happen.
+  const authoritativeLocalDataReady = Boolean(
+    VAULT_BRIDGE_RELEASE ? legacyCompatibilitySafe : isAuthoritativeVaultRuntimeInstalled()
+  );
+
   const vaultRuntimeReady = Boolean(
     VAULT_BRIDGE_RELEASE
       ? legacyCompatibilitySafe
       : (workspaceReady
         && vaultRecovery.state === "idle"
         && vault?.capability?.state === "unlocked"
-        && vaultRuntime?.state === "ready")
+        && vaultRuntime?.state === "ready"
+        && authoritativeLocalDataReady)
   );
 
   // A deliberate lock first flushes accepted writes. A failed flush keeps the
@@ -5084,6 +5118,15 @@ export default function App() {
   const lockVaultNow = useCallback(() => (
     typeof vaultRuntime?.flushAndLock === "function" ? vaultRuntime.flushAndLock(vault?.lock) : vault?.lock?.()
   ), [vaultRuntime, vault]);
+
+  // Confirmed restore asks the existing lifecycle owner to finish activation or
+  // revalidation. It never creates another runtime or replacement device key.
+  const prepareCloudRestore = useCallback(async ({ userId, companyId }) => {
+    if (userId !== auth.user?.id || companyId !== account.company?.id
+      || !browserOperational || vaultRecovery.state !== "idle") return { ok: false };
+    const result = await vaultRuntime.refresh();
+    return { ok: result?.state === "ready" };
+  }, [auth.user?.id, account.company?.id, browserOperational, vaultRecovery.state, vaultRuntime]);
 
   // ISO-16 activation order: cloud workers may only see an identity once the
   // AUTHORITATIVE runtime for this exact workspace is ready. `!VAULT_BRIDGE_RELEASE`
@@ -5099,6 +5142,13 @@ export default function App() {
   const cloudUser = workspaceCloudConfigured ? operationalUser : null;
   const cloudCompany = workspaceCloudConfigured ? account.company : null;
 
+  // Cloud workers only. The PHYSICAL device hook keeps its existing
+  // configuration untouched, so switching tabs never looks like a device
+  // takeover and never disturbs device-generation fencing.
+  const browserCloudConfigured = Boolean(workspaceCloudConfigured && browserOperational);
+  const browserCloudUser = browserCloudConfigured ? cloudUser : null;
+  const browserCloudCompany = browserCloudConfigured ? cloudCompany : null;
+
   const deviceLock = useDeviceLockStatus({
     configured: workspaceCloudConfigured,
     user: cloudUser,
@@ -5110,9 +5160,9 @@ export default function App() {
   // (Rules of Hooks) and self-gates internally -- it only runs when signed in,
   // Supabase is configured, and a workspace exists.
   useCloudAutoConvergence({
-    configured: workspaceCloudConfigured,
-    user: cloudUser,
-    company: cloudCompany,
+    configured: browserCloudConfigured,
+    user: browserCloudUser,
+    company: browserCloudCompany,
     deviceLock,
   });
 
@@ -5121,15 +5171,15 @@ export default function App() {
   // backup (cloud writes stay disabled until ownership is confirmed active).
   useCloudAutoBackup({
     enabled: Boolean(
-      workspaceCloudConfigured
+      browserCloudConfigured
       && deviceLock.ready === true
       && deviceLock.loading === false
       && deviceLock.isActive === true
       && deviceLock.isLocked === false
     ),
-    configured: workspaceCloudConfigured,
-    user: cloudUser,
-    company: cloudCompany,
+    configured: browserCloudConfigured,
+    user: browserCloudUser,
+    company: browserCloudCompany,
     role: account.role,
     deviceLocked: Boolean(deviceLock.isLocked),
   });
@@ -5198,8 +5248,25 @@ export default function App() {
   // progress gate while migration, sealing, or hydration runs, and stays behind
   // it if the authoritative runtime is blocked. There is no plaintext fallback
   // and no route that skips this gate.
-  if (!VAULT_BRIDGE_RELEASE && vaultRuntime?.state !== "ready") {
-    return <VaultRuntimeGate state={vaultRuntime?.state} />;
+  // The shell may not mount on an unreadable authoritative store. Showing zeros
+  // over encrypted data that merely is not mounted is worse than showing a gate.
+  if (!VAULT_BRIDGE_RELEASE && (vaultRuntime?.state !== "ready" || !authoritativeLocalDataReady)) {
+    return <VaultRuntimeGate state={vaultRuntime?.state === "ready" ? "blocked" : vaultRuntime?.state} />;
+  }
+
+  // The final gate before the shell. Auth, recovery, workspace setup, and every
+  // vault gate keep their existing priority; only a surface that would otherwise
+  // show business records is held here. Nothing is signed out, locked, or
+  // erased -- the other tab simply owns EstiPaid until this one is used again.
+  if (!browserOperational) {
+    return (
+      <BrowserSurfaceGate
+        state={browserSurface.code === "browser_surface_storage_unavailable"
+          ? "unavailable"
+          : browserSurface.ready ? "inactive" : "checking"}
+        onUseThisTab={browserSurface.claim}
+      />
+    );
   }
 
   return (
@@ -5208,8 +5275,10 @@ export default function App() {
       user={auth.user}
       company={account.company}
       deviceLock={deviceLock}
+      browserSurface={browserSurface}
     >
       <EstiPaidAppShell
+        onPrepareCloudRestore={prepareCloudRestore}
         auth={auth}
         account={account}
         deviceLock={deviceLock}

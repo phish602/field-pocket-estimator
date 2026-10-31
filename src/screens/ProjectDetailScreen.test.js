@@ -3,6 +3,7 @@ import { STORAGE_KEYS } from "../constants/storageKeys";
 import ProjectDetailScreen from "./ProjectDetailScreen";
 import {
   markCloudBackupDirty,
+  markCloudBackupReviewRequired,
   clearCloudBackupDirty,
 } from "../lib/cloudBackupQueue";
 import { CLOUD_AUTO_BACKUP_RUNNING_EVENT } from "../lib/useCloudAutoBackup";
@@ -186,7 +187,7 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
     expect(screen.queryByTestId("project-detail-backup-chip")).not.toBeInTheDocument();
   });
 
-  test("compact backup chip does not render when the queue has never been dirty and never backed up", async () => {
+  test("compact backup chip renders connected neutral when no proof exists", async () => {
     signedInWithCompany();
     checkSupabaseCloudOnboardingStatus.mockResolvedValue({ status: "ready_to_backup" });
     seedProject(createProject({ id: "proj_1" }));
@@ -194,7 +195,7 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
 
     await renderProjectDetail();
 
-    expect(screen.queryByTestId("project-detail-backup-chip")).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Cloud connected");
   });
 
   test("compact backup chip shows 'Cloud sync pending' when the queue is dirty", async () => {
@@ -232,6 +233,34 @@ describe("ProjectDetailScreen mobile title, metadata, and backup chip", () => {
     await renderProjectDetail();
 
     expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Cloud up to date");
+  });
+
+  test("historical conflict plus verified proof renders canonical Cloud up to date", async () => {
+    signedInWithCompany();
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+      schemaVersion: "2.0.0", pending: true, status: "conflict", reasons: [], domains: [],
+      companyId: "company_1", localMutationRevision: 4, syncingRevision: null,
+      lastVerifiedAt: 123, lastError: "Preserved historical evidence",
+    }));
+    seedProject(createProject({ id: "proj_1" }));
+    seedProjectDetailTarget("proj_1");
+
+    await renderProjectDetail();
+
+    expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Cloud up to date");
+    expect(screen.queryByText("Sync needs attention")).not.toBeInTheDocument();
+  });
+
+  test("new current conflict renders canonical Sync needs attention", async () => {
+    signedInWithCompany();
+    markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
+    markCloudBackupReviewRequired("Current conflict", { status: "conflict" });
+    seedProject(createProject({ id: "proj_1" }));
+    seedProjectDetailTarget("proj_1");
+
+    await renderProjectDetail();
+
+    expect(screen.getByTestId("project-detail-backup-chip")).toHaveTextContent("Sync needs attention");
   });
 
   test("project detail financial totals still render correctly", () => {

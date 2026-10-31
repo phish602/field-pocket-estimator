@@ -28,6 +28,7 @@ export const STORAGE_KEYS = {
   CUSTOM_LABOR_ROLES: "estipaid-custom-labor-roles-v1",
   JOB_LEARNING_REVIEWED_CANDIDATES: "estipaid-job-learning-reviewed-candidates-v1",
   CLOUD_BACKUP_QUEUE: "estipaid-cloud-backup-queue-v1",
+  CLOUD_MUTATION_LEDGER: "estipaid-cloud-mutation-ledger-v1",
   CLOUD_AUTO_BACKUP_PAUSE: "estipaid-cloud-auto-backup-pause-v1",
   CLOUD_PARTIAL_RECOVERY_STATUS: "estipaid-cloud-partial-recovery-status-v1",
   CLOUD_ASSET_BINDINGS: "estipaid-cloud-asset-bindings-v1",

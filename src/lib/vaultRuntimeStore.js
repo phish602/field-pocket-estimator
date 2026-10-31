@@ -687,7 +687,8 @@ export function runtimeClear() {
 // transaction. Unlike runtimeSetItem, this stages values off-cache and does
 // not publish an observable partial workspace before the repository CAS has
 // committed every replacement record and the matching catalog.
-export async function runtimeCommitAtomicRecords(records) {
+export async function runtimeCommitAtomicRecords(records, { beforeCommit = null } = {}) {
+  let durableCommitted = false;
   const session = active;
   if (!session || session.blocked || session.frozen) throw new Error(VAULT_RUNTIME_ERROR_CODES.NOT_READY);
   const requested = Array.isArray(records) ? records : [];
@@ -740,6 +741,10 @@ export async function runtimeCommitAtomicRecords(records) {
         if (active !== session || !leaseOwnsActiveSession(lease)) return false;
         const catalog = buildRuntimeCatalog({ runtimeGeneration: session.runtimeGeneration, catalogRevision: previousCatalogRevision + 1, entries: nextEntries });
         const catalogEnvelope = await encryptRuntimeCatalog({ dek, userId: session.userId, companyId: session.companyId, catalog });
+        // Restore must re-prove its exact identity/device/browser ownership after
+        // encryption, immediately before the repository's existing atomic CAS.
+        if (typeof beforeCommit === "function" && await beforeCommit() !== true) throw new Error(VAULT_RUNTIME_ERROR_CODES.STALE_SESSION);
+        if (active !== session || !leaseOwnsActiveSession(lease)) throw new Error(VAULT_RUNTIME_ERROR_CODES.STALE_SESSION);
         const committed = await session.repository.commitRuntimeRecordBatch({
           workspaceTag: session.workspaceTag,
           expectedCatalogRevision: previousCatalogRevision,
@@ -750,6 +755,7 @@ export async function runtimeCommitAtomicRecords(records) {
           catalogIv: catalogEnvelope.iv,
         });
         if (!committed || committed.records.length !== encryptedRecords.length) throw new Error("COMMIT_REJECTED");
+        durableCommitted = true;
         return committed;
       },
     });
@@ -776,6 +782,7 @@ export async function runtimeCommitAtomicRecords(records) {
   } catch (error) {
     if (leaseOwnsActiveSession(lease)) unfreezeVaultRuntimeMutations(lease);
     if (active === session && error?.message !== VAULT_RUNTIME_ERROR_CODES.STALE_SESSION) block(error?.code === "CONFLICT" ? VAULT_RUNTIME_ERROR_CODES.CONFLICT : VAULT_RUNTIME_ERROR_CODES.DURABILITY_FAILED);
+    if (durableCommitted && typeof beforeCommit === "function") error.committed = true;
     throw error;
   }
 }

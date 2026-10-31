@@ -195,11 +195,11 @@ export default function EditProjectScreen({ onBack, onSave }) {
     setAddrZip(linkedCustomerAddr.zip);
   }, [linkedCustomerAddr]);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!canSave || !projectId) return;
     const latestProject = readProjectById(projectId);
     if (!latestProject) return;
-    const updated = updateProjectMetadata(projectId, {
+    const updated = await updateProjectMetadata(projectId, {
       projectName: projectName.trim(),
       siteAddress: composeSiteAddress(addrStreet, addrCity, addrState, addrZip),
       status,

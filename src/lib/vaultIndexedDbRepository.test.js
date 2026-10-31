@@ -914,7 +914,7 @@ test("every approved logical key creates one encrypted record", async () => {
     "estipaid-selectedCustomerSnap-v1", "estipaid-customers-v1", "estipaid-customer-recent-v1", "estipaid-company-profile-v1",
     "estipaid-subscription-plan-state-v1", "estipaid-subscription-plan-remote-cache-v1", "estipaid-audit-events-v1", "estipaid-stripe-checkout-sessions-v1",
     "estipaid-stripe-checkout-create-locks-v1", "estipaid-scope-templates-v1", "estipaid-custom-labor-roles-v1", "estipaid-job-learning-reviewed-candidates-v1",
-    "estipaid-cloud-backup-queue-v1", "estipaid-cloud-auto-backup-pause-v1", "estipaid-cloud-partial-recovery-status-v1", "estipaid-cloud-asset-bindings-v1",
+    "estipaid-cloud-backup-queue-v1", "estipaid-cloud-mutation-ledger-v1", "estipaid-cloud-auto-backup-pause-v1", "estipaid-cloud-partial-recovery-status-v1", "estipaid-cloud-asset-bindings-v1",
     "estipaid-cloud-sync-baseline-v1", "estipaid-cloud-sync-conflict-vault-v1", "estipaid-cloud-convergence-journal-v1", "estipaid-job-learning-events-v1",
   ];
   try {

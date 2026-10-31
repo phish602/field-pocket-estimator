@@ -84,7 +84,23 @@ export function buildConfiguredAccountResult(overrides = {}) {
 }
 
 export function buildIdleDeviceLockResult(overrides = {}) {
-  return { loading: false, ready: true, isLocked: false, isActive: true, ...overrides };
+  // A genuinely active device also owns the current physical-device lock
+  // generation, so a fixture claiming `isActive: true` without its fence would
+  // not represent a real active device.
+  return {
+    loading: false,
+    ready: true,
+    isLocked: false,
+    isActive: true,
+    localDeviceId: "test_device_1",
+    activeDeviceState: {
+      activeDeviceId: "test_device_1",
+      activeDeviceName: "Test device",
+      lockVersion: 1,
+    },
+    fence: { companyId: "company_1", deviceId: "test_device_1", lockVersion: 1 },
+    ...overrides,
+  };
 }
 
 // Test-only public result for App suites whose subject intentionally starts

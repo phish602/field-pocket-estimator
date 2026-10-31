@@ -52,7 +52,7 @@ export default function TemplatesScreen({ onOpenBuilder }) {
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return null;
     }
-    const saved = writeStoredScopeTemplates(nextTemplates);
+    const saved = await writeStoredScopeTemplates(nextTemplates);
     setTemplates(saved);
     try {
       window.dispatchEvent(new CustomEvent("pe-localstorage", {

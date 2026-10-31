@@ -19,7 +19,7 @@ import {
   upsertProject,
   writeStoredProjects,
 } from "../utils/projects";
-import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
+import { commitStoredEstimateCollectionMutation } from "../lib/estimateCloudMutationPlan";
 import { removeCloudAssetBinding } from "../lib/cloudAssetBindings";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 import {
@@ -205,11 +205,14 @@ function readLegacyInvoiceEstimateRecords() {
   }
 }
 
-async function writeStoredEstimatesPreservingLegacy(nextEstimates, event = {}) {
+export async function writeStoredEstimatesPreservingLegacy(nextEstimates, event = {}) {
+  const previousEstimateRecords = readSavedEstimatesList();
   const estimateRecords = Array.isArray(nextEstimates) ? nextEstimates : [];
   const legacyInvoiceRecords = readLegacyInvoiceEstimateRecords();
   const value = JSON.stringify([...estimateRecords, ...legacyInvoiceRecords]);
-  await commitAtomicCloudQueuedBusinessMutation({
+  await commitStoredEstimateCollectionMutation({
+    previousEstimates: previousEstimateRecords,
+    nextEstimates: estimateRecords,
     writes: [{ key: ESTIMATES_KEY, value }],
     event: { reason: "estimate_data_saved", domains: ["estimates"], severity: "money_critical", source: "writeStoredEstimatesPreservingLegacy", ...event },
   });
@@ -3517,7 +3520,7 @@ export default function EstimatesScreen({
                                 window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
                                 return;
                               }
-                              writeStoredProjects(nextProjects);
+                              await writeStoredProjects(nextProjects, { reason: "project_backfilled", source: "EstimatesScreen" });
                               window.dispatchEvent(new Event("estipaid:projects-changed"));
                             }
                             if (target?.projectId) onOpenProjectDetail(target.projectId);

@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 
-import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import useIsNarrowViewport from "../lib/useIsNarrowViewport";
 import { DEVICE_LOCK_EXPLANATION } from "../lib/supabaseDeviceLock";
@@ -25,7 +25,8 @@ function showDeviceLockExplanation() {
 }
 
 export default function CloudHeaderStatusChip({ style } = {}) {
-  const { isSupabaseReady, hasCompany, userEmail, chipState, chipAction } = useCloudBackupStatus();
+  const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
+
   const isNarrow = useIsNarrowViewport();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
@@ -35,42 +36,30 @@ export default function CloudHeaderStatusChip({ style } = {}) {
   let border = "1px solid rgba(255,255,255,0.1)";
   let narrowMaxWidth = 88;
 
-  if (chipState === "backup_running") {
-    label = isNarrow ? "Backing up" : "Backing up...";
+  if (productState === CLOUD_PRODUCT_STATE.SYNCING) {
+    label = "Syncing";
     color = "rgba(99,179,237,0.95)";
     narrowMaxWidth = 96;
-  } else if (chipState === "device_locked") {
-    label = "Device locked";
-    color = "rgba(253,224,71,0.95)";
-    background = "rgba(245,158,11,0.09)";
-    border = "1px solid rgba(245,158,11,0.28)";
-    narrowMaxWidth = 132;
-  } else if (chipState === "backup_pending") {
-    label = isNarrow ? "Pending" : "Backup pending";
+  } else if (productState === CLOUD_PRODUCT_STATE.PENDING) {
+    label = "Pending";
     color = "rgba(191,214,235,0.92)";
     background = "rgba(148,177,209,0.1)";
     border = "1px solid rgba(148,177,209,0.32)";
-  } else if (chipState === "backup_failed") {
-    // Cloud status language is important enough to never abbreviate. The
-    // center Home mark is already hidden on narrow phones (see App.js
-    // showCenterMark), which freed up plenty of room in the header for a
-    // wider chip instead of shorter words.
-    label = "Backup issue";
+  } else if (productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE) {
+    label = "Sync issue";
     color = "rgba(253,224,71,0.95)";
+    background = "rgba(245,158,11,0.09)";
+    border = "1px solid rgba(245,158,11,0.28)";
     narrowMaxWidth = 128;
-  } else if (chipState === "local_cloud_mismatch") {
-    label = "Data mismatch";
-    color = "rgba(253,224,71,0.95)";
-    narrowMaxWidth = 128;
-  } else if (chipState === "safe_to_restore_empty_device") {
+  } else if (productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE) {
     label = "Restore";
     color = "rgba(99,179,237,0.95)";
-  } else if (chipState === "restored") {
-    label = "Restored";
-    color = "rgba(187,247,208,0.95)";
-  } else if (chipState === "cloud_verified_current") {
+  } else if (productState === CLOUD_PRODUCT_STATE.CLOUD_OK) {
     label = "Cloud OK";
     color = "rgba(187,247,208,0.9)";
+  } else if (productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED) {
+    label = "Cloud connected";
+    color = "rgba(187,247,208,0.82)";
   }
 
   if (!label) return null;
@@ -79,9 +68,11 @@ export default function CloudHeaderStatusChip({ style } = {}) {
     <button
       type="button"
       data-testid="cloud-header-status-chip"
-      onClick={chipAction === "device_locked"
+      onClick={productStatus.action === "device_locked"
         ? showDeviceLockExplanation
-        : (chipAction === "open_settings" ? openCloudSettings : reopenRestorePrompt)}
+        : productStatus.action === "open_restore"
+          ? reopenRestorePrompt
+          : openCloudSettings}
       style={{
         display: "inline-flex",
         alignItems: "center",

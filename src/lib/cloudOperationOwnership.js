@@ -13,15 +13,18 @@
 //
 // PRECEDENCE (in this exact order):
 //
-//   1. a pending local backup queue generation      -> BACKUP
-//   2. otherwise, a positively-proven empty core    -> RECOVERY
-//   3. otherwise                                    -> CONVERGENCE
+//   1. positively-empty core + pending queue        -> BACKUP
+//   2. established remote_changed/conflict review   -> CONVERGENCE
+//   3. other pending local queue generation         -> BACKUP
+//   4. otherwise, a positively-proven empty core    -> RECOVERY
+//   5. otherwise                                    -> CONVERGENCE
 //
-// Rule 1 outranking rule 2 is the important one. AN EMPTY DEVICE IS NOT ALWAYS A
+// Rule 1 outranking recovery is the important one. AN EMPTY DEVICE IS NOT ALWAYS A
 // FRESH DEVICE: a user may legitimately delete their last customer/project/
 // estimate/invoice, which leaves the core empty while that deletion is still
 // waiting in the backup queue. Treating that as a fresh device would let recovery
-// overwrite real local work. Pending local work therefore always wins.
+// overwrite real local work. Pending work therefore always wins while the core
+// is empty; established terminal review states are revalidated by convergence.
 //
 // This module decides OWNERSHIP ONLY. It is pure: no React, no Supabase, no
 // timers, no events, no persistence, no locks, no network, no retries. The
@@ -40,7 +43,8 @@ export const CORE_BUSINESS_FAMILIES = Object.freeze([
 ]);
 
 export const CLOUD_OPERATION_OWNER = Object.freeze({
-  // Pending local mutation waiting to reach the cloud. Outranks everything.
+  // Pending local mutation waiting to reach the cloud, including any pending
+  // review state while core data is positively empty.
   BACKUP: "backup",
   // A clean, positively-empty core device: recovery may hydrate before anything
   // else claims the shared run lock.
@@ -89,18 +93,32 @@ export function hasPendingLocalBackup(queueState) {
   return Boolean(queueState?.pending);
 }
 
-// `remote_changed` is terminal review state, not queued backup work: the backup
-// worker deliberately will not retry it. On an established device, keeping that
-// state owned by backup would deadlock the safe, local-only convergence that
-// imports proven cloud-only additions and verifies the result. A true `conflict`
-// remains review-only because convergence cannot choose between competing edits.
-function remoteChangedReviewNeedsConvergence(queueState) {
-  return String(queueState?.status || "") === "remote_changed";
+// Terminal review states are not retryable backup work: the backup worker
+// deliberately refuses them. On an established device, convergence is the
+// existing read/compare/strict-verify owner that can either prove the current
+// state safe or leave a genuine conflict unresolved.
+function reviewStateNeedsConvergence(queueState) {
+  const status = String(queueState?.status || "");
+  return status === "remote_changed" || status === "conflict";
 }
 
 // The single precedence rule. `coreEmpty` must be a POSITIVE proof of emptiness;
 // anything unproven or unreadable must arrive here as false.
-function resolveOwner(coreEmpty, queueState) {
+// Retirement ends an obligation without claiming its own cloud write succeeded.
+export function isActiveCloudMutation(entry) {
+  return !["acknowledged", "retired"].includes(String(entry?.status || ""));
+}
+
+export function hasCurrentDurableLedgerWork(ledgerState) {
+  const entries = Array.isArray(ledgerState?.entries) ? ledgerState.entries : [];
+  return entries.some(isActiveCloudMutation);
+}
+
+function resolveOwner(coreEmpty, queueState, ledgerState) {
+  // Durable record-level work is the authoritative local mutation channel. It
+  // wins before convergence regardless of hook mount order or legacy queue
+  // review state, including a DELETE that made the local core empty.
+  if (hasCurrentDurableLedgerWork(ledgerState)) return CLOUD_OPERATION_OWNER.BACKUP;
   // Pending work always wins while core data is empty, including terminal review
   // states. That preserves deletion-to-empty safety and keeps recovery from
   // overwriting the local mutation represented by the queue.
@@ -109,20 +127,20 @@ function resolveOwner(coreEmpty, queueState) {
   // resolve a cloud-only review. It performs no cloud writes, journals its local
   // apply, strictly verifies, then clears this exact queue revision only on
   // success.
-  if (remoteChangedReviewNeedsConvergence(queueState)) return CLOUD_OPERATION_OWNER.CONVERGENCE;
+  if (reviewStateNeedsConvergence(queueState)) return CLOUD_OPERATION_OWNER.CONVERGENCE;
   if (hasPendingLocalBackup(queueState)) return CLOUD_OPERATION_OWNER.BACKUP;
   if (coreEmpty) return CLOUD_OPERATION_OWNER.RECOVERY;
   return CLOUD_OPERATION_OWNER.CONVERGENCE;
 }
 
 // Snapshot-shaped resolution (local snapshot families as arrays).
-export function resolveOperationOwnerFromSnapshot({ snapshot, queueState } = {}) {
-  return resolveOwner(hasEmptyCoreBusinessSnapshot(snapshot), queueState);
+export function resolveOperationOwnerFromSnapshot({ snapshot, queueState, mutationLedger } = {}) {
+  return resolveOwner(hasEmptyCoreBusinessSnapshot(snapshot), queueState, mutationLedger);
 }
 
 // Counts-shaped resolution (a migration preview's localCounts).
-export function resolveOperationOwnerFromCounts({ counts, queueState } = {}) {
-  return resolveOwner(hasEmptyCoreBusinessCounts(counts), queueState);
+export function resolveOperationOwnerFromCounts({ counts, queueState, mutationLedger } = {}) {
+  return resolveOwner(hasEmptyCoreBusinessCounts(counts), queueState, mutationLedger);
 }
 
 export const backupOwnsOperation = (owner) => owner === CLOUD_OPERATION_OWNER.BACKUP;

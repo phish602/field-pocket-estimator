@@ -3,7 +3,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { normalizePercentInput } from "./format";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitAppRestoreBundleBusinessMutation } from "../lib/businessCloudMutationOwners";
 
 export const DEFAULT_SETTINGS = {
   pricing: {
@@ -123,19 +123,16 @@ export function loadSettings() {
   }
 }
 
-export function saveSettings(next) {
+export async function saveSettings(next) {
   const normalized = normalizeSettings(next);
   try {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(normalized));
+    await commitAppRestoreBundleBusinessMutation({
+      writes: [{ key: STORAGE_KEYS.SETTINGS, value: JSON.stringify(normalized) }],
+      event: { reason: "settings_saved", source: "saveSettings" },
+    });
     try {
       window.dispatchEvent(new Event("estipaid:settings-changed"));
     } catch {}
-    markCloudBackupDirty({
-      reason: "settings_saved",
-      domains: ["app_settings"],
-      severity: "normal",
-      source: "saveSettings",
-    });
     return true;
   } catch {
     return false;

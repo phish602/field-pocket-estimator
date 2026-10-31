@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
-import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanWriteCloud, operationFenceStillCurrent } from "./supabaseDeviceLock";
 
 export const SUPABASE_ESTIMATE_RESTORE_PAYLOAD_VERSION = "supabase-estimate-restore-payload-v1";
 export const ESTIMATE_RESTORE_PAYLOAD_SCHEMA = "estipaid.estimate.restore_payload";
@@ -194,6 +194,8 @@ export async function updateEstimateRestorePayloads({
   if (gated) return buildResult(gated);
 
   const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot, reason: "backup" });
+  // Captured once; a later generation from the same device does not renew it.
+  const startFence = deviceAccess?.access?.fence || null;
   if (!deviceAccess.ok) {
     return buildResult(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR, {
       error: deviceAccess.error,
@@ -263,14 +265,17 @@ export async function updateEstimateRestorePayloads({
         reason: "backup",
         claimIfMissing: false,
       });
-      if (!finalDeviceAccess.ok) {
+      // The generation must match the one this run started under, not merely
+      // resolve to the same device: A5 -> B6 -> A7 is a stale run.
+      const fenceHeld = operationFenceStillCurrent({ startFence, completionAccess: finalDeviceAccess });
+      if (!finalDeviceAccess.ok || !fenceHeld) {
         return buildResult(ESTIMATE_PAYLOAD_UPDATE_STATUS.ERROR, {
           estimatesChecked,
           estimatesUpdated,
           missingCloudRows,
           skipped,
           failed,
-          error: finalDeviceAccess.userMessage || finalDeviceAccess.error,
+          error: finalDeviceAccess.userMessage || finalDeviceAccess.error || "Backup stopped because EstiPaid was switched to another device.",
           code: finalDeviceAccess.code,
           deviceLockLost: finalDeviceAccess.deviceLockLost,
         });

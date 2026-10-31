@@ -10,7 +10,7 @@ import {
   loadCompanyProfile,
   normalizeCompanyProfile,
 } from "../utils/storage";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitAppRestoreBundleBusinessMutation } from "../lib/businessCloudMutationOwners";
 import {
   optimizeCompanyLogo,
   COMPANY_LOGO_TARGET_MAX_CHARS,
@@ -273,7 +273,7 @@ function buildStripeConnectUrls() {
   }
 }
 
-function saveProfile(p) {
+async function saveProfile(p) {
   let normalized;
   let serialized;
   try {
@@ -295,7 +295,10 @@ function saveProfile(p) {
   }
 
   try {
-    localStorage.setItem(PROFILE_KEY, serialized);
+    await commitAppRestoreBundleBusinessMutation({
+      writes: [{ key: PROFILE_KEY, value: serialized }],
+      event: { reason: "company_profile_saved", source: "saveProfile" },
+    });
   } catch {
     return { ok: false, normalized, error: "Unable to save this Company Profile on this device." };
   }
@@ -318,20 +321,6 @@ function saveProfile(p) {
     // verified as the current canonical record.
     window.dispatchEvent(new CustomEvent("pe-localstorage", { detail: { key: PROFILE_KEY, value: serialized } }));
   } catch {}
-
-  try {
-    const queueState = markCloudBackupDirty({
-      reason: "company_profile_saved",
-      domains: ["company_profile"],
-      severity: "normal",
-      source: "saveProfile",
-    });
-    if (!queueState?.pending || !Array.isArray(queueState?.domains) || !queueState.domains.includes("company_profile")) {
-      return { ok: false, normalized, error: "Saved on this device, but cloud backup could not be queued yet." };
-    }
-  } catch {
-    return { ok: false, normalized, error: "Saved on this device, but cloud backup could not be queued yet." };
-  }
 
   return { ok: true, normalized, error: "" };
 }
@@ -642,7 +631,7 @@ export default function CompanyProfileScreen({
       return false;
     }
 
-    const result = saveProfile(prep.profile);
+    const result = await saveProfile(prep.profile);
     setLastSaveOk(result.ok);
     if (!result.ok) {
       setSaveFailureMessage(result.error || "Unable to save this Company Profile.");
@@ -957,7 +946,7 @@ export default function CompanyProfileScreen({
       setSaveFailureMessage(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    const result = saveProfile(preparedProfile);
+    const result = await saveProfile(preparedProfile);
     setLastSaveOk(result.ok);
     if (result.ok) {
       setProfile(result.normalized);
@@ -996,12 +985,10 @@ export default function CompanyProfileScreen({
       return;
     }
     try {
-      localStorage.removeItem(PROFILE_KEY);
-      markCloudBackupDirty({
-        reason: "company_profile_cleared",
-        domains: ["company_profile"],
-        severity: "normal",
-        source: "doClearProfile",
+      const cleared = stripNonCompanyFields({ ...DEFAULT_COMPANY_PROFILE });
+      await commitAppRestoreBundleBusinessMutation({
+        writes: [{ key: PROFILE_KEY, value: JSON.stringify(cleared) }],
+        event: { reason: "company_profile_cleared", source: "doClearProfile" },
       });
     } catch {}
 

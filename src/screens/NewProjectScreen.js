@@ -8,7 +8,7 @@ import {
   writeStoredProjects,
 } from "../utils/projects";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitStoredCustomerCollectionMutation } from "../lib/businessCloudMutationOwners";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 
 const PROJECT_STATUS_OPTIONS = [
@@ -31,16 +31,16 @@ function readCustomers() {
   }
 }
 
-function writeCustomers(list) {
+async function writeCustomers(list) {
   try {
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(Array.isArray(list) ? list : []));
-    markCloudBackupDirty({
-      reason: "customer_data_saved",
-      domains: ["customers"],
-      severity: "normal",
-      source: "writeCustomers",
+    const committed = await commitStoredCustomerCollectionMutation({
+      previousCustomers: readCustomers(),
+      nextCustomers: Array.isArray(list) ? list : [],
+      event: { reason: "customer_created", source: "NewProjectScreen.writeCustomers" },
     });
+    return committed.records;
   } catch {}
+  return null;
 }
 
 function buildCustomerId() {
@@ -312,7 +312,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       return;
     }
     const next = [...customers, newCustomer];
-    writeCustomers(next);
+    await writeCustomers(next);
     window.dispatchEvent(new Event("estipaid:customers-changed"));
     setCustomers(next);
     setSelectedCustomerId(id);
@@ -354,7 +354,7 @@ export default function NewProjectScreen({ onBack, onSave }) {
       window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
       return;
     }
-    writeStoredProjects(next);
+    await writeStoredProjects(next, { reason: "project_created", source: "NewProjectScreen" });
     window.dispatchEvent(new Event("estipaid:projects-changed"));
     if (onSave) onSave(project.id);
   }, [canSave, selectedCustomerId, selectedCustomer, projectName, addrStreet, addrCity, addrState, addrZip, status, notes, onSave, ensureCanMutateBusinessData]);

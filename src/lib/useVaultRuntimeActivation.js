@@ -20,10 +20,10 @@ import {
   beginVaultRuntimeActivation,
   flushVaultRuntime,
   freezeVaultRuntimeMutations,
+  getVaultRuntimeStatus,
   hasVaultRuntimeSession,
   unfreezeVaultRuntimeMutations,
   subscribeVaultRuntimeStatus,
-  subscribeVaultRuntimeRevalidation,
   hydrateVaultRuntime,
   isVaultRuntimeReadable,
   isVaultRuntimeReady,
@@ -37,8 +37,77 @@ import {
 } from "./vaultRuntimeStore";
 import {
   installAuthoritativeVaultRuntime,
+  isAuthoritativeVaultRuntimeInstalled,
   revokeAuthoritativeVaultRuntime,
 } from "./accountScopedLocalStorage";
+
+// ---------------------------------------------------------------------------
+// Browser-ownership validation
+//
+// The vault is NOT a second tab-ownership system. Which tab may operate is
+// decided by browser-surface authority; the vault only has to prove that the
+// cache it serves was verified from encrypted IndexedDB under the CURRENT
+// browser ownership claim. That claim's verified token is the ownership
+// version, so:
+//
+//   - while one claim stands, a verified runtime stays continuously ready:
+//     focus, visibility, pageshow, cross-tab freshness messages, and remounts
+//     change nothing;
+//   - a genuinely new claim (Use This Tab, or a new document's first
+//     attendance) makes the cache non-operational until it is re-verified once.
+//
+// The record is memory-only and lives as long as this module -- one document.
+// It is never persisted anywhere. It is bound to the exact identity and the
+// exact runtime generation it was verified against, so it stops counting the
+// moment that runtime is revoked, locked, replaced, or recovered, and it is
+// cleared explicitly on every revocation this hook performs.
+// ---------------------------------------------------------------------------
+
+const NO_VALIDATION = Object.freeze({ identity: "", generation: 0, ownershipToken: "" });
+let ownershipValidation = NO_VALIDATION;
+
+function recordOwnershipValidation(identity, generation, ownershipToken) {
+  ownershipValidation = Object.freeze({
+    identity,
+    generation,
+    ownershipToken: typeof ownershipToken === "string" ? ownershipToken : "",
+  });
+}
+
+function clearOwnershipValidation() {
+  ownershipValidation = NO_VALIDATION;
+}
+
+function validationIsLive(identity) {
+  return Boolean(identity
+    && ownershipValidation.identity === identity
+    && ownershipValidation.generation > 0
+    && isVaultRuntimeReadable(ownershipValidation.generation));
+}
+
+function ownershipIsValidated(identity, ownershipToken) {
+  return Boolean(ownershipToken
+    && validationIsLive(identity)
+    && ownershipValidation.ownershipToken === ownershipToken);
+}
+
+// A hook unmount revokes the runtime -- but not inside the same synchronous
+// turn. A StrictMode effect replay or an App remount in one document runs its
+// cleanup and its new mount back to back; tearing the verified runtime down in
+// between would force a full re-hydration that nothing asked for. A genuine
+// unmount still revokes as soon as the current task yields.
+let pendingUnmountRevocation = null;
+
+function cancelPendingUnmountRevocation() {
+  if (pendingUnmountRevocation) pendingUnmountRevocation.cancelled = true;
+  pendingUnmountRevocation = null;
+}
+
+/** TEST-ONLY. Returns the module to a fresh document's state. */
+export function resetVaultOwnershipValidationForTests() {
+  cancelPendingUnmountRevocation();
+  clearOwnershipValidation();
+}
 
 const SAFE_MESSAGE = "";
 const DISABLED = Object.freeze({ state: "disabled", checking: false, pending: false, code: "", message: SAFE_MESSAGE });
@@ -159,15 +228,29 @@ export default function useVaultRuntimeActivation({
   userId = "",
   companyId = "",
   vaultUnlocked = false,
+  // The verified claim token of this browser surface's CURRENT ownership, or ""
+  // while it does not own EstiPaid. Left undefined, the runtime is not bound to
+  // browser ownership at all (headless callers and isolated tests).
+  browserOwnershipToken = undefined,
 } = {}) {
   const [result, setResult] = useState(DISABLED);
   const current = useRef({ generation: 0, mounted: true, identity: "" });
-  // Revalidation is serialized and coalesced: overlapping signals from several
-  // tabs must never run two hydrations against the same identity at once.
-  const revalidation = useRef({ running: false, queued: false });
+  // Revalidation is serialized and coalesced: overlapping requests must never
+  // run two hydrations against the same identity at once. `token` is the
+  // ownership token the in-flight pass is verifying for.
+  const revalidation = useRef({ running: false, queued: false, token: "" });
   const identity = enabled && userId && companyId ? `${userId}:${companyId}` : "";
+  const ownershipBound = typeof browserOwnershipToken === "string";
+  const ownershipToken = ownershipBound ? browserOwnershipToken : "";
+  // Read by async passes at the moment they read encrypted state, so each pass
+  // knows exactly which ownership claim the state it verified belongs to.
+  const ownership = useRef({ bound: ownershipBound, token: ownershipToken });
+  ownership.current = { bound: ownershipBound, token: ownershipToken };
+  const latestResult = useRef(result);
+  latestResult.current = result;
 
   const revoke = useCallback(() => {
+    clearOwnershipValidation();
     revokeAuthoritativeVaultRuntime();
     revokeVaultRuntime();
   }, []);
@@ -305,6 +388,10 @@ export default function useVaultRuntimeActivation({
 
     // 4. Hydrate and verify the runtime catalog and every record it names.
     settle(publicResult("hydrating", "", HYDRATING_MESSAGE));
+    // The ownership claim current when encrypted state is READ is the one this
+    // verification can vouch for. A claim made after this point is newer than
+    // the state below and gets its own revalidation.
+    const verifiedForOwnership = ownership.current.token;
     const hydrated = await hydrateVaultRuntime({
       userId: activeUserId, companyId: activeCompanyId, repository: vaultRepository, activation: activationToken,
     });
@@ -322,6 +409,9 @@ export default function useVaultRuntimeActivation({
       revoke();
       return DISABLED;
     }
+    // Only now -- candidate verified AND adapter installed -- may the ownership
+    // claim be recorded as validated.
+    recordOwnershipValidation(activeIdentity, hydrated.generation, verifiedForOwnership);
     return settle(publicResult("ready"));
   }, [revoke, installAdapter]);
 
@@ -333,14 +423,18 @@ export default function useVaultRuntimeActivation({
   // perfectly healthy local runtime and discarded queued writes before they
   // were durable. Revalidation now flushes first, re-hydrates in place, and
   // only replaces the cache once the new state verifies.
+  //
+  // It runs for a genuine browser-ownership takeover (a claim token this
+  // runtime has not verified) and for an explicit refresh that is not already
+  // satisfied. It is NOT a reaction to routine freshness signals any more.
   // -------------------------------------------------------------------------
   const revalidate = useCallback(async (activeIdentity, activeUserId, activeCompanyId, owner = null) => {
     if (current.current.identity !== activeIdentity) return DISABLED;
     if (owner) { owner.identity = activeIdentity; owner.generation = current.current.generation; }
     if (revalidation.current.running) {
       // Coalesce: one more pass runs after the in-flight one, so a burst of
-      // cross-tab messages (N+1 then N+2 then N+3) produces at most one extra
-      // pass and never two overlapping hydrations.
+      // requests produces at most one extra pass and never two overlapping
+      // hydrations.
       revalidation.current.queued = true;
       return DISABLED;
     }
@@ -397,6 +491,10 @@ export default function useVaultRuntimeActivation({
 
         // 3. Verify a candidate. hydrateVaultRuntime keeps the previous verified
         //    runtime active throughout and swaps atomically only on success.
+        //    The ownership claim current as encrypted state is read is the one
+        //    this pass can vouch for.
+        const verifiedForOwnership = ownership.current.token;
+        revalidation.current.token = verifiedForOwnership;
         const hydrated = await hydrateVaultRuntime({
           userId: activeUserId, companyId: activeCompanyId, lease: pass.lease,
         });
@@ -427,6 +525,14 @@ export default function useVaultRuntimeActivation({
           revoke();
           return DISABLED;
         }
+        recordOwnershipValidation(activeIdentity, hydrated.generation, verifiedForOwnership);
+        // Ownership moved again while this pass was verifying. Its result is
+        // valid for the claim it verified but not for the new one, which gets
+        // exactly one more pass; effective readiness stays gated meanwhile.
+        if (ownership.current.bound && ownership.current.token
+          && ownership.current.token !== verifiedForOwnership) {
+          revalidation.current.queued = true;
+        }
         outcome = publicResult("ready");
         setResult(outcome);
       } while (revalidation.current.queued);
@@ -437,6 +543,7 @@ export default function useVaultRuntimeActivation({
       if (pass.frozen && pass.lease) unfreezeVaultRuntimeMutations(pass.lease);
       revalidation.current.running = false;
       revalidation.current.queued = false;
+      revalidation.current.token = "";
     }
     return outcome;
   }, [revoke, installAdapter]);
@@ -476,11 +583,22 @@ export default function useVaultRuntimeActivation({
   useEffect(() => {
     const inspection = current.current;
     inspection.mounted = true;
+    // A mount in the same synchronous turn as an unmount (StrictMode replay, an
+    // App remount) keeps the verified runtime instead of tearing it down.
+    cancelPendingUnmountRevocation();
     return () => {
       inspection.mounted = false;
       inspection.generation += 1;
       inspection.identity = "";
-      revoke();
+      // Every operation this instance owned is already stale above. The runtime
+      // itself is revoked as soon as the turn yields unless a remount adopts it.
+      const pending = { cancelled: false };
+      pendingUnmountRevocation = pending;
+      Promise.resolve().then(() => {
+        if (pending.cancelled) return;
+        if (pendingUnmountRevocation === pending) pendingUnmountRevocation = null;
+        revoke();
+      });
     };
   }, [revoke]);
 
@@ -490,6 +608,18 @@ export default function useVaultRuntimeActivation({
       current.current.identity = "";
       revoke();
       setResult(DISABLED);
+      return undefined;
+    }
+    // Same-document remount: this exact identity already has a runtime that
+    // was verified, installed, and never revoked. Adopting it is not a new
+    // activation and not a revalidation -- nothing is re-read or replaced.
+    if (current.current.identity !== identity
+      && validationIsLive(identity)
+      && isVaultRuntimeReady(ownershipValidation.generation)
+      && isAuthoritativeVaultRuntimeInstalled()) {
+      current.current.generation += 1;
+      current.current.identity = identity;
+      setResult(publicResult("ready", "", SAFE_MESSAGE, getVaultRuntimeStatus().state === "pending-writes"));
       return undefined;
     }
     activate(identity, userId, companyId);
@@ -522,15 +652,39 @@ export default function useVaultRuntimeActivation({
     return subscribeVaultRuntimeStatus(apply);
   }, []);
 
-  // Another tab committed a newer catalog (or this tab regained focus): re-read
-  // and re-verify in place rather than trusting a possibly stale cache.
+  // There is deliberately NO steady-state subscription to cross-tab freshness
+  // (subscribeVaultRuntimeRevalidation) here. Only one browser surface may
+  // operate at a time, so a commit announced by another tab can only come from
+  // a surface that has since lost ownership -- and the claim that took
+  // ownership from it is revalidated below. Reacting to the message (or to the
+  // focus/visibility fallback behind it) froze and re-hydrated a healthy owner
+  // for nothing. Repository compare-and-set remains the write authority either
+  // way. The transport itself stays in vaultRuntimeStore.
+
+  // Genuine browser-ownership takeover: this surface holds a claim the current
+  // runtime has not verified. Re-read and re-verify the latest encrypted state
+  // exactly once for that claim. Effective readiness (below) is already gated
+  // synchronously, so nothing waits on this effect for safety.
+  const takeoverAttempt = useRef({ token: "", generation: 0 });
   useEffect(() => {
-    if (!identity || !vaultUnlocked) return undefined;
-    return subscribeVaultRuntimeRevalidation(() => {
-      if (current.current.identity !== identity) return;
-      guarded((owner) => revalidate(identity, userId, companyId, owner));
-    });
-  }, [identity, vaultUnlocked, userId, companyId, guarded, revalidate]);
+    if (!ownershipBound || !ownershipToken || !identity || !vaultUnlocked) return;
+    if (current.current.identity !== identity) return;
+    // Activation in flight, blocked, or disabled: activation records the claim
+    // it verified itself, and a failed runtime stays fail-closed.
+    if (result.state !== "ready") return;
+    if (ownershipIsValidated(identity, ownershipToken)) return;
+    if (!hasVaultRuntimeSession()) return;
+    // A pass already in flight reads the claim that is current when it reaches
+    // encrypted state, and loops once more if the claim moves after that, so a
+    // second pass started from here could only duplicate it.
+    if (revalidation.current.running) return;
+    // One attempt per claim against one runtime: rerenders and effect replays
+    // never start a second verification for the same takeover.
+    const generation = getVaultRuntimeStatus().generation;
+    if (takeoverAttempt.current.token === ownershipToken && takeoverAttempt.current.generation === generation) return;
+    takeoverAttempt.current = { token: ownershipToken, generation };
+    guarded((owner) => revalidate(identity, userId, companyId, owner));
+  }, [ownershipBound, ownershipToken, identity, vaultUnlocked, userId, companyId, result.state, guarded, revalidate]);
 
   // A manual refresh of the SAME identity is a revalidation, not a re-activation:
   // it must flush accepted writes, freeze, gate the shell, verify a candidate and
@@ -544,6 +698,18 @@ export default function useVaultRuntimeActivation({
     // path instead of coalescing.
     if (current.current.identity === identity
       && (revalidation.current.running || hasVaultRuntimeSession())) {
+      if (ownership.current.bound && !revalidation.current.running) {
+        const token = ownership.current.token;
+        // The current claim was already verified against this ready runtime:
+        // there is nothing fresher to read, so refresh is a no-op rather than
+        // the old flush/freeze/hydrate cycle.
+        if (token && ownershipIsValidated(identity, token) && isVaultRuntimeReady()) {
+          return Promise.resolve(latestResult.current);
+        }
+        // A surface that does not own EstiPaid keeps its last verified cache
+        // and does not re-read on request; its next claim is revalidated.
+        if (!token) return Promise.resolve(latestResult.current);
+      }
       return guarded((owner) => revalidate(identity, userId, companyId, owner));
     }
     return activate(identity, userId, companyId);
@@ -566,12 +732,24 @@ export default function useVaultRuntimeActivation({
     : Object.freeze({ ok: false, code: value?.code || "ACTIVATION_FAILED" }))),
   [guarded, revoke]);
 
+  // Effective readiness, derived during render. A ready runtime verified under
+  // a different (or no) ownership claim is NOT operational for the claim this
+  // surface holds now, so the very first render that sees a new active token
+  // already reports checking -- no effect has to fire first, and there is no
+  // render in which a new owner sees the previous claim's cache as ready.
+  const effective = result.state === "ready"
+    && ownershipBound
+    && ownershipToken
+    && !ownershipIsValidated(identity, ownershipToken)
+    ? publicResult("checking", "", HYDRATING_MESSAGE)
+    : result;
+
   return Object.freeze({
-    state: result.state,
-    checking: result.checking,
-    pending: result.pending,
-    code: result.code,
-    message: result.message,
+    state: effective.state,
+    checking: effective.checking,
+    pending: effective.pending,
+    code: effective.code,
+    message: effective.message,
     refresh,
     flushAndLock,
   });

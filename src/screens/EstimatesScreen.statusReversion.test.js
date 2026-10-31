@@ -1,6 +1,16 @@
 import React from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
+// The encrypted atomic runtime is covered separately. This UI lifecycle suite
+// keeps its original synchronous local-storage observability while exercising
+// the new shared estimate save owner.
+jest.mock("../lib/estimateCloudMutationPlan", () => ({
+  commitStoredEstimateCollectionMutation: async ({ writes = [] }) => {
+    writes.forEach(({ key, value }) => globalThis.localStorage.setItem(key, value));
+    return { ok: true, ledgerBacked: true };
+  },
+}));
+
 import EstimatesScreen from "./EstimatesScreen";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 

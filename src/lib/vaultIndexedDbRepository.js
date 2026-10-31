@@ -248,6 +248,7 @@ export const VAULT_MIGRATION_LOGICAL_KEYS = Object.freeze([
   "estipaid-custom-labor-roles-v1",
   "estipaid-job-learning-reviewed-candidates-v1",
   "estipaid-cloud-backup-queue-v1",
+  "estipaid-cloud-mutation-ledger-v1",
   "estipaid-cloud-auto-backup-pause-v1",
   "estipaid-cloud-partial-recovery-status-v1",
   "estipaid-cloud-asset-bindings-v1",

@@ -2,17 +2,59 @@ const mockGetSupabaseClient = jest.fn();
 const mockEnsureCurrentDeviceCanWriteCloud = jest.fn();
 const mockEnsureCurrentDeviceCanApplyLocalRestore = jest.fn();
 const mockRunSupabaseCloudVerification = jest.fn();
+const mockAtomicRestore = jest.fn();
+let mockRestoreTarget;
+let mockRestoreIdentity;
+let mockRestoreReady;
+let mockRestoreGeneration;
+let mockRestoreClaim;
+jest.mock("./vaultRuntimeStore", () => ({
+  runtimeCommitAtomicRecords: (...args) => mockAtomicRestore(...args),
+  getVaultRuntimeStatus: () => ({ generation: mockRestoreGeneration }),
+  isVaultRuntimeReady: () => mockRestoreReady,
+  isVaultRuntimeReadable: () => mockRestoreReady,
+}));
+jest.mock("./vaultSession", () => ({ deriveWorkspaceVaultTag: async () => "restore-test-tag" }));
+jest.mock("./accountScopedLocalStorage", () => ({
+  ...jest.requireActual("./accountScopedLocalStorage"),
+  getActiveAccountScopedStorage: () => mockRestoreTarget,
+  getActiveAccountWorkspaceIdentity: () => mockRestoreIdentity,
+  isAuthoritativeVaultRuntimeInstalled: () => mockRestoreReady,
+}));
+jest.mock("./browserSurfaceAuthority", () => ({
+  ...jest.requireActual("./browserSurfaceAuthority"),
+  getBrowserSurfaceClaimToken: () => mockRestoreClaim,
+}));
+beforeEach(() => {
+  mockRestoreIdentity = { userId: "user_1", companyId: "company_1" };
+  mockRestoreReady = true; mockRestoreGeneration = 1; mockRestoreClaim = "restore-claim";
+  mockAtomicRestore.mockImplementation(async (records, { beforeCommit } = {}) => {
+    if (beforeCommit && !await beforeCommit()) throw new Error("STALE_SESSION");
+    records.forEach(({ logicalKey, value }) => mockRestoreTarget.setItem(logicalKey, value));
+    return { ok: true };
+  });
+});
 
 jest.mock("./supabaseClient", () => ({
   getSupabaseClient: (...args) => mockGetSupabaseClient(...args),
 }));
 
+// Only the two ownership READS are stubbed. operationFenceStillCurrent is a
+// pure comparator and must stay real, or these tests would prove nothing about
+// the generation check the restore path now performs.
 jest.mock("./supabaseDeviceLock", () => ({
+  ...jest.requireActual("./supabaseDeviceLock"),
   ensureCurrentDeviceCanWriteCloud: (...args) => mockEnsureCurrentDeviceCanWriteCloud(...args),
   ensureCurrentDeviceCanApplyLocalRestore: (...args) => mockEnsureCurrentDeviceCanApplyLocalRestore(...args),
   DEVICE_LOCK_LOST_CODE: "device_lock_lost",
   DEVICE_LOCK_LOST_RESTORE_MESSAGE: "Recovery stopped because EstiPaid was switched to another device.",
 }));
+
+// The generation every default fixture operates under.
+const RESTORE_FENCE = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+function restoreAccessOk(fence = RESTORE_FENCE) {
+  return { ok: true, access: { isActive: true, isLocked: false, fence }, error: "" };
+}
 
 jest.mock("./supabaseCloudVerification", () => ({
   runSupabaseCloudVerification: (...args) => mockRunSupabaseCloudVerification(...args),
@@ -75,13 +117,14 @@ function buildPartialLocalStorageSnapshot() {
 
 function buildWritableStorage(initial = {}) {
   const store = { ...initial };
-  return {
+  mockRestoreTarget = {
     getItem: (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null),
     setItem: jest.fn((key, value) => {
       store[key] = value;
     }),
     __store: store,
   };
+  return mockRestoreTarget;
 }
 
 function createMockClient({ rowsByTable = {}, countErrorsByTable = {}, rowErrorsByTable = {} } = {}) {
@@ -320,9 +363,9 @@ describe("supabaseCloudRestore", () => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(restoreAccessOk());
     mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
-    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue(restoreAccessOk());
     mockRunSupabaseCloudVerification.mockReset();
     mockRunSupabaseCloudVerification.mockResolvedValue({ ok: true, allMatched: true, availableRepairs: [], notices: [] });
   });
@@ -559,6 +602,21 @@ describe("supabaseCloudRestore", () => {
   });
 
   describe("executeSupabaseCloudRestore", () => {
+    test("confirmed fresh-device restore waits for secure runtime handoff before applying records", async () => {
+      mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: fullCloudRows() }));
+      const storage = buildWritableStorage();
+      let ready = false;
+      const write = storage.setItem.getMockImplementation();
+      storage.setItem.mockImplementation((key, value) => {
+        if (!ready) throw new Error("EstiPaid could not save yet because this workspace's secure storage is not ready.");
+        write(key, value);
+      });
+      const prepareSecureRestore = jest.fn(async () => { ready = true; return { ok: true }; });
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext, prepareSecureRestore });
+      expect(result.error || "").toBe("");
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(prepareSecureRestore).toHaveBeenCalledTimes(1);
+    });
     test("blocks at signed_out without any Supabase calls or localStorage writes", async () => {
       const storage = buildWritableStorage();
       const result = await executeSupabaseCloudRestore({
@@ -624,7 +682,8 @@ describe("supabaseCloudRestore", () => {
       const mockClient = createMockClient({ rowsByTable: fullCloudRows() });
       mockGetSupabaseClient.mockReturnValue(mockClient);
       mockEnsureCurrentDeviceCanApplyLocalRestore
-        .mockResolvedValueOnce({ ok: true, access: { isActive: true, isLocked: false }, error: "" })
+        .mockResolvedValueOnce(restoreAccessOk())
+        .mockResolvedValueOnce(restoreAccessOk())
         .mockResolvedValueOnce({
           ok: false,
           code: "device_lock_lost",
@@ -831,7 +890,7 @@ describe("supabaseCloudRestore", () => {
           }),
         }),
       ]));
-      expect(storage.setItem).toHaveBeenCalledTimes(4);
+      expect(storage.setItem).toHaveBeenCalledTimes(8);
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-customers-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-projects-v1", expect.any(String));
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-invoices-v1", expect.any(String));
@@ -885,6 +944,9 @@ describe("supabaseCloudRestore", () => {
           },
         })],
         invoices: [cloudInvoiceRow({ estimate_id: "db_est_1", estimate_number: "EST-1", terms: "Net 30" })],
+        // Timestamp-shaped, not date-only: this is the shape the writer actually
+        // persists, and the shape that used to decay a day per restore.
+        invoice_payments: [cloudPaymentRow({ paid_at: "2026-01-15T00:00:00.000Z" })],
         invoice_line_items: [
           cloudInvoiceLineItemRow(),
           cloudInvoiceLineItemRow({
@@ -921,6 +983,8 @@ describe("supabaseCloudRestore", () => {
       }));
       expect(restoredInvoice.lineItems.map((item) => item.id)).toEqual(["invoice:inv_1:line:0", "invoice:inv_1:line:1"]);
       expect(restoredInvoice.payments.map((payment) => payment.id)).toEqual(["pay_1"]);
+      // The persisted instant survives as its own UTC calendar date.
+      expect(restoredInvoice.payments[0].paidAt).toBe("2026-01-15");
 
       const passTwo = await actualVerification.runSupabaseCloudVerification({ storageSnapshot: storage, ...baseContext });
       expect(passTwo).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
@@ -960,7 +1024,7 @@ describe("supabaseCloudRestore", () => {
         expect(result.baselineCaptured).toBe(false);
         expect(result.verification).toMatchObject({ ok: true, allMatched: false });
         expect(JSON.parse(storage.__store[STORAGE_KEYS.INVOICES])).toHaveLength(1);
-        expect(storage.__store[STORAGE_KEYS.CLOUD_SYNC_BASELINE]).toBeUndefined();
+        expect(JSON.parse(storage.__store[STORAGE_KEYS.CLOUD_SYNC_BASELINE])).toBeNull();
         expect(readCloudBackupQueueState().pending).toBe(true);
         expect(getLastCloudRestoreCompleteAt()).toBe(completedAtBefore);
         expect(onComplete).not.toHaveBeenCalled();
@@ -1076,7 +1140,7 @@ describe("supabaseCloudRestore", () => {
       expect(result.blockers).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: "estimates_not_reconstructable" }),
       ]));
-      expect(storage.setItem).toHaveBeenCalledTimes(4);
+      expect(storage.setItem).toHaveBeenCalledTimes(8);
       expect(storage.setItem).not.toHaveBeenCalledWith("estipaid-estimates-v1", expect.anything());
     });
 
@@ -1109,7 +1173,7 @@ describe("supabaseCloudRestore", () => {
       expect(result.partial).toBe(false);
       expect(result.blockers).toEqual([]);
       expect(result.restoredCounts).toEqual(expect.objectContaining({ estimates: 1 }));
-      expect(storage.setItem).toHaveBeenCalledTimes(5);
+      expect(storage.setItem).toHaveBeenCalledTimes(9);
       expect(storage.setItem).toHaveBeenCalledWith("estipaid-estimates-v1", expect.any(String));
 
       const restoredEstimates = JSON.parse(storage.__store["estipaid-estimates-v1"]);
@@ -1395,9 +1459,9 @@ describe("executeSupabaseCloudRestore — cloud asset binding capture", () => {
     mockGetSupabaseClient.mockReset();
     mockGetSupabaseClient.mockReturnValue(null);
     mockEnsureCurrentDeviceCanWriteCloud.mockReset();
-    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(restoreAccessOk());
     mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
-    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue({ ok: true, access: { isActive: true, isLocked: false }, error: "" });
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue(restoreAccessOk());
   });
 
   test("a successful restore binds every restored record to its cloud UUID (source cloud_restore)", async () => {
@@ -1630,5 +1694,231 @@ describe("readSupabaseCloudConvergenceSnapshot in-flight coordinator (Gate E2.2)
     const clientChanged = createMockClient({ rowsByTable: { customers: [cloudCustomerRow()] } });
     const second = await readSupabaseCloudConvergenceSnapshot(READ_ARGS(clientChanged));
     expect(second.counts.customers).toBe(1);
+  });
+});
+
+// START-FENCE: restore is a long, multi-stage operation whose every later
+// boundary previously asked only "is this device active NOW?". That question is
+// answered YES by A(v5) -> B(v6) -> A(v7): the same browser lost the workspace
+// and took it back, so its in-flight restore is operating on a cloud read from a
+// generation that has since been superseded. Each test below drives the run to a
+// specific fenced boundary and proves the forbidden side effect did not happen.
+describe("executeSupabaseCloudRestore START fence", () => {
+  const fenceA5 = { companyId: "company_1", deviceId: "device-a", lockVersion: 5 };
+  const fenceA7 = { companyId: "company_1", deviceId: "device-a", lockVersion: 7 };
+  const fenceB6 = { companyId: "company_1", deviceId: "device-b", lockVersion: 6 };
+  const okAt = (fence) => ({ ok: true, access: { isActive: true, isLocked: false, fence }, error: "" });
+
+  // Drives the four ownership reads in order:
+  // apply -> baseline capture -> queue clear -> restore complete.
+  function stageFences(fences) {
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
+    fences.forEach((fence) => mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValueOnce(okAt(fence)));
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue(okAt(fences[fences.length - 1]));
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockGetSupabaseClient.mockReset();
+    mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: fullCloudRows() }));
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(okAt(fenceA5));
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue(okAt(fenceA5));
+    mockRunSupabaseCloudVerification.mockReset();
+    mockRunSupabaseCloudVerification.mockResolvedValue({ ok: true, allMatched: true, availableRepairs: [], notices: [] });
+    markCloudBackupDirty({ reason: "restore_fence_probe", domains: ["customers"], severity: "normal" });
+  });
+
+  test("a same-owner heartbeat keeps the same generation and still restores", async () => {
+    // A heartbeat by the current owner does not advance lockVersion, so every
+    // boundary sees v5 and the restore must complete exactly as before.
+    stageFences([fenceA5, fenceA5, fenceA5, fenceA5]);
+    const onComplete = jest.fn();
+    window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    try {
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.baselineCaptured).toBe(true);
+      expect(readCloudBackupQueueState().pending).toBe(false);
+      expect(onComplete).toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    }
+  });
+
+  test("a takeover reported as still-active cannot overwrite local data", async () => {
+    // Defence in depth: even if the ownership read optimistically answers ok,
+    // a fence naming ANOTHER device is not the generation this run started under.
+    stageFences([fenceB6]);
+
+    const storage = buildWritableStorage();
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+    // The destructive batch is the forbidden side effect here.
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(readCloudBackupQueueState().pending).toBe(true);
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot overwrite local data at the apply boundary", async () => {
+    stageFences([fenceA7]);
+
+    const storage = buildWritableStorage();
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+    expect(result.deviceLockLost).toBe(true);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(readCloudBackupQueueState().pending).toBe(true);
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot capture a verified baseline after verification", async () => {
+    // The generation moves while the async strict verification is running.
+    stageFences([fenceA5, fenceA5, fenceA7]);
+    const onComplete = jest.fn();
+    window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    try {
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      // It reached the fenced boundary: verification actually ran.
+      expect(mockRunSupabaseCloudVerification).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+      // FORBIDDEN: no durable baseline, no queue clear, no completion signal.
+      expect(storage.setItem.mock.calls.filter(([key]) => key === STORAGE_KEYS.CLOUD_SYNC_BASELINE)
+        .every(([, value]) => JSON.parse(value) === null)).toBe(true);
+      expect(readCloudBackupQueueState().pending).toBe(true);
+      expect(onComplete).not.toHaveBeenCalled();
+      // The local write it already performed is reported honestly.
+      expect(result.noWritesPerformed).toBe(false);
+    } finally {
+      window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    }
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot clear the backup queue", async () => {
+    stageFences([fenceA5, fenceA5, fenceA7]);
+    const onComplete = jest.fn();
+    window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    try {
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+      // FORBIDDEN: the pending-mutation record survives.
+      expect(readCloudBackupQueueState().pending).toBe(true);
+      expect(onComplete).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    }
+  });
+
+  test("A(v5) -> B(v6) -> A(v7) cannot publish RESTORED or the complete event", async () => {
+    stageFences([fenceA5, fenceA5, fenceA5, fenceA7]);
+    const onComplete = jest.fn();
+    window.addEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    try {
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+
+      expect(result.status).not.toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.DEVICE_LOCKED);
+      // FORBIDDEN: the settled-device signal the rest of the app keys off.
+      expect(onComplete).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(CLOUD_RESTORE_COMPLETE_EVENT, onComplete);
+    }
+  });
+});
+
+// PAYMENT DATE DECAY.
+//
+// Restore used to hand `paid_at` through verbatim, and the local invoice
+// normalizer then read it with the LOCAL calendar (getFullYear/getMonth/
+// getDate). West of UTC that turned a persisted midnight-UTC instant into the
+// previous day, which the backend mapper wrote back as a new midnight-UTC
+// instant -- so every cloud -> local -> cloud cycle walked the payment one more
+// day backwards. These run under a fixed negative offset so the regression is
+// reproducible regardless of where the suite executes.
+describe("invoice payment date is a restore/backup fixed point", () => {
+  const { mapLocalInvoicePaymentToBackendPayment } = require("../utils/backendDataMapper");
+  const PHOENIX_OFFSET_MINUTES = 7 * 60; // UTC-7, the offset that exposed this.
+  let realGetTimezoneOffset;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockGetSupabaseClient.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockReset();
+    mockEnsureCurrentDeviceCanWriteCloud.mockResolvedValue(restoreAccessOk());
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockReset();
+    mockEnsureCurrentDeviceCanApplyLocalRestore.mockResolvedValue(restoreAccessOk());
+    mockRunSupabaseCloudVerification.mockReset();
+    mockRunSupabaseCloudVerification.mockResolvedValue({ ok: true, allMatched: true, availableRepairs: [], notices: [] });
+
+    realGetTimezoneOffset = Date.prototype.getTimezoneOffset;
+    // eslint-disable-next-line no-extend-native
+    Date.prototype.getTimezoneOffset = function getTimezoneOffset() { return PHOENIX_OFFSET_MINUTES; };
+  });
+
+  afterEach(() => {
+    // eslint-disable-next-line no-extend-native
+    Date.prototype.getTimezoneOffset = realGetTimezoneOffset;
+  });
+
+  async function restorePaymentWith(paidAt) {
+    mockGetSupabaseClient.mockReturnValue(createMockClient({
+      rowsByTable: fullCloudRows({ invoice_payments: [cloudPaymentRow({ paid_at: paidAt })] }),
+    }));
+    const storage = buildWritableStorage();
+    const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+    expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+    const invoice = JSON.parse(storage.__store[STORAGE_KEYS.INVOICES])[0];
+    return { invoice, payment: invoice.payments[0] };
+  }
+
+  test("1 -- a midnight-UTC timestamp restores as its own UTC calendar date", async () => {
+    const { payment } = await restorePaymentWith("2026-08-10T00:00:00+00:00");
+    expect(payment.paidAt).toBe("2026-08-10");
+  });
+
+  test("2 -- a date-only value is unchanged", async () => {
+    const { payment } = await restorePaymentWith("2026-08-10");
+    expect(payment.paidAt).toBe("2026-08-10");
+  });
+
+  test("3 -- the real cloud -> local -> cloud cycle is a fixed point over 5 rounds", async () => {
+    let persisted = "2026-08-10T00:00:00.000Z";
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const { invoice, payment } = await restorePaymentWith(persisted);
+      expect(payment.paidAt).toBe("2026-08-10");
+
+      // Back out through the EXISTING backend payment mapper.
+      persisted = mapLocalInvoicePaymentToBackendPayment(payment, invoice, {}).paid_at;
+      expect(persisted).toBe("2026-08-10T00:00:00.000Z");
+    }
+  });
+
+  test("4 -- different payment days remain different", async () => {
+    const tenth = await restorePaymentWith("2026-08-10T00:00:00.000Z");
+    const first = await restorePaymentWith("2026-08-01T00:00:00.000Z");
+
+    expect(tenth.payment.paidAt).toBe("2026-08-10");
+    expect(first.payment.paidAt).toBe("2026-08-01");
+    expect(tenth.payment.paidAt).not.toBe(first.payment.paidAt);
+  });
+
+  test("5 -- payment identity, amount, method and status are untouched", async () => {
+    const { payment } = await restorePaymentWith("2026-08-10T00:00:00.000Z");
+    expect(payment).toEqual(expect.objectContaining({
+      id: "pay_1",
+      amount: 250,
+      method: "cash",
+      status: "paid",
+    }));
   });
 });

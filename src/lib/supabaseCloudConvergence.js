@@ -1,3 +1,5 @@
+import { appendCloudMutationsDurably, CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "./cloudMutationLedger";
+import { buildImmutableAppRestoreBundleMutation } from "./businessCloudMutationOwners";
 // @ts-nocheck
 /* eslint-disable */
 
@@ -7,9 +9,9 @@ import { readCloudAssetBindings, setCloudAssetBindingsBatch } from "./cloudAsset
 import { readCloudSyncBaseline, cloudSyncEqual, captureVerifiedCloudSyncBaseline, stableCloudSyncHash, compactStoredCloudSyncBaseline } from "./cloudSyncBaseline";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { readCloudBackupQueueState, readPersistedCloudBackupQueueState, markCloudBackupDirty, clearCloudBackupDirty, CLOUD_BACKUP_STATUS, LEGACY_CLOUD_BACKUP_QUEUE_SCHEMA_VERSION, migrateLegacyPersistedCloudBackupQueue, recoverVerifiedActiveDeviceTakeoverPause } from "./cloudBackupQueue";
-import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanApplyLocalRestore, getOrCreateLocalDeviceId, operationFenceStillCurrent } from "./supabaseDeviceLock";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
-import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "../utils/backendDataMapper";
+import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice, mapLocalInvoicePaymentToBackendPayment } from "../utils/backendDataMapper";
 import { buildParentLineItemContract } from "./cloudLineItemContract";
 import { buildPersistedEstimateContract, PERSISTED_ESTIMATE_CONTRACT_FIELDS } from "./supabaseEstimatePersistenceContract";
 import { ESTIMATE_RESTORE_PAYLOAD_SCHEMA, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
@@ -57,14 +59,52 @@ export function normalizeEstimateContract(estimate = {}) {
     document: { ...clone(estimate), id: "" },
   };
 }
+const PERSISTED_INVOICE_HEADER_FIELDS = Object.freeze([
+  "legacy_local_id", "project_legacy_local_id", "customer_legacy_local_id", "source_estimate_legacy_local_id",
+  "invoice_number", "estimate_number", "doc_type", "status", "payment_status",
+  "invoice_date", "due_date", "total", "amount_paid", "balance_remaining", "notes", "terms",
+]);
+
+const PERSISTED_PAYMENT_FIELDS = Object.freeze(["legacy_local_id", "amount", "method", "status", "paid_at"]);
+
+function pickPersistedFields(source, fields) {
+  const picked = {};
+  fields.forEach((field) => {
+    const value = source?.[field];
+    // The mappers already delete "" and null, so an absent key means "not
+    // persisted" on both sides and stays absent rather than becoming a value.
+    if (value !== undefined) picked[field] = value;
+  });
+  return picked;
+}
+
 export function normalizeInvoiceContract(invoice = {}) {
+  const mapped = mapLocalInvoiceToBackendInvoice(invoice, {});
+  const parentLegacyId = asText(mapped.legacy_local_id) || entityId(invoice);
+  const payments = asArray(invoice?.payments)
+    .map((payment) => pickPersistedFields(
+      mapLocalInvoicePaymentToBackendPayment(payment, invoice, {}),
+      PERSISTED_PAYMENT_FIELDS
+    ))
+    // The cloud payment table has no `order` column, so runtime array position
+    // is not business state. Ordering by persisted identity keeps comparison
+    // deterministic WITHOUT collapsing duplicates: a repeated legacy_local_id
+    // still yields two rows here, and the existing duplicate-identity checks
+    // continue to fail closed on it.
+    .sort((left, right) => asText(left.legacy_local_id).localeCompare(asText(right.legacy_local_id)));
+
   return {
     id: entityId(invoice), customerId: asText(invoice.customerId || invoice.customer?.id), projectId: asText(invoice.projectId || invoice.project?.id),
     sourceEstimateId: asText(invoice.sourceEstimateId || invoice.sourceEstimateLegacyId || invoice.sourceEstimateSnapshot?.estimateId),
-    persisted: mapLocalInvoiceToBackendInvoice(invoice, {}),
-    // The complete local invoice is retained in the comparison contract so
-    // line items and payments can never be independently merged or patched.
-    document: { ...clone(invoice), id: "" },
+    persisted: pickPersistedFields(mapped, PERSISTED_INVOICE_HEADER_FIELDS),
+    // The SAME canonical child contract the writer and verifier use, so
+    // line-item economics stay strict and identity stays deterministic.
+    lineItems: buildParentLineItemContract({
+      entityType: "invoice",
+      parentLegacyId,
+      items: mapped.line_items,
+    }).rows,
+    payments,
   };
 }
 function normalizeFamilyEntity(family, value) {
@@ -106,10 +146,11 @@ function snapshotValues(storage) {
 // profile, settings, scope templates, customers, the conflict vault) are only
 // listed when this plan actually writes them, which for an ordinary cloud
 // import it does not.
-export function buildConvergenceRollbackKeySet({ writes = {}, bindingEntries = [], willCaptureBaseline = false, willClearQueue = false, metadataRecovery = false } = {}) {
+export function buildConvergenceRollbackKeySet({ writes = {}, bindingEntries = [], willCaptureBaseline = false, willClearQueue = false, willAppendLedger = false, metadataRecovery = false } = {}) {
   const keys = new Set(Object.keys(writes || {}));
   if (asArray(bindingEntries).length) keys.add(STORAGE_KEYS.CLOUD_ASSET_BINDINGS);
   if (willCaptureBaseline) keys.add(STORAGE_KEYS.CLOUD_SYNC_BASELINE);
+  if (willAppendLedger) keys.add(STORAGE_KEYS.CLOUD_MUTATION_LEDGER);
   // A verified completion clears the queue, and clearCloudBackupDirty also
   // clears the pause; a legacy migration rewrote both. Either way both keys are
   // in play and must be restorable.
@@ -942,6 +983,45 @@ export async function runSupabaseCloudConvergence(options = {}) {
   return result;
 }
 
+function buildConvergenceLocalOnlyMutations({ plan, snapshot, companyId }) {
+  const entityByFamily = {
+    customers: CLOUD_MUTATION_ENTITY.CUSTOMER,
+    projects: CLOUD_MUTATION_ENTITY.PROJECT,
+    estimates: CLOUD_MUTATION_ENTITY.ESTIMATE,
+    invoices: CLOUD_MUTATION_ENTITY.INVOICE,
+  };
+  const mutations = [];
+  let appBundleChanged = false;
+  asArray(plan?.classifications).forEach((entry) => {
+    if (!["local_only_addition", "local_changed"].includes(entry?.classification)) return;
+    if (["companyProfile", "settings", "scopeTemplates"].includes(entry?.family)) {
+      appBundleChanged = true;
+      return;
+    }
+    const entityType = entityByFamily[entry?.family];
+    if (!entityType) return;
+    const record = asArray(snapshot?.[entry.family]).find((candidate) => entityId(candidate) === asText(entry?.id));
+    if (!record) return;
+    mutations.push({
+      companyId,
+      entityType,
+      documentId: asText(entry.id),
+      operation: CLOUD_MUTATION_OPERATION.UPSERT,
+      reason: "cloud_convergence_local_change",
+      source: "runSupabaseCloudConvergence",
+      payload: clone(record),
+    });
+  });
+  if (appBundleChanged) {
+    mutations.push(buildImmutableAppRestoreBundleMutation({
+      companyId,
+      reason: "cloud_convergence_local_app_bundle_change",
+      source: "runSupabaseCloudConvergence",
+    }));
+  }
+  return mutations;
+}
+
 async function runCloudConvergenceAttempt({ storage = localStorage, configured = false, user = null, company = null, cloudSnapshot = null, deviceAccess = null, completionDeviceAccess = null, verifyCloud = runSupabaseCloudVerification } = {}) {
   const companyId = asText(company?.id); const userId = asText(user?.id);
   if (!configured || !companyId || !userId) return { ok: false, status: "unavailable", code: "prerequisites_missing", noWritesPerformed: true };
@@ -968,7 +1048,10 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   };
   // Re-read every metadata-derived value AFTER recovery so the proof, the plan
   // and the change-detection guard all agree on one post-recovery view.
-  const beforeValues = snapshotValues(storage); const beforeQueueRevision = queueRevision(storage);
+  // queueRevision() may normalize an older persisted queue or add missing
+  // review provenance. Perform that metadata-only migration before capturing
+  // the byte-for-byte rollback/change-detection snapshot.
+  const beforeQueueRevision = queueRevision(storage); const beforeValues = snapshotValues(storage);
   const baseline = readCloudSyncBaseline(companyId, storage);
   const plan = buildCloudConvergencePlan({ local, cloud: snapshot.mapped, baseline: baseline?.snapshots || null, cloudSnapshot: snapshot, companyId, storage });
   const attemptId = stableCloudSyncHash({ companyId, userId, queueRevision: beforeQueueRevision, local, cloud: snapshot.mapped, baseline: baseline?.version || 0 });
@@ -1028,6 +1111,9 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
           repairRowCount: Array.isArray(verification?.availableRepairs)
             ? verification.availableRepairs.reduce((sum, repair) => sum + (Number(repair?.count) || 0), 0)
             : 0,
+          repairDocumentIds: Array.isArray(verification?.availableRepairs)
+            ? [...new Set(verification.availableRepairs.flatMap((repair) => Array.isArray(repair?.parentLegacyIds) ? repair.parentLegacyIds : []).map(asText).filter(Boolean))]
+            : [],
           noticeCodes: Array.isArray(verification?.notices)
             ? [...new Set(verification.notices.filter((notice) => notice?.level === "warning" || notice?.level === "error").map((notice) => asText(notice?.code)).filter(Boolean))]
             : [],
@@ -1038,6 +1124,11 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
   }
   const access = deviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "cloud_convergence" });
   if (!access?.ok) return { ok: false, status: "blocked", code: "device_not_active", noWritesPerformed: true };
+  // Immutable for this transaction. Strict cloud verification below is awaited,
+  // so ownership can change underneath it; proving the device is merely ACTIVE at
+  // completion would accept A/v5 -> B/v6 -> A/v7 and let a stale transaction
+  // capture a baseline, clear the queue and remove the journal.
+  const startFence = access?.access?.fence || null;
   if (plan.bootstrap) {
     const recheckedProof = buildCleanReplicaBootstrapProof({ storage, companyId, local, cloud: snapshot.mapped, cloudSnapshot: snapshot, baseline: null });
     if (!recheckedProof.ok || Number(recheckedProof.queueRevision) !== Number(beforeQueueRevision)) return { ok: false, status: "aborted", code: recheckedProof.code || "baseline_bootstrap_local_pending", noWritesPerformed: true };
@@ -1054,6 +1145,7 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     bindingEntries,
     willCaptureBaseline: !plan.localOnly,
     willClearQueue: !plan.localOnly,
+    willAppendLedger: plan.localOnly,
     metadataRecovery: metadataStage.attempted,
   });
   const previous = rollbackKeys.reduce((out, key) => ({ ...out, [key]: beforeValues[key] ?? readRaw(storage, key) }), {});
@@ -1067,7 +1159,14 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
     for (const [key, value] of Object.entries(writes)) { if (!writeRaw(storage, key, value)) throw new Error("local_write_failed"); }
     const localVerification = verifyLocalApply({ before: beforeValues, writes, storage, localBefore: local, plan, expectedQueueRevision: beforeQueueRevision });
     if (!localVerification.ok) throw new Error(localVerification.code);
-    if (plan.localOnly) markCloudBackupDirty({ reason: "cloud_convergence_local_only", severity: "normal" });
+    if (plan.localOnly) {
+      const mutations = buildConvergenceLocalOnlyMutations({
+        plan,
+        snapshot: buildLocalSnapshotFromStorage(storage).snapshot,
+        companyId,
+      });
+      await appendCloudMutationsDurably(mutations, { storage });
+    }
     else {
       const verification = await verifyCloud({ storageSnapshot: storage, configured, user, company });
       const warning = Array.isArray(verification?.notices) && verification.notices.some((notice) => notice?.level === "warning" || notice?.level === "error");
@@ -1076,6 +1175,8 @@ async function runCloudConvergenceAttempt({ storage = localStorage, configured =
       if (!verification?.ok || !verification?.allMatched || warning || blocker || repairAvailable) throw new Error("cloud_verification_failed");
       const completionAccess = completionDeviceAccess || await ensureCurrentDeviceCanApplyLocalRestore({ configured, user, company, storage, reason: "before_convergence_complete" });
       if (!completionAccess?.ok || queueRevision(storage) !== beforeQueueRevision) throw new Error("convergence_completion_guard_failed");
+      // Same GENERATION, not merely the same device.
+      if (!operationFenceStillCurrent({ startFence, completionAccess })) throw new Error("convergence_completion_guard_failed");
       const captured = captureVerifiedCloudSyncBaseline({ storage, companyId, queueRevision: beforeQueueRevision, cloudSnapshot: snapshot, verified: true, deviceAccess: access });
       // Preserve the precise reason (e.g. baseline_quota_exceeded) instead of
       // collapsing every baseline failure into one opaque code.

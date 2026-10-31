@@ -111,12 +111,12 @@ describe("CASE 4 - non-empty core + pending queue -> BACKUP", () => {
       .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
   });
 
-  test("a true conflict remains owned by review, never automatic convergence", () => {
+  test("a terminal conflict review hands an established device to safe convergence", () => {
     const queueState = { pending: true, status: "conflict", localMutationRevision: 7 };
     expect(resolveOperationOwnerFromSnapshot({ snapshot: nonEmptySnapshot(), queueState }))
-      .toBe(CLOUD_OPERATION_OWNER.BACKUP);
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
     expect(resolveOperationOwnerFromCounts({ counts: nonEmptyCounts(), queueState }))
-      .toBe(CLOUD_OPERATION_OWNER.BACKUP);
+      .toBe(CLOUD_OPERATION_OWNER.CONVERGENCE);
   });
 });
 

@@ -3675,7 +3675,7 @@ export default function InvoicesScreen({
                                     window.alert(mutationAccess?.userMessage || "Save stopped because EstiPaid was switched to another device.");
                                     return;
                                   }
-                                  writeStoredProjects(nextProjects);
+                                  await writeStoredProjects(nextProjects, { reason: "project_backfilled", source: "InvoicesScreen" });
                                   window.dispatchEvent(new Event("estipaid:projects-changed"));
                                 }
                                 if (target?.projectId) onOpenProjectDetail(target.projectId);

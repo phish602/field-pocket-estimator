@@ -3,7 +3,7 @@
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { appendAuditEvent, createStoredAuditEvent } from "./auditStore";
-import { markCloudBackupDirty } from "../lib/cloudBackupQueue";
+import { commitStoredProjectCollectionMutation } from "../lib/businessCloudMutationOwners";
 import { INVOICE_STATUSES, deriveInvoiceStatus } from "./invoiceStatus";
 
 const PROJECTS_KEY = STORAGE_KEYS.PROJECTS;
@@ -338,19 +338,18 @@ export function readStoredProjects() {
   }
 }
 
-export function writeStoredProjects(projects) {
+export async function writeStoredProjects(projects, event = {}) {
+  const previous = readStoredProjects();
   const next = normalizeProjectList(projects);
-  localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
-  markCloudBackupDirty({
-    reason: "project_data_saved",
-    domains: ["projects"],
-    severity: "normal",
-    source: "writeStoredProjects",
+  const committed = await commitStoredProjectCollectionMutation({
+    previousProjects: previous,
+    nextProjects: next,
+    event: { reason: "project_data_saved", source: "writeStoredProjects", ...event },
   });
-  return next;
+  return committed.records;
 }
 
-export function deleteStoredProject(projectId) {
+export async function deleteStoredProject(projectId) {
   const id = asText(projectId);
   if (!id) {
     return { removed: false, reason: "missing-project-id" };
@@ -364,11 +363,11 @@ export function deleteStoredProject(projectId) {
 
   const next = projects.slice();
   next.splice(index, 1);
-  writeStoredProjects(next);
+  await writeStoredProjects(next, { reason: "project_deleted", source: "deleteStoredProject" });
   return { removed: true, removedProjectId: id };
 }
 
-export function updateProjectStoredStatus(projectId, nextStatus) {
+export async function updateProjectStoredStatus(projectId, nextStatus) {
   const id = asText(projectId);
   if (!id) return null;
 
@@ -389,7 +388,7 @@ export function updateProjectStoredStatus(projectId, nextStatus) {
   });
   const next = projects.slice();
   next[index] = updated;
-  writeStoredProjects(next);
+  await writeStoredProjects(next, { reason: "project_status_saved", source: "updateProjectStoredStatus" });
   try {
     const eventType = normalizedStatus === "archived"
       ? "project.archived"
@@ -412,7 +411,7 @@ export function updateProjectStoredStatus(projectId, nextStatus) {
   return updated;
 }
 
-export function updateProjectMetadata(projectId, fields) {
+export async function updateProjectMetadata(projectId, fields) {
   const id = asText(projectId);
   if (!id) return null;
   const projects = readStoredProjects();
@@ -426,7 +425,7 @@ export function updateProjectMetadata(projectId, fields) {
   });
   const next = projects.slice();
   next[index] = updated;
-  writeStoredProjects(next);
+  await writeStoredProjects(next, { reason: "project_metadata_saved", source: "updateProjectMetadata" });
   return updated;
 }
 

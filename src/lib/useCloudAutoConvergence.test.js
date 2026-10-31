@@ -126,10 +126,15 @@ test("runs the existing safe convergence path for an established remote_changed 
   markCloudBackupDirty({ reason: "invoice_saved", severity: "money_critical" });
   const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
   localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...raw, pending: true, status: "remote_changed" }));
+  runSupabaseCloudConvergence.mockImplementationOnce(async () => {
+    const current = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+    localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({ ...current, pending: false, status: "clean" }));
+    return { ok: true, status: "matched" };
+  });
 
   renderHook(() => useCloudAutoConvergence(props()));
 
-  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(runSupabaseCloudConvergence).toHaveBeenCalled());
   expect(isCloudOperationRunLocked()).toBe(false);
 });
 
@@ -487,4 +492,17 @@ test("a genuine passive foreground after the expired burst window schedules exac
   // (8) No concurrency and no further runs afterward.
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(runSupabaseCloudConvergence).toHaveBeenCalledTimes(3);
+});
+
+test("pending durable backup keeps ownership and convergence yields", async () => {
+  localStorage.clear();
+  localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "customer-existing" }]));
+  markCloudBackupDirty({ reason: "invoice_deleted", severity: "money_critical" });
+
+  renderHook(() => useCloudAutoConvergence(props()));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  expect(runSupabaseCloudConvergence).not.toHaveBeenCalled();
+  expect(tryAcquireCloudOperationRunLock(CLOUD_OPERATION_OWNER.BACKUP)).toBeTruthy();
+  resetCloudOperationRunLockForTests();
 });

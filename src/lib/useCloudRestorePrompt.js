@@ -54,6 +54,7 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
   const { company, role, hasCompany } = useSupabaseAccount({ configured: isSupabaseReady, user });
   const {
     queueState,
+    mutationLedger,
     onboardingStatus,
     restorePreview,
     restorePreviewLoading,
@@ -78,26 +79,26 @@ export default function useCloudRestorePrompt({ hasChamberedDraft = false } = {}
   const operationOwner = resolveOperationOwnerFromCounts({
     counts: onboardingStatus?.preview?.localCounts,
     queueState,
+    mutationLedger,
   });
 
   if (isSupabaseReady && userEmail && hasCompany && status) {
-    if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
+    if (decision?.queueCurrentReview || decision?.ledgerFailed) {
+      state = CLOUD_RESTORE_PROMPT_STATE.NEEDS_ATTENTION;
+    } else if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
       state = CLOUD_RESTORE_PROMPT_STATE.LOCAL_PENDING_BACKUP;
     } else if (status === CLOUD_ONBOARDING_STATUS.CLOUD_AVAILABLE_EMPTY_DEVICE) {
       state = hasChamberedDraft
         ? CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS
         : CLOUD_RESTORE_PROMPT_STATE.CLOUD_FOUND_EMPTY_DEVICE;
-    } else if (status === CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH) {
-      state = CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS;
     } else if (
-      status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
-      && onboardingStatus?.automaticSafeRepair?.attempted
-    ) {
-      state = CLOUD_RESTORE_PROMPT_STATE.CLOUD_AVAILABLE_LOCAL_EXISTS;
-    } else if (
-      status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
+      status === CLOUD_ONBOARDING_STATUS.LOCAL_CLOUD_MISMATCH
+      || status === CLOUD_ONBOARDING_STATUS.NEEDS_ATTENTION
       || status === CLOUD_ONBOARDING_STATUS.ERROR
     ) {
+      // Established-workspace mismatch/failure is a generic sync issue, never
+      // a Home restore recommendation. Fresh empty-device restore is the only
+      // normal restore classification above.
       state = CLOUD_RESTORE_PROMPT_STATE.NEEDS_ATTENTION;
     }
     // NO_LOCAL_DATA, READY_TO_BACKUP, ALREADY_BACKED_UP, BACKUP_COMPLETED

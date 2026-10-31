@@ -59,6 +59,31 @@ export const ACCOUNT_SCOPED_STORAGE_ERROR = Object.freeze({
   INSTALL_FAILED: "This browser is not able to open your workspace.",
 });
 
+// A protected business mutation reached the storage layer while protected vault
+// routing was active but no MUTABLE authoritative adapter existed.
+//
+// This used to return undefined, which told the caller the write succeeded while
+// the value was discarded -- silent data loss whose likelihood depended purely on
+// whether the vault runtime happened to install before or after a render tick.
+// Refusing loudly is the only safe answer: the value is not written to scoped
+// plaintext, not queued in a side cache, and no storage notification is emitted.
+export const VAULT_MUTATION_NOT_READY_CODE = "vault_mutation_not_ready";
+
+export class VaultMutationNotReadyError extends Error {
+  constructor(logicalKey = "") {
+    // The key NAME is safe to report; the value never is.
+    super("EstiPaid could not save yet because this workspace's secure storage is not ready.");
+    this.name = "VaultMutationNotReadyError";
+    this.code = VAULT_MUTATION_NOT_READY_CODE;
+    this.logicalKey = String(logicalKey || "");
+    this.accepted = false;
+  }
+}
+
+export function isVaultMutationNotReadyError(error) {
+  return Boolean(error) && error.code === VAULT_MUTATION_NOT_READY_CODE;
+}
+
 const ESTIPAID_PREFIX = "estipaid-";
 const NAMESPACE_PREFIX_WITH_SEPARATOR = `${WORKSPACE_NAMESPACE_PREFIX}:`;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -536,13 +561,19 @@ function createScopedStorageFacade({ storage, namespace }) {
         // deferred, redirected, or written as plaintext.
         if (routing === "vault") {
           const adapter = facadeMutableAdapter();
-          if (adapter) adapter.setItem(normalizedKey, value);
+          // Fail loudly. Returning undefined here reported success to the caller
+          // while discarding the business value.
+          if (!adapter) throw new VaultMutationNotReadyError(normalizedKey);
+          adapter.setItem(normalizedKey, value);
           return undefined;
         }
         if (routing === "refused") return undefined;
         return storage.setItem(toPhysicalKey(normalizedKey), value);
       }
-      if (!mayMutate()) return undefined;
+      if (!mayMutate()) {
+        if (isWorkspaceScopedLogicalKey(normalizedKey)) throw new VaultMutationNotReadyError(normalizedKey);
+        return undefined;
+      }
       return storage.setItem(toPhysicalKey(normalizedKey), value);
     },
     removeItem(key) {
@@ -555,7 +586,8 @@ function createScopedStorageFacade({ storage, namespace }) {
         const routing = classifyAuthoritativeKey(normalizedKey);
         if (routing === "vault") {
           const adapter = facadeMutableAdapter();
-          if (adapter) adapter.removeItem(normalizedKey);
+          if (!adapter) throw new VaultMutationNotReadyError(normalizedKey);
+          adapter.removeItem(normalizedKey);
           return undefined;
         }
         if (routing === "refused") return undefined;
@@ -831,6 +863,15 @@ export function getActiveAccountWorkspaceNamespace() {
 
 export function getActiveAccountScopedStorage() {
   return activeWorkspace?.facade || null;
+}
+
+// Read-only identity for canonical business commit owners. The value is sourced
+// from the already-verified active workspace marker; it contains no token,
+// mutable profile field, or authorization claim.
+export function getActiveAccountWorkspaceIdentity() {
+  return activeWorkspace
+    ? Object.freeze({ userId: activeWorkspace.userId, companyId: activeWorkspace.companyId })
+    : Object.freeze({ userId: "", companyId: "" });
 }
 
 // Read-only diagnostics for one identity's workspace. Never installs anything

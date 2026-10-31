@@ -10,7 +10,7 @@ import {
   updateProjectStoredStatus,
 } from "../utils/projects";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
-import useCloudBackupStatus from "../lib/useCloudBackupStatus";
+import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
 
 const PROJECT_DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
@@ -837,23 +837,22 @@ export default function ProjectDetailScreen({
   // has never been dirty/backed up).
   const backupChip = (() => {
     if (!cloudBackupStatus.isSupabaseReady || !cloudBackupStatus.userEmail || !cloudBackupStatus.hasCompany) return null;
-    if (cloudBackupStatus.restoredRecently) return { label: "Restored", color: "rgba(187,247,208,0.92)" };
-    if (cloudBackupStatus.displayState === "running") return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
-    if (cloudBackupStatus.displayState === "failed") return {
-      label: cloudBackupStatus.queueState?.status === "conflict"
-        ? "Cloud sync conflict"
-        : cloudBackupStatus.chipState === "local_cloud_mismatch" ? "Cloud changed elsewhere" : "Sync needs attention",
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.SYNCING) return { label: "Backing up...", color: "rgba(99,179,237,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE) return {
+      label: "Sync needs attention",
       color: "rgba(253,224,71,0.92)",
     };
-    if (cloudBackupStatus.displayState === "pending") return {
-      label: cloudBackupStatus.queueState?.status === "offline_pending"
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.PENDING) return {
+      label: cloudBackupStatus.productStatus?.pendingReason === "offline"
         ? "Waiting for connection"
-        : cloudBackupStatus.queueState?.status === "retry_wait"
+        : cloudBackupStatus.productStatus?.pendingReason === "retry"
           ? "Retrying cloud sync"
           : "Cloud sync pending",
       color: null,
     };
-    if (cloudBackupStatus.displayState === "current") return { label: "Cloud up to date", color: "rgba(187,247,208,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE) return { label: "Restore available", color: "rgba(99,179,237,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.CLOUD_OK) return { label: "Cloud up to date", color: "rgba(187,247,208,0.92)" };
+    if (cloudBackupStatus.productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED) return { label: "Cloud connected", color: "rgba(187,247,208,0.82)" };
     return null;
   })();
 
@@ -1005,7 +1004,7 @@ export default function ProjectDetailScreen({
                   }}
                   onClick={async () => {
                     if (!await ensureProjectMutation()) return;
-                    const updated = updateProjectStoredStatus(project.id, option.key);
+                    const updated = await updateProjectStoredStatus(project.id, option.key);
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
                       window.dispatchEvent(new Event("estipaid:projects-changed"));
@@ -1235,7 +1234,7 @@ export default function ProjectDetailScreen({
                   }}
                   onClick={async () => {
                     if (!await ensureProjectMutation()) return;
-                    const updated = updateProjectStoredStatus(project.id, "archived");
+                    const updated = await updateProjectStoredStatus(project.id, "archived");
                     if (updated) {
                       setRefreshSeq((value) => value + 1);
                       window.dispatchEvent(new Event("estipaid:projects-changed"));
@@ -1284,7 +1283,7 @@ export default function ProjectDetailScreen({
                     }}
                     onClick={async () => {
                       if (!await ensureProjectMutation()) return;
-                      const updated = updateProjectStoredStatus(project.id, "archived");
+                      const updated = await updateProjectStoredStatus(project.id, "archived");
                       if (updated) {
                         setRefreshSeq((value) => value + 1);
                         window.dispatchEvent(new Event("estipaid:projects-changed"));
@@ -1315,7 +1314,7 @@ export default function ProjectDetailScreen({
                     setDeleteBusy(true);
                     setDeleteMessage("");
                     try {
-                      const result = deleteStoredProject(project.id);
+                      const result = await deleteStoredProject(project.id);
                       if (!result?.removed) {
                         setDeleteMessage("Unable to delete this project right now.");
                         setDeleteBusy(false);

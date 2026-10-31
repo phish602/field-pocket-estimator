@@ -1,6 +1,14 @@
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { getSupabaseClient } from "./supabaseClient";
-import { collectBackendMappingWarnings, mapLocalSnapshotToBackendDraft } from "../utils/backendDataMapper";
+import {
+  collectBackendMappingWarnings,
+  mapLocalCustomerToBackendCustomer,
+  mapLocalEstimateToBackendEstimate,
+  mapLocalInvoicePaymentToBackendPayment,
+  mapLocalInvoiceToBackendInvoice,
+  mapLocalProjectToBackendProject,
+  mapLocalSnapshotToBackendDraft,
+} from "../utils/backendDataMapper";
 import { buildEstimateRestorePayload, ESTIMATE_RESTORE_PAYLOAD_VERSION } from "./supabaseEstimateRestorePayload";
 import { buildPersistedEstimateContract } from "./supabaseEstimatePersistenceContract";
 import {
@@ -8,7 +16,7 @@ import {
   buildLocalSnapshotFromArtifact,
   repairStoredLocalDataIntegrity,
 } from "./localDataIntegrity";
-import { ensureCurrentDeviceCanWriteCloud, getOrCreateLocalDeviceId } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanWriteCloud, getOrCreateLocalDeviceId, operationFenceStillCurrent, buildStaleOperationResult } from "./supabaseDeviceLock";
 import { repairProvenStaleInvoiceLineItemDuplicates } from "./staleInvoiceLineItemRepairClient";
 import {
   buildCloudIdentityReconciliationPlan,
@@ -428,6 +436,29 @@ function mapProjectPayloads(draft, customerIdByLegacyId, userId, localSnapshot) 
   });
 }
 
+export function buildTargetCustomerPersistencePayload({ customer, companyId, userId } = {}) {
+  const context = { companyId: asText(companyId), userId: asText(userId), source: "cloud_mutation_ledger" };
+  const mappedCustomer = mapLocalCustomerToBackendCustomer(customer, context);
+  return {
+    mappedCustomer,
+    customerPayload: mapCustomerPayloads({ customers: [mappedCustomer] }, asText(userId))[0] || null,
+  };
+}
+
+export function buildTargetProjectPersistencePayload({ project, companyId, userId, customerId = null } = {}) {
+  const context = { companyId: asText(companyId), userId: asText(userId), source: "cloud_mutation_ledger" };
+  const mappedProject = mapLocalProjectToBackendProject(project, context);
+  return {
+    mappedProject,
+    projectPayload: mapProjectPayloads(
+      { projects: [mappedProject] },
+      new Map(customerId ? [[asText(mappedProject?.customer_legacy_local_id), asText(customerId)]] : []),
+      asText(userId),
+      { projects: [project], estimates: [], invoices: [] }
+    )[0] || null,
+  };
+}
+
 function mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, userId) {
   return (Array.isArray(draft?.estimates) ? draft.estimates : []).map((estimate) => {
     // The table columns this writer owns come from the shared persistence
@@ -630,6 +661,80 @@ function mapInvoiceLineItemPayloads(draft, invoiceIdByLegacyId) {
   }
 
   return { payloads, issues };
+}
+
+// Shared narrow invoice persistence adapter. The mutation writer deliberately
+// delegates to the same local->backend mapper and SQL payload builders as the
+// full migration writer so financial/date semantics cannot drift between lanes.
+export function buildTargetInvoicePersistencePayloads({
+  invoice,
+  companyId,
+  userId,
+  customerId = null,
+  projectId = null,
+  estimateId = null,
+  invoiceId = null,
+} = {}) {
+  const context = { companyId: asText(companyId), userId: asText(userId), source: "cloud_mutation_ledger" };
+  const mappedInvoice = mapLocalInvoiceToBackendInvoice(invoice, context);
+  const draft = {
+    invoices: [mappedInvoice],
+    invoicePayments: (Array.isArray(invoice?.payments) ? invoice.payments : [])
+      .map((payment) => mapLocalInvoicePaymentToBackendPayment(payment, invoice, context)),
+  };
+  const invoiceLegacyId = asText(mappedInvoice?.legacy_local_id);
+  const invoiceIds = new Map(invoiceId ? [[invoiceLegacyId, asText(invoiceId)]] : []);
+  const invoicePayloads = mapInvoicePayloads(
+    draft,
+    new Map(customerId ? [[asText(mappedInvoice?.customer_legacy_local_id), asText(customerId)]] : []),
+    new Map(projectId ? [[asText(mappedInvoice?.project_legacy_local_id), asText(projectId)]] : []),
+    new Map(estimateId ? [[asText(mappedInvoice?.source_estimate_legacy_local_id), asText(estimateId)]] : []),
+    asText(userId)
+  );
+  const lineItems = mapInvoiceLineItemPayloads(draft, invoiceIds);
+  const paymentPayloads = mapInvoicePaymentPayloads(draft, invoiceIds, asText(userId));
+  return {
+    mappedInvoice,
+    invoicePayload: invoicePayloads[0] || null,
+    lineItemPayloads: lineItems.payloads,
+    lineItemIssues: lineItems.issues,
+    paymentPayloads,
+  };
+}
+
+// Shared narrow estimate persistence adapter. The target writer uses the same
+// local mapper, persisted header projection, verbatim restore payload and child
+// identity builder as the full migration writer.
+export function buildTargetEstimatePersistencePayloads({
+  estimate,
+  companyId,
+  userId,
+  customerId = null,
+  projectId = null,
+  estimateId = null,
+} = {}) {
+  const context = { companyId: asText(companyId), userId: asText(userId), source: "cloud_mutation_ledger" };
+  const mappedEstimate = mapLocalEstimateToBackendEstimate(estimate, context);
+  const draft = attachEstimateRestorePayloads(
+    { estimates: [mappedEstimate] },
+    { estimates: [estimate] }
+  );
+  const persistedMappedEstimate = draft.estimates[0] || mappedEstimate;
+  const estimateLegacyId = asText(persistedMappedEstimate?.legacy_local_id);
+  const estimateIds = new Map(estimateId ? [[estimateLegacyId, asText(estimateId)]] : []);
+  const estimatePayloads = mapEstimatePayloads(
+    draft,
+    new Map(customerId ? [[asText(persistedMappedEstimate?.customer_legacy_local_id), asText(customerId)]] : []),
+    new Map(projectId ? [[asText(persistedMappedEstimate?.project_legacy_local_id), asText(projectId)]] : []),
+    asText(userId)
+  );
+  const lineItems = mapEstimateLineItemPayloads(draft, estimateIds);
+  return {
+    mappedEstimate: persistedMappedEstimate,
+    estimatePayload: estimatePayloads[0] || null,
+    lineItemPayloads: lineItems.payloads,
+    lineItemIssues: lineItems.issues,
+  };
 }
 
 function buildLegacyIdMap(rows) {
@@ -1169,6 +1274,8 @@ export async function runSupabaseMigrationWrite({
       noLocalDeletes: true,
     };
   }
+  // The immutable generation this whole write began under.
+  const startFence = deviceAccess?.access?.fence || null;
 
   if (!userId || !companyId || !ALLOWED_MIGRATION_ROLES.has(normalizedRole) || !backupDownloadAvailable) {
     if (!userId) notices.push(buildNotice("error", "not_signed_in", "No signed-in Supabase user found."));
@@ -1188,14 +1295,25 @@ export async function runSupabaseMigrationWrite({
   // A preview/snapshot can take long enough for another device to take over.
   // Every destructive cloud call below invokes this non-claiming fresh read
   // immediately before it mutates a business table.
-  const ensureFreshMutationAccess = () => ensureCurrentDeviceCanWriteCloud({
-    configured,
-    user,
-    company,
-    storage: storageSnapshot,
-    reason: mutationReason,
-    claimIfMissing: false,
-  });
+  // "Active now" is not the question. A writer that started under generation 5,
+  // lost the workspace to another device at 6 and regained it at 7 would pass a
+  // plain activity check and keep pushing rows built from a superseded local
+  // read. Every fresh read must therefore prove the STARTING generation.
+  const ensureFreshMutationAccess = async () => {
+    const access = await ensureCurrentDeviceCanWriteCloud({
+      configured,
+      user,
+      company,
+      storage: storageSnapshot,
+      reason: mutationReason,
+      claimIfMissing: false,
+    });
+    if (!access.ok) return access;
+    if (!operationFenceStillCurrent({ startFence, completionAccess: access })) {
+      return { ...buildStaleOperationResult(mutationReason), access: access.access || null };
+    }
+    return access;
+  };
   const buildMutationLockResult = (access, extra = {}) => ({
     ok: false,
     blocked: true,

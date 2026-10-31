@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "./supabaseClient";
 import { STORAGE_KEYS } from "../constants/storageKeys";
-import { ensureCurrentDeviceCanWriteCloud } from "./supabaseDeviceLock";
+import { ensureCurrentDeviceCanWriteCloud, operationFenceStillCurrent, getDeviceLockStoppedMessage, DEVICE_LOCK_LOST_CODE } from "./supabaseDeviceLock";
 
 export const SUPABASE_APP_RESTORE_BUNDLE_SCHEMA = "estipaid.app.restore_bundle";
 export const SUPABASE_APP_RESTORE_BUNDLE_VERSION = 1;
@@ -370,6 +370,7 @@ export async function readSupabaseAppRestoreBundle({ client, companyId } = {}) {
 
 export async function updateSupabaseAppRestoreBundle({
   storageSnapshot,
+  proposedBundle = null,
   configured = false,
   user = null,
   company = null,
@@ -428,6 +429,9 @@ export async function updateSupabaseAppRestoreBundle({
   }
 
   const deviceAccess = await ensureCurrentDeviceCanWriteCloud({ configured, user, company, storage: storageSnapshot, reason: "backup" });
+  // Immutable for the whole operation. Never refreshed: a newer generation owned
+  // by this same device still invalidates work that began under the old one.
+  const startFence = deviceAccess?.access?.fence || null;
   if (!deviceAccess.ok) {
     return {
       status: APP_RESTORE_BUNDLE_STATUS.ERROR,
@@ -461,7 +465,22 @@ export async function updateSupabaseAppRestoreBundle({
     };
   }
 
-  const { bundle, notices, captureSummary } = buildSupabaseAppRestoreBundle(storageSnapshot);
+  const explicitValidation = proposedBundle ? validateSupabaseAppRestoreBundle(proposedBundle) : null;
+  if (proposedBundle && !explicitValidation?.valid) {
+    return {
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      noLocalDataChanged: true,
+      captureSummary: explicitValidation?.captureSummary || summarizeAppRestoreBundleCapture(null),
+      notices: [],
+      code: "app_restore_bundle_payload_invalid",
+      error: explicitValidation?.reason || "The proposed app restore bundle is invalid.",
+    };
+  }
+  const captured = proposedBundle
+    ? { bundle: canonicalizeJson(proposedBundle), notices: [], captureSummary: explicitValidation.captureSummary }
+    : buildSupabaseAppRestoreBundle(storageSnapshot);
+  const { bundle, notices, captureSummary } = captured;
   const { rows, error } = await readExistingBundleRows(client, companyId);
   if (error) {
     return {
@@ -500,6 +519,19 @@ export async function updateSupabaseAppRestoreBundle({
     reason: "backup",
     claimIfMissing: false,
   });
+  // Same generation, not merely the same device: A5 -> B6 -> A7 must fail here.
+  if (finalDeviceAccess.ok && !operationFenceStillCurrent({ startFence, completionAccess: finalDeviceAccess })) {
+    return {
+      status: APP_RESTORE_BUNDLE_STATUS.ERROR,
+      bundleUpdated: false,
+      noLocalDataChanged: true,
+      captureSummary,
+      notices,
+      error: getDeviceLockStoppedMessage("backup"),
+      code: DEVICE_LOCK_LOST_CODE,
+      deviceLockLost: true,
+    };
+  }
   if (!finalDeviceAccess.ok) {
     return {
       status: APP_RESTORE_BUNDLE_STATUS.ERROR,

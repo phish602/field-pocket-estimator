@@ -4,6 +4,7 @@ import {
   LOCAL_DATA_DECISION,
   scanLocalDataIntegrity,
 } from "./localDataIntegrity";
+import { CLOUD_BACKUP_REVIEW_ORIGIN } from "./cloudBackupQueue";
 
 function buildSnapshot(overrides = {}) {
   return {
@@ -255,14 +256,17 @@ describe("localDataIntegrity", () => {
     }));
   });
 
-  test("mismatch beats last successful backup", () => {
+  test("mismatch becomes a generic unresolved sync issue and cannot offer recovery actions", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
-      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123 },
+      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123, lastVerifiedAt: 123 },
       onboardingStatus: { status: "local_cloud_mismatch" },
     });
 
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.restoreCloudAvailable).toBe(false);
+    expect(decision.replaceCloudAvailable).toBe(false);
   });
 
   test("mismatch beats ordinary backup pending work", () => {
@@ -272,8 +276,8 @@ describe("localDataIntegrity", () => {
       onboardingStatus: { status: "local_cloud_mismatch" },
     });
 
-    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
   });
 
   function buildCloudOnlyEstimateVerification() {
@@ -288,7 +292,7 @@ describe("localDataIntegrity", () => {
     };
   }
 
-  test("cloud-only estimate rows do not show Cloud OK or Pending, and enable both restore and replace", () => {
+  test("cloud-only estimate rows remain internal mismatch evidence but expose only a generic sync issue", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
       cloudVerification: buildCloudOnlyEstimateVerification(),
@@ -296,13 +300,13 @@ describe("localDataIntegrity", () => {
       onboardingStatus: { status: "local_cloud_mismatch" },
     });
 
-    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
     expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
     expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
     expect(decision.cloudOnlyRowsDetected).toBe(true);
-    expect(decision.replaceCloudAvailable).toBe(true);
-    expect(decision.restoreCloudAvailable).toBe(true);
+    expect(decision.replaceCloudAvailable).toBe(false);
+    expect(decision.restoreCloudAvailable).toBe(false);
   });
 
   test("true local corruption still blocks the replace-cloud option even with cloud-only rows", () => {
@@ -337,7 +341,7 @@ describe("localDataIntegrity", () => {
     };
   }
 
-  test("generic cloud verification mismatch with clean local integrity sets restoreCloudAvailable and replaceCloudAvailable true", () => {
+  test("generic cloud verification mismatch uses backup_failed with no Restore or Replace", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
       cloudVerification: buildGenericMismatchVerification(),
@@ -345,17 +349,17 @@ describe("localDataIntegrity", () => {
       onboardingStatus: { status: "needs_attention" },
     });
 
-    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
-    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH);
-    expect(decision.restoreCloudAvailable).toBe(true);
-    expect(decision.replaceCloudAvailable).toBe(true);
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.restoreCloudAvailable).toBe(false);
+    expect(decision.replaceCloudAvailable).toBe(false);
   });
 
   test("generic cloud verification mismatch does not produce Cloud OK", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
       cloudVerification: buildGenericMismatchVerification(),
-      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123 },
+      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123, lastVerifiedAt: 123 },
       onboardingStatus: { status: "needs_attention" },
     });
 
@@ -408,16 +412,128 @@ describe("localDataIntegrity", () => {
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
   });
 
-  test("shows Backup issue when repairable metadata exists, even if the backup queue is pending", () => {
+  test("safe repair alone stays out of global failure status and recovery actions", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot({
         invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
       })),
-      queueState: { pending: true, status: "current" },
+      queueState: { pending: false, status: "current" },
       onboardingStatus: { status: "already_backed_up" },
     });
 
+    expect(decision.firstSafeRepair).toEqual(expect.objectContaining({ code: "invoice_project_stale" }));
+    expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.screenState).not.toBe(LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP);
+    expect(decision.restoreCloudAvailable).toBe(false);
+    expect(decision.replaceCloudAvailable).toBe(false);
+  });
+
+  test.each(["failed", "needs_attention"])(
+    "real queue status %s remains a generic backup failure when safe repair metadata exists",
+    (status) => {
+      const decision = getCloudDataDecision({
+        localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+          invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+        })),
+        queueState: { pending: false, status },
+        onboardingStatus: { status: "already_backed_up" },
+      });
+
+      expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+      expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    }
+  );
+
+  test.each(["remote_changed", "conflict"])(
+    "historical queue review status %s is diagnostic and not a global Backup issue",
+    (status) => {
+      const decision = getCloudDataDecision({
+        localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+        queueState: { pending: true, status, lastVerifiedAt: 123, reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW },
+        onboardingStatus: { status: "needs_attention" },
+      });
+      expect(decision.queueRequiresReview).toBe(true);
+      expect(decision.queueHistoricalReview).toBe(true);
+      expect(decision.chipState).not.toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+      expect(decision.screenState).not.toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    }
+  );
+
+  test("a current ledger failure remains a generic Sync issue", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "conflict", reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW },
+      mutationLedger: { entries: [{ revision: 1, status: "needs_attention" }] },
+      onboardingStatus: { status: "established_workspace" },
+    });
+    expect(decision.ledgerFailed).toBe(true);
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+  });
+
+  test("strictly verified ledger proof may show Cloud OK over stored historical review", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "conflict", reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW },
+      mutationLedger: { entries: [{ revision: 1, status: "acknowledged", verifiedAt: 456 }], lastVerifiedAt: 456 },
+      onboardingStatus: { status: "local_cloud_mismatch" },
+    });
+    expect(decision.verifiedCurrent).toBe(true);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+  });
+
+  test.each(["pending", "retry_wait", "syncing"])("current ledger status %s has active status precedence", (status) => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "conflict", reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.LEGACY_HISTORICAL_REVIEW },
+      mutationLedger: { entries: [{ revision: 1, status }] },
+      onboardingStatus: { status: "established_workspace" },
+    });
+    expect(decision.chipState).toBe(status === "syncing" ? LOCAL_DATA_DECISION.BACKUP_RUNNING : LOCAL_DATA_DECISION.BACKUP_PENDING);
+  });
+
+  test.each(["conflict", "remote_changed"])("new current review status %s remains a real Sync issue", (status) => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: {
+        pending: true,
+        status,
+        reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE,
+        lastVerifiedAt: 123,
+      },
+      onboardingStatus: { status: "established_workspace" },
+    });
+
+    expect(decision.queueCurrentReview).toBe(true);
+    expect(decision.queueUnresolved).toBe(true);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
+    expect(decision.verifiedCurrent).toBe(false);
+  });
+
+  test("safe repair metadata preserves pending queue precedence", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+      })),
+      queueState: { pending: true, status: "pending" },
+      onboardingStatus: { status: "already_backed_up" },
+    });
+
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
+  });
+
+  test("safe repair metadata allows real clean-queue verification proof to show Cloud OK", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot({
+        invoices: [{ id: "inv_1", projectId: "missing_project", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100, payments: [] }],
+      })),
+      queueState: { pending: false, status: "current", lastVerifiedAt: 123 },
+      onboardingStatus: { status: "established_workspace" },
+    });
+
+    expect(decision.verifiedCurrent).toBe(true);
+    expect(decision.screenState).toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
   });
 
   test("Pending still shows when the backup queue is pending and no blockers or repairs exist", () => {
@@ -442,10 +558,13 @@ describe("localDataIntegrity", () => {
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_RUNNING);
   });
 
-  test("restore available does not beat backup issue", () => {
+  test("restore available does not beat a real local blocker", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot({
-        estimates: [{ id: "est_1", projectId: "proj_1", customerId: "cust_1" }],
+        invoices: [
+          { id: "inv_1", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+          { id: "inv_2", projectId: "proj_1", customerId: "cust_1", invoiceNumber: "INV-100", total: 100, amountPaid: 0, balanceRemaining: 100 },
+        ],
       })),
       queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123 },
       onboardingStatus: { status: "cloud_available_empty_device" },
@@ -455,14 +574,37 @@ describe("localDataIntegrity", () => {
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_FAILED);
   });
 
-  test("verified current shows Cloud OK", () => {
+  test("established workspace alone is neutral without queue verification proof", () => {
     const decision = getCloudDataDecision({
       localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
       queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123 },
-      onboardingStatus: { status: "already_backed_up" },
+      onboardingStatus: { status: "established_workspace" },
+    });
+
+    expect(decision.screenState).toBeNull();
+    expect(decision.chipState).toBeNull();
+    expect(decision.verifiedCurrent).toBe(false);
+  });
+
+  test("clean queue with existing verified-success proof shows Cloud OK", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: false, status: "current", lastSuccessfulBackupAt: 123, lastVerifiedAt: 123 },
+      onboardingStatus: { status: "established_workspace" },
     });
 
     expect(decision.chipState).toBe(LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT);
+  });
+
+  test("stale verified proof cannot override a newer pending local revision", () => {
+    const decision = getCloudDataDecision({
+      localIntegrity: scanLocalDataIntegrity(buildSnapshot()),
+      queueState: { pending: true, status: "pending", localMutationRevision: 8, lastVerifiedAt: 123 },
+      onboardingStatus: { status: "established_workspace" },
+    });
+
+    expect(decision.verifiedCurrent).toBe(false);
+    expect(decision.chipState).toBe(LOCAL_DATA_DECISION.BACKUP_PENDING);
   });
 
   test("empty local plus valid cloud recommends restore", () => {

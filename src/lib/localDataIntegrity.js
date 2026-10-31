@@ -1,9 +1,15 @@
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { isActiveCloudMutation } from "./cloudOperationOwnership";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import {
   extractEstimateNumber,
   repairMissingEstimateNumbers,
 } from "../utils/estimateNumbers";
+import {
+  isCurrentCloudBackupReview,
+  isHistoricalCloudBackupReview,
+  isLegacyCompatibilityQueue,
+} from "./cloudBackupQueue";
 
 export const LOCAL_DATA_DECISION = Object.freeze({
   SAFE_TO_BACKUP: "safe_to_backup",
@@ -804,6 +810,7 @@ export function getCloudDataDecision({
   localIntegrity = null,
   cloudVerification = null,
   queueState = null,
+  mutationLedger = null,
   onboardingStatus = null,
   restorePreview = null,
   workerRunning = false,
@@ -815,8 +822,22 @@ export function getCloudDataDecision({
   const queuePending = Boolean(queueState?.pending);
   const queueStatus = asText(queueState?.status).toLowerCase();
   const queueFailed = queueStatus === "failed" || queueStatus === "needs_attention";
-  const queueRequiresReview = queueStatus === "remote_changed" || queueStatus === "conflict";
-  const knownPendingLocalMutation = queuePending && ["pending", "syncing", "offline_pending", "retry_wait"].includes(queueStatus);
+  const queueHistoricalReview = isHistoricalCloudBackupReview(queueState);
+  const queueCurrentReview = isCurrentCloudBackupReview(queueState);
+  const queueLegacyCompatibility = isLegacyCompatibilityQueue(queueState);
+  const queueRequiresReview = queueHistoricalReview || queueCurrentReview;
+  // Only explicitly quarantined, pre-fix review evidence is diagnostic. New
+  // terminal reviews are current failures and outrank pending/verified states.
+  const activeQueuePending = queuePending && !queueRequiresReview && !queueLegacyCompatibility;
+  const queueUnresolved = !queueLegacyCompatibility && (queueFailed || queueCurrentReview);
+  const queueSyncing = activeQueuePending && queueStatus === "syncing";
+  const knownPendingLocalMutation = activeQueuePending && ["pending", "syncing", "offline_pending", "retry_wait"].includes(queueStatus);
+  const ledgerEntries = asArray(mutationLedger?.entries);
+  const ledgerUnacknowledged = ledgerEntries.filter(isActiveCloudMutation);
+  const ledgerFailed = ledgerUnacknowledged.some((entry) => asText(entry?.status).toLowerCase() === "needs_attention");
+  const ledgerSyncing = ledgerUnacknowledged.some((entry) => asText(entry?.status).toLowerCase() === "syncing");
+  const ledgerPending = ledgerUnacknowledged.some((entry) => ["pending", "retry_wait"].includes(asText(entry?.status).toLowerCase()));
+  const onboardingFailed = (onboardingState === "error" || onboardingState === "needs_attention") && !queueHistoricalReview && !queueLegacyCompatibility;
   const rawMismatch = onboardingState === "local_cloud_mismatch"
     || Boolean(cloudVerification?.ok && cloudVerification?.allMatched === false);
   // Rows the cloud is MISSING that this device has (e.g. a payment saved 900ms
@@ -842,60 +863,48 @@ export function getCloudDataDecision({
     && cloudMissingLocalRowsDetected
     && !cloudOnlyRowsDetected
   );
-  const mismatch = rawMismatch && !pendingLocalAheadOnly;
-  // (cloudOnlyRowsDetected is computed above, before `mismatch`, because the
-  // local-ahead verdict depends on it. Rows the cloud has that this device does
-  // not are not fatal corruption -- they just mean the normal upsert backup
-  // can't silently proceed, so the user gets an explicit choice between
-  // restoring cloud data down or deliberately replacing the cloud backup with
-  // this device's snapshot.)
-  // A resolvable mismatch isn't limited to detected cloud-only rows -- a
-  // generic verification mismatch (e.g. "Cloud verification found
-  // mismatches between local and Supabase data") is just as resolvable via
-  // restore or replace as long as local integrity itself is clean. Gating
-  // this on cloudOnlyRowsDetected specifically left the generic case with no
-  // actions at all. empty_estimates_with_invoices (the partial-local-data
-  // danger state) is itself one of the entries in localIntegrity.blockers,
-  // so !firstBlocker already rules it out -- no separate check is needed.
-  const replaceCloudAvailable = mismatch && !firstBlocker;
-  const restoreCloudAvailable = mismatch;
+  const mismatch = rawMismatch && !pendingLocalAheadOnly && !queueHistoricalReview && !queueLegacyCompatibility;
+  // Mismatch remains available as internal diagnostic evidence, but it is not
+  // a normal product recovery decision. Established local data must never gain
+  // Restore/Replace actions merely because two observations differ.
+  const replaceCloudAvailable = false;
+  const restoreCloudAvailable = false;
   const restoreAvailable = onboardingState === "cloud_available_empty_device"
     && restorePreview?.eligible !== false
     && !restorePreview?.partial;
   const cloudUnrestorable = onboardingState === "cloud_available_empty_device"
     && Boolean(restorePreview?.partial || asText(restorePreview?.status) === "blocked_unsupported_shape");
   const partialLocalData = asArray(localIntegrity?.blockers).some((issue) => issue?.code === "empty_estimates_with_invoices");
-  // A pending local revision means this device holds money-critical data the
-  // cloud does not have yet, so the cloud is by definition NOT current -- even
-  // though the difference is expected and self-resolving. Every surface reading
-  // verifiedCurrent must therefore wait for the queue to drain.
-  const verifiedCurrent = (onboardingState === "already_backed_up" || onboardingState === "backup_completed")
+  // The durable queue is the existing authority for a real verified success.
+  // Its clear transition stamps lastVerifiedAt only for the exact uploaded
+  // revision; a newer local revision remains pending and does not refresh that
+  // proof. A neutral established-workspace observation is intentionally absent
+  // from this rule.
+  const verifiedAt = Number(queueState?.lastVerifiedAt || 0);
+  const queueHasVerifiedProof = Number.isFinite(verifiedAt) && verifiedAt > 0;
+  const queueSettledClean = !activeQueuePending
+    && !queueUnresolved
+    && (queueHistoricalReview || queueLegacyCompatibility || queueStatus === "clean" || queueStatus === "current" || !queueStatus);
+  const ledgerVerifiedAt = Number(mutationLedger?.lastVerifiedAt || 0);
+  const ledgerHasVerifiedProof = Number.isFinite(ledgerVerifiedAt) && ledgerVerifiedAt > 0 && ledgerUnacknowledged.length === 0;
+  const verifiedCurrent = (ledgerHasVerifiedProof || queueHasVerifiedProof)
+    && queueSettledClean
     && !firstBlocker
-    && !firstSafeRepair
     && !mismatch
-    && !cloudUnrestorable
-    && !queuePending;
+    && !cloudUnrestorable;
 
   let screenState = null;
   if (partialLocalData) {
     screenState = LOCAL_DATA_DECISION.PARTIAL_LOCAL_DATA;
-  } else if (firstBlocker || firstSafeRepair) {
+  } else if (firstBlocker) {
     screenState = LOCAL_DATA_DECISION.NEEDS_REPAIR_BEFORE_BACKUP;
   } else if (cloudUnrestorable) {
     screenState = LOCAL_DATA_DECISION.CLOUD_UNRESTORABLE;
-  } else if (mismatch || queueRequiresReview) {
-    // A resolvable data mismatch (verification ran and reported a
-    // difference) must win over a generic "needs_attention"/"error"/
-    // queue-failed label -- otherwise a clean-local-integrity mismatch (e.g.
-    // the writer's own post-write verification came back not-matching)
-    // renders as a dead-end "Cloud backup needs attention" with no restore
-    // or replace action, instead of the resolvable mismatch choice card.
-    screenState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
-  } else if (onboardingState === "error" || onboardingState === "needs_attention" || queueFailed) {
+  } else if (ledgerFailed || mismatch || queueUnresolved || onboardingFailed) {
     screenState = LOCAL_DATA_DECISION.BACKUP_FAILED;
-  } else if (workerRunning) {
+  } else if (workerRunning || ledgerSyncing || queueSyncing) {
     screenState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
-  } else if (queuePending) {
+  } else if (ledgerPending || activeQueuePending) {
     screenState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (restoreAvailable) {
     screenState = LOCAL_DATA_DECISION.SAFE_TO_RESTORE_EMPTY_DEVICE;
@@ -906,23 +915,16 @@ export function getCloudDataDecision({
   }
 
   let chipState = null;
-  if (firstBlocker || firstSafeRepair || cloudUnrestorable) {
-    // A concrete local blocker or repairable issue must surface even if a
-    // backup is queued -- otherwise the chip stays stuck on "Pending" while
-    // Advanced Settings shows a real blocker underneath it.
+  if (firstBlocker || cloudUnrestorable) {
+    // A concrete local blocker must surface even if a backup is queued.
+    // Safe metadata repairs remain diagnostic evidence for the existing
+    // automatic repair owner and do not represent global app-health failure.
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
-  } else if (mismatch || queueRequiresReview) {
-    // A resolvable mismatch (verification ran fine, local integrity is
-    // clean) must win over a generic queue-failed/needs_attention/error
-    // label -- otherwise the chip says "Backup issue" with no path forward
-    // instead of "Data mismatch" pointing at the restore/replace choice in
-    // Advanced Settings.
-    chipState = LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH;
-  } else if (queueFailed || onboardingState === "error" || onboardingState === "needs_attention") {
+  } else if (ledgerFailed || mismatch || queueUnresolved || onboardingFailed) {
     chipState = LOCAL_DATA_DECISION.BACKUP_FAILED;
-  } else if (workerRunning) {
+  } else if (workerRunning || ledgerSyncing || queueSyncing) {
     chipState = LOCAL_DATA_DECISION.BACKUP_RUNNING;
-  } else if (queuePending) {
+  } else if (ledgerPending || activeQueuePending) {
     chipState = LOCAL_DATA_DECISION.BACKUP_PENDING;
   } else if (restoreAvailable) {
     chipState = LOCAL_DATA_DECISION.SAFE_TO_RESTORE_EMPTY_DEVICE;
@@ -932,8 +934,7 @@ export function getCloudDataDecision({
     chipState = LOCAL_DATA_DECISION.CLOUD_VERIFIED_CURRENT;
   }
 
-  const chipAction = chipState === LOCAL_DATA_DECISION.LOCAL_CLOUD_MISMATCH
-    || chipState === LOCAL_DATA_DECISION.BACKUP_FAILED
+  const chipAction = chipState === LOCAL_DATA_DECISION.BACKUP_FAILED
       ? "open_settings"
       : chipState === LOCAL_DATA_DECISION.SAFE_TO_RESTORE_EMPTY_DEVICE
         ? "open_restore"
@@ -946,6 +947,14 @@ export function getCloudDataDecision({
     knownPendingLocalMutation,
     pendingLocalAheadOnly,
     queueRequiresReview,
+    queueHistoricalReview,
+    queueCurrentReview,
+    queueLegacyCompatibility,
+    queueUnresolved,
+    queueSyncing,
+    ledgerFailed,
+    ledgerSyncing,
+    ledgerPending,
     firstBlocker,
     firstSafeRepair,
     mismatch,
