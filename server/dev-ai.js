@@ -43,8 +43,13 @@ const DEV_AI_SERVER_STARTED_AT = new Date(DEV_AI_SERVER_STARTED_AT_MS).toISOStri
 const DEV_AI_SERVER_FILE = __filename;
 const DEV_AI_SERVER_BOOT_ID = `${process.pid}:${DEV_AI_SERVER_STARTED_AT_MS}`;
 const SCOPE_ASSIST_PRIMARY_TIMEOUT_MS = 90000;
-const GROQ_MODEL = String(process.env.GROQ_MODEL || "llama-3.1-8b-instant").trim() || "llama-3.1-8b-instant";
-const GROQ_SCOPE_PRIMARY_MODEL = String(process.env.GROQ_SCOPE_PRIMARY_MODEL || process.env.GROQ_SCOPE_MODEL || "llama-3.3-70b-versatile").trim() || "llama-3.3-70b-versatile";
+// Groq shut down llama-3.1-8b-instant and llama-3.3-70b-versatile on
+// 2026-08-16; these are its recommended replacements.
+const GROQ_MODEL = String(process.env.GROQ_MODEL || "openai/gpt-oss-20b").trim() || "openai/gpt-oss-20b";
+const GROQ_SCOPE_PRIMARY_MODEL = String(process.env.GROQ_SCOPE_PRIMARY_MODEL || process.env.GROQ_SCOPE_MODEL || "openai/gpt-oss-120b").trim() || "openai/gpt-oss-120b";
+// GPT-OSS reasoning tokens are billed against max_tokens. Low effort keeps that
+// reasoning short; the headroom keeps it from truncating capped answers.
+const GROQ_GPT_OSS_REASONING_TOKEN_HEADROOM = 512;
 const GROQ_API_KEY = String(process.env.GROQ_API_KEY || "").trim();
 const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
 const STRIPE_SUCCESS_URL = String(process.env.STRIPE_SUCCESS_URL || "").trim();
@@ -6390,6 +6395,16 @@ function getGroqConfigProblem() {
   return "";
 }
 
+function isGroqGptOssModel(model) {
+  return /^openai\/gpt-oss-/i.test(String(model || "").trim());
+}
+
+// Only GPT-OSS accepts reasoning_effort. include_reasoning=false keeps the
+// reasoning out of the response entirely (reasoning_format is unsupported).
+function buildGroqReasoningParams(model) {
+  return isGroqGptOssModel(model) ? { reasoning_effort: "low", include_reasoning: false } : {};
+}
+
 function readGroqMessageContent(data) {
   const raw = data?.choices?.[0]?.message?.content;
   if (typeof raw === "string") return raw.trim();
@@ -7652,7 +7667,10 @@ function buildSectionAssistProviderRequest({ systemPrompt, userPrompt, requestOp
   const model = String(modelOverride || requestOptions?.model || GROQ_MODEL).trim() || GROQ_MODEL;
   const temperature = Number.isFinite(Number(requestOptions?.temperature)) ? Number(requestOptions.temperature) : 0.2;
   const topP = Number.isFinite(Number(requestOptions?.top_p)) ? Number(requestOptions.top_p) : undefined;
-  const maxTokens = Number.isFinite(Number(requestOptions?.max_tokens)) ? Number(requestOptions.max_tokens) : undefined;
+  const requestedMaxTokens = Number.isFinite(Number(requestOptions?.max_tokens)) ? Number(requestOptions.max_tokens) : undefined;
+  const maxTokens = requestedMaxTokens && isGroqGptOssModel(model)
+    ? requestedMaxTokens + GROQ_GPT_OSS_REASONING_TOKEN_HEADROOM
+    : requestedMaxTokens;
 
   return {
     model,
@@ -7668,6 +7686,7 @@ function buildSectionAssistProviderRequest({ systemPrompt, userPrompt, requestOp
       temperature,
       ...(topP ? { top_p: topP } : {}),
       ...(maxTokens ? { max_tokens: maxTokens } : {}),
+      ...buildGroqReasoningParams(model),
       stream: false,
     }),
   };
