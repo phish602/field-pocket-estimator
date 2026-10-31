@@ -84,3 +84,90 @@ test("estimate conversion result enters the ledger without changing conversion m
     reason: "estimate_converted_to_invoice",
   }));
 });
+
+function stagedApproval() {
+  const before = {
+    id: "est-approval", docType: "estimate", estimateNumber: "EST-2", status: "draft",
+    customerId: "cust-1", projectId: "proj-1", total: 405,
+    ui: { materialsMode: "itemized" },
+    labor: { hazardPct: 0, riskPct: 0, multiplier: 1, lines: [{ id: "labor-1", role: "Technician", hours: 2, rate: 100 }] },
+    materials: { items: [{ id: "material-1", description: "Fixture", qty: 3, priceEach: 60 }] },
+    additionalCharges: { items: [{ id: "charge-1", description: "Service", qty: 1, unitPrice: 25 }] },
+  };
+  const unchanged = { ...before, id: "est-unrelated", estimateNumber: "EST-OTHER" };
+  const approved = { ...before, status: "approved" };
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([before, unchanged]));
+  const conversion = createInvoiceBuilderDraftFromEstimate(approved, []);
+  expect(conversion.ok).toBe(true);
+  expect(conversion.draft.invoiceTotal).toBe(405);
+  const event = {
+    companyId: "company-1", source: "EstimateForm.convertApprovedEstimate",
+    additionalWrites: [{ key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([approved, unchanged]) }],
+  };
+  return { before, approved, unchanged, conversion, event };
+}
+
+test("atomic approval/conversion queues the approved estimate before its invoice with complete immutable intent", async () => {
+  const { approved, unchanged, conversion, event } = stagedApproval();
+  const queueBefore = readCloudBackupQueueState();
+  const result = await commitStoredInvoices([conversion.draft], event);
+  const entries = readCloudMutationLedger().entries;
+  const estimateEntries = entries.filter(entry => entry.entityType === "estimate");
+  const invoiceEntries = entries.filter(entry => entry.entityType === "invoice");
+  expect(estimateEntries).toHaveLength(1);
+  expect(invoiceEntries).toHaveLength(1);
+  expect(estimateEntries[0]).toEqual(expect.objectContaining({
+    companyId: "company-1", documentId: approved.id, operation: "upsert", status: "pending", payload: approved,
+  }));
+  expect(estimateEntries[0].revision).toBeLessThan(invoiceEntries[0].revision);
+  expect(invoiceEntries[0].payload.sourceEstimateId).toBe(approved.id);
+  expect(invoiceEntries[0].payload.projectId).toBe(approved.projectId);
+  expect(invoiceEntries[0].payload.total).toBe(405);
+  expect(result.invoices).toHaveLength(1);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual([approved, unchanged]);
+  expect(runtimeCommitAtomicRecords).toHaveBeenCalledTimes(1);
+  const committed = runtimeCommitAtomicRecords.mock.calls[0][0];
+  [STORAGE_KEYS.ESTIMATES, STORAGE_KEYS.INVOICES, STORAGE_KEYS.CLOUD_MUTATION_LEDGER].forEach(key => {
+    expect(committed.filter(record => record.logicalKey === key)).toHaveLength(1);
+  });
+  expect(readCloudBackupQueueState()).toEqual(queueBefore);
+  approved.materials.items[0].priceEach = 999;
+  expect(estimateEntries[0].payload.materials.items[0].priceEach).toBe(60);
+});
+
+test("repeating the same staged approval creates no duplicate estimate or invoice mutation", async () => {
+  const { conversion, event } = stagedApproval();
+  const first = await commitStoredInvoices([conversion.draft], event);
+  const ledgerBefore = readCloudMutationLedger();
+  await commitStoredInvoices(first.invoices, event);
+  expect(readCloudMutationLedger()).toEqual(ledgerBefore);
+  expect(ledgerBefore.entries.filter(entry => entry.entityType === "estimate")).toHaveLength(1);
+  expect(ledgerBefore.entries.filter(entry => entry.entityType === "invoice")).toHaveLength(1);
+});
+
+test("failed atomic approval/conversion preserves the draft and accepts neither business change nor ledger entry", async () => {
+  const { before, unchanged, conversion, event } = stagedApproval();
+  runtimeCommitAtomicRecords.mockRejectedValueOnce(new Error("durability_failed"));
+  await expect(commitStoredInvoices([conversion.draft], event)).rejects.toThrow("durability_failed");
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual([before, unchanged]);
+  expect(localStorage.getItem(STORAGE_KEYS.INVOICES)).toBeNull();
+  expect(readCloudMutationLedger().entries).toEqual([]);
+});
+
+test.each(["{broken", "{}", "null"])("malformed staged estimates %s cannot accept an invoice without its approval intent", async value => {
+  const { before, unchanged, conversion, event } = stagedApproval();
+  event.additionalWrites[0].value = value;
+  await expect(commitStoredInvoices([conversion.draft], event)).rejects.toThrow();
+  expect(runtimeCommitAtomicRecords).not.toHaveBeenCalled();
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual([before, unchanged]);
+  expect(readCloudMutationLedger().entries).toEqual([]);
+});
+
+test("duplicate staged estimate writes derive exactly one mutation from the final committed value", async () => {
+  const { before, approved, unchanged, conversion, event } = stagedApproval();
+  event.additionalWrites.unshift({ key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([before, unchanged]) });
+  await commitStoredInvoices([conversion.draft], event);
+  expect(readCloudMutationLedger().entries.filter(entry => entry.entityType === "estimate"))
+    .toEqual([expect.objectContaining({ documentId: approved.id, payload: approved })]);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.ESTIMATES))).toEqual([approved, unchanged]);
+});

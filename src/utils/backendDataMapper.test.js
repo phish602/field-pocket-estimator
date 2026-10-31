@@ -274,6 +274,40 @@ describe("backendDataMapper", () => {
     expect(Array.isArray(invoice.line_items)).toBe(true);
   });
 
+  test("invoice scope is serialized exactly and separately from ordinary notes using the existing notes column", () => {
+    const scopeNotes = "  ## Installation\n\n• Fit fixtures — café\n1. Test circuit\n---\n[scope-image:scope-image-1]\n";
+    const scopeImages = [{ id: "scope-image-1", dataUrl: "data:image/png;base64,dGVzdA==", caption: "Test image" }];
+    const source = {
+      id: "inv_scope", scopeNotes, scopeImages,
+      tradeInsert: { key: "electrical", text: "Installation" },
+      ui: { includeInvoiceScopeOnPdf: true },
+      additionalNotes: "Separate customer note", invoiceTotal: 405,
+    };
+    const before = clone(source);
+    const mapped = mapLocalInvoiceToBackendInvoice(source, {});
+    expect(JSON.parse(mapped.notes)).toEqual({
+      schema: "estipaid.invoice.scope", version: 1,
+      scopeNotes, notes: "Separate customer note", scopeImages,
+      tradeInsert: source.tradeInsert, includeInvoiceScopeOnPdf: true,
+    });
+    expect(mapped.total).toBe(405);
+    expect(source).toEqual(before);
+    expect(mapped.scopeNotes).toBeUndefined(); // no unsupported cloud column
+  });
+
+  test("legacy invoice notes remain plain text and are never guessed to be scope", () => {
+    expect(mapLocalInvoiceToBackendInvoice({ id: "legacy", notes: "Existing notes" }, {}).notes).toBe("Existing notes");
+    expect(mapLocalInvoiceToBackendInvoice({ id: "legacy", additionalNotes: "Existing notes" }, {}).notes).toBe("Existing notes");
+  });
+
+  test("explicit empty scope stays distinguishable from a legacy record and does not borrow estimate scope", () => {
+    const mapped = mapLocalInvoiceToBackendInvoice({
+      id: "cleared", scopeNotes: "", notes: "Keep this note",
+      sourceEstimateSnapshot: { scopeNotes: "Do not resurrect this scope" },
+    }, {});
+    expect(JSON.parse(mapped.notes)).toMatchObject({ scopeNotes: "", notes: "Keep this note" });
+  });
+
   test("invoice payment maps without raw payment notes", () => {
     const context = createBackendMappingContext({ companyId: "company_1", userId: "user_1" });
     const payment = mapLocalInvoicePaymentToBackendPayment({

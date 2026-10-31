@@ -16,7 +16,7 @@
 
 import { computeTotals } from "../estimator/engine";
 import { normalizeInvoiceRecord } from "./invoices";
-import { mapLocalInvoiceToBackendInvoice } from "./backendDataMapper";
+import { mapLocalInvoiceToBackendInvoice, mapLocalEstimateToBackendEstimate } from "./backendDataMapper";
 import { buildParentLineItemContract } from "../lib/cloudLineItemContract";
 import { mapCloudInvoiceLineItem } from "../lib/supabaseCloudRestore";
 
@@ -228,6 +228,63 @@ describe("canonical child rows are identical before and after a local round trip
       current = roundTrip(current);
       expect(childRows(current)).toEqual(baseline);
     }
+  });
+});
+
+describe("additional-charge semantic restore", () => {
+  const invoice = buildTechnicianInvoice({
+    labor: { hazardPct: 0, riskPct: 0, multiplier: 1, lines: [
+      { id: "tech", role: "Technician", qty: 1, hours: 2, rate: 100 },
+    ] },
+    materials: { markupPct: 0, blanketCost: "", items: [
+      { id: "fixture", desc: "Test fixture", qty: 3, priceEach: 60 },
+    ] },
+    additionalCharges: { items: [
+      { id: "service", desc: "Test service charge", qty: 1, priceEach: 25 },
+    ] },
+  });
+
+  test("the reproduced $405 invoice keeps its $25 charge and exact child contract for three cycles", () => {
+    const baseline = childRows(invoice);
+    expect(baseline).toHaveLength(3);
+    expect(baseline[2].metadata.kind).toBe("additional_charge");
+    let current = invoice;
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      current = normalizeInvoiceRecord(roundTrip(current));
+      expect(current.labor.lines).toHaveLength(1);
+      expect(current.materials.items).toHaveLength(1);
+      expect(current.additionalCharges.items).toHaveLength(1);
+      expect(current.additionalCharges.items[0]).toMatchObject({ desc: "Test service charge", qty: 1, priceEach: 25 });
+      expect(computeTotals(current).totalRevenue).toBe(405);
+      expect(childRows(current)).toEqual(baseline);
+    }
+  });
+
+  test("charge-only invoices preserve decimal prices, explicit zero, identity, and ordering without blanket fallback", () => {
+    let current = buildTechnicianInvoice({
+      labor: { lines: [] },
+      additionalCharges: { items: [
+        { id: "charge_a", desc: "Service", qty: 2, priceEach: 12.5, sort_order: 7 },
+        { id: "charge_b", desc: "Waived", qty: 1, priceEach: 0, sort_order: 9 },
+        { id: "blank", desc: "", qty: "", priceEach: "" },
+      ] },
+    });
+    const baseline = childRows(current);
+    expect(baseline).toHaveLength(2);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      current = normalizeInvoiceRecord(roundTrip(current));
+      expect(current.additionalCharges.items).toHaveLength(2);
+      expect(current.materials.items).toHaveLength(0);
+      expect(current.materials.blanketCost).toBe("");
+      expect(computeTotals(current).totalRevenue).toBe(25);
+      expect(childRows(current)).toEqual(baseline);
+    }
+  });
+
+  test("estimate canonical child projection remains unchanged by invoice charge support", () => {
+    const withoutCharges = { ...invoice, additionalCharges: { items: [] } };
+    expect(mapLocalEstimateToBackendEstimate(invoice, {}).line_items)
+      .toEqual(mapLocalEstimateToBackendEstimate(withoutCharges, {}).line_items);
   });
 });
 

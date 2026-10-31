@@ -999,6 +999,78 @@ describe("supabaseCloudRestore", () => {
       ]));
     });
 
+    test("invoice scope and formatting survive repeated real verification and restoration with $405/$25/$100/$305 unchanged", async () => {
+      const { mapLocalInvoiceToBackendInvoice } = require("../utils/backendDataMapper");
+      const { normalizeInvoiceRecord } = require("../utils/invoices");
+      const { computeTotals } = require("../estimator/engine");
+      const { buildParentLineItemContract } = require("./cloudLineItemContract");
+      const actualVerification = jest.requireActual("./supabaseCloudVerification");
+      mockRunSupabaseCloudVerification.mockImplementation(options => actualVerification.runSupabaseCloudVerification(options));
+      const scopeNotes = "  ## Installation\n\n• Install three fixtures — café\n1. Test circuit\n---\n[scope-image:scope-image-1]\n";
+      const scopeImages = [{ id: "scope-image-1", dataUrl: "data:image/png;base64,dGVzdA==", caption: "Original caption" }];
+      let invoice = {
+        id: "inv_1", invoiceNumber: "INV-1", estimateNumber: "EST-1", sourceEstimateId: "est_1",
+        customerId: "cust_1", projectId: "proj_1", status: "sent", paymentStatus: "partial",
+        invoiceTotal: 405, amountPaid: 100, balanceRemaining: 305,
+        date: "2026-01-01", dueDate: "2026-02-01", terms: "Net 30",
+        scopeNotes, scopeImages, additionalNotes: "Separate customer note",
+        tradeInsert: { key: "electrical", text: "Installation" },
+        ui: { materialsMode: "itemized", includeInvoiceScopeOnPdf: true },
+        labor: { hazardPct: 0, riskPct: 0, multiplier: 1, lines: [{ id: "l", role: "Technician", qty: 1, hours: 2, rate: 100 }] },
+        materials: { markupPct: 0, blanketCost: "", items: [{ id: "m", desc: "Fixture", qty: 3, priceEach: 60 }] },
+        additionalCharges: { items: [{ id: "ac", desc: "Service", qty: 1, priceEach: 25 }] },
+      };
+      const originalNotes = mapLocalInvoiceToBackendInvoice(invoice, {}).notes;
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        const mapped = mapLocalInvoiceToBackendInvoice(invoice, {});
+        const children = buildParentLineItemContract({ entityType: "invoice", parentLegacyId: "inv_1", parentCloudId: "db_inv_1", parentColumn: "invoice_id", items: mapped.line_items }).rows;
+        const rows = fullCloudRows({
+          invoices: [cloudInvoiceRow({ total_amount: 405, amount_paid: 100, balance_remaining: 305, notes: mapped.notes })],
+          invoice_line_items: children,
+          invoice_payments: [cloudPaymentRow({ amount: 100, method: "cash" })],
+        });
+        mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: rows }));
+        const storage = buildWritableStorage();
+        const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+        expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+        expect(result.verification).toMatchObject({ ok: true, allMatched: true });
+        invoice = normalizeInvoiceRecord(JSON.parse(storage.__store[STORAGE_KEYS.INVOICES])[0]);
+        expect(invoice.scopeNotes).toBe(scopeNotes);
+        expect(invoice.scopeImages).toEqual(scopeImages);
+        expect(invoice.tradeInsert).toEqual({ key: "electrical", text: "Installation" });
+        expect(invoice.ui.includeInvoiceScopeOnPdf).toBe(true);
+        expect(invoice.additionalNotes).toBe("Separate customer note");
+        expect(mapLocalInvoiceToBackendInvoice(invoice, {}).notes).toBe(originalNotes);
+        expect(computeTotals(invoice).totalRevenue).toBe(405);
+        expect(invoice.additionalCharges.items).toHaveLength(1);
+        expect(invoice.additionalCharges.items[0].priceEach).toBe(25);
+        expect(invoice.payments).toHaveLength(1);
+        expect(invoice.payments[0].amount).toBe(100);
+        expect(invoice.amountPaid).toBe(100);
+        expect(invoice.balanceRemaining).toBe(305);
+
+        const changed = { ...invoice, scopeNotes: `${scopeNotes}Meaningful edit` };
+        storage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify([changed]));
+        expect(await actualVerification.runSupabaseCloudVerification({ storageSnapshot: storage, ...baseContext }))
+          .toMatchObject({ ok: true, allMatched: false });
+      }
+    });
+
+    test.each([
+      "Legacy ordinary notes",
+      '{"schema":"estipaid.invoice.scope","version":2,"scopeNotes":"future"}',
+      '{"schema":"estipaid.invoice.scope","version":1,"scopeNotes":7,"notes":"keep"}',
+      '{"schema":"estipaid.invoice.scope","version":1',
+    ])("legacy, unsupported, or malformed invoice notes are preserved verbatim: %s", async notes => {
+      mockGetSupabaseClient.mockReturnValue(createMockClient({ rowsByTable: fullCloudRows({ invoices: [cloudInvoiceRow({ notes })] }) }));
+      const storage = buildWritableStorage();
+      const result = await executeSupabaseCloudRestore({ storage, ...baseContext });
+      expect(result.status).toBe(CLOUD_RESTORE_STATUS.RESTORED);
+      const invoice = JSON.parse(storage.__store[STORAGE_KEYS.INVOICES])[0];
+      expect(invoice.notes).toBe(notes);
+      expect(invoice.scopeNotes).toBeUndefined();
+    });
+
     test("keeps reconstructed local records but never reports false restore success when strict verification mismatches", async () => {
       localStorage.clear();
       markCloudBackupDirty({ reason: "pre_restore_stale_marker", domains: ["customers"], severity: "normal" });

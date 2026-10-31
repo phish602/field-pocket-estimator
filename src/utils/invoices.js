@@ -9,6 +9,7 @@ import { appendAuditEvents, buildAuditStorePayload, createStoredAuditEvent, read
 import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
 import { CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "../lib/cloudMutationLedger";
 import { buildCollectionCloudMutationPlan } from "../lib/businessCloudMutationOwners";
+import { buildEstimateCloudMutationPlan } from "../lib/estimateCloudMutationPlan";
 import { normalizeInvoiceContract } from "../lib/supabaseCloudConvergence";
 import { cloudSyncEqual } from "../lib/cloudSyncBaseline";
 import {
@@ -91,6 +92,8 @@ function normalizeAdditionalChargeItems(items) {
       desc: asText(item?.desc || item?.description || item?.label),
       qty: item?.qty ?? "",
       priceEach: item?.priceEach ?? item?.charge ?? item?.amount ?? "",
+      ...(item?.kind === "additional_charge" ? { kind: "additional_charge" } : {}),
+      ...(thinSortOrder(item) !== null ? { sort_order: thinSortOrder(item) } : {}),
     }));
 }
 
@@ -682,13 +685,14 @@ function buildThinMaterialItem(item, index, kindOverride = "material") {
 // is preserved on the row so serialization re-emits it instead of silently
 // rewriting them into materials.
 function partitionThinInvoiceLineItems(source) {
-  const empty = { labor: [], materials: [], total: 0 };
+  const empty = { labor: [], materials: [], charges: [], total: 0 };
   if (hasStructuredInvoiceSections(source)) return empty;
   const lineItems = readThinInvoiceLineItems(source).filter(Boolean);
   if (lineItems.length === 0) return empty;
 
   const labor = [];
   const materials = [];
+  const charges = [];
   const legacyRows = [];
 
   lineItems.forEach((item, index) => {
@@ -705,6 +709,15 @@ function partitionThinInvoiceLineItems(source) {
       materials.push(buildThinMaterialItem(item, index));
       return;
     }
+    if (kind === "additional_charge") {
+      charges.push(withThinIdentity({
+        kind: "additional_charge",
+        desc: thinDescription(item),
+        qty: thinNumericField(item?.qty, item?.quantity),
+        priceEach: thinNumericField(item?.priceEach, item?.price, item?.unitPrice, item?.unit_price),
+      }, item, index, "invoice_charge"));
+      return;
+    }
     materials.push(buildThinMaterialItem(item, index, asText(item?.kind)));
   });
 
@@ -716,7 +729,8 @@ function partitionThinInvoiceLineItems(source) {
   return {
     labor,
     materials,
-    total: labor.length + materials.length,
+    charges,
+    total: labor.length + materials.length + charges.length,
   };
 }
 
@@ -1070,7 +1084,20 @@ export async function commitStoredInvoices(invoices, event = {}) {
   const plan = buildInvoiceAtomicWrites(invoices, event);
   const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
   const writes = [...plan.writes, ...additionalWrites];
+  // Approval/conversion stages its estimate alongside the invoice. Cover that
+  // exact final post-state with the existing estimate diff in this SAME commit,
+  // ahead of its child invoice. Match the atomic owner's last-write-wins rule.
+  const estimateWrite = [...writes].reverse().find(write => write?.key === STORAGE_KEYS.ESTIMATES);
+  let estimateMutations = [];
+  if (estimateWrite) {
+    const previousRaw = localStorage.getItem(STORAGE_KEYS.ESTIMATES);
+    const previousEstimates = previousRaw === null ? [] : JSON.parse(previousRaw);
+    const nextEstimates = JSON.parse(estimateWrite.value);
+    if (!Array.isArray(previousEstimates) || !Array.isArray(nextEstimates)) throw new Error("invalid_staged_estimates");
+    estimateMutations = buildEstimateCloudMutationPlan(previousEstimates, nextEstimates, event).mutations;
+  }
   const ledgerMutations = [
+    ...estimateMutations,
     ...buildInvoiceLedgerMutations(plan.previousInvoices, plan.invoices, event),
     ...(plan.projectChanged ? buildCollectionCloudMutationPlan({
       previous: plan.previousProjects,
@@ -1254,7 +1281,9 @@ export function normalizeInvoiceRecord(record, options = {}) {
         ...buildEstimateInvoiceSnapshot(snapshot || {}),
       }
     : null;
-  const normalizedAdditionalCharges = normalizeAdditionalChargeItems(source?.additionalCharges?.items);
+  const normalizedAdditionalCharges = normalizeAdditionalChargeItems(
+    thinSections.charges.length > 0 ? thinSections.charges : source?.additionalCharges?.items
+  );
   const financialSummary = extractFinancialSummaryFromDoc(source, {
     approvedTotal: normalizedSnapshot?.approvedTotal ?? source?.approvedTotal ?? invoiceTotal,
   });

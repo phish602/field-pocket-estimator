@@ -2,6 +2,7 @@ import { getSupabaseClient } from "./supabaseClient";
 import { buildLocalStorageExportArtifact } from "./localStorageExportArtifact";
 import { setCloudAssetBindingsBatch } from "./cloudAssetBindings";
 import { compareRestoredLineItemOrder } from "./cloudLineItemContract";
+import { decodeInvoiceScopeNotes } from "../utils/backendDataMapper";
 import { readSupabaseAppRestoreBundle } from "./supabaseAppRestoreBundle";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { clearCloudBackupDirty } from "./cloudBackupQueue";
@@ -606,6 +607,7 @@ function mapCloudEstimateToLocal(row) {
 function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, lineItemsByInvoiceCloudId, paymentsByInvoiceCloudId) {
   const id = requireLegacyId(row, "invoices");
   const cloudId = asText(row?.id);
+  const scope = decodeInvoiceScopeNotes(row?.notes);
   return {
     id,
     customerId: customerIdByCloudId.get(asText(row?.customer_id)) || "",
@@ -620,7 +622,14 @@ function mapCloudInvoiceToLocal(row, customerIdByCloudId, projectIdByCloudId, li
     balanceRemaining: row?.balance_remaining ?? 0,
     date: row?.invoice_date || "",
     dueDate: row?.due_date || "",
-    notes: row?.notes || "",
+    notes: scope ? scope.notes : (row?.notes || ""),
+    ...(scope ? {
+      scopeNotes: scope.scopeNotes,
+      ...(scope.scopeImages ? { scopeImages: scope.scopeImages } : {}),
+      ...(scope.tradeInsert ? { tradeInsert: scope.tradeInsert } : {}),
+      ...(typeof scope.includeInvoiceScopeOnPdf === "boolean"
+        ? { ui: { includeInvoiceScopeOnPdf: scope.includeInvoiceScopeOnPdf } } : {}),
+    } : {}),
     terms: row?.terms || "",
     lineItems: lineItemsByInvoiceCloudId.get(cloudId) || [],
     payments: paymentsByInvoiceCloudId.get(cloudId) || [],
