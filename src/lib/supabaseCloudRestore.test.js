@@ -252,6 +252,7 @@ function localEstimateFixture(overrides = {}) {
     projectId: "proj_1",
     customerId: "cust_1",
     estimateNumber: "EST-1",
+    date: "2026-06-26",
     status: "approved",
     total: 7083000,
     labor: {
@@ -294,6 +295,7 @@ function cloudEstimateRow(overrides = {}) {
     customer_id: "db_cust_1",
     project_id: "db_proj_1",
     estimate_number: "EST-1",
+    estimate_date: "2026-06-26",
     status: "approved",
     document_type: "estimate",
     total_amount: 7083000,
@@ -1696,6 +1698,22 @@ describe("readSupabaseCloudConvergenceSnapshot in-flight coordinator (Gate E2.2)
     BUSINESS_TABLES.forEach((table) => expect(getsFor(client, table)).toBe(1));
     expect(getsFor(client, APP_SETTINGS_TABLE)).toBe(1);
     expect(totalGets(client)).toBe(COMPLETE_SNAPSHOT_REQUESTS); // exactly 8
+  });
+
+  test("convergence evidence carries estimate_date while restoration remains verbatim from restore_payload", async () => {
+    const row = cloudEstimateRow({ estimate_date: "2026-06-27" });
+    row.restore_payload = {
+      ...row.restore_payload,
+      estimate: localEstimateFixture({ date: "2026-06-26" }),
+    };
+    const client = createMockClient({ rowsByTable: fullCloudRows({ estimates: [row] }) });
+
+    const result = await readSupabaseCloudConvergenceSnapshot(READ_ARGS(client));
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, status: "ready", noWritesPerformed: true }));
+    expect(result.mapped.estimates[0].date).toBe("2026-06-26");
+    expect(result.estimateEvidence.est_1.persisted.estimate_date).toBe("2026-06-27");
+    expect(result.estimateEvidence.est_1.restorePayload.estimate.date).toBe("2026-06-26");
   });
 
   test("a second read after completion performs a brand-new 8-request scan (no completed-result cache)", async () => {

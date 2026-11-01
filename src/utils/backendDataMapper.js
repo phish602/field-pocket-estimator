@@ -83,6 +83,29 @@ function pickText(...values) {
   return "";
 }
 
+function pickNumberOrNull(...values) {
+  for (const value of values) {
+    const next = toNumberOrNull(value);
+    if (next !== null) return next;
+  }
+  return null;
+}
+
+function pickDateOnly(...values) {
+  for (const value of values) {
+    const text = asText(value);
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    if (!match) continue;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (month < 1 || month > 12 || day < 1) continue;
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (day <= daysInMonth) return text;
+  }
+  return "";
+}
+
 function normalizeContextValue(value) {
   return asText(value);
 }
@@ -222,13 +245,11 @@ function extractProjectNumber(record = {}) {
 
 function extractDocumentLineItems(record = {}, kind = "") {
   const items = [];
-  // One shared mapper, document-type-aware. Everything the Invoice persistence
-  // repair added is gated on this flag, so ESTIMATE children keep the exact
-  // pre-repair projection: the same field reads and the same "empty object"
-  // rejection. Invoices additionally read the estimator's own row field names
-  // and reject semantically blank placeholder rows. Both are required by the
-  // Invoice repair, and neither may change Estimate canonical child rows.
-  // This mirrors how `hours` is already contained via lineItemIncludesSemantics.
+  // One shared mapper, document-type-aware. Invoices read all estimator row
+  // aliases and reject semantically blank placeholders. Estimates retain their
+  // existing labor/generic projection, while material rows also read the
+  // estimator's authoritative desc/priceEach/unitCostInternal fields. Estimate
+  // placeholder behavior and canonical child identity remain unchanged.
   const isInvoice = kind === "invoice";
   const laborLines = Array.isArray(record?.labor?.lines) ? record.labor.lines : (Array.isArray(record?.laborLines) ? record.laborLines : []);
   const materialItems = Array.isArray(record?.materials?.items) ? record.materials.items : (Array.isArray(record?.materialItems) ? record.materialItems : []);
@@ -240,29 +261,36 @@ function extractDocumentLineItems(record = {}, kind = "") {
     // (estimator labor/material lines) do not carry these fields, so they keep
     // the existing forced kind and array-index sort_order behavior.
     const explicitKind = pickText(item?.kind);
+    const isEstimateMaterial = !isInvoice && itemKind === "material";
     const explicitSortOrder = item?.sort_order ?? item?.sortOrder;
     const hasExplicitSortOrder = explicitSortOrder !== null && explicitSortOrder !== undefined && explicitSortOrder !== "" && Number.isFinite(Number(explicitSortOrder));
     const mapped = {
       kind: explicitKind || itemKind || kind || "line_item",
       legacy_local_id: buildLegacyLocalId(item),
-      // Invoice only: the estimator's own field names. A labor line describes
-      // itself with `role`, a material item with `desc`, and a material prices
-      // itself with `priceEach`. The invoice placeholder filter below decides
-      // emptiness from what this projection can see, so without these reads a
-      // real populated invoice row would be mistaken for a blank placeholder
-      // and dropped.
+      // Invoices read every estimator alias because their placeholder filter
+      // depends on the complete projection. Estimate material rows separately
+      // read the estimator's own desc/priceEach/internal-cost fields so their
+      // structured cloud children retain the saved economics.
       description: isInvoice
         ? pickText(item?.description, item?.desc, item?.role, item?.name, item?.title, item?.label, item?.notes, item?.text)
-        : pickText(item?.description, item?.name, item?.title, item?.label, item?.notes, item?.text),
+        : isEstimateMaterial
+          ? pickText(item?.description, item?.desc, item?.name, item?.title, item?.label, item?.notes, item?.text)
+          : pickText(item?.description, item?.name, item?.title, item?.label, item?.notes, item?.text),
       quantity: toNumberOrNull(item?.quantity ?? item?.qty ?? item?.count),
       unit: pickText(item?.unit, item?.units, item?.uom),
       unit_price: isInvoice
         ? toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price ?? item?.priceEach)
-        : toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price),
+        : isEstimateMaterial
+          ? pickNumberOrNull(item?.unitPrice, item?.rate, item?.price, item?.priceEach)
+          : toNumberOrNull(item?.unitPrice ?? item?.rate ?? item?.price),
       unit_cost: isInvoice
         ? toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.unitCostInternal ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal)
-        : toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal),
-      total: toNumberOrNull(item?.total ?? item?.amount),
+        : isEstimateMaterial
+          ? pickNumberOrNull(item?.unitCost, item?.cost, item?.unitCostInternal, item?.costInternal, item?.internalCost, item?.trueRateInternal)
+          : toNumberOrNull(item?.unitCost ?? item?.cost ?? item?.costInternal ?? item?.internalCost ?? item?.trueRateInternal),
+      total: isEstimateMaterial
+        ? pickNumberOrNull(item?.total, item?.amount)
+        : toNumberOrNull(item?.total ?? item?.amount),
       // Invoice only: labor is qty x hours x rate, and there is no hours column,
       // so hours travels in the invoice-scoped metadata contract.
       ...(isInvoice ? { hours: toNumberOrNull(item?.hours) } : {}),
@@ -278,7 +306,7 @@ function extractDocumentLineItems(record = {}, kind = "") {
       if (!hasBusinessLineItemContent(mapped)) return null;
       return mapped;
     }
-    // Estimate: unchanged pre-repair rejection.
+    // Estimate placeholder behavior remains unchanged.
     if (Object.keys(mapped).length === 0) return null;
     return mapped;
   };
@@ -470,6 +498,7 @@ export function mapLocalEstimateToBackendEstimate(estimate, context) {
     project_legacy_local_id: asText(source?.projectId),
     customer_legacy_local_id: asText(source?.customerId || source?.customer?.id),
     estimate_number: extractEstimateNumber(source),
+    estimate_date: pickDateOnly(source?.date, source?.job?.date),
     status: normalizeEstimateStatus(source?.status),
     doc_type: "estimate",
     customer_name: pickText(source?.customerName, source?.customer?.name, source?.customer?.companyName, source?.customer?.fullName),
