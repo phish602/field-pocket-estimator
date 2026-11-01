@@ -8,8 +8,7 @@ import { getDocumentEditTarget, resolveDocumentEditTarget } from "../lib/documen
 import { appendAuditEvents, buildAuditStorePayload, createStoredAuditEvent, readStoredAuditEvents } from "./auditStore";
 import { commitAtomicCloudQueuedBusinessMutation } from "../lib/cloudBackupQueue";
 import { CLOUD_MUTATION_ENTITY, CLOUD_MUTATION_OPERATION } from "../lib/cloudMutationLedger";
-import { buildCollectionCloudMutationPlan } from "../lib/businessCloudMutationOwners";
-import { buildEstimateCloudMutationPlan } from "../lib/estimateCloudMutationPlan";
+import { buildEstimateCloudMutationPlan, buildStagedProjectCloudMutationPlan } from "../lib/estimateCloudMutationPlan";
 import { normalizeInvoiceContract } from "../lib/supabaseCloudConvergence";
 import { cloudSyncEqual } from "../lib/cloudSyncBaseline";
 import {
@@ -1129,35 +1128,6 @@ function buildInvoiceLedgerMutations(previousInvoices, nextInvoices, event = {})
   return [...deletes, ...upserts];
 }
 
-// Saving an invoice re-derives its project, which advances the project's local
-// activity clock (updatedAt) to the invoice's save time. That clock orders
-// projects on this device but is not part of the persisted cloud project row,
-// so an upsert whose only difference is updatedAt rewrites an identical row and
-// re-verifies it on every invoice save. Any other project change still queues.
-function projectChangedBeyondActivityClock(previous, next) {
-  if (!previous || !next) return true;
-  const { updatedAt: previousUpdatedAt, ...previousRest } = previous;
-  const { updatedAt: nextUpdatedAt, ...nextRest } = next;
-  return !cloudSyncEqual(previousRest, nextRest);
-}
-
-function buildInvoiceProjectLedgerMutations(plan, event = {}) {
-  if (!plan.projectChanged) return [];
-  const previousById = new Map((Array.isArray(plan.previousProjects) ? plan.previousProjects : [])
-    .map((project) => [asText(project?.id), project]));
-  return buildCollectionCloudMutationPlan({
-    previous: plan.previousProjects,
-    next: plan.projects,
-    entityType: CLOUD_MUTATION_ENTITY.PROJECT,
-    companyId: event?.companyId,
-    reason: "project_backfilled_from_invoice",
-    source: asText(event?.source) || "commitStoredInvoices",
-  }).mutations.filter((mutation) => (
-    mutation.operation !== CLOUD_MUTATION_OPERATION.UPSERT
-    || projectChangedBeyondActivityClock(previousById.get(asText(mutation.documentId)), mutation.payload)
-  ));
-}
-
 export async function commitStoredInvoices(invoices, event = {}) {
   const plan = buildInvoiceAtomicWrites(invoices, event);
   const additionalWrites = Array.isArray(event.additionalWrites) ? event.additionalWrites : [];
@@ -1174,10 +1144,17 @@ export async function commitStoredInvoices(invoices, event = {}) {
     if (!Array.isArray(previousEstimates) || !Array.isArray(nextEstimates)) throw new Error("invalid_staged_estimates");
     estimateMutations = buildEstimateCloudMutationPlan(previousEstimates, nextEstimates, event).mutations;
   }
+  // The stored project list is the last staged project write: the invoice's own
+  // re-derived projects, or the builder's staged list. Saving an invoice
+  // advances its project's local activity clock, which the persisted cloud row
+  // does not carry, so only persisted project changes queue an upsert. Projects
+  // are created ahead of the estimate and invoice that reference them.
+  const projectPlan = buildStagedProjectCloudMutationPlan(writes, { ...event, projectReason: "project_backfilled_from_invoice", source: asText(event?.source) || "commitStoredInvoices" });
   const ledgerMutations = [
+    ...projectPlan.upserts,
     ...estimateMutations,
     ...buildInvoiceLedgerMutations(plan.previousInvoices, plan.invoices, event),
-    ...buildInvoiceProjectLedgerMutations(plan, event),
+    ...projectPlan.deletes,
   ];
   const allWritesAlreadyStored = writes.every((write) => {
     try { return localStorage.getItem(write.key) === write.value; } catch { return false; }
