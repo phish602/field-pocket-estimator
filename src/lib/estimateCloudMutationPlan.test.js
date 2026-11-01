@@ -106,6 +106,93 @@ test.each([
   expect(plan.mutations[0].payload.status).toBe(expectedStatus);
 });
 
+// The builder creates a brand-new project in the same atomic save as the
+// estimate. The estimate writer requires that project's cloud row, so the
+// project must be queued too, and ahead of the estimate that references it.
+function project(overrides = {}) {
+  return {
+    id: "project-1",
+    customerId: "customer-1",
+    projectName: "Recharge HVAC System",
+    status: "active",
+    scopeSummary: "Recover, evacuate and recharge.",
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...overrides,
+  };
+}
+
+test("a project created by the estimate save is queued ahead of the estimate that references it", async () => {
+  const created = estimate();
+  const newProject = project();
+  const result = await commitStoredEstimateCollectionMutation({
+    previousEstimates: [],
+    nextEstimates: [created],
+    writes: [
+      { key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([created]) },
+      { key: STORAGE_KEYS.PROJECTS, value: JSON.stringify([newProject]) },
+    ],
+    event: { companyId: "company-1", source: "EstimateForm.saveEstimate" },
+  });
+
+  expect(result).toEqual(expect.objectContaining({ ok: true, ledgerBacked: true }));
+  expect(readCloudMutationLedger().entries.map((entry) => [entry.entityType, entry.documentId, entry.operation])).toEqual([
+    ["project", "project-1", "upsert"],
+    ["estimate", "estimate-2606", "upsert"],
+  ]);
+  expect(readCloudMutationLedger().entries[0]).toEqual(expect.objectContaining({ companyId: "company-1", payload: newProject }));
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.PROJECTS))).toEqual([newProject]);
+});
+
+test("an estimate save that only advances the project's local activity clock queues no project upsert", async () => {
+  const before = estimate();
+  const after = estimate({ total: 6000 });
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([before]));
+  localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project()]));
+
+  await commitStoredEstimateCollectionMutation({
+    previousEstimates: [before],
+    nextEstimates: [after],
+    writes: [
+      { key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([after]) },
+      { key: STORAGE_KEYS.PROJECTS, value: JSON.stringify([project({ updatedAt: 2000 })]) },
+    ],
+    event: { companyId: "company-1" },
+  });
+
+  expect(readCloudMutationLedger().entries.map((entry) => entry.entityType)).toEqual(["estimate"]);
+});
+
+test("a persisted project change staged with the estimate is queued; an unchanged project save is a no-op", async () => {
+  const current = estimate();
+  localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([current]));
+  localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([project()]));
+
+  await commitStoredEstimateCollectionMutation({
+    previousEstimates: [current],
+    nextEstimates: [current],
+    writes: [
+      { key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([current]) },
+      { key: STORAGE_KEYS.PROJECTS, value: JSON.stringify([project({ scopeSummary: "Replace the condenser." })]) },
+    ],
+  });
+  expect(readCloudMutationLedger().entries.map((entry) => [entry.entityType, entry.payload.scopeSummary])).toEqual([
+    ["project", "Replace the condenser."],
+  ]);
+
+  runtimeCommitAtomicRecords.mockClear();
+  const repeat = await commitStoredEstimateCollectionMutation({
+    previousEstimates: [current],
+    nextEstimates: [current],
+    writes: [
+      { key: STORAGE_KEYS.ESTIMATES, value: JSON.stringify([current]) },
+      { key: STORAGE_KEYS.PROJECTS, value: localStorage.getItem(STORAGE_KEYS.PROJECTS) },
+    ],
+  });
+  expect(repeat).toEqual(expect.objectContaining({ noOp: true }));
+  expect(runtimeCommitAtomicRecords).not.toHaveBeenCalled();
+});
+
 test("estimate deletion appends one exact tombstone without dirtying the global queue", async () => {
   const before = estimate();
   localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([before]));

@@ -98,6 +98,32 @@ test("an invoice change still queues its invoice mutation, without a timestamp-o
   expect(ledgerEntries("project")).toHaveLength(1);
 });
 
+// The builder stages its own project list alongside the invoice. That staged
+// list is what is stored, so it is what must be queued -- ahead of the invoice
+// that references the project.
+test("a project the builder stages with the invoice is queued ahead of the invoice", async () => {
+  const builderProject = {
+    id: "proj_clean_lane",
+    customerId: "cust_clean_lane",
+    projectName: "Clean Lane AC Replacement",
+    status: "active",
+    siteAddress: "100 Builder Way",
+    createdAt: FIRST_SAVE,
+    updatedAt: FIRST_SAVE,
+  };
+
+  await commitStoredInvoices([invoice()], {
+    companyId: "company-1",
+    source: "EstimateForm.saveInvoice",
+    additionalWrites: [{ key: STORAGE_KEYS.PROJECTS, value: JSON.stringify([builderProject]) }],
+  });
+
+  const entries = readCloudMutationLedger().entries;
+  expect(entries.map((entry) => entry.entityType)).toEqual(["project", "invoice"]);
+  expect(entries[0].payload).toEqual(builderProject);
+  expect(storedProject()).toEqual(builderProject);
+});
+
 test("a project change the invoice really makes still queues the project", async () => {
   await commitStoredInvoices([invoice()], { companyId: "company-1" });
 

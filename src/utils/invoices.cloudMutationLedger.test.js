@@ -79,10 +79,18 @@ test("estimate conversion result enters the ledger without changing conversion m
   expect(conversion.ok).toBe(true);
   expect(conversion.draft.invoiceTotal).toBe(240);
   await commitStoredInvoices([conversion.draft], { companyId: "company-1", reason: "estimate_converted_to_invoice" });
-  expect(readCloudMutationLedger().entries[0]).toEqual(expect.objectContaining({
+  // The project the conversion creates is queued ahead of the invoice that
+  // references it, so the invoice never syncs before its parent exists.
+  const entries = readCloudMutationLedger().entries;
+  expect(entries.map((entry) => [entry.entityType, entry.documentId])).toEqual([
+    ["project", "proj-1"],
+    ["invoice", conversion.draft.id],
+  ]);
+  expect(entries[1]).toEqual(expect.objectContaining({
     documentId: conversion.draft.id,
     reason: "estimate_converted_to_invoice",
   }));
+  expect(entries[1].payload.invoiceTotal).toBe(240);
 });
 
 function stagedApproval() {
