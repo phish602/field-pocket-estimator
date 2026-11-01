@@ -49,7 +49,7 @@ const CONTENT = Object.freeze({
   ],
 });
 
-export default function VaultRuntimeGate({ state = "checking" } = {}) {
+export default function VaultRuntimeGate({ state = "checking", onSignOut } = {}) {
   const [heading, explainer] = CONTENT[state] || CONTENT.blocked;
   return (
     <div style={wrapStyle} aria-label="Encrypted local data access">
@@ -57,6 +57,9 @@ export default function VaultRuntimeGate({ state = "checking" } = {}) {
         <img src="/logo/estipaid.svg" alt="EstiPaid" style={{ height: 60, width: "auto", justifySelf: "center" }} draggable={false} />
         <div style={{ textAlign: "center", fontSize: 13, fontWeight: 800, letterSpacing: "2px", textTransform: "uppercase" }}>{heading}</div>
         <div style={{ textAlign: "center", fontSize: 13, lineHeight: 1.5, color: "rgba(220,229,238,0.68)" }}>{explainer}</div>
+        {state === "blocked" && typeof onSignOut === "function" ? (
+          <button type="button" className="pe-btn pe-btn-ghost" onClick={onSignOut}>Sign out</button>
+        ) : null}
       </section>
     </div>
   );

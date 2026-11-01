@@ -34,16 +34,29 @@ test("locked storage failure stays generic and leaks no raw message", () => {
 });
 
 test("damaged, unsupported, and recovery-required states fail closed without destructive controls", () => {
-  const { rerender } = renderGate({ capability: capability("damaged", "RECORD_CORRUPT") });
+  const onSignOut = jest.fn();
+  const { rerender } = renderGate({ capability: capability("damaged", "RECORD_CORRUPT"), onSignOut });
   expect(screen.getByText(/cannot be opened safely/i)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(onSignOut).toHaveBeenCalledTimes(1);
 
-  rerender(<VaultAccessGate capability={capability("unsupported", "UNSUPPORTED_ENVIRONMENT")} />);
+  rerender(<VaultAccessGate capability={capability("unsupported", "UNSUPPORTED_ENVIRONMENT")} onSignOut={onSignOut} />);
   expect(screen.getByText(/secure browser storage required/i)).toBeInTheDocument();
 
-  rerender(<VaultAccessGate capability={capability("reset_required", "DEVICE_KEY_MISSING")} />);
+  rerender(<VaultAccessGate capability={capability("reset_required", "DEVICE_KEY_MISSING")} onSignOut={onSignOut} />);
   expect(screen.getByText(/secure key is no longer available/i)).toBeInTheDocument();
   expect(screen.getByText(/Cloud-synced data remains recoverable/i)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /reset|delete|erase/i })).not.toBeInTheDocument();
+});
+
+test("a locked vault offers retry and secure account switching without destructive recovery", () => {
+  const refresh = jest.fn();
+  const onSignOut = jest.fn();
+  renderGate({ refresh, onSignOut });
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(onSignOut).toHaveBeenCalledTimes(1);
+  expect(refresh).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: /reset|delete|erase|clear/i })).not.toBeInTheDocument();
 });
 
 test("the gate contains no password field or password copy in any normal state", () => {

@@ -41,8 +41,12 @@ export default function VaultAccessGate({
   checking = false,
   pending = false,
   refresh,
+  onSignOut,
 }) {
   const state = String(capability?.state || "locked");
+  const signOut = typeof onSignOut === "function" ? (
+    <button type="button" className="pe-btn pe-btn-ghost" onClick={onSignOut} disabled={pending}>Sign out</button>
+  ) : null;
 
   if (checking || state === "unlocking" || state === "setup_required" || pending) {
     return (
@@ -60,7 +64,9 @@ export default function VaultAccessGate({
       <GateCard
         heading="Local vault cannot be opened"
         explainer="The local encrypted vault is damaged and cannot be opened safely. No data was changed, repaired, or deleted."
-      />
+      >
+        {signOut}
+      </GateCard>
     );
   }
 
@@ -69,7 +75,9 @@ export default function VaultAccessGate({
       <GateCard
         heading="Secure local vault unavailable"
         explainer="This device does not provide the secure browser storage required to protect local EstiPaid data."
-      />
+      >
+        {signOut}
+      </GateCard>
     );
   }
 
@@ -78,7 +86,9 @@ export default function VaultAccessGate({
       <GateCard
         heading="Local recovery required"
         explainer="This device’s secure key is no longer available. Cloud-synced data remains recoverable, but local-only unsynchronized data cannot be opened with a replacement key."
-      />
+      >
+        {signOut}
+      </GateCard>
     );
   }
 
@@ -91,6 +101,7 @@ export default function VaultAccessGate({
       <button type="button" className="pe-btn" onClick={() => refresh?.()} disabled={pending}>
         {pending ? "Opening secure vault…" : "Continue to EstiPaid"}
       </button>
+      {signOut}
     </GateCard>
   );
 }

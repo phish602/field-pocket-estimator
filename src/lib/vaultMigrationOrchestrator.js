@@ -412,14 +412,21 @@ export function createVaultMigrationOrchestrator({
             if (guard.state === "transition") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_RECOVERY_REQUIRED);
             if (guard.state === "authoritative") {
               const stored = await vaultRepository.readMigrationManifest({ workspaceTag });
-              if (!stored || !validTransitionId(stored.transitionId)) return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
-              const manifest = await decodeManifest({ repository: vaultRepository, workspaceTag, transitionId: stored.transitionId, dek, userId, companyId });
-              if (!await verifyRecords({ repository: vaultRepository, workspaceTag, dek, userId, companyId, manifest }) || !await sourcesAreAbsent(storage, manifest)) {
-                return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
+              if (stored) {
+                if (!validTransitionId(stored.transitionId)) return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
+                const manifest = await decodeManifest({ repository: vaultRepository, workspaceTag, transitionId: stored.transitionId, dek, userId, companyId });
+                if (!await verifyRecords({ repository: vaultRepository, workspaceTag, dek, userId, companyId, manifest }) || !await sourcesAreAbsent(storage, manifest)) {
+                  return fail(VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED);
+                }
+                return completed();
               }
-              return completed();
             }
-            if (guard.state !== "absent") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE);
+            if (guard.state !== "absent" && guard.state !== "authoritative") {
+              return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE);
+            }
+            // An authoritative device-global guard may belong to a different
+            // account. Create a normal workspace-bound transition, but never
+            // downgrade the global guard: bridge builds must stay fail-closed.
             active = await transitionRepository.createActiveTransition({ transitionId: newTransitionId(), workspaceTag });
           }
 
@@ -427,16 +434,20 @@ export function createVaultMigrationOrchestrator({
           if (!phase || !validTransitionId(active.transitionId)) return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, "", { resumable: true });
 
           if (phase === "prepared") {
-            if (guard.state === "authoritative") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
             if (guard.state === "absent" && !writeGuard({ state: "transition", storage })) {
               return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, phase, metadataForPhase(phase));
             }
             const verifiedGuard = readGuard();
-            if (!verifiedGuard || verifiedGuard.state !== "transition") return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, phase, metadataForPhase(phase));
+            const expectedGuardState = guard.state === "authoritative" ? "authoritative" : "transition";
+            if (!verifiedGuard || verifiedGuard.state !== expectedGuardState) {
+              return fail(VAULT_MIGRATION_ERROR_CODES.GUARD_UNAVAILABLE, phase, metadataForPhase(phase));
+            }
             active = await transitionRepository.advanceActiveTransition({ transitionId: active.transitionId, workspaceTag, expectedPhase: "prepared", nextPhase: "guarded" });
             phase = "guarded";
           } else if (["guarded", "copying", "verifying"].includes(phase)) {
-            if (guard.state !== "transition") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+            if (guard.state !== "transition" && guard.state !== "authoritative") {
+              return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
+            }
           } else if (phase === "cleaning") {
             if (guard.state !== "transition" && guard.state !== "authoritative") return fail(VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT, phase, metadataForPhase(phase));
           } else if (phase === "authoritative" && guard.state !== "authoritative") {

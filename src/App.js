@@ -5237,7 +5237,7 @@ export default function App() {
   }
 
   if (!VAULT_BRIDGE_RELEASE && vault?.capability?.state !== "unlocked") {
-    return <VaultAccessGate {...vault} />;
+    return <VaultAccessGate {...vault} onSignOut={auth.signOut} />;
   }
 
   // ISO-16: an unlocked vault is not enough. The shell waits behind a secure
@@ -5247,7 +5247,7 @@ export default function App() {
   // The shell may not mount on an unreadable authoritative store. Showing zeros
   // over encrypted data that merely is not mounted is worse than showing a gate.
   if (!VAULT_BRIDGE_RELEASE && (vaultRuntime?.state !== "ready" || !authoritativeLocalDataReady)) {
-    return <VaultRuntimeGate state={vaultRuntime?.state === "ready" ? "blocked" : vaultRuntime?.state} />;
+    return <VaultRuntimeGate state={vaultRuntime?.state === "ready" ? "blocked" : vaultRuntime?.state} onSignOut={auth.signOut} />;
   }
 
   // The final gate before the shell. Auth, recovery, workspace setup, and every

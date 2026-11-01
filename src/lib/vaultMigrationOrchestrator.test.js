@@ -1,3 +1,5 @@
+/* global globalThis */
+
 import { IDBFactory } from "fake-indexeddb";
 import {
   activateAccountScopedLocalStorage,
@@ -37,8 +39,8 @@ afterAll(() => {
   else globalThis.structuredClone = originalStructuredClone;
 });
 
-async function testKey() {
-  return globalThis.crypto.subtle.importKey("raw", new Uint8Array(32).fill(7), { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+async function testKey(fill = 7) {
+  return globalThis.crypto.subtle.importKey("raw", new Uint8Array(32).fill(fill), { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
 function guard(state) {
@@ -55,7 +57,7 @@ function memoryFacade(seed = {}) {
     getItem(key) {
       if (key === "estipaid-vault-guard-v1") {
         if (guardState === "absent") return null;
-        return `{\"version\":1,\"state\":\"${guardState}\"}`;
+        return `{"version":1,"state":"${guardState}"}`;
       }
       if (failNextRead) {
         failNextRead = false;
@@ -150,7 +152,7 @@ async function runner({ storage = memoryFacade(), vault = memoryVault(), transit
       deriveTag: async () => TAG,
       withActiveDek: async ({ workspaceTag, operation }) => workspaceTag === TAG ? operation(dek) : null,
       readGuard: () => guard(storage.guardState()),
-      writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{\"version\":1,\"state\":\"${state}\"}`) !== null,
+      writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{"version":1,"state":"${state}"}`) !== null,
       newTransitionId: () => TRANSITION_ID,
     }),
   };
@@ -293,7 +295,7 @@ test("interruption boundaries resume from durable state without returning to leg
     scenario.install(setup);
     const first = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
     expect(first.state).toBe("blocked");
-    if (!scenario.guardMayBeAbsent) expect(setup.storage.guardState()).not.toBe("absent");
+    expect(scenario.guardMayBeAbsent || setup.storage.guardState() !== "absent").toBe(true);
     await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
   }
 });
@@ -332,17 +334,67 @@ test("verification mismatch, source removal, and partial cleanup all remain fail
   await expect(cleanup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
 });
 
-test("no active transition plus authoritative guard does not automatically complete an unrelated workspace", async () => {
-  const storage = memoryFacade();
+test("an authoritative device guard starts a workspace-bound migration for a fresh account", async () => {
+  const storage = memoryFacade({ "estipaid-customers-v1": "account-b-customer" });
   storage.setGuardState("authoritative");
   const setup = await runner({ storage });
   const migration = await setup.orchestrator.run({ userId: USER, companyId: COMPANY });
-  expect(migration).toEqual(expect.objectContaining({
-    state: "blocked", code: VAULT_MIGRATION_ERROR_CODES.AUTHORITATIVE_WORKSPACE_UNVERIFIED,
-    resumable: false, authoritative: false,
-  }));
+  expect(migration).toMatchObject({ state: "authoritative", code: "" });
   expect(Object.isFrozen(migration)).toBe(true);
-  expect(setup.transition.createActiveTransition).not.toHaveBeenCalled();
+  expect(setup.transition.createActiveTransition).toHaveBeenCalledWith({ transitionId: TRANSITION_ID, workspaceTag: TAG });
+  expect(setup.vault.records.has("estipaid-customers-v1")).toBe(true);
+  expect(storage.values.has("estipaid-customers-v1")).toBe(false);
+  expect(storage.setVaultCompatibilityGuardValue.mock.calls.some(([value]) => value.includes('"state":"transition"'))).toBe(false);
+  expect(storage.guardState()).toBe("authoritative");
+});
+
+test("account A to B to A preserves each encrypted workspace and never downgrades device authority", async () => {
+  const userB = "22222222-3333-4444-8555-666666666666";
+  const companyB = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const storage = memoryFacade({ "estipaid-customers-v1": "account-a-private" });
+  const transition = memoryTransition();
+  const vaultA = memoryVault();
+  const vaultB = memoryVault();
+  const keyA = await testKey(7);
+  const keyB = await testKey(8);
+
+  const accountOrchestrator = ({ tag, vault, key, transitionId }) => createVaultMigrationOrchestrator({
+    storage,
+    vaultRepository: vault,
+    transitionRepository: transition,
+    deriveTag: async () => tag,
+    withActiveDek: async ({ workspaceTag, operation }) => workspaceTag === tag ? operation(key) : null,
+    readGuard: () => guard(storage.guardState()),
+    writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{"version":1,"state":"${state}"}`) !== null,
+    newTransitionId: () => transitionId,
+  });
+
+  const accountA = accountOrchestrator({ tag: TAG, vault: vaultA, key: keyA, transitionId: TRANSITION_ID });
+  await expect(accountA.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  const encryptedA = await vaultA.readEncryptedRecord({ workspaceTag: TAG, logicalKey: "estipaid-customers-v1" });
+  expect(encryptedA).not.toBeNull();
+
+  // Activating B changes only what the current account-scoped migration facade
+  // exposes. A's encrypted repository remains separate and untouched.
+  storage.setValue("estipaid-customers-v1", "account-b-private");
+  storage.setVaultCompatibilityGuardValue.mockClear();
+  const accountB = accountOrchestrator({ tag: OTHER_TAG, vault: vaultB, key: keyB, transitionId: OTHER_TRANSITION_ID });
+  await expect(accountB.run({ userId: userB, companyId: companyB })).resolves.toMatchObject({ state: "authoritative" });
+  expect(storage.setVaultCompatibilityGuardValue.mock.calls.some(([value]) => value.includes('"state":"transition"'))).toBe(false);
+  expect(storage.guardState()).toBe("authoritative");
+
+  const encryptedAAfterB = await vaultA.readEncryptedRecord({ workspaceTag: TAG, logicalKey: "estipaid-customers-v1" });
+  const encryptedB = await vaultB.readEncryptedRecord({ workspaceTag: OTHER_TAG, logicalKey: "estipaid-customers-v1" });
+  expect(encryptedAAfterB).toEqual(encryptedA);
+  expect(encryptedB).not.toBeNull();
+  expect(encryptedB.ciphertext).not.toEqual(encryptedA.ciphertext);
+  expect(new TextDecoder().decode(encryptedA.ciphertext)).not.toContain("account-a-private");
+  expect(new TextDecoder().decode(encryptedB.ciphertext)).not.toContain("account-b-private");
+
+  const transitionsBeforeReturn = transition.createActiveTransition.mock.calls.length;
+  await expect(accountA.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(transition.createActiveTransition).toHaveBeenCalledTimes(transitionsBeforeReturn);
+  expect(await vaultB.readEncryptedRecord({ workspaceTag: OTHER_TAG, logicalKey: "estipaid-customers-v1" })).toEqual(encryptedB);
 });
 
 test("no active transition plus authoritative guard completes only after current workspace integrity verification", async () => {
@@ -377,7 +429,7 @@ test("a second workspace cannot claim an orphaned transition guard", async () =>
   const orchestrator = createVaultMigrationOrchestrator({
     storage, vaultRepository: memoryVault(), transitionRepository: transition, deriveTag: async () => OTHER_TAG,
     withActiveDek: async ({ operation }) => operation(key), readGuard: () => guard(storage.guardState()),
-    writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{\"version\":1,\"state\":\"${state}\"}`) !== null,
+    writeGuard: ({ state, storage: target }) => target.setVaultCompatibilityGuardValue(`{"version":1,"state":"${state}"}`) !== null,
     newTransitionId: () => OTHER_TRANSITION_ID,
   });
   await expect(orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({
@@ -433,32 +485,33 @@ test("restart from matching prepared plus transition guard safely advances and c
   expect(transition.advanceActiveTransition.mock.calls[0]).toMatchObject([{ expectedPhase: "prepared", nextPhase: "guarded" }]);
 });
 
-test("authoritative guard plus prepared fails closed", async () => {
+test("an authoritative-workspace migration resumes safely from prepared", async () => {
   const storage = memoryFacade();
   storage.setGuardState("authoritative");
   const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "prepared" }) });
-  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "prepared", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
+  expect(storage.setVaultCompatibilityGuardValue.mock.calls.some(([value]) => value.includes('"state":"transition"'))).toBe(false);
 });
 
-test("authoritative guard plus guarded fails closed", async () => {
+test("an authoritative-workspace migration resumes safely from guarded", async () => {
   const storage = memoryFacade();
   storage.setGuardState("authoritative");
   const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "guarded" }) });
-  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "guarded", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "authoritative" });
 });
 
-test("authoritative guard plus copying fails closed", async () => {
+test("an unsafe authoritative copying transition without its manifest remains fail-closed", async () => {
   const storage = memoryFacade();
   storage.setGuardState("authoritative");
   const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "copying" }) });
-  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "copying", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "copying", code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID });
 });
 
-test("authoritative guard plus verifying fails closed", async () => {
+test("an unsafe authoritative verifying transition without its manifest remains fail-closed", async () => {
   const storage = memoryFacade();
   storage.setGuardState("authoritative");
   const setup = await runner({ storage, transition: memoryTransition({ transitionId: TRANSITION_ID, workspaceTag: TAG, phase: "verifying" }) });
-  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "verifying", code: VAULT_MIGRATION_ERROR_CODES.TRANSITION_CONFLICT });
+  await expect(setup.orchestrator.run({ userId: USER, companyId: COMPANY })).resolves.toMatchObject({ state: "blocked", phase: "verifying", code: VAULT_MIGRATION_ERROR_CODES.MANIFEST_INVALID });
 });
 
 test("absent guard with guarded or later pre-authority phases fails closed", async () => {

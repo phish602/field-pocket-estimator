@@ -6,7 +6,7 @@
  * Cloud workers must see an identity only under the same condition.
  */
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import {
   TEST_COMPANY,
@@ -37,6 +37,7 @@ jest.mock("./lib/vaultCrypto", () => ({ workspaceTag: () => Promise.resolve("A".
 
 const useVaultSession = require("./lib/useVaultSession").default;
 const useVaultRuntimeActivation = require("./lib/useVaultRuntimeActivation").default;
+const useSupabaseAuth = require("./lib/useSupabaseAuth").default;
 const useCloudAutoConvergence = require("./lib/useCloudAutoConvergence").default;
 const useCloudAutoBackup = require("./lib/useCloudAutoBackup").default;
 const useVaultIdleLock = require("./lib/useVaultIdleLock").default;
@@ -68,6 +69,15 @@ test("a locked vault shows the access gate and never the shell", async () => {
   await waitFor(() => expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument());
 });
 
+test("an unreadable vault keeps data protected and offers a secure sign-out path", async () => {
+  setup({ vault: { ...buildUnlockedVaultSessionResult(), capability: Object.freeze({ state: "damaged", code: "RECORD_CORRUPT", message: "" }) } });
+  render(<App />);
+  const signOut = useSupabaseAuth.mock.results[0].value.signOut;
+  fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+  expect(signOut).toHaveBeenCalledTimes(1);
+  expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
+});
+
 test("a missing vault shows the setup gate and never the shell", async () => {
   setup({ vault: { ...buildUnlockedVaultSessionResult(), capability: Object.freeze({ state: "setup_required", code: "", message: "" }) } });
   render(<App />);
@@ -83,19 +93,20 @@ test.each([
 ])("the shell does not mount while the runtime is %s", async (state) => {
   setup({ runtime: buildReadyVaultRuntimeResult({ state, checking: state !== "blocked" }) });
   render(<App />);
-  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(await screen.findByLabelText(/encrypted local data access/i)).toBeInTheDocument();
   expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
 });
 
-test("the runtime gate never offers a destructive reset or asks for the login password", async () => {
+test("the runtime gate offers only secure sign-out and never destructive recovery or a login-password prompt", async () => {
   setup({ runtime: buildReadyVaultRuntimeResult({ state: "blocked", checking: false, code: "CATALOG_INVALID" }) });
   render(<App />);
   const gate = await screen.findByLabelText(/encrypted local data access/i);
   const text = gate.textContent.toLowerCase();
+  const signOut = useSupabaseAuth.mock.results[0].value.signOut;
 
-  // The strongest form of "offers no destructive action" is that the gate has no
-  // interactive control at all: nothing to click, nothing to submit.
-  expect(gate.querySelectorAll("button, a, input, select, textarea, [role='button']")).toHaveLength(0);
+  expect(within(gate).getAllByRole("button")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(signOut).toHaveBeenCalledTimes(1);
 
   // And no imperative that would send a contractor to destroy their own data or
   // hand over the wrong password. ("deleted" inside the reassurance below is the
@@ -203,7 +214,7 @@ test("a revalidation gates the shell and remounts it only after replacement", as
   // The runtime freezes mutations and publishes `hydrating` while it verifies.
   useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "hydrating", checking: true }));
   view.rerender(<App />);
-  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(await screen.findByLabelText(/encrypted local data access/i)).toBeInTheDocument();
   expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
 
   // Cloud workers see no identity for the whole frozen window.
@@ -227,11 +238,11 @@ test("a failed candidate leaves App blocked behind the gate", async () => {
 
   useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "hydrating", checking: true }));
   view.rerender(<App />);
-  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(await screen.findByLabelText(/encrypted local data access/i)).toBeInTheDocument();
 
   useVaultRuntimeActivation.mockReturnValue(buildReadyVaultRuntimeResult({ state: "blocked", checking: false, code: "RECORD_INVALID" }));
   view.rerender(<App />);
-  await waitFor(() => expect(screen.getByLabelText(/encrypted local data access/i)).toBeInTheDocument());
+  expect(await screen.findByLabelText(/encrypted local data access/i)).toBeInTheDocument();
   expect(screen.queryByLabelText(/open menu/i)).not.toBeInTheDocument();
   const convergence = useCloudAutoConvergence.mock.calls.at(-1)[0];
   expect(convergence.configured).toBe(false);
