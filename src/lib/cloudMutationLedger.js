@@ -6,6 +6,7 @@ import { runtimeCommitAtomicRecords, getVaultRuntimeStatus, isVaultRuntimeReady,
 import { getActiveAccountScopedStorage, getActiveAccountWorkspaceIdentity, isAuthoritativeVaultRuntimeInstalled } from "./accountScopedLocalStorage";
 import { deriveWorkspaceVaultTag } from "./vaultSession";
 import { isActiveCloudMutation } from "./cloudOperationOwnership";
+import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice, mapLocalProjectToBackendProject } from "../utils/backendDataMapper";
 
 export const CLOUD_MUTATION_LEDGER_SCHEMA_VERSION = "2.0.0";
 export const CLOUD_MUTATION_ENTITY = Object.freeze({
@@ -86,6 +87,7 @@ function normalizeEntry(entry) {
     ...(entry.automaticRecoveryProof ? { automaticRecoveryProof: asText(entry.automaticRecoveryProof) } : {}),
     ...(entry.supersededByMutationId ? { supersededByMutationId: asText(entry.supersededByMutationId), supersededByRevision: Number(entry.supersededByRevision) } : {}),
     ...(entry.retirement ? { retirement: clone(entry.retirement) } : {}),
+    ...(entry.dependencyRecovery && typeof entry.dependencyRecovery === "object" ? { dependencyRecovery: clone(entry.dependencyRecovery) } : {}),
   };
 }
 
@@ -397,22 +399,137 @@ function hasVerifiedAcknowledgement(entry) {
     && !entry.supersededByMutationId;
 }
 
-// Only the exact required project can unlock a retry. Persist the proof on the
+// A dependent upsert names its parents exactly as the cloud writer maps them;
+// "<table>_parent_missing" says which one the writer could not find.
+const DEPENDENCY_PARENTS = Object.freeze({
+  [CLOUD_MUTATION_ENTITY.PROJECT]: { map: mapLocalProjectToBackendProject, parents: {
+    customers_parent_missing: [CLOUD_MUTATION_ENTITY.CUSTOMER, "customer_legacy_local_id"],
+  } },
+  [CLOUD_MUTATION_ENTITY.ESTIMATE]: { map: mapLocalEstimateToBackendEstimate, parents: {
+    customers_parent_missing: [CLOUD_MUTATION_ENTITY.CUSTOMER, "customer_legacy_local_id"],
+    projects_parent_missing: [CLOUD_MUTATION_ENTITY.PROJECT, "project_legacy_local_id"],
+  } },
+  [CLOUD_MUTATION_ENTITY.INVOICE]: { map: mapLocalInvoiceToBackendInvoice, parents: {
+    customers_parent_missing: [CLOUD_MUTATION_ENTITY.CUSTOMER, "customer_legacy_local_id"],
+    projects_parent_missing: [CLOUD_MUTATION_ENTITY.PROJECT, "project_legacy_local_id"],
+    estimates_parent_missing: [CLOUD_MUTATION_ENTITY.ESTIMATE, "source_estimate_legacy_local_id"],
+  } },
+});
+const PARENT_STORAGE_KEYS = Object.freeze({
+  [CLOUD_MUTATION_ENTITY.CUSTOMER]: STORAGE_KEYS.CUSTOMERS,
+  [CLOUD_MUTATION_ENTITY.PROJECT]: STORAGE_KEYS.PROJECTS,
+  [CLOUD_MUTATION_ENTITY.ESTIMATE]: STORAGE_KEYS.ESTIMATES,
+});
+export const CLOUD_MUTATION_MAX_DEPENDENCY_RECOVERIES = 2;
+
+function parentMissingDependency(entry) {
+  const rule = DEPENDENCY_PARENTS[entry?.entityType];
+  const parent = rule?.parents?.[entry?.lastErrorCode];
+  if (!parent || entry.operation !== CLOUD_MUTATION_OPERATION.UPSERT || entry.documentId !== asText(entry.payload?.id)) return null;
+  let parentDocumentId = "";
+  try { parentDocumentId = asText(rule.map(entry.payload, {})?.[parent[1]]); } catch { return null; }
+  return parentDocumentId ? { parentEntityType: parent[0], parentDocumentId } : null;
+}
+
+function conflictingCompany(record, companyId) {
+  return [record?.companyId, record?.company_id].some(value => asText(value) && asText(value) !== companyId);
+}
+
+// The historical estimate/project identity is unchanged; the same rule now also
+// covers every other dependent/parent pair the cloud writer can report.
+function deriveParentMissingRecoveryDependency(entry, recoveryContext) {
+  const historical = deriveParentMissingEstimateRecoveryIdentity(entry, recoveryContext);
+  if (historical) return { companyId: historical.companyId, parentEntityType: CLOUD_MUTATION_ENTITY.PROJECT, parentDocumentId: historical.projectId };
+  if (entry?.status !== CLOUD_MUTATION_STATUS.NEEDS_ATTENTION) return null;
+  const dependency = parentMissingDependency(entry);
+  const companyId = dependency ? recoveryEntryCompanyId(entry, recoveryContext) : "";
+  if (!companyId || conflictingCompany(entry.payload, companyId)) return null;
+  return { companyId, ...dependency };
+}
+
+// Only the exact required parent can unlock a retry. Persist the proof on the
 // failed entry so remounts, clocks, triggers and another failed attempt cannot
 // reuse it. A parent verified before the failure is not changed evidence.
 export function getCloudMutationAutomaticRecoveryProof(current, ledger, recoveryContext = null) {
-  const identity = deriveParentMissingEstimateRecoveryIdentity(current, recoveryContext);
+  const identity = deriveParentMissingRecoveryDependency(current, recoveryContext);
   if (!identity) return null;
-  const { projectId, companyId } = identity;
-  if (!projectId || !Number(current.lastAttemptAt)) return null;
+  const { parentEntityType, parentDocumentId, companyId } = identity;
+  if (!parentDocumentId || !Number(current.lastAttemptAt)) return null;
   const parent = [...(ledger?.entries || [])].reverse().find(entry =>
-    recoveryEntryCompanyId(entry, current.companyId ? null : recoveryContext) === companyId && entry.entityType === CLOUD_MUTATION_ENTITY.PROJECT
-    && entry.documentId === projectId);
+    recoveryEntryCompanyId(entry, current.companyId ? null : recoveryContext) === companyId && entry.entityType === parentEntityType
+    && entry.documentId === parentDocumentId);
   if (!hasVerifiedAcknowledgement(parent) || parent.operation !== CLOUD_MUTATION_OPERATION.UPSERT
-    || asText(parent.payload?.id) !== projectId
+    || asText(parent.payload?.id) !== parentDocumentId
     || Number(parent.verifiedAt) <= Number(current.lastAttemptAt)) return null;
   const proof = `${parent.mutationId}:${parent.revision}:${parent.verifiedAt}`;
   return current.automaticRecoveryProof === proof ? null : proof;
+}
+
+function readParentRecords(storage, entityType) {
+  try {
+    const parsed = JSON.parse(storage.getItem(PARENT_STORAGE_KEYS[entityType]) || "[]");
+    return (Array.isArray(parsed) ? parsed : []).filter(record => record && typeof record === "object" && !Array.isArray(record)
+      && (entityType !== CLOUD_MUTATION_ENTITY.ESTIMATE || asText(record.docType || "estimate").toLowerCase() !== "invoice"));
+  } catch { return []; }
+}
+
+// A dependent failed because its parent is absent from the cloud, and nothing in
+// the ledger will ever put it there. Queue that exact parent, from the current
+// verified workspace's own record, as an ordinary durable upsert. The dependent
+// is never rewritten or retried here: once the parent verifies, the proof rule
+// above retries it. A parent that is missing locally, belongs to another
+// company, is already queued, or already verified since the failure is left
+// alone, and each dependent gets a bounded number of these recoveries.
+export async function enqueueRecoverableMissingParentMutations({ recoveryContext = null, companyId = "", now = nowTs() } = {}) {
+  const workspaceCompanyId = asText(companyId);
+  if (!historicalContextIsCurrent(recoveryContext) || !workspaceCompanyId || recoveryContext.companyId !== workspaceCompanyId) {
+    return { ok: true, appended: [] };
+  }
+  const storage = recoveryContext.storage;
+  const ledger = readCloudMutationLedger(storage);
+  const planned = new Map();
+  const dependentPatches = new Map();
+  ledger.entries.forEach((entry, index) => {
+    if (![CLOUD_MUTATION_STATUS.RETRY_WAIT, CLOUD_MUTATION_STATUS.NEEDS_ATTENTION].includes(entry.status)) return;
+    const dependency = parentMissingDependency(entry);
+    if (!dependency || recoveryEntryCompanyId(entry, recoveryContext) !== workspaceCompanyId
+      || conflictingCompany(entry.payload, workspaceCompanyId)) return;
+    const { parentEntityType, parentDocumentId } = dependency;
+    const prior = entry.dependencyRecovery;
+    const attempts = prior?.parentEntityType === parentEntityType && prior?.parentDocumentId === parentDocumentId ? Number(prior.attempts) || 0 : 0;
+    if (attempts >= CLOUD_MUTATION_MAX_DEPENDENCY_RECOVERIES) return;
+    const covered = ledger.entries.some(other => other.entityType === parentEntityType && other.documentId === parentDocumentId
+      && recoveryEntryCompanyId(other, recoveryContext) === workspaceCompanyId
+      && (isActiveCloudMutation(other) || (hasVerifiedAcknowledgement(other) && Number(other.verifiedAt) > Number(entry.lastAttemptAt || 0))));
+    if (covered) return;
+    const key = `${parentEntityType}:${parentDocumentId}`;
+    if (!planned.has(key)) {
+      const record = readParentRecords(storage, parentEntityType).find(candidate => asText(candidate.id) === parentDocumentId);
+      if (!record || conflictingCompany(record, workspaceCompanyId)) return;
+      planned.set(key, {
+        companyId: workspaceCompanyId, entityType: parentEntityType, documentId: parentDocumentId,
+        operation: CLOUD_MUTATION_OPERATION.UPSERT, reason: "dependency_parent_missing_recovery",
+        source: "cloudMutationDependencyRecovery", payload: record, createdAt: now,
+      });
+    }
+    dependentPatches.set(index, { key, parentEntityType, parentDocumentId, attempts: attempts + 1 });
+  });
+  if (!planned.size) return { ok: true, appended: [] };
+  const keys = [...planned.keys()];
+  const { ledger: appendedLedger, appended } = appendCloudMutationRecords(ledger, [...planned.values()], { now });
+  const parentMutationIds = new Map(keys.map((key, index) => [key, appended[index].mutationId]));
+  const next = {
+    ...appendedLedger,
+    entries: appendedLedger.entries.map((entry, index) => {
+      const patch = dependentPatches.get(index);
+      if (!patch) return entry;
+      return { ...entry, dependencyRecovery: { parentEntityType: patch.parentEntityType, parentDocumentId: patch.parentDocumentId,
+        attempts: patch.attempts, parentMutationId: parentMutationIds.get(patch.key), queuedAt: now } };
+    }),
+  };
+  if (!historicalContextIsCurrent(recoveryContext)) return { ok: true, appended: [] };
+  await runtimeCommitAtomicRecords([{ logicalKey: STORAGE_KEYS.CLOUD_MUTATION_LEDGER, value: JSON.stringify(next) }]);
+  return { ok: true, appended, ledger: next };
 }
 
 // Immutable targeted estimate upserts contain the complete estimate contract;
