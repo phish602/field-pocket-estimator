@@ -9,8 +9,10 @@
 // at the base commit 58b4ce5390d529a776bfe5129aeec3c29ef72c3d. It is the oracle:
 // current Estimate output must equal it, field for field, row for row.
 //
-// This test asserts COMPATIBILITY ONLY. It must never be "fixed" by changing
-// Estimate production behavior.
+// Lane 2 intentionally adds only the estimator's material fidelity fields to
+// Estimate children. This file keeps the pre-repair projection as an oracle and
+// layers those exact authorized material fields on top, so labor, generic rows,
+// placeholders, identities and ordering cannot drift accidentally.
 
 import { DEFAULT_STATE } from "../estimator/defaultState";
 import { mapLocalEstimateToBackendEstimate, mapLocalInvoiceToBackendInvoice } from "./backendDataMapper";
@@ -83,6 +85,35 @@ function PRE_REPAIR_extractDocumentLineItems(record = {}, kind = "") {
   return items;
 }
 
+function pickPreRepairNumber(...values) {
+  for (const value of values) {
+    const next = preRepairToNumberOrNull(value);
+    if (next !== null) return next;
+  }
+  return null;
+}
+
+function expectedEstimateLineItems(record = {}) {
+  const expected = PRE_REPAIR_extractDocumentLineItems(record, "estimate");
+  const laborLines = Array.isArray(record?.labor?.lines) ? record.labor.lines : (Array.isArray(record?.laborLines) ? record.laborLines : []);
+  const materialItems = Array.isArray(record?.materials?.items) ? record.materials.items : (Array.isArray(record?.materialItems) ? record.materialItems : []);
+
+  materialItems.forEach((item, index) => {
+    const mapped = expected[laborLines.length + index];
+    if (!mapped || mapped.kind !== "material") return;
+    const description = preRepairPickText(item?.description, item?.desc, item?.name, item?.title, item?.label, item?.notes, item?.text);
+    const unitPrice = pickPreRepairNumber(item?.unitPrice, item?.rate, item?.price, item?.priceEach);
+    const unitCost = pickPreRepairNumber(item?.unitCost, item?.cost, item?.unitCostInternal, item?.costInternal, item?.internalCost, item?.trueRateInternal);
+    const total = pickPreRepairNumber(item?.total, item?.amount);
+    if (description) mapped.description = description;
+    if (unitPrice !== null) mapped.unit_price = unitPrice;
+    if (unitCost !== null) mapped.unit_cost = unitCost;
+    if (total !== null) mapped.total = total;
+  });
+
+  return expected;
+}
+
 // ---------------------------------------------------------------------------
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -153,14 +184,14 @@ const FIXTURES = [
   })],
 ];
 
-describe("Estimate child serialization is unchanged by the Invoice repair", () => {
-  test.each(FIXTURES)("%s produces pre-repair canonical children", (_label, estimate) => {
-    const expected = PRE_REPAIR_extractDocumentLineItems(estimate, "estimate");
+describe("Estimate child serialization changes only for authorized material fidelity", () => {
+  test.each(FIXTURES)("%s produces canonical children with only the material fidelity extension", (_label, estimate) => {
+    const expected = expectedEstimateLineItems(estimate);
     const actual = mapLocalEstimateToBackendEstimate(estimate, {}).line_items;
     expect(actual).toEqual(expected);
   });
 
-  test.each(FIXTURES)("%s produces pre-repair canonical child ROWS", (_label, estimate) => {
+  test.each(FIXTURES)("%s produces canonical child rows with stable identities and ordering", (_label, estimate) => {
     const rowsFor = (items) => buildParentLineItemContract({
       entityType: "estimate",
       parentLegacyId: estimate.id,
@@ -168,7 +199,7 @@ describe("Estimate child serialization is unchanged by the Invoice repair", () =
       items,
     }).rows;
 
-    const expected = rowsFor(PRE_REPAIR_extractDocumentLineItems(estimate, "estimate"));
+    const expected = rowsFor(expectedEstimateLineItems(estimate));
     const actual = rowsFor(mapLocalEstimateToBackendEstimate(estimate, {}).line_items);
     expect(actual).toEqual(expected);
   });
@@ -193,7 +224,7 @@ describe("Estimate child serialization is unchanged by the Invoice repair", () =
       labor: { hazardPct: 0, riskPct: 0, multiplier: 1, lines: [clone(BLANK_LABOR)] },
       materials: { markupPct: 0, blanketCost: "", items: [clone(BLANK_MATERIAL)] },
     });
-    const expected = PRE_REPAIR_extractDocumentLineItems(estimate, "estimate");
+    const expected = expectedEstimateLineItems(estimate);
     const actual = mapLocalEstimateToBackendEstimate(estimate, {}).line_items;
 
     // Pre-repair kept these rows (they retain kind/legacy_local_id/sort_order).
@@ -228,12 +259,15 @@ describe("the Invoice repair behavior is still active for invoices", () => {
     expect(material.unit_price).toBe(135);
     expect(material.unit_cost).toBe(70);
 
-    // And these reads are genuinely invoice-only: the same rows through the
-    // estimate path keep the pre-repair projection.
+    // Estimate labor remains on its prior projection, while estimate material
+    // now reads the same saved material economics required by Lane 2.
     const estimateItems = mapLocalEstimateToBackendEstimate({ ...invoiceBase, ...invoice }, {}).line_items;
     expect(estimateItems.find((item) => item.kind === "labor").description).toBe("Electrician");
-    expect(estimateItems.find((item) => item.kind === "material").description).toBeUndefined();
-    expect(estimateItems.find((item) => item.kind === "material").unit_price).toBeUndefined();
+    expect(estimateItems.find((item) => item.kind === "material")).toEqual(expect.objectContaining({
+      description: "Vanity light",
+      unit_price: 135,
+      unit_cost: 70,
+    }));
   });
 
   test("invoice blank placeholders are still rejected while estimate keeps them", () => {

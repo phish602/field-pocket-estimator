@@ -20,6 +20,17 @@
 
 const asText = (value) => String(value || "").trim();
 
+const asDateOnly = (value) => {
+  const text = asText(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return null;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? text : null;
+};
+
 // The writer-owned estimate columns, in table order. Anything absent from this
 // list is either not written by mapEstimatePayloads (approved_total,
 // grand_total, total, margins) or is not derivable from the backend draft alone
@@ -29,6 +40,7 @@ export const PERSISTED_ESTIMATE_CONTRACT_FIELDS = Object.freeze([
   "customer_legacy_local_id",
   "project_legacy_local_id",
   "estimate_number",
+  "estimate_date",
   "status",
   "total_amount",
   "notes",
@@ -50,6 +62,7 @@ export function buildPersistedEstimateContract(backendEstimate) {
     customer_legacy_local_id: asText(estimate?.customer_legacy_local_id),
     project_legacy_local_id: asText(estimate?.project_legacy_local_id),
     estimate_number: estimate?.estimate_number || null,
+    estimate_date: asDateOnly(estimate?.estimate_date),
     status: estimate?.status || "pending",
     total_amount: persistedEstimateTotalAmount(estimate),
     notes: estimate?.notes || null,

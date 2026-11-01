@@ -38,9 +38,9 @@ function setVerifiedCleanQueue(companyId = "company-1", revision = 0) {
     nextRetryAt: null, lastError: "", lastErrorCode: "", reasons: [], domains: [],
   }));
 }
-const estimate = (id = "estimate-1", overrides = {}) => ({ id, customerId: "customer-1", projectId: "project-1", estimateNumber: id, status: "draft", total: 100, notes: "", terms: "", labor: { lines: [] }, materials: { items: [] }, ...overrides });
+const estimate = (id = "estimate-1", overrides = {}) => ({ id, customerId: "customer-1", projectId: "project-1", estimateNumber: id, date: "2026-06-26", status: "draft", total: 100, notes: "", terms: "", labor: { lines: [] }, materials: { items: [] }, ...overrides });
 function estimateEvidence(row, overrides = {}) {
-  return { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: row.id, estimate: row }, persisted: { legacy_local_id: row.id, customer_legacy_local_id: row.customerId, project_legacy_local_id: row.projectId }, lineItems: [], ...overrides };
+  return { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: row.id, estimate: row }, persisted: { legacy_local_id: row.id, customer_legacy_local_id: row.customerId, project_legacy_local_id: row.projectId, estimate_date: row.date ?? null }, lineItems: [], ...overrides };
 }
 
 beforeEach(() => {
@@ -550,6 +550,28 @@ test.each([
   expect(plan.safe).toBe(false); expect(plan.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ family: "estimates", id: "cloud-estimate", code })]));
 });
 
+test("estimate convergence evidence rejects a different persisted calendar date", () => {
+  const row = estimate("cloud-estimate", { date: "2026-06-26" });
+  const evidence = estimateEvidence(row);
+  evidence.persisted = { ...evidence.persisted, estimate_date: "2026-06-27" };
+  const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] };
+
+  const plan = buildCloudConvergencePlan({
+    local: { ...emptySnapshot(), ...parents },
+    cloud: { ...emptySnapshot(), ...parents, estimates: [row] },
+    cloudSnapshot: {
+      uuidMaps: { estimates: { "cloud-estimate": uuid(18) } },
+      estimateEvidence: { "cloud-estimate": evidence },
+    },
+    companyId: "company-1",
+  });
+
+  expect(plan.safe).toBe(false);
+  expect(plan.conflicts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ family: "estimates", id: "cloud-estimate", code: "estimate_restore_payload_persisted_mismatch" }),
+  ]));
+});
+
 test("baseline estimate supports remote replacement, local-only queueing, same final state, and blocks concurrent differences", () => {
   const base = estimate("e"); const parents = { customers: [{ id: "customer-1" }], projects: [{ id: "project-1", customerId: "customer-1" }] }; const baseline = { ...emptySnapshot(), ...parents, estimates: [base] };
   const remoteRow = estimate("e", { notes: "cloud" }); const snapshot = { uuidMaps: { estimates: { e: uuid(13) } }, estimateEvidence: { e: estimateEvidence(remoteRow) } };
@@ -833,7 +855,7 @@ function liveEstimateEvidence(estimates) {
   return Object.fromEntries(estimates.map((est) => {
     const mapped = mapLocalEstimateToBackendEstimate(est, {});
     const lineItems = buildParentLineItemContract({ entityType: "estimate", parentLegacyId: est.id, parentColumn: "estimate_id", items: mapped.line_items }).rows;
-    return [est.id, { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: est.id, estimate: est }, persisted: { legacy_local_id: est.id, customer_legacy_local_id: est.customerId, project_legacy_local_id: est.projectId }, lineItems }];
+    return [est.id, { restorePayload: { schema: "estipaid.estimate.restore_payload", version: 1, legacyLocalId: est.id, estimate: est }, persisted: { legacy_local_id: est.id, customer_legacy_local_id: est.customerId, project_legacy_local_id: est.projectId, estimate_date: mapped.estimate_date ?? null }, lineItems }];
   }));
 }
 
@@ -929,6 +951,7 @@ function writerEstimateRow({ local, id, customerUuid, projectUuid, totalAmount, 
   return {
     id, legacy_local_id: local.id, customer_id: customerUuid, project_id: projectUuid,
     estimate_number: mapped.estimate_number || null, status: mapped.status || "pending", document_type: "estimate",
+    estimate_date: mapped.estimate_date || null,
     total_amount: totalAmount,
     notes: mapped.notes || null, terms: mapped.terms || null,
     converted_invoice_legacy_id: convertedInvoiceLegacyId,
@@ -948,6 +971,7 @@ function mapperShapedEstimateRow({ local, id, customerUuid, projectUuid }) {
   return {
     id, legacy_local_id: local.id, customer_id: customerUuid, project_id: projectUuid,
     estimate_number: mapped.estimate_number, status: mapped.status, total_amount: mapped.total_amount,
+    estimate_date: mapped.estimate_date ?? null,
     approved_total: mapped.approved_total ?? null, notes: mapped.notes, terms: mapped.terms,
     converted_invoice_legacy_id: mapped.converted_invoice_legacy_local_id ?? null,
     restore_payload: { schema: ESTIMATE_RESTORE_PAYLOAD_SCHEMA, version: Number(ESTIMATE_RESTORE_PAYLOAD_VERSION), legacyLocalId: local.id, estimate: local },

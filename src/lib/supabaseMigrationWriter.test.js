@@ -19,6 +19,7 @@ function writerAccessOk(fence = WRITER_FENCE) {
 }
 
 const {
+  buildTargetEstimatePersistencePayloads,
   isSupabaseMigrationPreviewReady,
   runSupabaseMigrationWrite,
 } = require("./supabaseMigrationWriter");
@@ -2283,6 +2284,7 @@ describe("Gate 16F estimate write payload is unchanged by the shared contract re
   test("writes the exact pre-refactor table row, collapsing totals into total_amount", async () => {
     const rows = await writeEstimate({
       id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1",
+      date: "2026-11-01",
       status: "approved", approvedTotal: 4500, grandTotal: 4400, total: 4300,
       labor: { lines: [{ id: "est_line_1", description: "Labor", quantity: 1, rate: 100 }] },
     });
@@ -2295,6 +2297,7 @@ describe("Gate 16F estimate write payload is unchanged by the shared contract re
       project_id: "db_proj_1",
       legacy_local_id: "est_1",
       estimate_number: "EST-1",
+      estimate_date: "2026-11-01",
       status: "approved",
       document_type: "estimate",
       total_amount: 4500,
@@ -2326,6 +2329,60 @@ describe("Gate 16F estimate write payload is unchanged by the shared contract re
   test("carries a converted invoice legacy id into its own column", async () => {
     const rows = await writeEstimate({ id: "est_1", projectId: "proj_1", customerId: "cust_1", estimateNumber: "EST-1", total: 100, invoiceId: "inv_9" });
     expect(rows[0].converted_invoice_legacy_id).toBe("inv_9");
+  });
+
+  test("target payload preserves estimate material economics, date, identity, ordering, and verbatim restore payload", () => {
+    const estimate = {
+      id: "est_materials",
+      projectId: "proj_1",
+      customerId: "cust_1",
+      estimateNumber: "EST-MATERIALS",
+      date: "2026-07-04",
+      total: 500,
+      totalCost: 220,
+      grossProfit: 280,
+      grossMarginPct: 56,
+      labor: { lines: [{ id: "labor_1", description: "Install", quantity: 2, rate: 50, total: 100 }] },
+      materials: {
+        markupPct: 25,
+        items: [
+          { id: "material_1", desc: "Fixture", qty: 2, unit: "each", priceEach: 200, unitCostInternal: 90, total: 400 },
+          { id: "material_2", desc: "Included fastener", qty: 1, priceEach: 0, costInternal: 0, total: 0 },
+        ],
+      },
+    };
+    const before = JSON.parse(JSON.stringify(estimate));
+    const payloads = buildTargetEstimatePersistencePayloads({
+      estimate,
+      companyId: "company_1",
+      userId: "user_1",
+      customerId: "db_cust_1",
+      projectId: "db_proj_1",
+      estimateId: "db_est_1",
+    });
+
+    expect(payloads.estimatePayload).toEqual(expect.objectContaining({
+      legacy_local_id: "est_materials",
+      estimate_date: "2026-07-04",
+      total_amount: 500,
+    }));
+    expect(payloads.lineItemPayloads).toEqual([
+      expect.objectContaining({ legacy_local_id: "estimate:est_materials:line:0", sort_order: 0, line_role: "labor", description: "Install", quantity: 2, unit_price: 50, total_price: 100 }),
+      expect.objectContaining({ legacy_local_id: "estimate:est_materials:line:1", sort_order: 0, line_role: "material", description: "Fixture", quantity: 2, unit: "each", unit_price: 200, total_price: 400, metadata: { unit_cost: 90 } }),
+      expect.objectContaining({ legacy_local_id: "estimate:est_materials:line:2", sort_order: 1, line_role: "material", description: "Included fastener", quantity: 1, unit_price: 0, total_price: 0, metadata: { unit_cost: 0 } }),
+    ]);
+    expect(payloads.estimatePayload.restore_payload.estimate).toEqual(before);
+    expect(payloads.mappedEstimate).toEqual(expect.objectContaining({ total: 500, total_cost: 220, gross_profit: 280, gross_margin_pct: 56 }));
+    expect(estimate).toEqual(before);
+  });
+
+  test("target payload leaves a genuinely missing historical estimate date null", () => {
+    const payloads = buildTargetEstimatePersistencePayloads({
+      estimate: { id: "est_legacy", estimateNumber: "EST-LEGACY", total: 10 },
+      companyId: "company_1",
+      userId: "user_1",
+    });
+    expect(payloads.estimatePayload.estimate_date).toBeNull();
   });
 });
 

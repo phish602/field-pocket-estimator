@@ -48,6 +48,7 @@ function defaultLocalData() {
       projectId: "proj_1",
       customerId: "cust_1",
       estimateNumber: "EST-1",
+      date: "2026-06-26",
       total: 100,
       labor: { lines: [{ id: "line_1", description: "Labor", quantity: 1, rate: 100 }] },
     }],
@@ -233,7 +234,28 @@ describe("supabaseCloudVerification", () => {
     expect(mockClient.from).toHaveBeenCalledWith("invoice_line_items");
     expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith(expect.stringContaining("restore_payload"));
     expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith(expect.stringContaining("total_amount"));
+    expect(mockClient.selectMocks.estimates).toHaveBeenCalledWith(expect.stringContaining("estimate_date"));
     expect(mockClient.selectMocks.customers).toHaveBeenCalledWith(expect.stringContaining("display_name"));
+  });
+
+  test("preserves date-only semantics and rejects a different cloud calendar date", async () => {
+    const localData = defaultLocalData();
+    const cloudRows = writerShapedCloudRows(localData);
+    cloudRows.estimates[0].estimate_date = "2026-06-26T23:30:00-07:00";
+
+    const equivalent = await verifyCloud({ localData, cloudRows });
+    expect(equivalent).toEqual(expect.objectContaining({ ok: true, allMatched: true }));
+
+    cloudRows.estimates[0].estimate_date = "2026-06-27";
+    const mismatched = await verifyCloud({ localData, cloudRows });
+    expect(mismatched.allMatched).toBe(false);
+    expect(mismatched.tableResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "estimates",
+        status: "mismatch",
+        semanticMismatchFields: ["estimate_date"],
+      }),
+    ]));
   });
 
   test("treats estimates without restore_payload as a cloud mismatch even when ids and counts match", async () => {
@@ -629,6 +651,7 @@ function writerShapedCloudRows(localData) {
       customer_id: customerIdByLegacyId[persisted.customer_legacy_local_id] || null,
       project_id: projectIdByLegacyId[persisted.project_legacy_local_id] || null,
       estimate_number: persisted.estimate_number,
+      estimate_date: persisted.estimate_date,
       status: persisted.status,
       total_amount: persisted.total_amount,
       notes: persisted.notes,

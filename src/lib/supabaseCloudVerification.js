@@ -25,7 +25,7 @@ export const SUPABASE_CLOUD_VERIFICATION_VERSION = "supabase-cloud-verification-
 const ID_COMPARABLE_TABLES = [
   ["customers", "customers", "id, legacy_local_id, display_name, company_name, contact_name, phone, email, billing_address, customer_type, customer_status"],
   ["projects", "projects", "id, legacy_local_id, customer_id, project_number, project_name, site_address, status, notes, scope_summary"],
-  ["estimates", "estimates", "id, legacy_local_id, customer_id, project_id, estimate_number, status, total_amount, notes, terms, converted_invoice_legacy_id, restore_payload, restore_payload_version"],
+  ["estimates", "estimates", "id, legacy_local_id, customer_id, project_id, estimate_number, estimate_date, status, total_amount, notes, terms, converted_invoice_legacy_id, restore_payload, restore_payload_version"],
   ["invoices", "invoices", "id, legacy_local_id, customer_id, project_id, estimate_id, source_estimate_legacy_id, invoice_number, estimate_number, status, payment_status, invoice_date, due_date, total_amount, amount_paid, balance_remaining, notes, terms"],
   ["invoice_payments", "invoicePayments", "id, legacy_local_id, invoice_id, amount, method, status, paid_at"],
 ];
@@ -174,6 +174,7 @@ function buildEstimateContract(estimate, customerIds, projectIds, localEstimates
     customer_id: customerIds.get(asText(persisted.customer_legacy_local_id)) || null,
     project_id: projectIds.get(asText(persisted.project_legacy_local_id)) || null,
     estimate_number: persisted.estimate_number,
+    estimate_date: persisted.estimate_date,
     status: persisted.status,
     total_amount: persisted.total_amount,
     notes: persisted.notes,
@@ -229,7 +230,7 @@ function buildInvoicePaymentContract(payment, invoiceIds) {
 const SEMANTIC_FIELDS = {
   customers: [["display_name"], ["company_name"], ["contact_name"], ["phone"], ["email"], ["billing_address"], ["customer_type"], ["customer_status"]],
   projects: [["customer_id"], ["project_number"], ["project_name"], ["site_address"], ["status"], ["notes"], ["scope_summary"]],
-  estimates: [["customer_id"], ["project_id"], ["estimate_number"], ["status"], ["total_amount", "money"], ["notes"], ["terms"], ["converted_invoice_legacy_id"], ["restore_payload", "json"], ["restore_payload_version"]],
+  estimates: [["customer_id"], ["project_id"], ["estimate_number"], ["estimate_date", "date"], ["status"], ["total_amount", "money"], ["notes"], ["terms"], ["converted_invoice_legacy_id"], ["restore_payload", "json"], ["restore_payload_version"]],
   invoices: [["customer_id"], ["project_id"], ["estimate_id"], ["source_estimate_legacy_id"], ["invoice_number"], ["estimate_number"], ["status"], ["payment_status"], ["invoice_date", "date"], ["due_date", "date"], ["total_amount", "money"], ["amount_paid", "money"], ["balance_remaining", "money"], ["notes"], ["terms"]],
   invoice_payments: [["invoice_id"], ["amount", "money"], ["method"], ["status"], ["paid_at", "date"]],
 };

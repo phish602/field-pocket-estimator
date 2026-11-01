@@ -474,6 +474,7 @@ function mapEstimatePayloads(draft, customerIdByLegacyId, projectIdByLegacyId, u
       project_id: projectIdByLegacyId.get(contract.project_legacy_local_id) || null,
       legacy_local_id: contract.legacy_local_id,
       estimate_number: contract.estimate_number,
+      estimate_date: contract.estimate_date,
       status: contract.status,
       document_type: "estimate",
       total_amount: contract.total_amount,

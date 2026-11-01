@@ -432,7 +432,7 @@ async function runEstimateMutationWrite({
     }
 
     const estimateRead = await client.from("estimates")
-      .select("id, legacy_local_id, customer_id, project_id, estimate_number, status, total_amount, notes, terms, converted_invoice_legacy_id, restore_payload, restore_payload_version")
+      .select("id, legacy_local_id, customer_id, project_id, estimate_number, estimate_date, status, total_amount, notes, terms, converted_invoice_legacy_id, restore_payload, restore_payload_version")
       .eq("company_id", companyId).eq("legacy_local_id", documentId).maybeSingle();
     if (estimateRead?.error || !estimateRead?.data) return failed("estimate_verification_read_failed", estimateRead?.error?.message || "Target estimate was not found after write.");
     const estimateMismatch = comparePersistedCloudSemanticContract("estimates", payloads.estimatePayload, estimateRead.data);

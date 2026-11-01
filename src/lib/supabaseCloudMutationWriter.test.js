@@ -34,7 +34,7 @@ const {
   buildTargetCustomerPersistencePayload,
   buildTargetProjectPersistencePayload,
 } = require("./supabaseMigrationWriter");
-function createClient({ paymentMismatch = false, estimateHeaderMismatch = false, estimateLineMismatch = false, unexpectedEstimateLine = false, estimateCleanupError = false, missingEstimateProject = false, unexpectedInvoicePayment = false, paymentCleanupError = false } = {}) {
+function createClient({ paymentMismatch = false, estimateHeaderMismatch = false, estimateDateMismatch = false, estimateLineMismatch = false, unexpectedEstimateLine = false, estimateCleanupError = false, missingEstimateProject = false, unexpectedInvoicePayment = false, paymentCleanupError = false } = {}) {
   const operations = [];
   const rows = {
     customers: [{ id: "cust-cloud", legacy_local_id: "cust-1", company_id: "company-1" }],
@@ -101,6 +101,7 @@ function createClient({ paymentMismatch = false, estimateHeaderMismatch = false,
       const data = this.filtered().map((row) => {
         if (paymentMismatch && this.table === "invoice_payments" && row.legacy_local_id === "pay-1") return { ...row, paid_at: "2026-08-22T00:00:00.000Z" };
         if (estimateHeaderMismatch && this.table === "estimates" && row.legacy_local_id === "estimate-2606") return { ...row, total_amount: 1 };
+        if (estimateDateMismatch && this.table === "estimates" && row.legacy_local_id === "estimate-2606") return { ...row, estimate_date: "2026-06-27" };
         if (estimateLineMismatch && this.table === "estimate_line_items" && row.legacy_local_id === "estimate:estimate-2606:line:0") return { ...row, unit_price: 1 };
         return { ...row };
       });
@@ -134,6 +135,7 @@ function estimateMutation() {
       estimateNumber: "EST-2606",
       customerId: "cust-1",
       projectId: "proj-1",
+      date: "2026-06-26",
       total: 6000,
       materials: { items: [{ id: "material-1", desc: "Fixtures", qty: 1, priceEach: 2000 }] },
     },
@@ -196,6 +198,7 @@ beforeEach(() => {
       customer_id: "cust-cloud",
       project_id: "proj-cloud",
       estimate_number: "EST-2606",
+      estimate_date: "2026-06-26",
       status: "draft",
       total_amount: 6000,
       restore_payload: { version: 1, estimate: estimateMutation().payload },
@@ -309,6 +312,7 @@ test("EST-2606 target write ignores unrelated workspace divergence and touches o
 
 test.each([
   ["header", { estimateHeaderMismatch: true }],
+  ["date", { estimateDateMismatch: true }],
   ["line item", { estimateLineMismatch: true }],
 ])("strict estimate %s mismatch does not verify", async (_label, options) => {
   const fixture = createClient(options);

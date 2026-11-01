@@ -174,6 +174,7 @@ describe("backendDataMapper", () => {
       projectId: "proj_1",
       customerId: "cust_1",
       estimateNumber: "EST-100",
+      date: "2026-03-09",
       status: "approved",
       total: 1234.56,
       totalCost: 800,
@@ -186,6 +187,13 @@ describe("backendDataMapper", () => {
       createdAt: 1710000000000,
       updatedAt: 1710001000000,
       labor: { lines: [{ id: "lab_1", description: "Labor", quantity: 2, rate: 50 }] },
+      materials: {
+        markupPct: 18,
+        items: [
+          { id: "mat_1", desc: "Vanity light", qty: "2", unit: "each", priceEach: "135", unitCostInternal: "70", total: "270" },
+          { id: "mat_2", desc: "Warranty replacement", qty: "1", priceEach: 0, costInternal: 0, total: 0 },
+        ],
+      },
     }, context);
 
     expect(estimate).toEqual(expect.objectContaining({
@@ -194,6 +202,7 @@ describe("backendDataMapper", () => {
       project_legacy_local_id: "proj_1",
       customer_legacy_local_id: "cust_1",
       estimate_number: "EST-100",
+      estimate_date: "2026-03-09",
       status: "approved",
       doc_type: "estimate",
       converted_invoice_legacy_local_id: "inv_1",
@@ -214,7 +223,34 @@ describe("backendDataMapper", () => {
         quantity: 2,
         unit_price: 50,
       }),
+      expect.objectContaining({
+        kind: "material",
+        legacy_local_id: "mat_1",
+        description: "Vanity light",
+        quantity: 2,
+        unit: "each",
+        unit_price: 135,
+        unit_cost: 70,
+        total: 270,
+      }),
+      expect.objectContaining({
+        kind: "material",
+        legacy_local_id: "mat_2",
+        description: "Warranty replacement",
+        quantity: 1,
+        unit_price: 0,
+        unit_cost: 0,
+        total: 0,
+      }),
     ]));
+  });
+
+  test("estimate dates remain date-only and missing or invalid historical dates are not fabricated", () => {
+    expect(mapLocalEstimateToBackendEstimate({ id: "est_top", date: "2026-11-01" }, {}).estimate_date).toBe("2026-11-01");
+    expect(mapLocalEstimateToBackendEstimate({ id: "est_job", date: "", job: { date: "2024-02-29" } }, {}).estimate_date).toBe("2024-02-29");
+    expect(mapLocalEstimateToBackendEstimate({ id: "est_missing" }, {})).not.toHaveProperty("estimate_date");
+    expect(mapLocalEstimateToBackendEstimate({ id: "est_timestamp", date: "2026-11-01T23:30:00-07:00" }, {})).not.toHaveProperty("estimate_date");
+    expect(mapLocalEstimateToBackendEstimate({ id: "est_invalid", date: "2026-02-29" }, {})).not.toHaveProperty("estimate_date");
   });
 
   test("invoice maps invoice_number separately from legacy_local_id", () => {

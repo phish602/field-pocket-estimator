@@ -52,7 +52,7 @@ describe("persisted estimate contract shape", () => {
     const contract = buildPersistedEstimateContract(backendDraft(localEstimate({ total: 100, notes: "", terms: "" })));
     expect(contract).toEqual({
       legacy_local_id: "est-1", customer_legacy_local_id: "cust-1", project_legacy_local_id: "proj-1",
-      estimate_number: "EST-1", status: "draft", total_amount: 100,
+      estimate_number: "EST-1", estimate_date: null, status: "draft", total_amount: 100,
       notes: null, terms: null, converted_invoice_legacy_local_id: null,
     });
   });
@@ -62,18 +62,23 @@ describe("persisted estimate contract shape", () => {
     expect(contract.converted_invoice_legacy_local_id).toBe("inv-4");
   });
 
-  test("persists notes/terms as null because the backend draft never carries them", () => {
-    // mapLocalEstimateToBackendEstimate maps no notes/terms field, so a local
-    // estimate's notes never reach the estimates table -- the writer has always
-    // stored null. The contract mirrors the writer exactly rather than inventing
-    // a value the writer would not have written; a cloud row holding anything
-    // else in those columns is therefore still a real contradiction.
+  test("preserves a valid date-only estimate date and never fabricates a missing or invalid one", () => {
+    expect(buildPersistedEstimateContract(backendDraft(localEstimate({ date: "2026-11-01" }))).estimate_date).toBe("2026-11-01");
+    expect(buildPersistedEstimateContract(backendDraft(localEstimate({ job: { date: "2024-02-29" } }))).estimate_date).toBe("2024-02-29");
+    expect(buildPersistedEstimateContract(backendDraft(localEstimate())).estimate_date).toBeNull();
+    expect(buildPersistedEstimateContract({ estimate_date: "2026-11-01T23:30:00-07:00" }).estimate_date).toBeNull();
+    expect(buildPersistedEstimateContract({ estimate_date: "2026-02-29" }).estimate_date).toBeNull();
+  });
+
+  test("persists notes/terms already carried by the backend draft", () => {
+    // This is existing mapper behavior. The date extension must not erase or
+    // otherwise change these restoration-compatible fields.
     const draft = backendDraft(localEstimate({ total: 100, notes: "Scope A", terms: "Net 30" }));
-    expect(draft.notes).toBeUndefined();
-    expect(draft.terms).toBeUndefined();
+    expect(draft.notes).toBe("Scope A");
+    expect(draft.terms).toBe("Net 30");
     const contract = buildPersistedEstimateContract(draft);
-    expect(contract.notes).toBeNull();
-    expect(contract.terms).toBeNull();
+    expect(contract.notes).toBe("Scope A");
+    expect(contract.terms).toBe("Net 30");
   });
 
   test("passes through notes/terms that a draft does carry", () => {
@@ -90,7 +95,7 @@ describe("persisted estimate contract shape", () => {
   test("is total on junk input rather than throwing", () => {
     expect(buildPersistedEstimateContract(null)).toEqual({
       legacy_local_id: "", customer_legacy_local_id: "", project_legacy_local_id: "",
-      estimate_number: null, status: "pending", total_amount: null,
+      estimate_number: null, estimate_date: null, status: "pending", total_amount: null,
       notes: null, terms: null, converted_invoice_legacy_local_id: null,
     });
   });
