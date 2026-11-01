@@ -214,7 +214,15 @@ function parsePlainScopeBlocks(rawText) {
         const l = lines[i];
         if (!l.trim()) { i++; break; }
         if (/^---+$/.test(l.trim()) || /^##\s+/.test(l)) break;
-        if (isStructuredListLine(l)) items.push(normalizeLongTextLine(stripScopeMarkdownMarkers(l)));
+        if (isStructuredListLine(l)) {
+          items.push(normalizeLongTextLine(stripScopeMarkdownMarkers(l)));
+        } else if (/^\s/.test(l) && items.length) {
+          // Indented continuation of the previous item.
+          items[items.length - 1] = normalizeLongTextLine(`${items[items.length - 1]} ${stripScopeMarkdownMarkers(l.trim())}`);
+        } else {
+          // Unindented text after a list starts a new paragraph; never drop it.
+          break;
+        }
         i++;
       }
       if (items.length) blocks.push({ type: "list", items });
@@ -405,19 +413,6 @@ function toNumericAmount(value) {
 function isPlaceholderBlanketDescription(value) {
   const normalized = asText(value).toLowerCase();
   return normalized === "blanket materials";
-}
-
-function buildFooterLine(company) {
-  const address = ensureArray(company?.addressLines)
-    .map((line) => asText(line))
-    .filter(Boolean)
-    .join(", ") || asText(company?.address);
-
-  return [
-    asText(company?.companyName),
-    asText(company?.phone),
-    address,
-  ].filter(Boolean).join(" • ");
 }
 
 function buildFooterDetails(company) {
@@ -879,7 +874,6 @@ export function buildPdfDoc(payload) {
   const estimateNumber = asText(payload?.documentNumber, "Draft");
   const date = asText(job?.dateDisplay, asText(job?.date, "-"));
   const po = asText(job?.poNumber, "-");
-  const footerLine = buildFooterLine(company);
   const footerCompanyName = asText(company?.companyName);
   const footerDetails = buildFooterDetails(company);
   // Subscription state, not editable Company Profile fields, controls branding.
@@ -952,8 +946,15 @@ export function buildPdfDoc(payload) {
   const SCOPE_IMAGE_CAPTION_GAP = 1.3;
   const SCOPE_IMAGE_CAPTION_HEIGHT = 3.2;
   const MATERIAL_KEEP_BUFFER = 5.8;
-  const TOTALS_KEEP_BUFFER = 8.8;
-  const TOTALS_HEIGHT_SAFETY = 4.6;
+  const TOTALS_FONT_SIZE = 10;
+  const TOTALS_LABEL_WIDTH = 46;
+  const TOTALS_VALUE_WIDTH = 26;
+  const TOTALS_CELL_PADDING = { top: 1.5, right: 1.25, bottom: 1.4, left: 1.25 };
+  const TOTALS_DIVIDER_CELL_PADDING = { top: 2.35, right: 1.25, bottom: 2.2, left: 1.25 };
+  const TOTALS_GRAND_TOTAL_CELL_PADDING = { top: 3.35, right: 1.25, bottom: 1.4, left: 1.25 };
+  const TOTALS_DIVIDER_ROW_HEIGHT = Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
+  // Absorbs sub-millimetre rounding between this measurement and autoTable's.
+  const TOTALS_MEASURE_TOLERANCE = 0.6;
   const META_BOX_HEIGHT = 13.2;
   const META_ROW_HEIGHT = META_BOX_HEIGHT / 2;
   const MATERIAL_TITLE_BAND_HEIGHT = 7.2;
@@ -979,24 +980,30 @@ export function buildPdfDoc(payload) {
   const sectionTextWidth = Math.max(60, pageWidth - LEFT - RIGHT_GUTTER - 4.5);
   const footerTextWidth = RIGHT - LEFT - 14;
 
+  // Footer layout is measured once and drawn identically on every page. Both lines wrap to
+  // the footer width; the block grows upward from FOOTER_BLOCK_BOTTOM_Y, and content
+  // clearance below is derived from wherever the block starts.
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(FOOTER_PRIMARY_FONT_SIZE);
+  const footerPrimaryLines = footerCompanyName ? splitText(doc, footerCompanyName, footerTextWidth) : [];
+  const footerPrimaryLineHeight = (FOOTER_PRIMARY_FONT_SIZE * doc.getLineHeightFactor()) / doc.internal.scaleFactor;
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9.95);
   doc.setFontSize(FOOTER_SECONDARY_FONT_SIZE);
   const footerSecondaryLines = footerDetails ? splitText(doc, footerDetails, footerTextWidth) : [];
-  const footerSecondaryLineCount = Math.max(footerSecondaryLines.length, footerDetails ? 1 : 0);
-  const footerSecondaryLineHeight = footerSecondaryLineCount
-    ? (doc.getFontSize() * FOOTER_SECONDARY_LINE_HEIGHT) / doc.internal.scaleFactor
+  const footerSecondaryLineHeight = (FOOTER_SECONDARY_FONT_SIZE * FOOTER_SECONDARY_LINE_HEIGHT) / doc.internal.scaleFactor;
+  const footerSecondaryY = footerSecondaryLines.length
+    ? FOOTER_BLOCK_BOTTOM_Y - ((footerSecondaryLines.length - 1) * footerSecondaryLineHeight)
     : 0;
-  const footerSecondaryHeight = footerSecondaryLineCount > 1
-    ? (footerSecondaryLineCount - 1) * footerSecondaryLineHeight
-    : 0;
-  const footerPrimaryY = footerDetails
-    ? FOOTER_BLOCK_BOTTOM_Y - footerSecondaryHeight - FOOTER_PRIMARY_TO_SECONDARY_GAP
+  const footerPrimaryLastY = footerSecondaryLines.length
+    ? footerSecondaryY - FOOTER_PRIMARY_TO_SECONDARY_GAP
     : FOOTER_BLOCK_BOTTOM_Y;
-  const footerSecondaryY = footerDetails ? footerPrimaryY + FOOTER_PRIMARY_TO_SECONDARY_GAP : 0;
-  const footerStartY = footerDetails ? footerPrimaryY : FOOTER_BLOCK_BOTTOM_Y;
+  const footerPrimaryY = footerPrimaryLines.length
+    ? footerPrimaryLastY - ((footerPrimaryLines.length - 1) * footerPrimaryLineHeight)
+    : 0;
+  const hasFooter = footerPrimaryLines.length > 0 || footerSecondaryLines.length > 0;
+  const footerStartY = footerPrimaryLines.length ? footerPrimaryY : (footerSecondaryY || FOOTER_BLOCK_BOTTOM_Y);
   const footerDividerY = footerStartY - FOOTER_DIVIDER_GAP;
-  const contentBottomLimit = (footerLine ? footerStartY : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
+  const contentBottomLimit = (hasFooter ? footerStartY : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
   const footerSafeTopY = Math.min(contentBottomLimit, PAGE_NUMBER_Y - 4.8);
   const pagedTableMargin = {
     left: LEFT,
@@ -1012,6 +1019,27 @@ export function buildPdfDoc(payload) {
       nextY = nextPageTop;
     }
     return nextY;
+  }
+
+  // Shared Estimate/Invoice company footer, drawn on the current page.
+  function drawCompanyFooter() {
+    if (!hasFooter) return;
+    doc.setDrawColor(198, 198, 198);
+    doc.setLineWidth(0.25);
+    doc.line(LEFT + FOOTER_DIVIDER_SIDE_INSET, footerDividerY, RIGHT - FOOTER_DIVIDER_SIDE_INSET, footerDividerY);
+
+    if (footerPrimaryLines.length) {
+      applyPdfTextStyle("bold", FOOTER_PRIMARY_FONT_SIZE, [28, 28, 28]);
+      doc.text(footerPrimaryLines, CENTER, footerPrimaryY, { align: "center" });
+    }
+
+    if (footerSecondaryLines.length) {
+      applyPdfTextStyle("normal", FOOTER_SECONDARY_FONT_SIZE, [92, 92, 92]);
+      doc.text(footerSecondaryLines, CENTER, footerSecondaryY, {
+        align: "center",
+        lineHeightFactor: FOOTER_SECONDARY_LINE_HEIGHT,
+      });
+    }
   }
 
   function resetContinuationCursor(hookData) {
@@ -1072,13 +1100,32 @@ export function buildPdfDoc(payload) {
     return getMaterialRowLayout(normalizedMaterialRows[0], 84, 1.45).height;
   }
 
+  function getTotalsRowStyle(index) {
+    if (index === grandTotalRowIndex) {
+      return { padding: TOTALS_GRAND_TOTAL_CELL_PADDING, minHeight: TOTALS_GRAND_TOTAL_ROW_HEIGHT, fontStyle: "bold" };
+    }
+    if (index === totalsDividerRowIndex) {
+      return { padding: TOTALS_DIVIDER_CELL_PADDING, minHeight: TOTALS_DIVIDER_ROW_HEIGHT, fontStyle: "normal" };
+    }
+    return { padding: TOTALS_CELL_PADDING, minHeight: TOTALS_ROW_HEIGHT, fontStyle: "normal" };
+  }
+
+  // Mirrors autoTable's row sizing (wrapped line count x line height + vertical padding,
+  // floored at minCellHeight) so totals only move to a new page when they truly do not fit.
   function estimateTotalsBlockHeight() {
+    const lineHeight = (TOTALS_FONT_SIZE * doc.getLineHeightFactor()) / doc.internal.scaleFactor;
     const rowsHeight = safeSummaryRows.reduce((sum, row, index) => {
-      if (index === grandTotalRowIndex) return sum + TOTALS_GRAND_TOTAL_ROW_HEIGHT;
-      if (index === totalsDividerRowIndex) return sum + Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
-      return sum + TOTALS_ROW_HEIGHT;
+      const { padding, minHeight, fontStyle } = getTotalsRowStyle(index);
+      doc.setFont("helvetica", fontStyle);
+      doc.setFontSize(TOTALS_FONT_SIZE);
+      const lineCount = Math.max(
+        1,
+        splitText(doc, row?.[0], TOTALS_LABEL_WIDTH - padding.left - padding.right).length,
+        splitText(doc, row?.[1], TOTALS_VALUE_WIDTH - padding.left - padding.right).length
+      );
+      return sum + Math.max(minHeight, padding.top + padding.bottom + (lineCount * lineHeight));
     }, 0);
-    return TOTALS_TOP_OFFSET + rowsHeight + TOTALS_KEEP_BUFFER + TOTALS_HEIGHT_SAFETY;
+    return TOTALS_TOP_OFFSET + rowsHeight + TOTALS_MEASURE_TOLERANCE;
   }
 
   drawLogo(doc, company, LEFT, LOGO_Y);
@@ -1134,7 +1181,6 @@ export function buildPdfDoc(payload) {
     const lineHeight = (bodyFontSize * lineHeightFactor) / doc.internal.scaleFactor;
     const bodyStartOffset = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + 2.2;
     const fixedHeight = bodyStartOffset + TERMS_BOX_BOTTOM_PADDING;
-    const minimumPanelHeight = fixedHeight + lineHeight;
     let page = Math.max(1, Number(startPage || doc.getNumberOfPages()));
     let panelY = Math.max(TERMS_BOX_PAGE_TOP, Number(startY || 0) + Number(gap || 0));
     let lineIndex = 0;
@@ -1143,6 +1189,8 @@ export function buildPdfDoc(payload) {
 
     while (lineIndex < safeLines.length) {
       doc.setPage(page);
+      // Keep the panel header with at least two body lines (or all of a shorter remainder).
+      const minimumPanelHeight = fixedHeight + (lineHeight * Math.min(2, safeLines.length - lineIndex));
       if (panelY + minimumPanelHeight > footerSafeTopY) {
         doc.addPage();
         page = doc.getNumberOfPages();
@@ -1741,8 +1789,8 @@ export function buildPdfDoc(payload) {
     styles: {
       font: "helvetica",
       fontStyle: "normal",
-      fontSize: 10,
-      cellPadding: { top: 1.5, right: 1.25, bottom: 1.4, left: 1.25 },
+      fontSize: TOTALS_FONT_SIZE,
+      cellPadding: TOTALS_CELL_PADDING,
       minCellHeight: TOTALS_ROW_HEIGHT,
       overflow: "linebreak",
       lineWidth: 0,
@@ -1751,10 +1799,11 @@ export function buildPdfDoc(payload) {
       valign: "top",
     },
     columnStyles: {
-      0: { cellWidth: 46, fontStyle: "normal" },
-      1: { cellWidth: 26, halign: "right" },
+      0: { cellWidth: TOTALS_LABEL_WIDTH, fontStyle: "normal" },
+      1: { cellWidth: TOTALS_VALUE_WIDTH, halign: "right" },
     },
-    margin: { left: TOTALS_X, right: TOTALS_RIGHT_GUTTER },
+    // Same top/bottom limits as other sections so "avoid" never lets totals reach the footer.
+    margin: { left: TOTALS_X, right: TOTALS_RIGHT_GUTTER, top: SECTION_PAGE_TOP, bottom: pagedTableMargin.bottom },
     didDrawCell: (hookData) => {
       if (hookData.section !== "body") return;
       if (hookData.row.index !== totalsDividerRowIndex) return;
@@ -1769,13 +1818,13 @@ export function buildPdfDoc(payload) {
     didParseCell: (hookData) => {
       if (hookData.section !== "body") return;
       if (hookData.row.index === totalsDividerRowIndex) {
-        hookData.cell.styles.cellPadding = { top: 2.35, right: 1.25, bottom: 2.2, left: 1.25 };
-        hookData.cell.styles.minCellHeight = Math.max(TOTALS_ROW_HEIGHT + 1.35, 7.3);
+        hookData.cell.styles.cellPadding = TOTALS_DIVIDER_CELL_PADDING;
+        hookData.cell.styles.minCellHeight = TOTALS_DIVIDER_ROW_HEIGHT;
       }
       if (hookData.row.index !== grandTotalRowIndex) return;
       hookData.cell.styles.fontStyle = "bold";
       hookData.cell.styles.fillColor = GRAND_TOTAL_FILL;
-      hookData.cell.styles.cellPadding = { top: 3.35, right: 1.25, bottom: 1.4, left: 1.25 };
+      hookData.cell.styles.cellPadding = TOTALS_GRAND_TOTAL_CELL_PADDING;
       hookData.cell.styles.minCellHeight = TOTALS_GRAND_TOTAL_ROW_HEIGHT;
     },
   });
@@ -1856,29 +1905,8 @@ export function buildPdfDoc(payload) {
 
       doc.setTextColor(20, 20, 20);
     }
-  }
 
-  if (footerLine) {
-    const lastPage = pageCount;
-    doc.setPage(lastPage);
-    doc.setDrawColor(198, 198, 198);
-    doc.setLineWidth(0.25);
-    doc.line(LEFT + FOOTER_DIVIDER_SIDE_INSET, footerDividerY, RIGHT - FOOTER_DIVIDER_SIDE_INSET, footerDividerY);
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(FOOTER_PRIMARY_FONT_SIZE);
-    doc.setTextColor(28, 28, 28);
-    doc.text(footerCompanyName || footerLine, CENTER, footerPrimaryY, { align: "center" });
-
-    if (footerDetails) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(FOOTER_SECONDARY_FONT_SIZE);
-      doc.setTextColor(92, 92, 92);
-      doc.text(footerSecondaryLines.length ? footerSecondaryLines : [footerDetails], CENTER, footerSecondaryY, {
-        align: "center",
-        lineHeightFactor: FOOTER_SECONDARY_LINE_HEIGHT,
-      });
-    }
+    drawCompanyFooter();
   }
 
   doc.setTextColor(20, 20, 20);
