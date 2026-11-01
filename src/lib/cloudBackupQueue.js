@@ -561,6 +561,40 @@ export function isLegacyCompatibilityQueue(queueState) {
   return queueState?.purpose === CLOUD_BACKUP_QUEUE_PURPOSE.LEGACY_COMPATIBILITY;
 }
 
+// Pure builders: convergence owns proof acquisition and the encrypted atomic
+// ledger/queue commit. Never use the normal success transition here: that would
+// advance backup clocks and erase retry evidence without a new backup.
+export function isInactiveWorkspaceBaselineQueue(queue, { companyId, before } = {}) {
+  const materializedReview = isLegacyCompatibilityQueue(queue)
+    && queue.reviewOrigin === CLOUD_BACKUP_REVIEW_ORIGIN.CURRENT_SYNC_FAILURE
+    && Number.isSafeInteger(queue.localMutationRevision) && queue.localMutationRevision > 0
+    && queue.compatibilityMaterializedRevision === queue.localMutationRevision
+    && Number(queue.compatibilityMaterializedAt) > 0
+    && queue.legacyCompatibilityEvidence?.revision === queue.localMutationRevision
+    && Number.isSafeInteger(queue.legacyCompatibilityEvidence?.materializedMutationCount)
+    && queue.legacyCompatibilityEvidence.materializedMutationCount > 0;
+  return hasValidPersistedQueueShape(queue) && queue.pending === false
+    && queue.status === CLOUD_BACKUP_STATUS.CLEAN && queue.syncingRevision === null
+    && [CLOUD_BACKUP_QUEUE_PURPOSE.NONE, CLOUD_BACKUP_QUEUE_PURPOSE.LEGACY_COMPATIBILITY].includes(queue.purpose)
+    // Materialization transfers obligations to the ledger; it does not erase
+    // review provenance. This only permits proof evaluation, never queue clear.
+    && (!queue.reviewOrigin || materializedReview) && queue.nextRetryAt == null
+    && (!queue.companyId || queue.companyId === companyId)
+    && (!queue.lastErrorCode || (isLegacyCompatibilityQueue(queue) && queue.lastErrorCode === "identity_review_required"))
+    && [queue.createdAt, queue.updatedAt, queue.lastQueuedAt, queue.lastAttemptAt, queue.compatibilityMaterializedAt]
+      .every(value => value == null || (Number(value) > 0 && Number(value) < before));
+}
+
+export function buildWorkspaceBaselineRetiredQueue(queue, proof) {
+  if (!isInactiveWorkspaceBaselineQueue(queue, { companyId: proof?.companyId, before: proof?.startedAt })) return null;
+  if (!isLegacyCompatibilityQueue(queue)) return queue;
+  return { ...queue, pending: false, status: CLOUD_BACKUP_STATUS.CLEAN,
+    purpose: CLOUD_BACKUP_QUEUE_PURPOSE.NONE, lastError: "", lastErrorCode: "",
+    reviewOrigin: CLOUD_BACKUP_REVIEW_ORIGIN.NONE,
+    supersededCompatibilityFailure: { reason: "verified_workspace_baseline_superseded", verifiedAt: proof.verifiedAt,
+      previous: { ...queue } } };
+}
+
 /**
  * Clears the pending/dirty state, marking the queue current. Used after a
  * confirmed successful backup, or after a cloud restore that made local data

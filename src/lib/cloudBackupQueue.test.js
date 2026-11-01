@@ -16,7 +16,7 @@ import {
   readPersistedCloudBackupQueueState,
   CLOUD_BACKUP_QUEUE_SCHEMA_VERSION,
   CLOUD_BACKUP_REVIEW_ORIGIN,
-  createEmptyCloudBackupQueueState,
+  createEmptyCloudBackupQueueState, isInactiveWorkspaceBaselineQueue, buildWorkspaceBaselineRetiredQueue,
 } from "./cloudBackupQueue";
 
 beforeEach(() => {
@@ -383,7 +383,46 @@ describe("recordCloudBackupAttemptFailure", () => {
 });
 
 
-
+describe("historical baseline materialized compatibility provenance", () => {
+  const companyId = "test-company", proof = { companyId, startedAt: 5000, verifiedAt: 6000 };
+  const materialized = () => ({ ...createEmptyCloudBackupQueueState(), companyId,
+    status: "clean", pending: false, purpose: "legacy_compatibility", reviewOrigin: "current_sync_failure",
+    lastErrorCode: "identity_review_required", lastError: "Historical evidence", localMutationRevision: 28,
+    compatibilityMaterializedRevision: 28, compatibilityMaterializedAt: 2500,
+    legacyCompatibilityEvidence: { revision: 28, materializedMutationCount: 4 },
+    createdAt: 1000, updatedAt: 2500, lastAttemptAt: 2000, lastQueuedAt: 1500,
+    lastVerifiedAt: 3000, lastSuccessfulBackupAt: 3000, retryCount: 13 });
+  test("fully transferred provenance permits proof evaluation and is archived intact only by the proof builder", () => {
+    const before = materialized(), bytes = JSON.stringify(before);
+    expect(isInactiveWorkspaceBaselineQueue(before, { companyId, before: 5000 })).toBe(true);
+    const after = buildWorkspaceBaselineRetiredQueue(before, proof);
+    expect(after).toMatchObject({ pending: false, status: "clean", purpose: "none", reviewOrigin: "", lastErrorCode: "",
+      retryCount: 13, lastVerifiedAt: 3000, lastSuccessfulBackupAt: 3000, updatedAt: 2500, lastAttemptAt: 2000 });
+    expect(after.supersededCompatibilityFailure.previous).toEqual(before);
+    expect(JSON.stringify(before)).toBe(bytes); expect(localStorage.length).toBe(0);
+  });
+  test.each(["missing_materialization", "wrong_revision", "missing_evidence", "wrong_evidence_revision", "empty_transfer", "pending", "review", "conflict", "syncing", "backoff", "company", "identity", "new_work", "fresh_timestamp"])("%s remains a blocker", kind => {
+    const queue = materialized();
+    if (kind === "missing_materialization") queue.compatibilityMaterializedAt = null;
+    if (kind === "wrong_revision") queue.compatibilityMaterializedRevision = 27;
+    if (kind === "missing_evidence") delete queue.legacyCompatibilityEvidence;
+    if (kind === "wrong_evidence_revision") queue.legacyCompatibilityEvidence.revision = 27;
+    if (kind === "empty_transfer") queue.legacyCompatibilityEvidence.materializedMutationCount = 0;
+    if (kind === "pending") queue.pending = true;
+    if (kind === "review") queue.status = "remote_changed";
+    if (kind === "conflict") queue.status = "conflict";
+    if (kind === "syncing") queue.syncingRevision = 28;
+    if (kind === "backoff") queue.nextRetryAt = 4000;
+    if (kind === "company") queue.companyId = "other";
+    if (kind === "identity") queue.lastErrorCode = "company_mismatch";
+    if (kind === "new_work") queue.localMutationRevision += 1;
+    if (kind === "fresh_timestamp") queue.updatedAt = 5000;
+    const bytes = JSON.stringify(queue);
+    expect(isInactiveWorkspaceBaselineQueue(queue, { companyId, before: 5000 })).toBe(false);
+    expect(buildWorkspaceBaselineRetiredQueue(queue, proof)).toBeNull();
+    expect(JSON.stringify(queue)).toBe(bytes); expect(localStorage.length).toBe(0);
+  });
+});
 
 describe("markCloudBackupReviewRequired", () => {
   test("keeps local work pending but removes a permanent identity conflict from retry scheduling", () => {

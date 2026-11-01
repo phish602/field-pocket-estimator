@@ -278,6 +278,73 @@ function isParentMissingEstimate(entry) {
     && entry.documentId === asText(entry.payload?.id);
 }
 
+// Eligibility is not proof. Only the convergence owner may use these candidates
+// after a NEW strict match of the unchanged authoritative workspace. Any other
+// active entry (especially a delete) keeps the entire operation fail closed.
+// This shape is BASELINE-ONLY. The parent-retry/same-document recovery predicate
+// above remains unchanged; these extra errors must never unlock automatic replay.
+function isWorkspaceBaselineFailure(entry) {
+  return entry.operation === CLOUD_MUTATION_OPERATION.UPSERT
+    && entry.status === CLOUD_MUTATION_STATUS.NEEDS_ATTENTION
+    && entry.documentId === asText(entry.payload?.id)
+    && ((entry.entityType === CLOUD_MUTATION_ENTITY.ESTIMATE
+      && ["projects_parent_missing", "estimate_write_failed"].includes(entry.lastErrorCode))
+      || (entry.entityType === CLOUD_MUTATION_ENTITY.INVOICE && entry.lastErrorCode === "estimates_parent_missing"));
+}
+
+function baselineEntryBelongsToCompany(entry, companyId) {
+  return (!entry.companyId || entry.companyId === companyId)
+    && ![entry.payload?.companyId, entry.payload?.company_id].some(value => asText(value) && asText(value) !== companyId);
+}
+
+export function getHistoricalWorkspaceBaselineCandidates(ledger, { companyId, before } = {}) {
+  if (!Array.isArray(ledger?.entries)) return [];
+  if (ledger.entries.filter(isActiveCloudMutation).some(entry => entry.operation !== CLOUD_MUTATION_OPERATION.UPSERT)) return [];
+  const normalized = normalizeCloudMutationLedger(ledger);
+  if (normalized.entries.length !== ledger.entries.length) return [];
+  // Retirement addresses immutable entries by identity. Ambiguous persisted
+  // identities must not retire an unrelated record or choose a revision proof.
+  if (new Set(normalized.entries.map(entry => entry.mutationId)).size !== normalized.entries.length
+    || new Set(normalized.entries.map(entry => entry.revision)).size !== normalized.entries.length) return [];
+  const active = normalized.entries.filter(isActiveCloudMutation);
+  if (!companyId || !active.length || !active.every(entry => isWorkspaceBaselineFailure(entry)
+    && baselineEntryBelongsToCompany(entry, companyId)
+    && entry.createdAt > 0 && entry.lastAttemptAt >= entry.createdAt && entry.lastAttemptAt < before
+    && entry.nextRetryAt == null && entry.retryCount >= CLOUD_MUTATION_MAX_RETRIES)) return [];
+  return active;
+}
+
+export function buildWorkspaceBaselineRetiredLedger(ledger, { companyId, startedAt, verifiedAt, coversPayload, ...binding } = {}) {
+  const candidates = getHistoricalWorkspaceBaselineCandidates(ledger, { companyId, before: startedAt });
+  if (!candidates.length || !(verifiedAt >= startedAt) || typeof coversPayload !== "function") return null;
+  const entries = normalizeCloudMutationLedger(ledger).entries;
+  const coverage = new Map();
+  for (const failed of candidates) {
+    let proof = failed;
+    if (coversPayload(failed) !== true) {
+      // A newer timestamp/current document is not supersession. Require the
+      // latest same-document immutable ledger intent to have its own verified
+      // acknowledgement, AND cover today's freshly verified canonical state.
+      proof = [...entries].reverse().find(entry => entry.entityType === failed.entityType
+        && entry.documentId === failed.documentId && entry.revision > failed.revision);
+      if (!hasVerifiedAcknowledgement(proof) || proof.operation !== CLOUD_MUTATION_OPERATION.UPSERT
+        || proof.documentId !== asText(proof.payload?.id) || !baselineEntryBelongsToCompany(proof, companyId)
+        || proof.createdAt >= startedAt || Number(proof.lastAttemptAt || 0) >= startedAt
+        || proof.verifiedAt > verifiedAt || proof.acknowledgedAt > verifiedAt || coversPayload(proof) !== true) return null;
+    }
+    coverage.set(failed.mutationId, { kind: proof === failed ? "immutable_payload" : "verified_same_document_supersession",
+      mutationId: proof.mutationId, revision: proof.revision });
+  }
+  return { ...ledger, entries: ledger.entries.map(entry => coverage.has(entry.mutationId)
+    ? { ...entry, status: CLOUD_MUTATION_STATUS.RETIRED,
+      retirement: { reason: "verified_workspace_baseline_superseded", companyId, verifiedAt, ...binding, coverage: coverage.get(entry.mutationId) } }
+    : entry) };
+}
+
+// An account marker alone is insufficient. Bind the exact installed facade to
+// the user/company-derived encrypted vault tag, current generation and actual
+// runtime ledger. No UI selection, legacy plaintext or caller-supplied company
+// can provide historical identity on its own.
 function historicalContextIsCurrent(context) {
   if (!context) return false;
   try {

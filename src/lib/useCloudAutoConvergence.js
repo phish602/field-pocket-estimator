@@ -15,6 +15,7 @@ import {
 } from "./cloudOperationOwnership";
 import {
   runSupabaseCloudConvergence,
+  canVerifyHistoricalWorkspaceResidue,
   recoverInterruptedCloudConvergence,
   recordCloudConvergenceResult,
   CLOUD_CONVERGENCE_REQUEST_EVENT,
@@ -231,7 +232,8 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
         // after journal recovery on purpose -- the backup worker refuses to run
         // while an unresolved convergence journal exists, so yielding any earlier
         // would leave that journal with nobody to recover it.
-        if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP) {
+        const historicalResidueOnly = canVerifyHistoricalWorkspaceResidue({ storage: localStorage, companyId: cmp.id });
+        if (operationOwner === CLOUD_OPERATION_OWNER.BACKUP && !historicalResidueOnly) {
           record({ status: "skipped", code: "local_backup_pending", stage: "operation_ownership", retryable: true });
           scheduleRetry(); return;
         }
@@ -245,7 +247,10 @@ export default function useCloudAutoConvergence({ configured = false, user = nul
           scheduleRetry(); return;
         }
         try {
-          const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: cfg, user: usr, company: cmp });
+          // This narrow branch performs fresh READS only until an exact match
+          // proves retirement safe. It never imports business data or uploads.
+          const result = await runSupabaseCloudConvergence({ storage: localStorage, configured: cfg, user: usr, company: cmp,
+            ...(historicalResidueOnly ? { reconcileHistoricalResidueOnly: true } : {}) });
           if (disposed) return;
           lastKeyRef.current = `${result?.status}:${result?.code || ""}`;
           recordCloudConvergenceResult({ ...result, attempt: retryCountRef.current });

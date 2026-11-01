@@ -3,7 +3,7 @@ jest.mock("./vaultRuntimeStore", () => ({ runtimeCommitAtomicRecords: jest.fn() 
 
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { buildLocalSnapshotFromStorage } from "./localDataIntegrity";
-import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, recoverInterruptedCloudConvergence, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
+import { buildCleanReplicaBootstrapProof, buildCloudConvergencePlan, classifyCloudConvergenceEntity, mergeNonOverlappingCloudMetadata, normalizeCustomerContract, normalizeProjectContract, normalizeEstimateContract, normalizeInvoiceContract, readCloudSyncConflictVault, recoverInterruptedCloudConvergence, runSupabaseCloudConvergence } from "./supabaseCloudConvergence";
 import { getSupabaseClient } from "./supabaseClient";
 import { readSupabaseCloudConvergenceSnapshot } from "./supabaseCloudRestore";
 import { runSupabaseCloudVerification } from "./supabaseCloudVerification";
@@ -741,9 +741,72 @@ test("a no-write result reports matched only when strict verification passes", a
   expect(result).toEqual(expect.objectContaining({ ok: true, status: "matched", noWritesPerformed: true, localOnly: false }));
 });
 
+test("a strictly verified matched review clears only the exact historical queue revision", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+  setVerifiedCleanQueue("company-1", 7);
+  const queued = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    ...queued,
+    pending: true,
+    status: "conflict",
+  }));
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: true, notices: [], blockers: [], availableRepairs: [] }));
+  const fence = { companyId: "company-1", deviceId: "device-a", lockVersion: 5 };
 
+  const result = await runSupabaseCloudConvergence({
+    storage: localStorage,
+    configured: true,
+    user: { id: "u" },
+    company: { id: "company-1" },
+    cloudSnapshot: snapshot,
+    verifyCloud,
+    deviceAccess: { ok: true, access: { fence } },
+    completionDeviceAccess: { ok: true, access: { fence } },
+  });
 
+  expect(result).toEqual(expect.objectContaining({ ok: true, status: "converged" }));
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE))).toEqual(expect.objectContaining({
+    pending: false,
+    status: "clean",
+    localMutationRevision: 7,
+  }));
+});
 
+test("a matched review whose strict verification fails keeps the historical queue unresolved", async () => {
+  const local = baseLocal();
+  setLocalSnapshot(local);
+  setBaseline(local);
+  setVerifiedCleanQueue("company-1", 7);
+  const queued = JSON.parse(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE));
+  localStorage.setItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE, JSON.stringify({
+    ...queued,
+    pending: true,
+    status: "conflict",
+  }));
+  const queueBefore = localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE);
+  const snapshot = { ok: true, mapped: local, estimateEvidence: { "estimate-1": estimateEvidence(local.estimates[0]) }, supplemental: { status: "missing" } };
+  const verifyCloud = jest.fn(async () => ({ ok: true, allMatched: false, notices: [], blockers: [], availableRepairs: [] }));
+  const fence = { companyId: "company-1", deviceId: "device-a", lockVersion: 5 };
+
+  const result = await runSupabaseCloudConvergence({
+    storage: localStorage,
+    configured: true,
+    user: { id: "u" },
+    company: { id: "company-1" },
+    cloudSnapshot: snapshot,
+    verifyCloud,
+    deviceAccess: { ok: true, access: { fence } },
+    completionDeviceAccess: { ok: true, access: { fence } },
+  });
+
+  expect(result).toEqual(expect.objectContaining({ ok: false, status: "rolled_back", code: "cloud_verification_failed" }));
+  expect(verifyCloud).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem(STORAGE_KEYS.CLOUD_BACKUP_QUEUE)).toBe(queueBefore);
+});
 
 function liveLocal() {
   const customers = Array.from({ length: 7 }, (_, i) => ({ id: `cust-${i + 1}`, fullName: `Customer ${i + 1}` }));
@@ -2699,7 +2762,71 @@ test("convergence START fence: a takeover by another device cannot finalize", as
 // READ-ONLY conflict-vault accessor. The evidence recordConflicts() persists was
 // reachable only through module-private readRaw, so a gated UI had no legitimate
 // way to inspect it. This accessor must read and do absolutely nothing else.
+describe("readCloudSyncConflictVault", () => {
+  const entry = {
+    key: "company-1:invoices:inv-1:h",
+    entityFamily: "invoices",
+    stableIdentity: "inv-1",
+    classificationCode: "both_changed_conflict",
+    baselineSnapshot: { id: "inv-1" },
+    baselineHash: "h0",
+    localSnapshot: { id: "inv-1", status: "sent" },
+    cloudSnapshot: { id: "inv-1", status: "paid" },
+    cloudUuid: "uuid-1",
+    attemptId: "attempt_a",
+    detectedAt: "2026-08-17T02:00:00.000Z",
+  };
 
+  test("returns an empty read result when nothing is persisted", () => {
+    const result = readCloudSyncConflictVault(localStorage);
+    expect(result).toEqual(expect.objectContaining({ ok: true, present: false, entries: [], error: "" }));
+  });
+
+  test("returns the persisted evidence unchanged", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+    const before = localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT);
+
+    const result = readCloudSyncConflictVault(localStorage);
+
+    expect(result.ok).toBe(true);
+    expect(result.companyId).toBe("company-1");
+    expect(result.entries).toEqual([entry]);
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe(before);
+  });
+
+  test("hands back a defensive clone, so a viewer cannot mutate stored evidence", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+
+    const result = readCloudSyncConflictVault(localStorage);
+    result.entries[0].classificationCode = "tampered";
+
+    expect(readCloudSyncConflictVault(localStorage).entries[0].classificationCode).toBe("both_changed_conflict");
+  });
+
+  test("malformed JSON reads as an error and repairs nothing", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, "{not json");
+
+    const result = readCloudSyncConflictVault(localStorage);
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, present: true, error: "conflict_vault_unreadable", entries: [] }));
+    expect(localStorage.getItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT)).toBe("{not json");
+  });
+
+  test("performs no writes of any kind", () => {
+    localStorage.setItem(STORAGE_KEYS.CLOUD_SYNC_CONFLICT_VAULT, JSON.stringify({ version: 1, companyId: "company-1", entries: [entry] }));
+    const setItem = jest.fn();
+    const removeItem = jest.fn();
+    const probe = {
+      getItem: (key) => localStorage.getItem(key),
+      setItem,
+      removeItem,
+    };
+
+    expect(readCloudSyncConflictVault(probe).entries).toHaveLength(1);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+  });
+});
 
 // INVOICE COMPARISON CONTRACT.
 //
