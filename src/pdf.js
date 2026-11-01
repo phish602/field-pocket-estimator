@@ -13,9 +13,18 @@ function ensureArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+export function normalizePdfText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ")
+    .replace(/[\u00ad\u200b-\u200d\u2060\ufeff]/g, "")
+    .replace(/[\u2010-\u2015\u2212]/g, "-");
+}
+
 function asText(value, fallback = "") {
-  const text = String(value ?? "").trim();
-  return text || fallback;
+  const text = normalizePdfText(value).trim();
+  return text || normalizePdfText(fallback).trim();
 }
 
 function splitText(doc, value, width) {
@@ -25,7 +34,7 @@ function splitText(doc, value, width) {
 }
 
 function normalizeLongTextLine(value) {
-  return String(value ?? "")
+  return normalizePdfText(value)
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:!?])/g, "$1")
     .trim();
@@ -118,7 +127,7 @@ function formatDenseLongTextParagraph(value) {
 }
 
 export function stripScopeMarkdownMarkers(value) {
-  const text = String(value ?? "");
+  const text = normalizePdfText(value);
   if (!text) return "";
 
   return text
@@ -194,7 +203,7 @@ function parsePlainScopeBlocks(rawText) {
       continue;
     }
     if (/^##\s+/.test(line)) {
-      const text = normalizeLongTextLine(line.replace(/^##\s+/, ""));
+      const text = normalizeLongTextLine(stripScopeMarkdownMarkers(line.replace(/^##\s+/, "")));
       if (text) blocks.push({ type: "heading", text });
       i++;
       continue;
@@ -205,7 +214,7 @@ function parsePlainScopeBlocks(rawText) {
         const l = lines[i];
         if (!l.trim()) { i++; break; }
         if (/^---+$/.test(l.trim()) || /^##\s+/.test(l)) break;
-        if (isStructuredListLine(l)) items.push(normalizeLongTextLine(l));
+        if (isStructuredListLine(l)) items.push(normalizeLongTextLine(stripScopeMarkdownMarkers(l)));
         i++;
       }
       if (items.length) blocks.push({ type: "list", items });
@@ -220,7 +229,7 @@ function parsePlainScopeBlocks(rawText) {
       i++;
     }
     if (paraLines.length) {
-      const text = formatLongFormPdfText(paraLines.join("\n"));
+      const text = formatLongFormPdfText(stripScopeMarkdownMarkers(paraLines.join("\n")));
       if (text) blocks.push({ type: "paragraph", text });
     }
   }
@@ -229,7 +238,7 @@ function parsePlainScopeBlocks(rawText) {
 
 function parseScopeBlocks(rawText) {
   if (!rawText) return [];
-  const normalized = String(rawText)
+  const normalized = normalizePdfText(rawText)
     .replace(/\r\n?/g, "\n")
     .replace(/\n{3,}/g, "\n\n");
   const blocks = [];
@@ -332,7 +341,7 @@ function normalizeMaterialRow(row) {
   if (Array.isArray(row)) {
     return {
       desc: asText(row?.[0]),
-      note: asText(row?.note),
+      note: asText(row?.note, asText(row?.notes, asText(row?.materialNote))),
       qty: asText(row?.[1], "-"),
       each: asText(row?.[2], "-"),
       total: asText(row?.[3], "-"),
@@ -342,7 +351,7 @@ function normalizeMaterialRow(row) {
   if (row && typeof row === "object") {
     return {
       desc: asText(row?.desc, asText(row?.description, asText(row?.label))),
-      note: asText(row?.note),
+      note: asText(row?.note, asText(row?.notes, asText(row?.materialNote))),
       qty: asText(row?.qty, "-"),
       each: asText(row?.each, asText(row?.priceEach, asText(row?.price, "-"))),
       total: asText(row?.total, asText(row?.lineTotal, asText(row?.amount, "-"))),
@@ -791,8 +800,9 @@ function resolveInvoiceStatusText(payload) {
   return "";
 }
 
-function buildPdfDoc(payload) {
+export function buildPdfDoc(payload) {
   const doc = new jsPDF();
+  if (typeof doc.setCharSpace === "function") doc.setCharSpace(0);
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const company = payload?.company || {};
@@ -948,32 +958,22 @@ function buildPdfDoc(payload) {
   const META_ROW_HEIGHT = META_BOX_HEIGHT / 2;
   const MATERIAL_TITLE_BAND_HEIGHT = 7.2;
   const MATERIAL_HEADER_GAP = 1.2;
-  const TERMS_BOX_MIN_GAP = 22.4;
+  const TERMS_BOX_MIN_GAP = 4.6;
   const TERMS_BOX_LEFT = LEFT;
   const TERMS_BOX_PADDING_X = 3.2;
   const TERMS_BOX_TOP_PADDING = 1.6;
-  const TERMS_BOX_BOTTOM_PADDING = 2.8;
+  const TERMS_BOX_BOTTOM_PADDING = 1.8;
   const TERMS_BOX_HEADER_BAND_HEIGHT = 5.8;
-  const TERMS_BOX_BODY_TOP_GAP = 1.9;
+  const TERMS_BOX_BODY_TOP_GAP = 1.2;
   const TERMS_BOX_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
-  const TERMS_BOX_FOOTER_GAP = 9;
   const TERMS_HEADER_TEXT = "TERMS & CONDITIONS";
   const TERMS_HEADER_FONT_SIZE = 7.1;
   const TERMS_BODY_FONT_SIZE = 9.85;
   const TERMS_LINE_HEIGHT_FACTOR = 1.16;
-  const INVOICE_NOTES_BOX_GAP = 12.8;
+  const INVOICE_NOTES_BOX_GAP = 3.6;
   const INVOICE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
-  const ESTIMATE_NOTES_BOX_GAP = 16;
-  const ESTIMATE_NOTES_BOX_LEFT = LEFT;
-  const ESTIMATE_NOTES_BOX_PADDING_X = 3.2;
-  const ESTIMATE_NOTES_BOX_TOP_PADDING = 1.6;
-  const ESTIMATE_NOTES_BOX_BOTTOM_PADDING = 2.8;
-  const ESTIMATE_NOTES_HEADER_BAND_HEIGHT = 5.8;
-  const ESTIMATE_NOTES_BODY_TOP_GAP = 1.9;
-  const ESTIMATE_NOTES_PAGE_TOP = HEADER_SAFE_BOTTOM_Y;
-  const ESTIMATE_NOTES_FOOTER_GAP = 9;
+  const ESTIMATE_NOTES_BOX_GAP = 4.8;
   const ESTIMATE_NOTES_HEADER_TEXT = "ADDITIONAL NOTES";
-  const ESTIMATE_NOTES_HEADER_FONT_SIZE = 7.1;
   const ESTIMATE_NOTES_BODY_FONT_SIZE = 9.4;
   const ESTIMATE_NOTES_LINE_HEIGHT_FACTOR = 1.18;
   const sectionTextWidth = Math.max(60, pageWidth - LEFT - RIGHT_GUTTER - 4.5);
@@ -1107,6 +1107,93 @@ function buildPdfDoc(payload) {
   const labelCenterY = META_Y + (META_ROW_HEIGHT / 2) + 0.05;
   const valueCenterY = META_Y + META_ROW_HEIGHT + (META_ROW_HEIGHT / 2) + 0.05;
 
+  function applyPdfTextStyle(fontStyle = "normal", fontSize = 9.95, textColor = [20, 20, 20]) {
+    if (typeof doc.setCharSpace === "function") doc.setCharSpace(0);
+    doc.setFont("helvetica", fontStyle);
+    doc.setFontSize(fontSize);
+    doc.setTextColor(...textColor);
+  }
+
+  function renderPaginatedTextPanel({
+    startPage,
+    startY,
+    gap,
+    headerText,
+    text,
+    bodyFontSize,
+    lineHeightFactor,
+  }) {
+    const normalizedText = formatLongFormPdfText(text);
+    if (!normalizedText) return { page: startPage, bottomY: startY };
+
+    const panelWidth = TERMS_BOX_WIDTH;
+    const textWidth = panelWidth - (TERMS_BOX_PADDING_X * 2);
+    applyPdfTextStyle("normal", bodyFontSize);
+    const lines = splitText(doc, normalizedText, textWidth);
+    const safeLines = lines.length ? lines : [normalizedText];
+    const lineHeight = (bodyFontSize * lineHeightFactor) / doc.internal.scaleFactor;
+    const bodyStartOffset = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + 2.2;
+    const fixedHeight = bodyStartOffset + TERMS_BOX_BOTTOM_PADDING;
+    const minimumPanelHeight = fixedHeight + lineHeight;
+    let page = Math.max(1, Number(startPage || doc.getNumberOfPages()));
+    let panelY = Math.max(TERMS_BOX_PAGE_TOP, Number(startY || 0) + Number(gap || 0));
+    let lineIndex = 0;
+    let bottomY = panelY;
+    let continued = false;
+
+    while (lineIndex < safeLines.length) {
+      doc.setPage(page);
+      if (panelY + minimumPanelHeight > footerSafeTopY) {
+        doc.addPage();
+        page = doc.getNumberOfPages();
+        panelY = TERMS_BOX_PAGE_TOP;
+        continued = lineIndex > 0;
+      }
+
+      const availableBodyHeight = Math.max(lineHeight, footerSafeTopY - panelY - fixedHeight);
+      const lineCapacity = Math.max(1, Math.floor((availableBodyHeight + 0.001) / lineHeight));
+      const panelLines = safeLines.slice(lineIndex, lineIndex + lineCapacity);
+      const panelHeight = fixedHeight + (panelLines.length * lineHeight);
+      const renderedHeader = continued ? `${headerText} (CONTINUED)` : headerText;
+
+      doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
+      doc.setLineWidth(BORDER_LINE_WIDTH);
+      doc.rect(TERMS_BOX_LEFT, panelY, panelWidth, panelHeight);
+      doc.line(
+        TERMS_BOX_LEFT,
+        panelY + TERMS_BOX_HEADER_BAND_HEIGHT,
+        TERMS_BOX_LEFT + panelWidth,
+        panelY + TERMS_BOX_HEADER_BAND_HEIGHT
+      );
+
+      applyPdfTextStyle("bold", TERMS_HEADER_FONT_SIZE);
+      doc.text(
+        renderedHeader,
+        TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
+        panelY + TERMS_BOX_TOP_PADDING + 2.0
+      );
+
+      applyPdfTextStyle("normal", bodyFontSize);
+      doc.text(
+        panelLines,
+        TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
+        panelY + bodyStartOffset,
+        { lineHeightFactor }
+      );
+
+      lineIndex += panelLines.length;
+      bottomY = panelY + panelHeight;
+      if (lineIndex < safeLines.length) {
+        doc.addPage();
+        page = doc.getNumberOfPages();
+        panelY = TERMS_BOX_PAGE_TOP;
+        continued = true;
+      }
+    }
+
+    return { page, bottomY };
+  }
+
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13.2);
   doc.text(documentTypeLabel, CENTER, documentTypeLabelY, {
@@ -1184,7 +1271,7 @@ function buildPdfDoc(payload) {
   if (shouldRenderScopeNotes) {
     const SCOPE_MARGIN = pagedTableMargin;
     const SCOPE_HEAD = [["SCOPE / NOTES"]];
-    const SCOPE_HEAD_STYLES = { fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
+    const SCOPE_HEAD_STYLES = { font: "helvetica", fontStyle: "bold", fillColor: HEADER_FILL, textColor: [20, 20, 20], lineWidth: 0 };
     const SCOPE_COMMON = {
       theme: "plain",
       tableLineWidth: 0,
@@ -1192,7 +1279,7 @@ function buildPdfDoc(payload) {
       margin: SCOPE_MARGIN,
       willDrawPage: resetContinuationCursor,
     };
-    const SCOPE_BASE = { overflow: "linebreak", lineWidth: 0, fillColor: [255, 255, 255], textColor: [20, 20, 20], valign: "top" };
+    const SCOPE_BASE = { font: "helvetica", fontStyle: "normal", overflow: "linebreak", lineWidth: 0, fillColor: [255, 255, 255], textColor: [20, 20, 20], valign: "top" };
     let scopeHeaderPending = true;
 
     for (const blk of scopeBlocks) {
@@ -1406,8 +1493,11 @@ function buildPdfDoc(payload) {
       body: materialTableBody,
       theme: "plain",
       tableLineWidth: 0,
+      tableWidth: 174,
       rowPageBreak: "avoid",
       styles: {
+        font: "helvetica",
+        fontStyle: "normal",
         fontSize: MATERIAL_DESC_FONT_SIZE,
         cellPadding: 1.45,
         minCellHeight: 4.2,
@@ -1417,6 +1507,7 @@ function buildPdfDoc(payload) {
         valign: "top",
       },
       headStyles: {
+        font: "helvetica",
         fontStyle: "bold",
         textColor: [20, 20, 20],
         lineWidth: 0,
@@ -1460,6 +1551,7 @@ function buildPdfDoc(payload) {
         const textX = hookData.cell.x + layout.paddingLeft;
         const textY = hookData.cell.y + layout.paddingTop;
 
+        if (typeof doc.setCharSpace === "function") doc.setCharSpace(0);
         doc.setFont("helvetica", "normal");
         doc.setFontSize(MATERIAL_DESC_FONT_SIZE);
         doc.setTextColor(20, 20, 20);
@@ -1486,11 +1578,25 @@ function buildPdfDoc(payload) {
     y = (doc.lastAutoTable?.finalY || y);
 
     if (materialsBlanketDescription) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9.25);
-      const materialsDescriptionLines = splitText(doc, materialsBlanketDescription, 182);
-      doc.text(materialsDescriptionLines, LEFT + 4, y);
-      y += (materialsDescriptionLines.length || 1) * 3.6 + 0.05;
+      autoTable(doc, {
+        startY: y,
+        body: [[materialsBlanketDescription]],
+        theme: "plain",
+        tableLineWidth: 0,
+        styles: {
+          font: "helvetica",
+          fontStyle: "normal",
+          fontSize: 9.25,
+          cellPadding: { top: 1.2, right: 4, bottom: 1.2, left: 4 },
+          overflow: "linebreak",
+          lineWidth: 0,
+          textColor: [20, 20, 20],
+          valign: "top",
+        },
+        margin: pagedTableMargin,
+        willDrawPage: resetContinuationCursor,
+      });
+      y = doc.lastAutoTable?.finalY || y;
     }
 
     const materialsSectionEndPage = doc.getNumberOfPages();
@@ -1556,7 +1662,10 @@ function buildPdfDoc(payload) {
       body: additionalChargeTableBody,
       theme: "plain",
       tableLineWidth: 0,
+      tableWidth: 174,
       styles: {
+        font: "helvetica",
+        fontStyle: "normal",
         fontSize: MATERIAL_DESC_FONT_SIZE,
         cellPadding: 1.45,
         minCellHeight: 4.2,
@@ -1566,6 +1675,7 @@ function buildPdfDoc(payload) {
         valign: "top",
       },
       headStyles: {
+        font: "helvetica",
         fontStyle: "bold",
         textColor: [20, 20, 20],
         lineWidth: 0,
@@ -1629,6 +1739,8 @@ function buildPdfDoc(payload) {
     tableWidth: TOTALS_TABLE_WIDTH,
     pageBreak: "avoid",
     styles: {
+      font: "helvetica",
+      fontStyle: "normal",
       fontSize: 10,
       cellPadding: { top: 1.5, right: 1.25, bottom: 1.4, left: 1.25 },
       minCellHeight: TOTALS_ROW_HEIGHT,
@@ -1674,162 +1786,41 @@ function buildPdfDoc(payload) {
   let invoiceCompanionBottomY = totalsFinalY;
 
   if (payload?.docType === "estimate" && additionalNotesText) {
-    const footerLimitY = (footerLine ? footerStartY : FOOTER_Y) - ESTIMATE_NOTES_FOOTER_GAP;
-    const estimateNotesBoxWidth = Math.max(contentRightEdge - LEFT + 2, RIGHT - LEFT + 2);
-    const notesTextWidth = estimateNotesBoxWidth - (ESTIMATE_NOTES_BOX_PADDING_X * 2);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(ESTIMATE_NOTES_BODY_FONT_SIZE);
-    const estimateNotesLines = splitText(doc, additionalNotesText, notesTextWidth);
-    const estimateNotesLineCount = Math.max(estimateNotesLines.length, 1);
-    const estimateNotesLineHeight = (doc.getFontSize() * ESTIMATE_NOTES_LINE_HEIGHT_FACTOR) / doc.internal.scaleFactor;
-    const estimateNotesTextHeight = estimateNotesLineCount * estimateNotesLineHeight;
-    const notesHeaderLineY = ESTIMATE_NOTES_HEADER_BAND_HEIGHT;
-    const notesTextStartY = ESTIMATE_NOTES_HEADER_BAND_HEIGHT + ESTIMATE_NOTES_BODY_TOP_GAP + 0.95;
-    const estimateNotesBoxHeight = ESTIMATE_NOTES_HEADER_BAND_HEIGHT + ESTIMATE_NOTES_BODY_TOP_GAP + estimateNotesTextHeight + ESTIMATE_NOTES_BOX_BOTTOM_PADDING;
-    let estimateNotesBoxY = totalsFinalY + ESTIMATE_NOTES_BOX_GAP;
-    let targetPage = totalsFinalPage;
-
-    if (estimateNotesBoxY < ESTIMATE_NOTES_PAGE_TOP) {
-      estimateNotesBoxY = ESTIMATE_NOTES_PAGE_TOP;
-    }
-
-    if (estimateNotesBoxY + estimateNotesBoxHeight > footerLimitY) {
-      doc.addPage();
-      targetPage = doc.getNumberOfPages();
-      estimateNotesBoxY = ESTIMATE_NOTES_PAGE_TOP;
-    }
-
-    doc.setPage(targetPage);
-    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
-    doc.setLineWidth(BORDER_LINE_WIDTH);
-    doc.rect(ESTIMATE_NOTES_BOX_LEFT, estimateNotesBoxY, estimateNotesBoxWidth, estimateNotesBoxHeight);
-    doc.line(
-      ESTIMATE_NOTES_BOX_LEFT,
-      estimateNotesBoxY + notesHeaderLineY,
-      ESTIMATE_NOTES_BOX_LEFT + estimateNotesBoxWidth,
-      estimateNotesBoxY + notesHeaderLineY
-    );
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(ESTIMATE_NOTES_HEADER_FONT_SIZE);
-    doc.text(ESTIMATE_NOTES_HEADER_TEXT, ESTIMATE_NOTES_BOX_LEFT + ESTIMATE_NOTES_BOX_PADDING_X, estimateNotesBoxY + ESTIMATE_NOTES_BOX_TOP_PADDING + 2.0);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(ESTIMATE_NOTES_BODY_FONT_SIZE);
-    doc.text(
-      estimateNotesLines.length ? estimateNotesLines : [additionalNotesText],
-      ESTIMATE_NOTES_BOX_LEFT + ESTIMATE_NOTES_BOX_PADDING_X,
-      estimateNotesBoxY + notesTextStartY,
-      { lineHeightFactor: ESTIMATE_NOTES_LINE_HEIGHT_FACTOR }
-    );
+    renderPaginatedTextPanel({
+      startPage: totalsFinalPage,
+      startY: totalsFinalY,
+      gap: ESTIMATE_NOTES_BOX_GAP,
+      headerText: ESTIMATE_NOTES_HEADER_TEXT,
+      text: additionalNotesText,
+      bodyFontSize: ESTIMATE_NOTES_BODY_FONT_SIZE,
+      lineHeightFactor: ESTIMATE_NOTES_LINE_HEIGHT_FACTOR,
+    });
   }
 
   if (payload?.docType === "invoice" && invoicePaymentTermsText) {
-    const footerLimitY = (footerLine ? footerStartY : FOOTER_Y) - TERMS_BOX_FOOTER_GAP;
-    const paymentTermsTextWidth = TERMS_BOX_WIDTH - (TERMS_BOX_PADDING_X * 2);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(TERMS_BODY_FONT_SIZE);
-    const paymentTermsLines = splitText(doc, invoicePaymentTermsText, paymentTermsTextWidth);
-    const paymentTermsLineCount = Math.max(paymentTermsLines.length, 1);
-    const paymentTermsLineHeight = (doc.getFontSize() * TERMS_LINE_HEIGHT_FACTOR) / doc.internal.scaleFactor;
-    const paymentTermsTextHeight = paymentTermsLineCount * paymentTermsLineHeight;
-    const termsHeaderLineY = TERMS_BOX_HEADER_BAND_HEIGHT;
-    const termsTextStartY = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + 2.45;
-    const termsBoxHeight = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + paymentTermsTextHeight + TERMS_BOX_BOTTOM_PADDING;
-    let paymentTermsBoxY = totalsFinalY + TERMS_BOX_MIN_GAP;
-    let targetPage = totalsFinalPage;
-
-    if (paymentTermsBoxY < TERMS_BOX_PAGE_TOP) {
-      paymentTermsBoxY = TERMS_BOX_PAGE_TOP;
-    }
-
-    if (paymentTermsBoxY + termsBoxHeight > footerLimitY) {
-      doc.addPage();
-      targetPage = doc.getNumberOfPages();
-      paymentTermsBoxY = TERMS_BOX_PAGE_TOP;
-    }
-
-    doc.setPage(targetPage);
-    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
-    doc.setLineWidth(BORDER_LINE_WIDTH);
-    doc.rect(TERMS_BOX_LEFT, paymentTermsBoxY, TERMS_BOX_WIDTH, termsBoxHeight);
-    doc.line(
-      TERMS_BOX_LEFT,
-      paymentTermsBoxY + termsHeaderLineY,
-      TERMS_BOX_LEFT + TERMS_BOX_WIDTH,
-      paymentTermsBoxY + termsHeaderLineY
-    );
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(TERMS_HEADER_FONT_SIZE);
-    doc.text(TERMS_HEADER_TEXT, TERMS_BOX_LEFT + TERMS_BOX_PADDING_X, paymentTermsBoxY + TERMS_BOX_TOP_PADDING + 2.0);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(TERMS_BODY_FONT_SIZE);
-    doc.text(
-      paymentTermsLines.length ? paymentTermsLines : [invoicePaymentTermsText],
-      TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
-      paymentTermsBoxY + termsTextStartY,
-      { lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR }
-    );
-
-    invoiceCompanionPage = targetPage;
-    invoiceCompanionBottomY = paymentTermsBoxY + termsBoxHeight;
+    const termsResult = renderPaginatedTextPanel({
+      startPage: totalsFinalPage,
+      startY: totalsFinalY,
+      gap: TERMS_BOX_MIN_GAP,
+      headerText: TERMS_HEADER_TEXT,
+      text: invoicePaymentTermsText,
+      bodyFontSize: TERMS_BODY_FONT_SIZE,
+      lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR,
+    });
+    invoiceCompanionPage = termsResult.page;
+    invoiceCompanionBottomY = termsResult.bottomY;
   }
 
   if (payload?.docType === "invoice" && additionalNotesText) {
-    const footerLimitY = (footerLine ? footerStartY : FOOTER_Y) - TERMS_BOX_FOOTER_GAP;
-    const invoiceNotesTextWidth = TERMS_BOX_WIDTH - (TERMS_BOX_PADDING_X * 2);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(TERMS_BODY_FONT_SIZE);
-    const invoiceNotesLines = splitText(doc, additionalNotesText, invoiceNotesTextWidth);
-    const invoiceNotesLineCount = Math.max(invoiceNotesLines.length, 1);
-    const invoiceNotesLineHeight = (doc.getFontSize() * TERMS_LINE_HEIGHT_FACTOR) / doc.internal.scaleFactor;
-    const invoiceNotesTextHeight = invoiceNotesLineCount * invoiceNotesLineHeight;
-    const invoiceNotesHeaderLineY = TERMS_BOX_HEADER_BAND_HEIGHT;
-    const invoiceNotesTextStartY = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + 2.45;
-    const invoiceNotesBoxHeight = TERMS_BOX_HEADER_BAND_HEIGHT + TERMS_BOX_BODY_TOP_GAP + invoiceNotesTextHeight + TERMS_BOX_BOTTOM_PADDING;
-    let invoiceNotesBoxY = invoicePaymentTermsText
-      ? invoiceCompanionBottomY + INVOICE_NOTES_BOX_GAP
-      : totalsFinalY + TERMS_BOX_MIN_GAP;
-    let targetPage = invoicePaymentTermsText ? invoiceCompanionPage : totalsFinalPage;
-
-    if (invoiceNotesBoxY < TERMS_BOX_PAGE_TOP) {
-      invoiceNotesBoxY = TERMS_BOX_PAGE_TOP;
-    }
-
-    if (invoiceNotesBoxY + invoiceNotesBoxHeight > footerLimitY) {
-      doc.addPage();
-      targetPage = doc.getNumberOfPages();
-      invoiceNotesBoxY = TERMS_BOX_PAGE_TOP;
-    }
-
-    doc.setPage(targetPage);
-    doc.setDrawColor(BORDER_COLOR, BORDER_COLOR, BORDER_COLOR);
-    doc.setLineWidth(BORDER_LINE_WIDTH);
-    doc.rect(TERMS_BOX_LEFT, invoiceNotesBoxY, TERMS_BOX_WIDTH, invoiceNotesBoxHeight);
-    doc.line(
-      TERMS_BOX_LEFT,
-      invoiceNotesBoxY + invoiceNotesHeaderLineY,
-      TERMS_BOX_LEFT + TERMS_BOX_WIDTH,
-      invoiceNotesBoxY + invoiceNotesHeaderLineY
-    );
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(TERMS_HEADER_FONT_SIZE);
-    doc.text(INVOICE_NOTES_HEADER_TEXT, TERMS_BOX_LEFT + TERMS_BOX_PADDING_X, invoiceNotesBoxY + TERMS_BOX_TOP_PADDING + 2.0);
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(TERMS_BODY_FONT_SIZE);
-    doc.text(
-      invoiceNotesLines.length ? invoiceNotesLines : [additionalNotesText],
-      TERMS_BOX_LEFT + TERMS_BOX_PADDING_X,
-      invoiceNotesBoxY + invoiceNotesTextStartY,
-      { lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR }
-    );
+    renderPaginatedTextPanel({
+      startPage: invoicePaymentTermsText ? invoiceCompanionPage : totalsFinalPage,
+      startY: invoicePaymentTermsText ? invoiceCompanionBottomY : totalsFinalY,
+      gap: invoicePaymentTermsText ? INVOICE_NOTES_BOX_GAP : TERMS_BOX_MIN_GAP,
+      headerText: INVOICE_NOTES_HEADER_TEXT,
+      text: additionalNotesText,
+      bodyFontSize: TERMS_BODY_FONT_SIZE,
+      lineHeightFactor: TERMS_LINE_HEIGHT_FACTOR,
+    });
   }
 
   const pageCount = doc.getNumberOfPages();
