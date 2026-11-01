@@ -171,7 +171,7 @@ const GUARD_STATES = Object.freeze(["absent", "transition", "authoritative"]);
  *   G  no catalog, transition active                 -> migrate (resume)
  *   H  no catalog, guard absent, no transition       -> migrate (first run)
  *   I  no catalog, guard transition, no transition   -> block GUARD_RECOVERY_REQUIRED
- *   J  no catalog, guard authoritative, no txn       -> seal
+ *   J  no catalog, guard authoritative, no txn       -> migrate current workspace
  */
 export function resolveVaultActivationPlan({ policy, guard, transition, catalogPresent, workspaceTag } = {}) {
   const block = (code) => Object.freeze({ action: VAULT_ACTIVATION_PLAN_ACTIONS.BLOCK, code, case: "" });
@@ -220,7 +220,11 @@ export function resolveVaultActivationPlan({ policy, guard, transition, catalogP
   if (guard.state === "transition") {
     return Object.freeze({ ...block(VAULT_ACTIVATION_PLAN_CODES.GUARD_RECOVERY_REQUIRED), case: "I" });
   }
-  return plan(VAULT_ACTIVATION_PLAN_ACTIONS.SEAL, "J");                          // J
+  // J -- the guard is device-global. It proves encrypted mode is authoritative
+  // on this browser, not that THIS workspace already has a verified manifest.
+  // The orchestrator distinguishes a completed current-workspace migration from
+  // a fresh account and securely inventories only the active scoped workspace.
+  return plan(VAULT_ACTIVATION_PLAN_ACTIONS.MIGRATE, "J");                       // J
 }
 
 export default function useVaultRuntimeActivation({

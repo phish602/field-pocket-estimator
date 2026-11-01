@@ -145,11 +145,11 @@ test("an existing runtime catalog hydrates without rerunning a source migration"
   expect(runtime.hydrateVaultRuntime).toHaveBeenCalled();
 });
 
-test("an authoritative guard with no runtime catalog seals without re-migrating", async () => {
+test("an authoritative device guard with no current-workspace catalog migrates before sealing", async () => {
   guard.readVaultCompatibilityGuard.mockReturnValue({ state: "authoritative", code: "", message: "" });
   render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
-  expect(orchestrator.migrateActiveWorkspaceVault).not.toHaveBeenCalled();
+  expect(orchestrator.migrateActiveWorkspaceVault).toHaveBeenCalledWith({ userId: USER, companyId: COMPANY });
   expect(runtime.sealVaultRuntime).toHaveBeenCalled();
 });
 
@@ -174,11 +174,11 @@ test("a blocked migration blocks the runtime and installs no adapter", async () 
 
 test("a failed seal or a failed hydration blocks and never installs the adapter", async () => {
   runtime.sealVaultRuntime.mockResolvedValue({ ok: false, state: "blocked", code: "RECORD_INVALID" });
-  const first = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
+  const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("blocked"));
   expect(latest.code).toBe("RECORD_INVALID");
   expect(scoped.installAuthoritativeVaultRuntime).not.toHaveBeenCalled();
-  first.unmount();
+  view.unmount();
 
   runtime.sealVaultRuntime.mockResolvedValue({ ok: true, state: "sealed", code: "", entryCount: 0, generation: 0 });
   runtime.hydrateVaultRuntime.mockResolvedValue({ ok: false, state: "blocked", code: "CATALOG_INVALID" });
@@ -211,14 +211,22 @@ test("an unusable IndexedDB environment blocks instead of throwing", async () =>
   expect(latest.code).toBe("UNSUPPORTED_ENVIRONMENT");
 });
 
-test("an identity switch revokes the previous runtime before the new one activates", async () => {
+test("an A to B to A identity round trip revokes each previous runtime before activating the next one", async () => {
+  const otherUser = "22222222-3333-4444-8555-666666666666";
   const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   await waitFor(() => expect(latest.state).toBe("ready"));
   scoped.revokeAuthoritativeVaultRuntime.mockClear();
   runtime.revokeVaultRuntime.mockClear();
 
-  view.rerender(<Probe enabled userId={"22222222-3333-4444-8555-666666666666"} companyId={COMPANY} vaultUnlocked />);
+  view.rerender(<Probe enabled userId={otherUser} companyId={COMPANY} vaultUnlocked />);
   // Revocation is synchronous on the identity change, before any await resolves.
+  expect(scoped.revokeAuthoritativeVaultRuntime).toHaveBeenCalled();
+  expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
+  await waitFor(() => expect(latest.state).toBe("ready"));
+
+  scoped.revokeAuthoritativeVaultRuntime.mockClear();
+  runtime.revokeVaultRuntime.mockClear();
+  view.rerender(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
   expect(scoped.revokeAuthoritativeVaultRuntime).toHaveBeenCalled();
   expect(runtime.revokeVaultRuntime).toHaveBeenCalled();
   await waitFor(() => expect(latest.state).toBe("ready"));
@@ -345,7 +353,7 @@ const STATE_MATRIX = [
   ["transition", "other", false, "block", VAULT_ACTIVATION_PLAN_CODES.OTHER_WORKSPACE_TRANSITION, "C"],
   ["transition", null, true, "block", VAULT_ACTIVATION_PLAN_CODES.RUNTIME_GUARD_MISMATCH, "D"],
   ["transition", "self", true, "block", VAULT_ACTIVATION_PLAN_CODES.RUNTIME_GUARD_MISMATCH, "D"],
-  ["authoritative", null, false, "seal", "", "J"],
+  ["authoritative", null, false, "migrate", "", "J"],
   ["authoritative", "self", false, "migrate", "", "G"],
   ["authoritative", "other", false, "block", VAULT_ACTIVATION_PLAN_CODES.OTHER_WORKSPACE_TRANSITION, "C"],
   ["authoritative", null, true, "hydrate", "", "F"],
@@ -569,10 +577,9 @@ test("a revalidation that lands after an identity switch installs nothing for th
   scoped.installAuthoritativeVaultRuntime.mockClear();
 
   const signal = revalidation();
-  let pending;
+  const pending = signal();
+  view.rerender(<Probe enabled userId={"22222222-3333-4444-8555-666666666666"} companyId={COMPANY} vaultUnlocked />);
   await act(async () => {
-    pending = signal();
-    view.rerender(<Probe enabled userId={"22222222-3333-4444-8555-666666666666"} companyId={COMPANY} vaultUnlocked />);
     release();
     await pending;
   });
@@ -621,7 +628,7 @@ test("an exception anywhere in activation produces a stable blocked result", asy
   for (const applyFailure of failures) {
     applyFailure();
     const view = render(<Probe enabled userId={USER} companyId={COMPANY} vaultUnlocked />);
-    // eslint-disable-next-line no-await-in-loop
+    // eslint-disable-next-line no-await-in-loop, no-loop-func
     await waitFor(() => expect(latest.state).toBe("blocked"));
     expect(latest.code).toBe("ACTIVATION_FAILED");
     expect(latest.checking).toBe(false);
