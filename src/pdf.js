@@ -903,7 +903,10 @@ export function buildPdfDoc(payload) {
   const TOTALS_X = Math.max(LEFT, pageWidth - TOTALS_RIGHT_GUTTER - TOTALS_TABLE_WIDTH);
   const TOTALS_ROW_HEIGHT = ROW_HEIGHT + 1.35;
   const TOTALS_GRAND_TOTAL_ROW_HEIGHT = TOTALS_ROW_HEIGHT + 1.7;
-  const PAGE_NUMBER_Y = FOOTER_Y;
+  // The footer band (divider, company block, page metadata) is drawn this much lower than the
+  // anchors that set content clearance, seating it in the bottom margin without moving page breaks.
+  const FOOTER_BAND_DROP = 6;
+  const PAGE_NUMBER_Y = FOOTER_Y + FOOTER_BAND_DROP;
   const PAGE_NUMBER_FONT_SIZE = 8.1;
   const PAGE_NUMBER_TEXT_COLOR = 110;
   const CONTINUATION_TITLE_Y = 11;
@@ -911,7 +914,7 @@ export function buildPdfDoc(payload) {
   const CONTINUATION_DIVIDER_Y = 21.5;
   const HEADER_SAFE_BOTTOM_Y = CONTINUATION_DIVIDER_Y + 7;
   const CONTINUATION_SECTION_TOP_Y = HEADER_SAFE_BOTTOM_Y - 2.8;
-  const FOOTER_BLOCK_BOTTOM_Y = pageHeight - 24.2;
+  const FOOTER_BLOCK_BOTTOM_Y = pageHeight - 24.2 + FOOTER_BAND_DROP;
   const FOOTER_PRIMARY_FONT_SIZE = 15.4;
   const FOOTER_SECONDARY_FONT_SIZE = 12.4;
   const FOOTER_SECONDARY_LINE_HEIGHT = 1.32;
@@ -982,7 +985,7 @@ export function buildPdfDoc(payload) {
 
   // Footer layout is measured once and drawn identically on every page. Both lines wrap to
   // the footer width; the block grows upward from FOOTER_BLOCK_BOTTOM_Y, and content
-  // clearance below is derived from wherever the block starts.
+  // clearance is derived from wherever the block starts, less FOOTER_BAND_DROP.
   doc.setFont("helvetica", "bold");
   doc.setFontSize(FOOTER_PRIMARY_FONT_SIZE);
   const footerPrimaryLines = footerCompanyName ? splitText(doc, footerCompanyName, footerTextWidth) : [];
@@ -1003,8 +1006,8 @@ export function buildPdfDoc(payload) {
   const hasFooter = footerPrimaryLines.length > 0 || footerSecondaryLines.length > 0;
   const footerStartY = footerPrimaryLines.length ? footerPrimaryY : (footerSecondaryY || FOOTER_BLOCK_BOTTOM_Y);
   const footerDividerY = footerStartY - FOOTER_DIVIDER_GAP;
-  const contentBottomLimit = (hasFooter ? footerStartY : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
-  const footerSafeTopY = Math.min(contentBottomLimit, PAGE_NUMBER_Y - 4.8);
+  const contentBottomLimit = (hasFooter ? footerStartY - FOOTER_BAND_DROP : FOOTER_Y) - CONTENT_BOTTOM_BUFFER;
+  const footerSafeTopY = Math.min(contentBottomLimit, FOOTER_Y - 4.8);
   const pagedTableMargin = {
     left: LEFT,
     right: RIGHT_GUTTER,
