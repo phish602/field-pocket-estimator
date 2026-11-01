@@ -28,7 +28,13 @@ function signInWithCompany() {
     user: { id: "user_1" },
     userEmail: "owner@example.com",
   });
-  useSupabaseAccount.mockReturnValue({ hasCompany: true });
+  // The canonical cloud status counts a workspace as connected only when the
+  // account resolves a company record, exactly as useSupabaseAccount does.
+  useSupabaseAccount.mockReturnValue({
+    company: { id: "company_1", name: "Field Pocket LLC" },
+    role: "owner",
+    hasCompany: true,
+  });
 }
 
 function signedOut() {
@@ -55,12 +61,16 @@ test("NewProjectScreen shows inline backup status near the Create Project contro
   );
 });
 
-test("NewProjectScreen shows no inline backup status when there is no meaningful queue state", () => {
+// A connected workspace with no queued work reports the canonical connected
+// state, never a pending or up-to-date claim it has no proof for.
+test("NewProjectScreen shows connected status, not pending, when there is no queued work", () => {
   signInWithCompany();
 
   render(<NewProjectScreen onBack={() => {}} onSave={() => {}} />);
 
-  expect(screen.queryByTestId("cloud-backup-inline-status")).not.toBeInTheDocument();
+  const status = screen.getByTestId("cloud-backup-inline-status");
+  expect(status).toHaveTextContent("Cloud connected");
+  expect(status).not.toHaveTextContent(/Backup pending|Cloud up to date/);
 });
 
 test("EditProjectScreen shows inline backup status near the Save Changes control when queue state exists", () => {

@@ -2194,9 +2194,51 @@ export function addManualInvoicePayment(invoice, paymentInput = {}, options = {}
   };
 }
 
+function isValidDateOnly(value) {
+  const date = asText(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
 
+export function updateManualInvoicePaymentDate(invoice, paymentId, paidAt, options = {}) {
+  const source = normalizeInvoiceRecord(invoice);
+  const id = asText(paymentId);
+  const date = asText(paidAt);
+  const now = Number(options?.nowTs) || Date.now();
 
+  if (!asText(source?.id)) {
+    return { ok: false, code: "invoice_missing", message: "Invoice identity is missing." };
+  }
+  if (!id) {
+    return { ok: false, code: "payment_missing", message: "Payment identity is missing." };
+  }
+  if (!isValidDateOnly(date)) {
+    return { ok: false, code: "invalid_paid_at", message: "Payment date must use YYYY-MM-DD." };
+  }
 
+  const payments = normalizePayments(source.payments);
+  const paymentIndex = payments.findIndex((payment) => payment.id === id);
+  if (paymentIndex < 0) {
+    return { ok: false, code: "payment_not_found", message: "Payment was not found on this invoice." };
+  }
+  if (String(payments[paymentIndex]?.method || "").trim().toLowerCase() === "stripe") {
+    return { ok: false, code: "stripe_payment", message: "Stripe payment dates are managed by Stripe." };
+  }
+
+  return {
+    ok: true,
+    invoice: normalizeInvoiceRecord({
+      ...source,
+      payments: payments.map((payment) => (
+        payment.id === id ? { ...payment, paidAt: date } : payment
+      )),
+      updatedAt: now,
+      savedAt: now,
+      ts: now,
+    }),
+  };
+}
 
 export function appendStripeInvoicePayment(invoice, paymentInput = {}, options = {}) {
   const source = normalizeInvoiceRecord(invoice);

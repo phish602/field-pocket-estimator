@@ -15,6 +15,7 @@ import * as FinancialSnapshotScreenMod from "./screens/FinancialSnapshotScreen";
 import * as JobLearningDiagnosticsScreenMod from "./screens/JobLearningDiagnosticsScreen";
 import { STORAGE_KEYS } from "./constants/storageKeys";
 import { ROUTES, BUILDER_INTENTS } from "./constants/routes";
+import { useLanguage } from "./lib/i18n";
 import {
   DRILLDOWN_SCOPES,
   ESTIMATE_DRILLDOWNS,
@@ -206,7 +207,6 @@ function EstiPaidInlineLogo({ className, style, svgRef, draggable = false, title
    - Header/Footer are transparent overlays; content scrolls underneath
    ========================================================= */
 
-const LANG_KEY = STORAGE_KEYS.LANG;
 const CUSTOMERS_KEY = STORAGE_KEYS.CUSTOMERS;
 const ESTIMATES_KEY = STORAGE_KEYS.ESTIMATES;
 const INVOICES_KEY = STORAGE_KEYS.INVOICES;
@@ -640,6 +640,7 @@ function deriveHomeDashboardSummary({
   projects,
   businessPulseCounts,
   companyProfile,
+  t,
 }) {
   const invoiceRecords = Array.isArray(invoices) ? invoices : [];
   const projectRecords = Array.isArray(projects) ? projects : [];
@@ -679,40 +680,49 @@ function deriveHomeDashboardSummary({
     nextSteps.push({
       key: "overdue",
       tone: "danger",
-      title: "Follow Up on Overdue Invoices",
-      detail: `${Number(pulse.overdueInvoices)} ${Number(pulse.overdueInvoices) === 1 ? "invoice is" : "invoices are"} overdue for ${homeMoney(overdueBalance || unpaidBalance)}.`,
+      title: t("home.followUpOverdueTitle"),
+      detail: t(
+        Number(pulse.overdueInvoices) === 1 ? "home.stepOverdueDetailOne" : "home.stepOverdueDetailOther",
+        { count: Number(pulse.overdueInvoices), amount: homeMoney(overdueBalance || unpaidBalance) }
+      ),
     });
   }
   if (unpaidBalance > 0) {
     nextSteps.push({
       key: "receivables",
       tone: "warning",
-      title: "Follow up on open receivables",
-      detail: `${homeMoney(unpaidBalance)} is still outstanding across ${Number(pulse?.unpaidInvoices || 0)} unpaid ${Number(pulse?.unpaidInvoices || 0) === 1 ? "invoice" : "invoices"}.`,
+      title: t("home.followUpReceivablesTitle"),
+      detail: t(
+        Number(pulse?.unpaidInvoices || 0) === 1 ? "home.stepReceivablesDetailOne" : "home.stepReceivablesDetailOther",
+        { count: Number(pulse?.unpaidInvoices || 0), amount: homeMoney(unpaidBalance) }
+      ),
     });
   }
   if (Number(pulse?.approvedEstimates || 0) > 0) {
     nextSteps.push({
       key: "approved",
       tone: "good",
-      title: "Ready to Invoice",
-      detail: `${Number(pulse.approvedEstimates)} approved ${Number(pulse.approvedEstimates) === 1 ? "estimate is" : "estimates are"} ready to move into billing.`,
+      title: t("home.readyToInvoiceTitle"),
+      detail: t(
+        Number(pulse.approvedEstimates) === 1 ? "home.stepApprovedDetailOne" : "home.stepApprovedDetailOther",
+        { count: Number(pulse.approvedEstimates) }
+      ),
     });
   }
   if (!stripeConnected) {
     nextSteps.push({
       key: "stripe",
       tone: "info",
-      title: "Connect Stripe",
-      detail: "Enable online invoice payments from Company Profile when you are ready.",
+      title: t("home.connectStripeTitle"),
+      detail: t("home.connectStripeDetail"),
     });
   }
   if (nextSteps.length === 0) {
     nextSteps.push({
       key: "steady",
       tone: "good",
-      title: "Everything is caught up",
-      detail: "No overdue invoices or unpaid balance need immediate attention.",
+      title: t("home.caughtUpTitle"),
+      detail: t("home.caughtUpDetail"),
     });
   }
 
@@ -731,16 +741,6 @@ function deriveHomeDashboardSummary({
     },
     nextSteps: nextSteps.slice(0, 3),
   };
-}
-
-function getSavedLang() {
-  try {
-    const v = localStorage.getItem(LANG_KEY);
-    if (v === "en" || v === "es") return v;
-  } catch {
-    // ignore
-  }
-  return "en";
 }
 
 /* =========================
@@ -1008,6 +1008,7 @@ function TopBar({
   chromeVisible,
   routeEnterKey,
 }) {
+  const { t } = useLanguage();
   const src = topRightLogoSrc || DEFAULT_LOGO;
   const isHome = !showHeaderSpin;
   const estiLogoRef = useRef(null);
@@ -1043,7 +1044,7 @@ function TopBar({
         type="button"
         style={{ ...styles.headerIconBtn, ...styles.headerMenuIcon }}
         onClick={onMenu}
-        aria-label="Open Menu"
+        aria-label={t("shell.openMenu")}
       >
         ☰
       </button>
@@ -1055,8 +1056,8 @@ function TopBar({
           key={`header-brand-wrap-${routeEnterKey || "default"}`}
           type="button"
           style={styles.headerSpinBtn}
-          aria-label="Go to Home"
-          title="Home"
+          aria-label={t("shell.goToHome")}
+          title={t("shell.navHome")}
           onClick={(e) => {
             if (e?.currentTarget?.__lpFired) return;
             onHeaderSpinTap && onHeaderSpinTap();
@@ -1103,18 +1104,18 @@ function TopBar({
           type="button"
           style={styles.headerIconBtn}
           onClick={onProfile}
-          aria-label="Open Company Profile"
+          aria-label={t("shell.openCompanyProfile")}
         >
           <div style={styles.profileLogoWrap}>
             {showAddLogoCue ? <span style={styles.profileLogoCueRing} aria-hidden="true" /> : null}
             <img
               src={src}
-              alt="Company logo"
+              alt={t("shell.companyLogo")}
               style={styles.profileLogo}
               draggable={false}
             />
             {showAddLogoCue ? <span style={styles.profileLogoCueBadge} aria-hidden="true">+</span> : null}
-            {showAddLogoCue ? <span style={styles.profileLogoCueText} aria-hidden="true">Add Logo</span> : null}
+            {showAddLogoCue ? <span style={styles.profileLogoCueText} aria-hidden="true">{t("shell.addLogo")}</span> : null}
           </div>
         </button>
       </div>
@@ -1132,15 +1133,16 @@ function BottomNav({
   className,
   ...rest
 }) {
+  const { t } = useLanguage();
   const tabs = useMemo(
     () => [
-      { key: ROUTES.HOME, label: "Home", Icon: IconHome },
-      { key: ROUTES.CUSTOMERS, label: "Customers", Icon: IconCustomers },
-      { key: ROUTES.CREATE, label: "Create", Icon: IconCreate, center: true },
-      { key: ROUTES.ESTIMATES, label: "Estimates", Icon: IconEstimates },
-      { key: ROUTES.INVOICES, label: "Invoices", Icon: IconInvoices },
+      { key: ROUTES.HOME, label: t("shell.navHome"), Icon: IconHome },
+      { key: ROUTES.CUSTOMERS, label: t("shell.navCustomers"), Icon: IconCustomers },
+      { key: ROUTES.CREATE, label: t("shell.navCreate"), Icon: IconCreate, center: true },
+      { key: ROUTES.ESTIMATES, label: t("shell.navEstimates"), Icon: IconEstimates },
+      { key: ROUTES.INVOICES, label: t("shell.navInvoices"), Icon: IconInvoices },
     ],
-    []
+    [t]
   );
 
   const [createBump, setCreateBump] = useState(false);
@@ -1242,28 +1244,29 @@ function BottomNav({
 
 
 function QuickMenu({ open, onClose, onSelect }) {
+  const { t } = useLanguage();
   if (!open) return null;
 
   const items = [
-    { key: ROUTES.HOME, label: "Home" },
-    { key: ROUTES.CREATE, label: "Create" },
-    { key: ROUTES.PROJECTS, label: "Projects" },
-    { key: ROUTES.ESTIMATES, label: "Estimates" },
-    { key: ROUTES.INVOICES, label: "Invoices" },
-    { key: ROUTES.COMPANY_PROFILE, label: "Company Profile" },
+    { key: ROUTES.HOME, label: t("shell.navHome") },
+    { key: ROUTES.CREATE, label: t("shell.navCreate") },
+    { key: ROUTES.PROJECTS, label: t("shell.navProjects") },
+    { key: ROUTES.ESTIMATES, label: t("shell.navEstimates") },
+    { key: ROUTES.INVOICES, label: t("shell.navInvoices") },
+    { key: ROUTES.COMPANY_PROFILE, label: t("shell.navCompanyProfile") },
   ];
 
   return (
     <>
       <div className="pe-quick-overlay" style={styles.quickOverlay} onClick={onClose} />
-      <div className="pe-quick-menu" style={styles.quickMenu} role="dialog" aria-modal="true" aria-label="Shortcuts">
+      <div className="pe-quick-menu" style={styles.quickMenu} role="dialog" aria-modal="true" aria-label={t("shell.shortcuts")}>
         <div className="pe-quick-title-row" style={styles.quickTitleRow}>
-          <div className="pe-quick-title" style={styles.quickTitle}>Shortcuts</div>
+          <div className="pe-quick-title" style={styles.quickTitle}>{t("shell.shortcuts")}</div>
           <button
             className="pe-btn pe-btn-ghost"
             style={styles.quickClose}
             onClick={onClose}
-            aria-label="Close Shortcuts"
+            aria-label={t("shell.closeShortcuts")}
             type="button"
           >
             ✕
@@ -1290,13 +1293,14 @@ function QuickMenu({ open, onClose, onSelect }) {
 
 
 function CreateLauncher({ open, onClose, onAction, estimateActionLabel }) {
+  const { t } = useLanguage();
   if (!open) return null;
   return (
     <>
       <div className="pe-quick-overlay" style={styles.quickOverlay} onClick={onClose} />
-      <div style={styles.createLauncherPanel} role="dialog" aria-modal="true" aria-label="Start New">
+      <div style={styles.createLauncherPanel} role="dialog" aria-modal="true" aria-label={t("shell.startNew")}>
         <div style={styles.quickTitleRow}>
-          <div style={styles.quickTitle}>Start New</div>
+          <div style={styles.quickTitle}>{t("shell.startNew")}</div>
           <button
             className="pe-btn pe-btn-ghost"
             style={styles.quickClose}
@@ -1351,6 +1355,7 @@ function CreateLauncher({ open, onClose, onAction, estimateActionLabel }) {
 
 
 function Drawer({ open, onClose, onSelect, disabled }) {
+  const { t } = useLanguage();
   return (
     <>
       {open && <div className="pe-drawer-overlay" style={styles.drawerOverlay} onClick={onClose} />}
@@ -1364,17 +1369,17 @@ function Drawer({ open, onClose, onSelect, disabled }) {
         }}
         role="dialog"
         aria-modal="true"
-        aria-label="Menu"
+        aria-label={t("shell.menu")}
         aria-hidden={open ? undefined : "true"}
       >
         <div style={styles.drawerHeader}>
-          <div style={styles.drawerTitle}>Menu</div>
+          <div style={styles.drawerTitle}>{t("shell.menu")}</div>
           <button
             className="pe-btn pe-btn-ghost"
             type="button"
             style={styles.drawerClose}
             onClick={onClose}
-            aria-label="Close Menu"
+            aria-label={t("shell.closeMenu")}
           >
             ✕
           </button>
@@ -1388,7 +1393,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             onClick={() => onSelect(ROUTES.PROJECTS)}
             disabled={disabled}
           >
-            Projects
+            {t("shell.navProjects")}
           </button>
 
           <button
@@ -1398,7 +1403,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             onClick={() => onSelect("company")}
             disabled={disabled}
           >
-            Company Profile
+            {t("shell.navCompanyProfile")}
           </button>
 
           <button
@@ -1407,7 +1412,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             style={styles.drawerItem}
             onClick={() => onSelect(ROUTES.SNAPSHOT)}
           >
-            Snapshot
+            {t("shell.navSnapshot")}
           </button>
 
           <button
@@ -1417,7 +1422,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             onClick={() => onSelect("templates")}
             disabled={disabled}
           >
-            Templates
+            {t("shell.navTemplates")}
           </button>
 
           <button
@@ -1426,7 +1431,7 @@ function Drawer({ open, onClose, onSelect, disabled }) {
             style={styles.drawerItem}
             onClick={() => onSelect(ROUTES.ADVANCED)}
           >
-            Settings
+            {t("shell.navSettings")}
           </button>
         </div>
       </div>
@@ -1450,6 +1455,7 @@ function CreateFlow({
   onHomeEstimateLaunchConsumed,
   onResolveDocTypeGuard,
 }) {
+  const { t } = useLanguage();
   const desiredDocType = intent === BUILDER_INTENTS.INVOICE ? "invoice" : "estimate";
   const [isSeedReady, setIsSeedReady] = useState(() => {
     try {
@@ -1523,10 +1529,10 @@ function CreateFlow({
         onHomeEstimateLaunchConsumed={onHomeEstimateLaunchConsumed}
       />
       {typeSwitchGuardPending ? (
-        <div style={DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE} role="dialog" aria-modal="true" aria-label="Estimate draft in progress">
+        <div style={DOC_TYPE_GUARD_MODAL_OVERLAY_STYLE} role="dialog" aria-modal="true" aria-label={t("shell.estimateDraftInProgress")}>
           <div style={DOC_TYPE_GUARD_MODAL_CARD_STYLE}>
             <div style={DOC_TYPE_GUARD_MODAL_TEXT_STYLE}>
-              You have an estimate draft in progress. Continue editing the estimate or start a blank invoice?
+              {t("shell.docTypeGuardBody")}
             </div>
             <div style={DOC_TYPE_GUARD_MODAL_ACTIONS_STYLE}>
               <button
@@ -1534,14 +1540,14 @@ function CreateFlow({
                 className="pe-btn pe-btn-ghost"
                 onClick={() => resolveDocTypeGuard("estimate")}
               >
-                Continue Estimate
+                {t("shell.continueEstimate")}
               </button>
               <button
                 type="button"
                 className="pe-btn"
                 onClick={() => resolveDocTypeGuard("invoice")}
               >
-                Start Blank Invoice
+                {t("shell.startBlankInvoice")}
               </button>
             </div>
           </div>
@@ -1551,15 +1557,17 @@ function CreateFlow({
   );
 }
 
-function homeRelDate(ts) {
+function homeRelDate(ts, t, lang) {
   if (!ts) return "";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "";
   const diff = Date.now() - d.getTime();
-  if (diff < 86400000) return "Today";
-  if (diff < 172800000) return "Yesterday";
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
-  try { return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch { return ""; }
+  if (diff < 86400000) return t("common.today");
+  if (diff < 172800000) return t("common.yesterday");
+  if (diff < 604800000) return t("home.daysAgo", { count: Math.floor(diff / 86400000) });
+  try {
+    return d.toLocaleDateString(lang === "es" ? "es" : undefined, { month: "short", day: "numeric" });
+  } catch { return ""; }
 }
 
 function homeMoney(v) {
@@ -1597,6 +1605,7 @@ function HomeScreen({
   // screens, so each metric navigates there carrying the subset it counted.
   // `hasRecords` keeps a metric inert when nothing is behind it: a zero should
   // read as "caught up", not as an entry point into an empty list.
+  const { lang, t } = useLanguage();
   const drilldownFor = (scope, drilldown, destination, hasRecords = true) => {
     if (typeof onOpenDrilldown !== "function" || !hasRecords) return null;
     return () => onOpenDrilldown(scope, drilldown, destination);
@@ -1609,92 +1618,98 @@ function HomeScreen({
   const pulseItems = [
     {
       key: "pending-estimates",
-      label: "Pending",
-      sublabel: "estimates",
+      label: t("home.pulsePending"),
+      sublabel: t("home.pulseEstimatesUnit"),
       value: Number(businessPulseCounts?.pendingEstimates || 0),
       tone: "estimate",
       // This counter treats every not-yet-approved, not-lost estimate as
       // pending, drafts included, so it focuses that same wider set.
       onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.OPEN, ROUTES.ESTIMATES, Number(businessPulseCounts?.pendingEstimates || 0) > 0),
-      actionLabel: "Show open estimates",
+      actionLabel: t("home.showOpenEstimates"),
     },
     {
       key: "approved-estimates",
-      label: "Approved",
-      sublabel: "estimates",
+      label: t("home.pulseApproved"),
+      sublabel: t("home.pulseEstimatesUnit"),
       value: Number(businessPulseCounts?.approvedEstimates || 0),
       tone: "estimate",
       onActivate: drilldownFor(DRILLDOWN_SCOPES.ESTIMATES, ESTIMATE_DRILLDOWNS.APPROVED, ROUTES.ESTIMATES, Number(businessPulseCounts?.approvedEstimates || 0) > 0),
-      actionLabel: "Show approved estimates",
+      actionLabel: t("home.showApprovedEstimates"),
     },
     {
       key: "unpaid-invoices",
-      label: "Unpaid",
-      sublabel: "invoices",
+      label: t("home.pulseUnpaid"),
+      sublabel: t("home.pulseInvoicesUnit"),
       value: Number(businessPulseCounts?.unpaidInvoices || 0),
       tone: "invoice",
       onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES, Number(businessPulseCounts?.unpaidInvoices || 0) > 0),
-      actionLabel: "Show unpaid invoices",
+      actionLabel: t("home.showUnpaidInvoices"),
     },
     {
       key: "overdue-invoices",
-      label: "Overdue",
-      sublabel: "invoices",
+      label: t("home.pulseOverdue"),
+      sublabel: t("home.pulseInvoicesUnit"),
       value: Number(businessPulseCounts?.overdueInvoices || 0),
       tone: "invoice",
       onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES, Number(businessPulseCounts?.overdueInvoices || 0) > 0),
-      actionLabel: "Show overdue invoices",
+      actionLabel: t("home.showOverdueInvoices"),
     },
   ];
   const dashboard = dashboardSummary && typeof dashboardSummary === "object" ? dashboardSummary : {};
   const spotlightItems = [
     {
       key: "balance-due",
-      label: "Balance due",
+      label: t("home.balanceDue"),
       value: homeMoney(dashboard?.unpaidBalance || 0),
       detail: Number(dashboard?.unpaidInvoices || 0) > 0
-        ? `${Number(dashboard.unpaidInvoices)} open ${Number(dashboard.unpaidInvoices) === 1 ? "invoice" : "invoices"}`
-        : "No open invoices",
+        ? t(
+            Number(dashboard.unpaidInvoices) === 1 ? "home.openInvoicesOne" : "home.openInvoicesOther",
+            { count: Number(dashboard.unpaidInvoices) }
+          )
+        : t("home.noOpenInvoices"),
       tone: Number(dashboard?.unpaidBalance || 0) > 0 ? "warning" : "neutral",
       onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.RECEIVABLES, ROUTES.INVOICES, Number(dashboard?.unpaidInvoices || 0) > 0),
-      actionLabel: "Show invoices with an open balance",
-      cue: "View receivables",
+      actionLabel: t("home.showOpenBalanceInvoices"),
+      cue: t("home.viewReceivables"),
     },
     {
       key: "overdue",
-      label: "Overdue",
+      label: t("home.overdue"),
       value: Number(dashboard?.overdueInvoices || 0),
-      detail: Number(dashboard?.overdueBalance || 0) > 0 ? homeMoney(dashboard.overdueBalance) : "Caught up",
+      detail: Number(dashboard?.overdueBalance || 0) > 0 ? homeMoney(dashboard.overdueBalance) : t("home.caughtUp"),
       tone: Number(dashboard?.overdueInvoices || 0) > 0 ? "danger" : "neutral",
       onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.OVERDUE, ROUTES.INVOICES, Number(dashboard?.overdueInvoices || 0) > 0),
-      actionLabel: "Show overdue invoices",
-      cue: "View overdue",
+      actionLabel: t("home.showOverdueInvoices"),
+      cue: t("home.viewOverdue"),
     },
     {
       key: "paid",
-      label: "Paid",
+      label: t("home.paid"),
       value: homeMoney(dashboard?.paidAmount || 0),
-      detail: Number(dashboard?.paidAmount || 0) > 0 ? "Collected to date" : "No payments yet",
+      detail: Number(dashboard?.paidAmount || 0) > 0 ? t("home.collectedToDate") : t("home.noPaymentsYet"),
       tone: Number(dashboard?.paidAmount || 0) > 0 ? "good" : "neutral",
       // This figure is money collected to date, so it drills into every invoice
       // that recorded a payment rather than only fully settled ones.
       onActivate: drilldownFor(DRILLDOWN_SCOPES.INVOICES, INVOICE_DRILLDOWNS.COLLECTED, ROUTES.INVOICES, Number(dashboard?.paidAmount || 0) > 0),
-      actionLabel: "Show invoices with payments collected",
-      cue: "View collected",
+      actionLabel: t("home.showCollectedInvoices"),
+      cue: t("home.viewCollected"),
     },
     {
       key: "active-projects",
-      label: "Active projects",
+      label: t("home.activeProjects"),
       value: Number(dashboard?.activeProjectCount || 0),
       detail: Number(dashboard?.approvedEstimates || 0) > 0
-        ? `${Number(dashboard.approvedEstimates)} approved ${Number(dashboard.approvedEstimates) === 1 ? "estimate" : "estimates"}`
-        : "Recent jobs in motion",
+        ? t(
+            Number(dashboard.approvedEstimates) === 1 ? "home.approvedEstimatesOne" : "home.approvedEstimatesOther",
+            { count: Number(dashboard.approvedEstimates) }
+          )
+        : t("home.recentJobsInMotion"),
       tone: Number(dashboard?.activeProjectCount || 0) > 0 ? "info" : "neutral",
       // Home counts jobs that are active or still estimating, so it drills into
       // that same "in motion" set rather than the narrower active-only one.
       onActivate: drilldownFor(DRILLDOWN_SCOPES.PROJECTS, PROJECT_DRILLDOWNS.IN_MOTION, ROUTES.PROJECTS, Number(dashboard?.activeProjectCount || 0) > 0),
-      actionLabel: "Show projects in motion",
-      cue: "View projects",
+      actionLabel: t("home.showProjectsInMotion"),
+      cue: t("home.viewProjects"),
     },
   ];
   const nextSteps = Array.isArray(dashboard?.nextSteps) ? dashboard.nextSteps : [];
@@ -1735,7 +1750,7 @@ function HomeScreen({
         </div>
         <div className="pe-home-hero-stack">
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(7, 11, 16, 0.32)", color: "rgba(226,234,241,0.72)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase" }}>
-            Command Dashboard
+            {t("home.commandDashboard")}
           </div>
           <div
             className="pe-home-wordmark"
@@ -1819,7 +1834,7 @@ function HomeScreen({
               opacity: 0.98,
             }}
           >
-            Turn Scope into Revenue
+            {t("home.tagline")}
           </div>
           <div
             className="pe-home-subline"
@@ -1832,7 +1847,7 @@ function HomeScreen({
               textAlign: "center",
             }}
           >
-            See what needs attention, what has been paid, and the safest next move before you open anything else.
+            {t("home.subline")}
           </div>
           <div className="pe-home-spotlight-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, width: "100%", marginTop: 18 }}>
             {spotlightItems.map((item) => {
@@ -1907,7 +1922,7 @@ function HomeScreen({
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
           <div className="pe-card pe-home-momentum-panel" style={{ padding: 0, overflow: "hidden" }}>
             <div className="pe-home-momentum-primary">
-              <div className="pe-home-momentum-label">Resume</div>
+              <div className="pe-home-momentum-label">{t("shell.resume")}</div>
               <div className="pe-home-resume-card">
                 {resumeHeadline ? <div className="pe-home-resume-title">{resumeHeadline}</div> : null}
                 {resumeMetaItems.length > 0 ? (
@@ -1929,7 +1944,7 @@ function HomeScreen({
                   } catch {}
                 }}
               >
-                Resume Draft
+                {t("home.resumeDraft")}
               </button>
             </div>
           </div>
@@ -1938,8 +1953,8 @@ function HomeScreen({
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
         <div className="pe-card pe-home-pulse-panel" style={{ minWidth: 0 }}>
-          <div className="pe-home-pulse-eyebrow">Business Pulse</div>
-          <div className="pe-home-pulse-strip" role="list" aria-label="Business Pulse">
+          <div className="pe-home-pulse-eyebrow">{t("home.businessPulse")}</div>
+          <div className="pe-home-pulse-strip" role="list" aria-label={t("home.businessPulse")}>
             {pulseItems.map((item) => {
               const pulseBody = (
                 <>
@@ -1975,10 +1990,10 @@ function HomeScreen({
         <div className="pe-card" style={{ display: "grid", gap: 10, padding: "12px 14px", minWidth: 0, borderColor: stripeCardTone === "good" ? "rgba(34,197,94,0.18)" : "rgba(59,130,246,0.16)" }}>
           <div style={{ display: "grid", gap: 4 }}>
             <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
-              Next up
+              {t("home.nextUp")}
             </div>
             <div style={{ fontSize: 16, fontWeight: 850, color: "rgba(239,245,249,0.97)" }}>
-              What needs attention next
+              {t("home.whatNeedsAttentionNext")}
             </div>
           </div>
           <div style={{ display: "grid", gap: 8 }}>
@@ -2004,7 +2019,7 @@ function HomeScreen({
           <div style={{ display: "grid", gap: 6, paddingTop: 2, borderTop: "1px solid rgba(255,255,255,0.07)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(180,196,208,0.48)" }}>
-                Stripe readiness
+                {t("home.stripeReadiness")}
               </div>
               <span style={{
                 padding: "4px 9px",
@@ -2017,13 +2032,13 @@ function HomeScreen({
                 letterSpacing: "0.08em",
                 textTransform: "uppercase",
               }}>
-                {dashboard?.stripe?.connected ? "Connected" : "Not connected"}
+                {dashboard?.stripe?.connected ? t("home.stripeConnected") : t("home.stripeNotConnected")}
               </span>
             </div>
             <div style={{ fontSize: 12.5, lineHeight: 1.45, color: "rgba(217,227,235,0.76)" }}>
               {dashboard?.stripe?.connected
-                ? "Stripe is connected, so online invoice payments can be enabled from your current account setup."
-                : "Connect Stripe in Company Profile when you want customers to pay invoices online."}
+                ? t("home.stripeConnectedDetail")
+                : t("home.stripeNotConnectedDetail")}
             </div>
           </div>
         </div>
@@ -2032,16 +2047,17 @@ function HomeScreen({
       {recentProjects && recentProjects.length > 0 ? (
         <div className="pe-card pe-home-projects-panel" style={{ overflow: "hidden" }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", opacity: 0.5, padding: "14px 16px 10px" }}>
-            Active Projects
+            {t("home.activeProjects")}
           </div>
           <div style={{ display: "grid", gap: 0 }}>
             {recentProjects.map((p, idx) => {
-              const pName = String(p?.projectName || "").trim() || "Untitled Project";
+              // Project and customer names are business data, shown exactly as entered.
+              const pName = String(p?.projectName || "").trim() || t("home.untitledProject");
               const cName = String(p?._customerName || p?.customerName || "").trim();
               const dsKey = p?._displayStatus?.key || "draft";
-              const dsLabel = p?._displayStatus?.label || "Draft";
+              const dsLabel = t(p?._displayStatus?.labelKey || "projects.statusDraft");
               const SC = HOME_PROJECT_STATUS_COLORS[dsKey] || HOME_PROJECT_STATUS_COLORS.draft;
-              const actDate = homeRelDate(p?._latestActivityAt || 0);
+              const actDate = homeRelDate(p?._latestActivityAt || 0, t, lang);
               const overdueCount = p?._overdueCount || 0;
               const balDue = p?._totals?.balanceRemaining || 0;
               const approvedEstCount = p?._approvedEstCount || 0;
@@ -2108,17 +2124,17 @@ function HomeScreen({
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                       {overdueCount > 0 ? (
                         <span className="pe-home-project-signal" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
-                          {overdueCount === 1 ? "1 overdue" : `${overdueCount} overdue`}
+                          {t(overdueCount === 1 ? "home.projectOverdueOne" : "home.projectOverdueOther", { count: overdueCount })}
                         </span>
                       ) : null}
                       {balDue > 0 ? (
                         <span className="pe-home-project-signal pe-home-money-chip" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
-                          {homeMoney(balDue)} due
+                          {t("home.projectAmountDue", { amount: homeMoney(balDue) })}
                         </span>
                       ) : null}
                       {approvedEstCount > 0 ? (
                         <span className="pe-home-project-signal" style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
-                          {approvedEstCount === 1 ? "1 estimate approved" : `${approvedEstCount} estimates approved`}
+                          {t(approvedEstCount === 1 ? "home.projectApprovedOne" : "home.projectApprovedOther", { count: approvedEstCount })}
                         </span>
                       ) : null}
                     </div>
@@ -2712,7 +2728,7 @@ function EstiPaidAppShell({
     }
   }, []);
 
-  const [lang] = useState(() => getSavedLang());
+  const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState(() => ROUTES.HOME);
   // A save target lives only for the handoff back from the builder to its
   // section.  It deliberately is not persisted: ordinary later navigation
@@ -2816,8 +2832,9 @@ const [spinTick, setSpinTick] = useState(0);
       projects: normalizedProjects,
       businessPulseCounts,
       companyProfile,
+      t,
     });
-  }, [invoiceHistory, normalizedProjects, businessPulseCounts]);
+  }, [invoiceHistory, normalizedProjects, businessPulseCounts, t]);
 
   // Gate 17A.1a: one-time removal of Stripe identifiers left in legacy
   // subscription caches by pre-Gate-17A builds. Idempotent, touches only those
@@ -2859,20 +2876,6 @@ const [spinTick, setSpinTick] = useState(0);
     loadSnapshotSubscriptionState();
     return () => { active = false; };
   }, [activeTab, auth?.configured, auth?.session?.access_token, snapshotCompanyId]);
-
-  const shellT = useCallback((key) => {
-    const en = {
-      estimateNumLabel: "Estimate #",
-      invoiceNumLabel: "Invoice #",
-    };
-    const es = {
-      estimateNumLabel: "Estimación #",
-      invoiceNumLabel: "Factura #",
-    };
-    const dict = lang === "es" ? es : en;
-    return dict[key] || key;
-  }, [lang]);
-
 
   // ===== In-progress estimate draft (survives tab switches) =====
   const ESTIMATE_DRAFT_KEY = STORAGE_KEYS.ESTIMATE_DRAFT;
@@ -2926,14 +2929,14 @@ const [spinTick, setSpinTick] = useState(0);
 
   const ensureBuilderAccess = useCallback((requestedTab = "") => {
     const gate = requireCompanyProfile({
-      message: "Company Profile required. Open Company Profile?",
+      message: t("shell.companyProfileRequired"),
       onRequireProfile: () => {
         prepareCompanyProfileReturnTarget(requestedTab);
         enterTab(ROUTES.COMPANY_PROFILE);
       },
     });
     return !!gate?.allowed;
-  }, [enterTab, prepareCompanyProfileReturnTarget]);
+  }, [enterTab, prepareCompanyProfileReturnTarget, t]);
 
   const performNavigation = useCallback((tab, options = {}) => {
     const skipCreateDraftSave = Boolean(options?.skipCreateDraftSave);
@@ -3100,15 +3103,15 @@ const [spinTick, setSpinTick] = useState(0);
       if (hasMeaningfulEstimateDraftContent(parsed)) {
         setDraftOverwriteGuard({
           proceed,
-          title: copy.title || "You have a draft in progress",
-          body: copy.body || "Starting a new estimate will replace the draft currently in the builder.",
-          confirmLabel: copy.confirmLabel || "Discard and Start New Estimate",
+          title: copy.title || t("shell.draftInProgressTitle"),
+          body: copy.body || t("shell.draftReplaceEstimate"),
+          confirmLabel: copy.confirmLabel || t("shell.discardStartNewEstimate"),
         });
         return;
       }
     } catch {}
     proceed();
-  }, []);
+  }, [t]);
 
   const resetProjectDetailSeededBuilderSession = useCallback(() => {
     try {
@@ -3184,9 +3187,9 @@ const [spinTick, setSpinTick] = useState(0);
     }
     guardSharedDraftOverwrite(
       () => performLaunchEstimateFromHome(roughPrompt, launchOptions),
-      { body: "Starting a new estimate will replace the draft currently in the builder." }
+      { body: t("shell.draftReplaceEstimate") }
     );
-  }, [performLaunchEstimateFromHome, guardSharedDraftOverwrite]);
+  }, [performLaunchEstimateFromHome, guardSharedDraftOverwrite, t]);
 
   const consumeHomeEstimateLaunch = useCallback((launchId = "") => {
     setHomeEstimateLaunch((current) => {
@@ -3273,11 +3276,11 @@ const [spinTick, setSpinTick] = useState(0);
             clearProjectDetailReturnTarget();
             navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
           },
-          title: "You have a draft in progress",
+          title: t("shell.draftInProgressTitle"),
           body: desiredDocType === "invoice"
-            ? "Starting a new invoice will replace the draft currently in the builder."
-            : "Starting a new estimate will replace the draft currently in the builder.",
-          confirmLabel: desiredDocType === "invoice" ? "Discard and Start New Invoice" : "Discard and Start New Estimate",
+            ? t("shell.draftReplaceInvoice")
+            : t("shell.draftReplaceEstimate"),
+          confirmLabel: desiredDocType === "invoice" ? t("shell.discardStartNewInvoice") : t("shell.discardStartNewEstimate"),
         });
         return;
       }
@@ -3286,7 +3289,7 @@ const [spinTick, setSpinTick] = useState(0);
     setHomeEstimateLaunch(null);
     clearProjectDetailReturnTarget();
     navigateTo(nextIntent === BUILDER_INTENTS.INVOICE ? ROUTES.INVOICE_BUILDER : ROUTES.ESTIMATE_BUILDER);
-  }, [createEditSessionActive, navigateTo, setHomeEstimateLaunch]);
+  }, [createEditSessionActive, navigateTo, setHomeEstimateLaunch, t]);
 
   const clearEstimateOpenCustomersGuard = useCallback(() => {
     estimateOpenCustomersGuardUntilRef.current = 0;
@@ -4088,7 +4091,6 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     if (activeTab === ROUTES.CUSTOMERS)
       return (
         <CustomersScreen
-          lang={lang}
           drilldownIntent={dashboardIntent}
           onDrilldownIntentConsumed={consumeDashboardIntent}
           onDone={(p) => {
@@ -4113,8 +4115,6 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     if (activeTab === ROUTES.ESTIMATES) {
       return (
         <EstimatesScreen
-          lang={lang}
-          t={shellT}
           spinTick={spinTick}
           history={estimateHistory}
           invoiceLaunchRequest={invoiceLaunchRequest}
@@ -4185,14 +4185,14 @@ const [drawerOpen, setDrawerOpen] = useState(false);
               armProjectDetailReturnTarget();
               resetProjectDetailSeededBuilderSession();
               navigateTo(ROUTES.ESTIMATE_BUILDER);
-            }, { body: "Starting a new estimate will replace the draft currently in the builder." });
+            }, { body: t("shell.draftReplaceEstimate") });
           }}
           onNewInvoice={() => {
             guardSharedDraftOverwrite(() => {
               armProjectDetailReturnTarget();
               resetProjectDetailSeededBuilderSession();
               navigateTo(ROUTES.INVOICE_BUILDER);
-            }, { body: "Starting a new invoice will replace the draft currently in the builder." });
+            }, { body: t("shell.draftReplaceInvoice") });
           }}
         />
       );
@@ -4200,8 +4200,6 @@ const [drawerOpen, setDrawerOpen] = useState(false);
     if (activeTab === ROUTES.INVOICES) {
       return (
         <InvoicesScreen
-          lang={lang}
-          t={shellT}
           spinTick={spinTick}
           postSaveTarget={postSaveTarget}
           onPostSaveTargetConsumed={consumePostSaveTarget}
@@ -4590,10 +4588,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
             const parsed = raw ? safeParseJson(raw) : null;
             const docType = parsed?.ui?.docType === "invoice" ? "invoice" : "estimate";
             return docType === "estimate" && hasMeaningfulEstimateDraftContent(parsed)
-              ? "Resume Estimate Draft"
-              : "Estimate";
+              ? t("shell.resumeEstimateDraft")
+              : t("common.estimate");
           } catch {
-            return "Estimate";
+            return t("common.estimate");
           }
         })()}
         onClose={() => setCreateLauncherOpen(false)}
@@ -4619,12 +4617,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       />
 
       {showCreateFromEditModal ? (
-        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Start new document">
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label={t("shell.startNewDocument")}>
           <div style={unsavedModalCard}>
             <div style={unsavedModalText}>
-              You are currently editing a saved estimate or invoice.
-              Starting a new one will discard any unsaved progress.
-              Continue?
+              {t("shell.createFromEditBody")}
             </div>
             <div style={unsavedModalActions}>
               <button
@@ -4632,14 +4628,14 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                 className="pe-btn pe-btn-ghost"
                 onClick={() => setShowCreateFromEditModal(false)}
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
                 className="pe-btn"
                 onClick={continueCreateFromEdit}
               >
-                Continue
+                {t("common.continue")}
               </button>
             </div>
           </div>
@@ -4667,7 +4663,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                   } catch {}
                 }}
               >
-                Continue Current Draft
+                {t("shell.continueCurrentDraft")}
               </button>
               <button
                 type="button"
@@ -4686,11 +4682,10 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       ) : null}
 
       {showLeaveEditModal ? (
-        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Leave edit session">
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label={t("shell.leaveEditSession")}>
           <div style={unsavedModalCard}>
             <div style={unsavedModalText}>
-              You are currently editing. Leaving will discard any unsaved changes.
-              Continue?
+              {t("shell.leaveEditBody")}
             </div>
             <div style={unsavedModalActions}>
               <button
@@ -4698,7 +4693,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                 className="pe-btn pe-btn-ghost"
                 onClick={() => setShowLeaveEditModal(false)}
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -4710,7 +4705,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                   if (target) navigateTo(target, { bypassDirtyGuard: true });
                 }}
               >
-                Leave
+                {t("shell.leave")}
               </button>
             </div>
           </div>
@@ -4718,11 +4713,11 @@ const [drawerOpen, setDrawerOpen] = useState(false);
       ) : null}
 
       {showUnsavedProfileModal ? (
-        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label="Unsaved changes">
+        <div style={unsavedModalOverlay} role="dialog" aria-modal="true" aria-label={t("common.unsavedChanges")}>
           <div style={unsavedModalCard}>
-            <div style={unsavedModalTitle}>Unsaved changes</div>
+            <div style={unsavedModalTitle}>{t("common.unsavedChanges")}</div>
             <div style={unsavedModalText}>
-              You have unsaved changes in your Company Profile. If you leave this page, they will be lost.
+              {t("shell.unsavedProfileBody")}
             </div>
             <div style={unsavedModalActions}>
               <button
@@ -4733,7 +4728,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                   setShowUnsavedProfileModal(false);
                 }}
               >
-                Stay
+                {t("shell.stay")}
               </button>
               <button
                 type="button"
@@ -4745,7 +4740,7 @@ const [drawerOpen, setDrawerOpen] = useState(false);
                   if (target) navigateTo(target, { bypassDirtyGuard: true });
                 }}
               >
-                Leave without saving
+                {t("shell.leaveWithoutSaving")}
               </button>
             </div>
           </div>
@@ -4817,6 +4812,7 @@ const authLoadingDotStyle = {
 // only changes what session resolution *looks* like; the routing that decides
 // when it renders, and every gate after it, are untouched.
 function AuthLoadingScreen() {
+  const { t } = useLanguage();
   return (
     <div style={authLoadingWrapStyle}>
       <div
@@ -4824,7 +4820,7 @@ function AuthLoadingScreen() {
         role="status"
         aria-live="polite"
         aria-busy="true"
-        aria-label="Checking your session"
+        aria-label={t("common.checkingSession")}
       >
         <img
           src={DEFAULT_LOGO}
@@ -4841,7 +4837,7 @@ function AuthLoadingScreen() {
           className="pe-field-helper"
           style={{ fontSize: 12.5, letterSpacing: "0.5px", opacity: 0.8 }}
         >
-          Checking your session...
+          {t("shell.checkingSessionEllipsis")}
         </div>
       </div>
     </div>

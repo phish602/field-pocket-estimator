@@ -5,6 +5,7 @@ import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackup
 import { SHOW_CLOUD_RESTORE_PROMPT_EVENT } from "../lib/useCloudRestorePrompt";
 import useIsNarrowViewport from "../lib/useIsNarrowViewport";
 import { DEVICE_LOCK_EXPLANATION } from "../lib/supabaseDeviceLock";
+import { useLanguage } from "../lib/i18n";
 
 function reopenRestorePrompt() {
   try {
@@ -26,7 +27,7 @@ function showDeviceLockExplanation() {
 
 export default function CloudHeaderStatusChip({ style } = {}) {
   const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
-
+  const { t } = useLanguage();
   const isNarrow = useIsNarrowViewport();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
@@ -37,28 +38,28 @@ export default function CloudHeaderStatusChip({ style } = {}) {
   let narrowMaxWidth = 88;
 
   if (productState === CLOUD_PRODUCT_STATE.SYNCING) {
-    label = "Syncing";
+    label = t("cloud.syncing");
     color = "rgba(99,179,237,0.95)";
     narrowMaxWidth = 96;
   } else if (productState === CLOUD_PRODUCT_STATE.PENDING) {
-    label = "Pending";
+    label = t("cloud.pendingShort");
     color = "rgba(191,214,235,0.92)";
     background = "rgba(148,177,209,0.1)";
     border = "1px solid rgba(148,177,209,0.32)";
   } else if (productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE) {
-    label = "Sync issue";
+    label = t("cloud.syncIssue");
     color = "rgba(253,224,71,0.95)";
     background = "rgba(245,158,11,0.09)";
     border = "1px solid rgba(245,158,11,0.28)";
     narrowMaxWidth = 128;
   } else if (productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE) {
-    label = "Restore";
+    label = t("cloud.restore");
     color = "rgba(99,179,237,0.95)";
   } else if (productState === CLOUD_PRODUCT_STATE.CLOUD_OK) {
-    label = "Cloud OK";
+    label = t("cloud.ok");
     color = "rgba(187,247,208,0.9)";
   } else if (productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED) {
-    label = "Cloud connected";
+    label = t("cloud.connected");
     color = "rgba(187,247,208,0.82)";
   }
 

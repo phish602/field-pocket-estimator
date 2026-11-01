@@ -41,6 +41,7 @@ const useVaultDeviceRecovery = require("./lib/useVaultDeviceRecovery").default;
 const useVaultCompatibilityBridge = require("./lib/useVaultCompatibilityBridge").default;
 const vaultCrypto = require("./lib/vaultCrypto");
 const { setActiveWorkspaceVaultCompatibility } = require("./lib/accountScopedLocalStorage");
+const { ensureTestAuthoritativeRuntime } = require("./testUtils/configuredWorkspaceTestHarness");
 
 const USER_A = { id: "11111111-1111-4111-8111-111111111111", email: "a@example.test" };
 const USER_B = { id: "22222222-2222-4222-8222-222222222222", email: "b@example.test" };
@@ -52,6 +53,24 @@ const COMPANY_B = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Company B
 const LEGACY_COMPANY_NAME = "BVW";
 const LEGACY_CUSTOMER_NAME = "Legacy BVW Customer";
 const LEGACY_BALANCE = "20508";
+
+// Writes a value at the PHYSICAL scoped key, which is what an accepted workspace
+// write produces. Used instead of localStorage.setItem because a protected
+// business write is legitimately refused unless the vault authority is mutable.
+function rawLocalStorage() {
+  const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+  // While a facade is installed the descriptor holds it; unmounting restores the
+  // real Storage. Seeding always happens while the real Storage is in place.
+  return descriptor && descriptor.value ? descriptor.value : window.localStorage;
+}
+
+function seedScopedWorkspaceValue(namespace, logicalKey, value) {
+  rawLocalStorage().setItem(`${namespace}:${logicalKey}`, value);
+}
+
+function rawStorageValue(physicalKey) {
+  return rawLocalStorage().getItem(physicalKey);
+}
 
 function seedLegacyBrowserData() {
   localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify({ companyName: LEGACY_COMPANY_NAME }));
@@ -97,11 +116,14 @@ let getItemSpy = null;
 beforeEach(() => {
   localStorage.clear();
   jest.clearAllMocks();
+  // The shell now requires the AUTHORITATIVE adapter to actually be installed,
+  // not merely the runtime hook reporting ready -- install it as production does.
+  ensureTestAuthoritativeRuntime();
   readKeys = [];
   useSupabaseAuth.mockReturnValue(auth());
   useSupabaseAccount.mockReturnValue(account());
   useSupabaseWorkspaceBootstrap.mockReturnValue({ createWorkspace: jest.fn(), creating: false, error: "", success: "", result: null });
-  useDeviceLockStatus.mockReturnValue({ loading: false, ready: true, isLocked: false, isActive: true });
+  useDeviceLockStatus.mockReturnValue({ loading: false, ready: true, isLocked: false, isActive: true, localDeviceId: "test_device_1", activeDeviceState: { activeDeviceId: "test_device_1", lockVersion: 1 }, fence: { companyId: "company_1", deviceId: "test_device_1", lockVersion: 1 } });
   useVaultSession.mockReturnValue({
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
     setup: jest.fn(), unlock: jest.fn(), lock: jest.fn(), refresh: jest.fn(),
@@ -117,10 +139,10 @@ beforeEach(() => {
   // ISO-16: the shell now requires a verified authoritative runtime. The core
   // isolation cases below are about NAMESPACE isolation, so they start from a
   // ready runtime; the runtime's own gating is asserted separately.
-  useVaultRuntimeActivation.mockReturnValue({
+  useVaultRuntimeActivation.mockImplementation(() => { ensureTestAuthoritativeRuntime(); return ({
     state: "ready", checking: false, pending: false, code: "", message: "",
     refresh: jest.fn(), flushAndLock: jest.fn(async () => ({ ok: true, code: "" })),
-  });
+  }); });
   vaultCrypto.workspaceTag.mockResolvedValue("A".repeat(43));
   const realGetItem = Storage.prototype.getItem;
   getItemSpy = jest.spyOn(Storage.prototype, "getItem").mockImplementation(function getItem(key) {
@@ -226,15 +248,28 @@ test("3-5. records persist per account and never leak across accounts on one bro
   const namespaceA = buildAccountWorkspaceNamespace({ userId: USER_A.id, companyId: COMPANY_A.id });
   const namespaceB = buildAccountWorkspaceNamespace({ userId: USER_B.id, companyId: COMPANY_B.id });
 
-  // 3. User A creates a record while their workspace is open.
+  // 3. User A already holds an accepted record in their own namespace.
+  //
+  // This is seeded at the PHYSICAL scoped key, which is exactly what an accepted
+  // write produces. It used to be seeded through localStorage.setItem, which only
+  // worked inside an accidental window before the vault compatibility authority
+  // came up -- see the refusal assertion below for the contract that replaced it.
+  seedScopedWorkspaceValue(namespaceA, STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "a-1", name: "A Customer" }]));
+
   signedInAs(USER_A, COMPANY_A);
   const first = render(<App />);
   await waitFor(() => expect(dashboard()).toBeInTheDocument());
-  // The shell patches the active storage so same-tab listeners fire, so this
-  // write reaches the app exactly as an in-app save would.
-  act(() => { localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify([{ id: "a-1", name: "A Customer" }])); });
   expect(localStorage.getItem(STORAGE_KEYS.CUSTOMERS)).toContain("A Customer");
+
+  // NEW CONTRACT: a protected business write that the vault authority cannot
+  // accept fails LOUDLY. It must never report success and discard the value.
+  expect(() => {
+    localStorage.setItem(STORAGE_KEYS.ESTIMATES, JSON.stringify([{ id: "should-not-persist" }]));
+  }).toThrow(expect.objectContaining({ code: "vault_mutation_not_ready" }));
+  // ...and it left no plaintext scoped copy behind.
+  expect(localStorage.getItem(STORAGE_KEYS.ESTIMATES)).toBeNull();
   first.unmount();
+  expect(rawStorageValue(`${namespaceA}:${STORAGE_KEYS.ESTIMATES}`)).toBeNull();
 
   expect(inspectAccountScopedWorkspace({ storage: window.localStorage, userId: USER_A.id, companyId: COMPANY_A.id }).logicalKeys)
     .toContain(STORAGE_KEYS.CUSTOMERS);
@@ -270,10 +305,13 @@ test("3-5. records persist per account and never leak across accounts on one bro
 
 // 6. The same user in a different company gets a different empty workspace.
 test("6. the same user with a different company opens a different empty namespace", async () => {
+  const namespaceA = buildAccountWorkspaceNamespace({ userId: USER_A.id, companyId: COMPANY_A.id });
+  seedScopedWorkspaceValue(namespaceA, STORAGE_KEYS.PROJECTS, JSON.stringify([{ id: "a-project" }]));
+
   signedInAs(USER_A, COMPANY_A);
   const first = render(<App />);
   await waitFor(() => expect(dashboard()).toBeInTheDocument());
-  act(() => { localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify([{ id: "a-project" }])); });
+  expect(localStorage.getItem(STORAGE_KEYS.PROJECTS)).toContain("a-project");
   first.unmount();
 
   signedInAs(USER_A, COMPANY_B);
@@ -397,10 +435,10 @@ test("unconfigured account service fails closed without mounting the shell or wo
 test.each([
   ["checking"], ["migrating"], ["sealing"], ["hydrating"], ["pending-writes"], ["blocked"],
 ])("runtime %s state keeps the normal shell unmounted after workspace activation", async (state) => {
-  useVaultRuntimeActivation.mockReturnValue({
+  useVaultRuntimeActivation.mockImplementation(() => { ensureTestAuthoritativeRuntime(); return ({
     state, checking: state !== "blocked" && state !== "pending-writes", pending: state === "pending-writes",
     code: "", message: "", refresh: jest.fn(), flushAndLock: jest.fn(),
-  });
+  }); });
   render(<App />);
   await waitFor(() => expect(screen.getByLabelText("Encrypted local data access")).toBeInTheDocument());
   expect(dashboard()).not.toBeInTheDocument();
@@ -425,9 +463,9 @@ test("Lock Now flushes accepted writes and then locks, without signing out, clea
     capability: { state: "unlocked", code: "", message: "" }, checking: false, pending: false, error: "",
     setup: jest.fn(), unlock: jest.fn(), lock, refresh: jest.fn(),
   });
-  useVaultRuntimeActivation.mockReturnValue({
+  useVaultRuntimeActivation.mockImplementation(() => { ensureTestAuthoritativeRuntime(); return ({
     state: "ready", checking: false, pending: false, code: "", message: "", refresh: jest.fn(), flushAndLock,
-  });
+  }); });
   try {
     render(<App />);
     await waitFor(() => expect(dashboard()).toBeInTheDocument());

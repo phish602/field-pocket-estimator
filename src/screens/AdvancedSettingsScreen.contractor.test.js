@@ -37,10 +37,12 @@ const REMOVED_COPY = [
   "Back Up This Device",
   "Advanced Recovery",
   "Replace Cloud Backup With This Device",
+  "Developer Tools",
+  "Export Raw App Data",
+  "Import Backup JSON",
+  "Development Sample Data",
   "Retry Sync",
 ];
-// Local Developer Tools and backup export/import controls are retired by a
-// separate Settings UI change; their removal assertions belong to that change.
 
 function status(state, overrides = {}) {
   return {

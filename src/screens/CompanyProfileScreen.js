@@ -28,6 +28,7 @@ import {
 import { resolveCompanyEntitlements } from "../lib/companyEntitlementsApi";
 import { allowLocalEntitlementFallback } from "../lib/useCompanyEntitlements";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
+import { useLanguage } from "../lib/i18n";
 
 const PROFILE_KEY = STORAGE_KEYS.COMPANY_PROFILE;
 const PROFILE_RETURN_TARGET_KEY = "estipaid-profile-return-target-v1";
@@ -35,12 +36,12 @@ const STRIPE_CHECKOUT_SESSIONS_KEY = STORAGE_KEYS.STRIPE_CHECKOUT_SESSIONS;
 
 const US_STATES = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
 const REQUIRED_FIELD_META = {
-  companyName: { label: "Company Name", inputId: "user-profile-company-name" },
-  phone: { label: "Phone", inputId: "user-profile-phone" },
-  addressLine1: { label: "Address Line 1", inputId: "user-profile-address-line-1" },
-  city: { label: "City", inputId: "user-profile-city" },
-  state: { label: "State", inputId: "user-profile-state" },
-  zip: { label: "ZIP", inputId: "user-profile-zip" },
+  companyName: { labelKey: "profile.companyName2", inputId: "user-profile-company-name" },
+  phone: { labelKey: "profile.phone2", inputId: "user-profile-phone" },
+  addressLine1: { labelKey: "profile.addressLine12", inputId: "user-profile-address-line-1" },
+  city: { labelKey: "profile.city2", inputId: "user-profile-city" },
+  state: { labelKey: "profile.state2", inputId: "user-profile-state" },
+  zip: { labelKey: "profile.zipFieldLabel", inputId: "user-profile-zip" },
 };
 const REQUIRED_FIELD_ORDER = ["companyName", "phone", "addressLine1", "city", "state", "zip"];
 
@@ -149,11 +150,11 @@ function hasValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
-function validHelperText() {
+function validHelperText(t) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(134,239,172,0.9)" }}>
       <ValidCheckIcon />
-      Valid
+      {t("profile.valid")}
     </span>
   );
 }
@@ -348,6 +349,8 @@ export default function CompanyProfileScreen({
   companyId = "",
   accessToken = "",
 } = {}) {
+  // Language and copy come from the app's one owner (src/lib/i18n).
+  const { t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
   const initialProfileRef = useRef(null);
   if (initialProfileRef.current === null) {
@@ -467,19 +470,19 @@ export default function CompanyProfileScreen({
   // are separate concepts. A canceled Pro subscriber sees Plan Free and Billing
   // status Canceled -- never "Free / Canceled" as if Free itself were canceled.
   const BILLING_STATUS_LABELS = {
-    free: "Free", trialing: "Trialing", active: "Active",
-    past_due: "Past due", canceled: "Canceled", unknown: "Unknown",
+    free: t("profile.billingFree"), trialing: t("profile.billingTrialing"), active: t("profile.billingActive"),
+    past_due: t("profile.billingPastDue"), canceled: t("profile.billingCanceled"), unknown: t("profile.billingUnknown"),
   };
   const subscriptionAccessLabel = (() => {
     // Internal complimentary access never claims Stripe billing is active.
     if (subscriptionPlanState.source === "internal_comp") {
-      return `Complimentary ${getSubscriptionPlanLabel(subscriptionPlanState)} access`;
+      return t("profile.complimentaryAccess", { plan: getSubscriptionPlanLabel(subscriptionPlanState) });
     }
     // A real Stripe record exists: report its status as billing, not access.
     if (billingState && billingState.source === "stripe") {
-      return `Billing status: ${BILLING_STATUS_LABELS[billingState.status] || "Unknown"}`;
+      return t("profile.billingStatus", { status: BILLING_STATUS_LABELS[billingState.status] || t("profile.billingUnknown") });
     }
-    return `Status: ${getSubscriptionStatusLabel(subscriptionPlanState)}`;
+    return t("profile.statusLabel", { status: getSubscriptionStatusLabel(subscriptionPlanState) });
   })();
 
   const isDirty = useMemo(() => serializeProfileState(profile) !== lastSavedSnapshot, [profile, lastSavedSnapshot]);
@@ -501,30 +504,30 @@ export default function CompanyProfileScreen({
   const stripeStateMeta = stripeConnected
     ? (stripeReady
       ? {
-        label: "Ready for payments",
+        label: t("profile.readyPayments"),
         background: "rgba(34,197,94,0.12)",
         border: "rgba(34,197,94,0.22)",
         color: "rgba(187,247,208,0.98)",
         summary: "Stripe is connected and online invoice payments are available.",
-        helper: "Customers can pay invoices online and Stripe can route funds to payouts.",
+        helper: t("profile.customersPayInvoicesOnlineStripeRoute"),
         nextAction: "Refresh Stripe Status whenever Stripe onboarding details change.",
       }
       : {
-        label: "Setup incomplete",
+        label: t("profile.setupIncomplete"),
         background: "rgba(245,158,11,0.12)",
         border: "rgba(245,158,11,0.22)",
         color: "rgba(253,230,138,0.98)",
         summary: "Stripe is connected, but onboarding still needs attention before payments are fully ready.",
-        helper: "Finish account setup so EstiPaid can safely support online invoice payments.",
+        helper: t("profile.finishAccountSetupSoEstipaidSafely"),
         nextAction: "Continue Stripe Setup, then refresh the status after Stripe updates the account.",
       })
     : {
-      label: "Not connected",
+      label: t("profile.notConnected"),
       background: "rgba(59,130,246,0.12)",
       border: "rgba(59,130,246,0.22)",
       color: "rgba(191,219,254,0.98)",
       summary: "Stripe is not connected yet. Online invoice payments are unavailable.",
-      helper: "Connect Stripe to let customers pay invoices online without changing invoice or payment flows.",
+      helper: t("profile.connectStripeLetCustomersPayInvoices"),
       nextAction: "Connect Stripe to start onboarding and create a payment-ready account link.",
     };
   const resolvedSubscriptionPlan = resolvePlanFromSubscriptionState(subscriptionPlanState);
@@ -1178,14 +1181,14 @@ const stripeActionGroupStyle = {
       {showClearConfirm ? (
         <div style={modalOverlay} role="dialog" aria-modal="true">
           <div style={modalCard}>
-            <div style={modalTitle}>Clear all Company Profile fields?</div>
-            <div style={modalText}>Unsaved changes will be lost.</div>
+            <div style={modalTitle}>{t("profile.clearAllCompanyProfileFields")}</div>
+            <div style={modalText}>{t("profile.unsavedChangesLost")}</div>
             <div style={modalActions}>
               <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(false)}>
-                Cancel
+                {t("profile.cancel")}
               </button>
               <button type="button" className="pe-btn" onClick={doClearProfile}>
-                Clear
+                {t("profile.clear")}
               </button>
             </div>
           </div>
@@ -1197,22 +1200,22 @@ const stripeActionGroupStyle = {
           <div className="pe-company-header-title">
             <img
               src="/logo/estipaid.svg"
-              alt="EstiPaid"
+              alt={t("profile.estipaid")}
               className="pe-company-header-logo esti-spin"
               draggable={false}
             />
-            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title="Company Profile">Company Profile</h1>
+            <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={t("profile.companyProfile")}>{t("profile.companyProfile")}</h1>
           </div>
 
           <div className="pe-company-header-controls pe-company-header-controls-profile">
             <button type="button" className="pe-btn" onClick={doExplicitSave}>
-              Save
+              {t("profile.save")}
             </button>
             <button type="button" className="pe-btn pe-btn-ghost" onClick={() => setShowClearConfirm(true)}>
-              Clear
+              {t("profile.clear")}
             </button>
             <div className={`pe-company-save-indicator ${saveFlash ? "is-visible" : ""}`} aria-live="polite">
-              Saved
+              {t("profile.saved")}
             </div>
           </div>
         </div>
@@ -1229,48 +1232,48 @@ const stripeActionGroupStyle = {
           data-status={subscriptionPlanState.status}
           style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "2px 0 10px", padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(148,163,184,0.22)", background: "rgba(255,255,255,0.03)" }}
         >
-          <span style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>Plan</span>
+          <span style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>{t("profile.plan")}</span>
           <span style={{ fontSize: 13, fontWeight: 900, padding: "3px 10px", borderRadius: 999, border: "1px solid rgba(96,165,250,0.35)", background: "rgba(59,130,246,0.12)", color: "rgba(219,234,254,0.96)" }}>
             {getSubscriptionPlanLabel(subscriptionPlanState)}
           </span>
           <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>
             {`${subscriptionAccessLabel} · ${getEntitlementsFromSubscriptionState(subscriptionPlanState).showPdfWatermark
-              ? "PDF exports include EstiPaid branding."
-              : "No EstiPaid watermark."}`}
+              ? t("profile.pdfIncludesBranding")
+              : t("profile.noWatermark")}`}
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", width: "100%" }}>
             {resolvedSubscriptionPlan === "free" ? (
               <>
                 <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("solo")}>
-                  {subscriptionCheckoutBusy === "solo" ? "Starting Solo checkout…" : "Upgrade to Solo"}
+                  {subscriptionCheckoutBusy === "solo" ? t("profile.startingCheckout", { plan: "Solo" }) : t("profile.upgradeTo", { plan: "Solo" })}
                 </button>
                 <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("pro")}>
-                  {subscriptionCheckoutBusy === "pro" ? "Starting Pro checkout…" : "Upgrade to Pro"}
+                  {subscriptionCheckoutBusy === "pro" ? t("profile.startingCheckout", { plan: "Pro" }) : t("profile.upgradeTo", { plan: "Pro" })}
                 </button>
                 <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
-                  {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
+                  {subscriptionCheckoutBusy === "business" ? t("profile.startingCheckout", { plan: "Business" }) : t("profile.upgradeTo", { plan: "Business" })}
                 </button>
               </>
             ) : null}
             {resolvedSubscriptionPlan === "solo" ? (
               <>
                 <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("pro")}>
-                  {subscriptionCheckoutBusy === "pro" ? "Starting Pro checkout…" : "Upgrade to Pro"}
+                  {subscriptionCheckoutBusy === "pro" ? t("profile.startingCheckout", { plan: "Pro" }) : t("profile.upgradeTo", { plan: "Pro" })}
                 </button>
                 <button type="button" className="pe-btn pe-btn-ghost" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
-                  {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
+                  {subscriptionCheckoutBusy === "business" ? t("profile.startingCheckout", { plan: "Business" }) : t("profile.upgradeTo", { plan: "Business" })}
                 </button>
               </>
             ) : null}
             {resolvedSubscriptionPlan === "pro" ? (
               <button type="button" className="pe-btn" disabled={!!subscriptionCheckoutBusy} onClick={() => handleSubscriptionCheckout("business")}>
-                {subscriptionCheckoutBusy === "business" ? "Starting Business checkout…" : "Upgrade to Business"}
+                {subscriptionCheckoutBusy === "business" ? t("profile.startingCheckout", { plan: "Business" }) : t("profile.upgradeTo", { plan: "Business" })}
               </button>
             ) : null}
             {resolvedSubscriptionPlan === "business" ? (
-              <span style={{ fontSize: 11.5, color: "rgba(187,247,208,0.92)", fontWeight: 800 }}>Business is your current plan.</span>
+              <span style={{ fontSize: 11.5, color: "rgba(187,247,208,0.92)", fontWeight: 800 }}>{t("profile.businessCurrentPlan")}</span>
             ) : null}
-            <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>Plan changes activate after Stripe confirms payment.</span>
+            <span style={{ fontSize: 11.5, color: "rgba(208,219,228,0.6)" }}>{t("profile.planChangesActivateAfterStripeConfirms")}</span>
           </div>
           {subscriptionCheckoutError ? (
             <span role="alert" style={{ width: "100%", fontSize: 11.5, color: "rgba(254,202,202,0.96)" }}>{subscriptionCheckoutError}</span>
@@ -1279,13 +1282,13 @@ const stripeActionGroupStyle = {
 
         {showMissingRequiredPrompt && missingRequiredFields.length ? (
           <div className="pe-company-missing-banner" role="alert" aria-live="assertive">
-            <div className="pe-company-missing-banner-title">Missing required information</div>
+            <div className="pe-company-missing-banner-title">{t("profile.missingRequiredInformation")}</div>
             <div className="pe-company-missing-banner-body">
-              Please complete the highlighted fields to save your Company Profile.
+              {t("profile.pleaseCompleteHighlightedFieldsSaveCompany")}
             </div>
             <ul className="pe-company-missing-list">
               {missingRequiredFields.map((fieldKey) => (
-                <li key={fieldKey}>{REQUIRED_FIELD_META[fieldKey]?.label || fieldKey}</li>
+                <li key={fieldKey}>{REQUIRED_FIELD_META[fieldKey]?.labelKey ? t(REQUIRED_FIELD_META[fieldKey].labelKey) : fieldKey}</li>
               ))}
             </ul>
           </div>
@@ -1294,17 +1297,17 @@ const stripeActionGroupStyle = {
         <div className="pe-company-form-inner ep-section-gap-sm">
           <div className="pe-company-top-layout">
             <div className="pe-company-form-section pe-company-top-main">
-              <ProfileSectionHeader icon={<IconBuilding />} title="COMPANY" />
+              <ProfileSectionHeader icon={<IconBuilding />} title={t("profile.sectionCompany")} />
               <div className="pe-company-grid-12">
                 <Field
                   fieldClassName="pe-company-col-12"
                   labelClassName={fieldLabelClassName("companyName")}
                   controlClassName={fieldControlClassName("companyName")}
-                  label="Company name *"
+                  label={t("profile.companyName")}
                   id={REQUIRED_FIELD_META.companyName.inputId}
                   errorText={fieldRequiredError("companyName")}
                   value={profile.companyName}
-                  placeholder="Example: Desert Ridge HOA"
+                  placeholder={t("profile.exampleDesertRidgeHoa")}
                   onChange={(e) => setProfile((p) => ({ ...p, companyName: e.target.value }))}
                 />
 
@@ -1312,41 +1315,41 @@ const stripeActionGroupStyle = {
                   fieldClassName="pe-company-col-5"
                   labelClassName={fieldLabelClassName("phone")}
                   controlClassName={fieldControlClassName("phone")}
-                  label="Phone *"
+                  label={t("profile.phone")}
                   id={REQUIRED_FIELD_META.phone.inputId}
                   type="tel"
                   inputMode="tel"
                   autoComplete="tel"
                   errorText={fieldRequiredError("phone")}
-                  helperText={hasValidPhone(profile.phone) ? validHelperText() : ""}
+                  helperText={hasValidPhone(profile.phone) ? validHelperText(t) : ""}
                   value={formatPhoneForDisplay(profile.phone)}
-                  placeholder="Example: 602-555-0147"
+                  placeholder={t("profile.example6025550147")}
                   onChange={(e) => setProfile((p) => ({ ...p, phone: sanitizePhoneDigits(e.target.value, 11) }))}
                 />
 
                 <Field
                   fieldClassName="pe-company-col-7"
-                  label="Email"
+                  label={t("profile.email")}
                   type="email"
                   autoComplete="email"
-                  helperText={hasValidEmail(profile.email) ? validHelperText() : ""}
+                  helperText={hasValidEmail(profile.email) ? validHelperText(t) : ""}
                   value={profile.email}
-                  placeholder="Example: office@desertridgehoa.com"
+                  placeholder={t("profile.exampleOfficeDesertridgehoaCom")}
                   onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
                 />
 
                 <Field
                   fieldClassName="pe-company-col-12"
-                  label="Website"
+                  label={t("profile.website")}
                   value={profile.website}
-                  placeholder="Example: www.desertridgehoa.com"
+                  placeholder={t("profile.exampleWwwDesertridgehoaCom")}
                   onChange={(e) => setProfile((p) => ({ ...p, website: e.target.value }))}
                 />
               </div>
             </div>
 
             <div id="company-profile-branding" ref={brandingCardRef} className="pe-card pe-card-content ep-glass-tile ep-tile-hover pe-company-top-branding-col pe-company-branding-card pe-branding-tile">
-              <ProfileSectionHeader icon={<IconImage />} title="BRANDING" />
+              <ProfileSectionHeader icon={<IconImage />} title={t("profile.sectionBranding")} />
               <input
                 ref={fileInputRef}
                 className="pe-company-hidden-file"
@@ -1359,25 +1362,25 @@ const stripeActionGroupStyle = {
                   {profile.logoDataUrl ? (
                     <img
                       src={profile.logoDataUrl}
-                      alt="Company logo preview"
+                      alt={t("profile.companyLogoPreview")}
                       className="pe-company-branding-preview-img"
                       draggable={false}
                     />
                   ) : (
                     <div className="pe-company-branding-placeholder">
                       <span className="pe-company-branding-placeholder-icon" aria-hidden="true"><IconImage /></span>
-                      <span>No logo uploaded</span>
+                      <span>{t("profile.noLogoUploaded")}</span>
                     </div>
                   )}
                 </div>
-                <div className="pe-field-helper pe-company-branding-helper">Used on PDF exports</div>
+                <div className="pe-field-helper pe-company-branding-helper">{t("profile.usedPdfExports")}</div>
                 {!profile.logoDataUrl ? (
                   <>
                     <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 6 }}>
-                      No logo uploaded yet. Your PDF will use a branded initials badge until you add one.
+                      {t("profile.noLogoUploadedYetPdfUse")}
                     </div>
                     <div className="pe-field-helper pe-company-branding-helper" style={{ marginTop: 2, opacity: 0.78 }}>
-                      Upload a logo anytime to replace it.
+                      {t("profile.uploadLogoAnytimeReplace")}
                     </div>
                   </>
                 ) : null}
@@ -1394,7 +1397,7 @@ const stripeActionGroupStyle = {
                 </button>
                 {profile.logoDataUrl ? (
                   <button type="button" className="pe-btn pe-btn-ghost" onClick={removeLogo} disabled={logoOptimizing}>
-                    Remove
+                    {t("profile.remove")}
                   </button>
                 ) : null}
               </div>
@@ -1403,7 +1406,7 @@ const stripeActionGroupStyle = {
               </div>
               {logoOptimizing ? (
                 <div className="pe-field-helper pe-company-branding-helper" role="status" aria-live="polite" style={{ marginTop: 4, color: "rgba(191,219,254,0.9)" }}>
-                  Optimizing logo...
+                  {t("profile.optimizingLogo")}
                 </div>
               ) : null}
               {!logoOptimizing && logoNotice ? (
@@ -1421,27 +1424,27 @@ const stripeActionGroupStyle = {
 
           <div className="pe-company-form-section">
             <div className="pe-company-section-divider" aria-hidden="true" />
-            <ProfileSectionHeader icon={<IconMapPin />} title="BUSINESS ADDRESS" />
+            <ProfileSectionHeader icon={<IconMapPin />} title={t("profile.businessAddress")} />
             <div className="pe-company-grid-12">
               <Field
                 fieldClassName="pe-company-col-12"
                 labelClassName={fieldLabelClassName("addressLine1")}
                 controlClassName={fieldControlClassName("addressLine1")}
-                label="Address line 1 *"
+                label={t("profile.addressLine1")}
                 id={REQUIRED_FIELD_META.addressLine1.inputId}
                 autoComplete="address-line1"
                 errorText={fieldRequiredError("addressLine1")}
                 value={profile.addressLine1}
-                placeholder="Example: 1234 E Camelback Rd, Phoenix AZ"
+                placeholder={t("profile.example1234ECamelbackRdPhoenix")}
                 onChange={(e) => setProfile((p) => ({ ...p, addressLine1: e.target.value }))}
               />
 
               <Field
                 fieldClassName="pe-company-col-12"
-                label="Address line 2"
+                label={t("profile.addressLine2")}
                 autoComplete="address-line2"
                 value={profile.addressLine2}
-                placeholder="Example: Suite 200"
+                placeholder={t("profile.exampleSuite200")}
                 onChange={(e) => setProfile((p) => ({ ...p, addressLine2: e.target.value }))}
               />
 
@@ -1449,12 +1452,12 @@ const stripeActionGroupStyle = {
                 fieldClassName="pe-company-col-5"
                 labelClassName={fieldLabelClassName("city")}
                 controlClassName={fieldControlClassName("city")}
-                label="City *"
+                label={t("profile.city")}
                 id={REQUIRED_FIELD_META.city.inputId}
                 autoComplete="address-level2"
                 errorText={fieldRequiredError("city")}
                 value={profile.city}
-                placeholder="Example: Phoenix"
+                placeholder={t("profile.examplePhoenix")}
                 onChange={(e) => setProfile((p) => ({ ...p, city: e.target.value }))}
               />
 
@@ -1463,14 +1466,14 @@ const stripeActionGroupStyle = {
                 fieldClassName="pe-company-col-4"
                 labelClassName={fieldLabelClassName("state")}
                 controlClassName={fieldControlClassName("state")}
-                label="State *"
+                label={t("profile.state")}
                 id={REQUIRED_FIELD_META.state.inputId}
                 autoComplete="address-level1"
                 errorText={fieldRequiredError("state")}
                 value={profile.state}
                 onChange={(e) => setProfile((p) => ({ ...p, state: e.target.value }))}
               >
-                <option value="">Select State</option>
+                <option value="">{t("profile.selectState")}</option>
                 {US_STATES.map((stateCode) => (
                   <option key={stateCode} value={stateCode}>
                     {stateCode}
@@ -1482,7 +1485,7 @@ const stripeActionGroupStyle = {
                 fieldClassName="pe-company-col-3"
                 labelClassName={fieldLabelClassName("zip")}
                 controlClassName={fieldControlClassName("zip")}
-                label="ZIP *"
+                label={t("profile.zip")}
                 id={REQUIRED_FIELD_META.zip.inputId}
                 autoComplete="postal-code"
                 inputMode="numeric"
@@ -1496,13 +1499,13 @@ const stripeActionGroupStyle = {
 
           <div className="pe-company-form-section">
             <div className="pe-company-section-divider" aria-hidden="true" />
-            <ProfileSectionHeader icon={<IconBadge />} title="LICENSING &amp; TAX" />
+            <ProfileSectionHeader icon={<IconBadge />} title={t("profile.licensingAmpTax")} />
             <div className="pe-company-grid-12">
               <Field
                 fieldClassName="pe-company-col-6"
                 label="ROC"
                 value={profile.roc}
-                placeholder="ROC 123456"
+                placeholder={t("profile.roc123456")}
                 onChange={(e) => setProfile((p) => ({ ...p, roc: e.target.value }))}
               />
               <Field
@@ -1517,7 +1520,7 @@ const stripeActionGroupStyle = {
 
           <div className="pe-company-form-section">
             <div className="pe-company-section-divider" aria-hidden="true" />
-            <ProfileSectionHeader icon={<IconBadge />} title="STRIPE PAYMENTS" />
+            <ProfileSectionHeader icon={<IconBadge />} title={t("profile.stripePayments")} />
             <div className="pe-company-grid-12">
               <div className="pe-company-col-12">
                 <div
@@ -1529,10 +1532,10 @@ const stripeActionGroupStyle = {
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                     <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-                      <div style={stripeEyebrowStyle}>Stripe connection</div>
+                      <div style={stripeEyebrowStyle}>{t("profile.stripeConnection")}</div>
                       <div style={stripeHeadlineStyle}>{stripeStateMeta.summary}</div>
                       <div className="pe-field-helper" style={{ ...stripeBodyStyle, marginBottom: 0 }}>
-                        Connect your own Stripe account for future online invoice payments. EstiPaid stores your connected account ID only and never stores Stripe secret keys.
+                        {t("profile.connectOwnStripeAccountFutureOnline")}
                       </div>
                     </div>
                     <div
@@ -1555,7 +1558,7 @@ const stripeActionGroupStyle = {
                     }}
                   >
                     <div style={stripeMetricCardStyle}>
-                      <div style={stripeMetricLabelStyle}>Connected</div>
+                      <div style={stripeMetricLabelStyle}>{t("profile.connected")}</div>
                       <div style={{ ...stripeMetricValueStyle, color: stripeConnected ? "rgba(191,219,254,0.98)" : "rgba(226,232,240,0.92)" }}>
                         {stripeConnected ? "Yes" : "No"}
                       </div>
@@ -1564,7 +1567,7 @@ const stripeActionGroupStyle = {
                       </div>
                     </div>
                     <div style={stripeMetricCardStyle}>
-                      <div style={stripeMetricLabelStyle}>Details submitted</div>
+                      <div style={stripeMetricLabelStyle}>{t("profile.detailsSubmitted")}</div>
                       <div style={{ ...stripeMetricValueStyle, color: stripeDetailsSubmitted ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
                         {stripeStatus ? (stripeStatus.detailsSubmitted ? "Yes" : "No") : "Not checked yet"}
                       </div>
@@ -1573,7 +1576,7 @@ const stripeActionGroupStyle = {
                       </div>
                     </div>
                     <div style={stripeMetricCardStyle}>
-                      <div style={stripeMetricLabelStyle}>Charges enabled</div>
+                      <div style={stripeMetricLabelStyle}>{t("profile.chargesEnabled")}</div>
                       <div style={{ ...stripeMetricValueStyle, color: stripeChargesEnabled ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
                         {stripeStatus ? (stripeStatus.chargesEnabled ? "Yes" : "No") : "Not checked yet"}
                       </div>
@@ -1582,7 +1585,7 @@ const stripeActionGroupStyle = {
                       </div>
                     </div>
                     <div style={stripeMetricCardStyle}>
-                      <div style={stripeMetricLabelStyle}>Payouts enabled</div>
+                      <div style={stripeMetricLabelStyle}>{t("profile.payoutsEnabled")}</div>
                       <div style={{ ...stripeMetricValueStyle, color: stripePayoutsEnabled ? "rgba(187,247,208,0.98)" : stripeMetricValueStyle.color }}>
                         {stripeStatus ? (stripeStatus.payoutsEnabled ? "Yes" : "No") : "Not checked yet"}
                       </div>
@@ -1594,14 +1597,14 @@ const stripeActionGroupStyle = {
 
                   <div style={stripeDetailsGridStyle}>
                     <div style={stripeDetailBlockStyle}>
-                      <div style={stripeEyebrowStyle}>Status details</div>
+                      <div style={stripeEyebrowStyle}>{t("profile.statusDetails")}</div>
                       {stripeAccountId ? (
                         <div style={{ fontSize: 13.5 }}>
                           Connected account ID: <strong data-testid="stripe-account-id">{stripeAccountId}</strong>
                         </div>
                       ) : (
                         <div style={{ fontSize: 13.5, opacity: 0.82 }}>
-                          No Stripe account connected yet.
+                          {t("profile.noStripeAccountConnectedYet")}
                         </div>
                       )}
                       <div style={{ display: "grid", gap: 6, fontSize: 13.5 }}>
@@ -1618,7 +1621,7 @@ const stripeActionGroupStyle = {
                     </div>
 
                     <div style={stripeDetailBlockStyle}>
-                      <div style={stripeEyebrowStyle}>Next step</div>
+                      <div style={stripeEyebrowStyle}>{t("profile.nextStep")}</div>
                       <div style={{ fontSize: 15, fontWeight: 900, color: stripeStateMeta.color }}>
                         {stripeConnected ? (stripeReady ? "Refresh Stripe Status" : "Continue Stripe Setup") : "Connect Stripe"}
                       </div>
@@ -1629,7 +1632,7 @@ const stripeActionGroupStyle = {
 
                   <div style={stripeDetailsGridStyle}>
                     <div style={stripeActionGroupStyle}>
-                      <div style={stripeEyebrowStyle}>Primary actions</div>
+                      <div style={stripeEyebrowStyle}>{t("profile.primaryActions")}</div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <button
                           type="button"
@@ -1662,9 +1665,9 @@ const stripeActionGroupStyle = {
                           border: "1px solid rgba(248,113,113,0.18)",
                         }}
                       >
-                        <div style={stripeEyebrowStyle}>Secondary action</div>
+                        <div style={stripeEyebrowStyle}>{t("profile.secondaryAction")}</div>
                         <div style={{ ...stripeBodyStyle, color: "rgba(254,202,202,0.86)" }}>
-                          Disconnect Stripe only if this profile should stop using the current Stripe account for online invoice payments.
+                          {t("profile.disconnectStripeOnlyIfProfileShould")}
                         </div>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                           <button
@@ -1672,7 +1675,7 @@ const stripeActionGroupStyle = {
                             className="pe-btn pe-btn-ghost"
                             onClick={handleStripeDisconnect}
                           >
-                            Disconnect Stripe
+                            {t("profile.disconnectStripe")}
                           </button>
                         </div>
                       </div>

@@ -9,6 +9,7 @@ import { BUILD_TAG, DEFAULT_STATE, STORAGE_KEY } from "./estimator/defaultState"
 import { computeTotals } from "./estimator/engine";
 import useEstimatorState, { useEstimatorState as useEstimatorStateNamed } from "./estimator/useEstimatorState";
 import { computeDueDateFromCustomer, getNetTermsDays, getNetTermsLabel } from "./estimator/netTerms";
+import { useLanguage } from "./lib/i18n";
 import InlineCustomNumberField from "./components/estimator/InlineCustomNumberField";
 import DocumentFinalizeModal from "./components/estimator/DocumentFinalizeModal";
 import SectionMaterials from "./components/estimator/SectionMaterials";
@@ -112,7 +113,6 @@ import {
 } from "./lib/scopeImageStorage";
 
 const money = createMoneyFormatter("en-US", "USD");
-const LANG_KEY = STORAGE_KEYS.LANG;
 const CUSTOM_LABOR_ROLES_KEY = STORAGE_KEYS.CUSTOM_LABOR_ROLES || "estipaid-custom-labor-roles-v1";
 const CREATE_NEW_LABOR_ROLE_VALUE = "__create_new_labor_role__";
 const SCOPE_EXPECTED_SERVER_RUNTIME_BUILD = "scope-runtime-2026-04-08-live-runtime-proof-v5";
@@ -121,150 +121,6 @@ const MAX_SCOPE_IMAGE_STORED_BYTES = SCOPE_IMAGE_HARD_MAX_STORED_BYTES;
 const MAX_SCOPE_IMAGES_TOTAL_STORED_BYTES = 800 * 1024;
 const SCOPE_IMAGE_MARKER_PATTERN = /\[scope-image:([a-zA-Z0-9_-]+)\]/g;
 const STORAGE_FULL_MESSAGE = "Storage is full. Remove some photos or templates and try again.";
-const I18N = {
-  en: {
-    standard: "Standard (1.00×)",
-    difficultAccess: "Difficult access (1.10×)",
-    highRisk: "High-risk / PPE (1.20×)",
-    offHours: "Off-hours / Night (1.25×)",
-    customEllipsis: "Custom…",
-    estimateTotal: "Estimate Total",
-    laborLines: "labor line(s)",
-    laborers: "laborer(s)",
-    complexity: "× complexity",
-    risk: "% risk",
-    materialsMeta: "% materials",
-    materials: "Materials",
-    materialsMode: "Entry type",
-    materialsModeBlanket: "Blanket",
-    materialsModeItemized: "Itemized",
-    materialsCost: "Materials cost",
-    markupPct: "Markup %",
-    materialsBlanketDescriptionLabel: "What's included (prints on PDF)",
-    materialsBlanketDescriptionPlaceholder: "Example: Fixtures, fittings, fasteners, consumables, delivery, and disposal.",
-    addMaterialItem: "+ Add Item",
-    materialsItemizedHelp: "List materials line by line — qty × price builds the section total. Good for detailed breakdowns or when itemizing helps price the job.",
-    materialDesc: "Description",
-    materialNote: "Line note (optional)",
-    materialNotePlaceholder: "Prints under this item in the PDF",
-    materialQty: "Qty",
-    materialCostInternal: "Cost (internal)",
-    materialCharge: "Price (each)",
-    materialsItemizedTotal: "Itemized materials total",
-    additionalCharges: "Additional Charges",
-    additionalChargesHelp: "Custom fee or service lines that bill separately from labor and materials.",
-    addChargeItem: "+ Add Charge",
-    chargeDesc: "Description",
-    chargeQty: "Qty",
-    chargeUnitPrice: "Unit price",
-    chargeLineTotal: "Line total",
-    additionalChargesSubtotal: "Additional charges subtotal",
-    labor: "Labor",
-    hours: "Hours",
-    rate: "Rate ($/hr)",
-    selectRole: "Select role…",
-    documentFinalization: "Document finalization",
-    closeFinalization: "Close finalization",
-    reviewSaveEstimate: "Review & Save Estimate",
-    reviewSaveInvoice: "Review & Save Invoice",
-    finalizeEstimateIntro: "Review the customer-facing estimate PDF before approving the final document.",
-    finalizeInvoiceIntro: "Review the customer-facing invoice PDF before approving the final document.",
-    viewPdf: "View PDF",
-    downloadPreview: "Download Preview",
-    backToEditing: "Back to Editing",
-    approveAndSave: "Approve & Save",
-    saveEstimate: "Save Estimate",
-    approveConvertInvoice: "Approve & Convert to Invoice",
-    markAsSent: "Mark as Sent",
-    markApproved: "Mark Approved",
-    convertToInvoice: "Convert to Invoice",
-    nextActions: "Next actions",
-    savingEstimate: "Saving estimate…",
-    savingInvoice: "Saving invoice…",
-    estimateSaved: "Estimate Saved",
-    invoiceSaved: "Invoice Saved",
-    estimateSavedIntro: "Your estimate is saved and ready for its next step.",
-    invoiceSavedIntro: "Your invoice is saved and ready for its next step.",
-    documentActions: "Document",
-    downloadPdf: "Download PDF",
-    sharePdf: "Share PDF",
-    continueEditing: "Continue Editing",
-    exitBuilder: "Exit Builder",
-    finalizeSaveFailed: "The document could not be saved. Review the details and try again.",
-    invoiceTotal: "Invoice Total",
-  },
-  es: {
-    standard: "Estándar (1.00×)",
-    difficultAccess: "Acceso difícil (1.10×)",
-    highRisk: "Alto riesgo / PPE (1.20×)",
-    offHours: "Fuera de horario / Noche (1.25×)",
-    customEllipsis: "Personalizado…",
-    estimateTotal: "Total estimado",
-    laborLines: "línea(s) de mano de obra",
-    laborers: "trabajador(es)",
-    complexity: "× complejidad",
-    risk: "% riesgo",
-    materialsMeta: "% materiales",
-    materials: "Materiales",
-    materialsMode: "Tipo de entrada",
-    materialsModeBlanket: "Global",
-    materialsModeItemized: "Detallado",
-    materialsCost: "Costo de materiales",
-    markupPct: "Margen %",
-    materialsBlanketDescriptionLabel: "Qué incluye (se imprime en PDF)",
-    materialsBlanketDescriptionPlaceholder: "Ejemplo: Accesorios, herrajes, fijaciones, consumibles, entrega y disposición.",
-    addMaterialItem: "+ Agregar Partida",
-    materialsItemizedHelp: "Lista materiales línea por línea — cant. × precio construye el total. Útil para desglosar costos o cuando conviene itemizar el presupuesto.",
-    materialDesc: "Descripción",
-    materialNote: "Nota de línea (opcional)",
-    materialNotePlaceholder: "Se imprime debajo de esta partida en el PDF",
-    materialQty: "Cant.",
-    materialCostInternal: "Costo (interno)",
-    materialCharge: "Precio (c/u)",
-    materialsItemizedTotal: "Total de materiales por partida",
-    additionalCharges: "Cargos adicionales",
-    additionalChargesHelp: "Cargos o servicios personalizados que se facturan aparte de la mano de obra y los materiales.",
-    addChargeItem: "+ Agregar cargo",
-    chargeDesc: "Descripción",
-    chargeQty: "Cant.",
-    chargeUnitPrice: "Precio unitario",
-    chargeLineTotal: "Total de línea",
-    additionalChargesSubtotal: "Subtotal de cargos adicionales",
-    labor: "Mano de obra",
-    hours: "Horas",
-    rate: "Tarifa ($/hr)",
-    selectRole: "Seleccionar rol…",
-    documentFinalization: "Finalización del documento",
-    closeFinalization: "Cerrar finalización",
-    reviewSaveEstimate: "Revisar y guardar estimado",
-    reviewSaveInvoice: "Revisar y guardar factura",
-    finalizeEstimateIntro: "Revisa el PDF del estimado para el cliente antes de aprobar el documento final.",
-    finalizeInvoiceIntro: "Revisa el PDF de la factura para el cliente antes de aprobar el documento final.",
-    viewPdf: "Ver PDF",
-    downloadPreview: "Descargar vista previa",
-    backToEditing: "Volver a editar",
-    approveAndSave: "Aprobar y guardar",
-    saveEstimate: "Guardar estimación",
-    approveConvertInvoice: "Aprobar y convertir en factura",
-    markAsSent: "Marcar como enviada",
-    markApproved: "Marcar aprobado",
-    convertToInvoice: "Convertir en factura",
-    nextActions: "Siguientes acciones",
-    savingEstimate: "Guardando estimado…",
-    savingInvoice: "Guardando factura…",
-    estimateSaved: "Estimado guardado",
-    invoiceSaved: "Factura guardada",
-    estimateSavedIntro: "Tu estimado está guardado y listo para el siguiente paso.",
-    invoiceSavedIntro: "Tu factura está guardada y lista para el siguiente paso.",
-    documentActions: "Documento",
-    downloadPdf: "Descargar PDF",
-    sharePdf: "Compartir PDF",
-    continueEditing: "Continuar editando",
-    exitBuilder: "Salir del generador",
-    finalizeSaveFailed: "No se pudo guardar el documento. Revisa los detalles e inténtalo de nuevo.",
-    invoiceTotal: "Total de la factura",
-  },
-};
 
 // Customer-use handoff key (written by CustomersScreen when a customer is selected)
 const PENDING_CUSTOMER_USE_KEY = STORAGE_KEYS.PENDING_CUSTOMER_USE;
@@ -1593,55 +1449,12 @@ export default function EstimateForm(props) {
     }
   }, [isEditMode]);
   const [suppressDraftPersistenceUntilUnmount, setSuppressDraftPersistenceUntilUnmount] = useState(false);
-  // The builder reads and writes the same global language preference as the
-  // rest of EstiPaid (STORAGE_KEYS.LANG). It is reactive state -- not a
-  // builder-owned copy -- so the in-builder EN/ES control updates the chrome and
-  // section copy in place without recreating the estimator or touching document
-  // state. Cross-surface changes arrive through the storage / pe-localstorage
-  // events every other screen already emits.
-  const readSavedLang = useCallback(() => {
-    try {
-      return localStorage.getItem(LANG_KEY) === "es" ? "es" : "en";
-    } catch {
-      return "en";
-    }
-  }, []);
-  const [lang, setLang] = useState(readSavedLang);
-  useEffect(() => {
-    const sync = () => setLang(readSavedLang());
-    const onLocal = (event) => {
-      if (!event?.detail || event.detail.key === LANG_KEY) sync();
-    };
-    window.addEventListener("storage", sync);
-    window.addEventListener("pe-localstorage", onLocal);
-    window.addEventListener("estipaid:lang", sync);
-    return () => {
-      window.removeEventListener("storage", sync);
-      window.removeEventListener("pe-localstorage", onLocal);
-      window.removeEventListener("estipaid:lang", sync);
-    };
-  }, [readSavedLang]);
-  const applyLang = useCallback((requested) => {
-    const next = requested === "es" ? "es" : "en";
-    if (next === readSavedLang()) {
-      setLang(next);
-      return;
-    }
-    try {
-      localStorage.setItem(LANG_KEY, next);
-    } catch {}
-    setLang(next);
-    // Notify the rest of the app through the existing local-change channels so
-    // any other mounted surface follows the same global preference.
-    dispatchLocalStorageUpdate(LANG_KEY, next);
-    try {
-      window.dispatchEvent(new Event("estipaid:lang"));
-    } catch {}
-  }, [readSavedLang]);
-  const t = useMemo(
-    () => (key) => I18N[lang]?.[key] || I18N.en?.[key] || key,
-    [lang]
-  );
+  // The builder reads the app's one language owner (src/lib/i18n). It keeps no
+  // language copy of its own: the in-builder EN/ES control writes through the
+  // shared owner, so the builder chrome, every other mounted surface, and the
+  // stored preference all move together without recreating the estimator or
+  // touching document state.
+  const { lang, setLanguage: applyLang, t } = useLanguage();
   const customerTopRef = useRef(null);
   const customerNameRef = useRef(null);
   const customerDropdownPortalRef = useRef(null);
@@ -4714,7 +4527,7 @@ export default function EstimateForm(props) {
     });
     options.push({
       value: CREATE_NEW_LABOR_ROLE_VALUE,
-      label: lang === "es" ? "Crear nuevo rol…" : "Create new role…",
+      label: t("builderExtra.createNewRole"),
     });
     return options;
   }
@@ -4724,14 +4537,14 @@ export default function EstimateForm(props) {
     const currentLabel = lines[i]?.label;
     const defaultLabel = getLegacyLaborRoleLabel(currentLabel, customLaborRoles, CUSTOM_LABOR_ROLE_HELPER_OPTIONS) || normalizeLaborRoleLabel(currentLabel);
     const enteredLabel = window.prompt(
-      lang === "es" ? "Nombra este rol de mano de obra:" : "Name this labor role:",
+      t("builderExtra.nameLaborRole"),
       defaultLabel
     );
     if (enteredLabel === null) return;
 
     const nextLabel = normalizeLaborRoleLabel(enteredLabel);
     if (!nextLabel) {
-      window.alert(lang === "es" ? "Ingresa un nombre de rol antes de guardarlo." : "Enter a role name before saving it.");
+      window.alert(t("builderExtra.enterRoleNameBeforeSaving"));
       return;
     }
 
@@ -6400,11 +6213,11 @@ export default function EstimateForm(props) {
   const totalTallyLine = `${laborLineCount} ${t("laborLines")}`
     + (totalLaborers !== laborLineCount ? ` • ${totalLaborers} ${t("laborers")}` : "")
     + (laborMultiplier !== 1 ? ` • ${laborMultiplier}${t("complexity")}` : "")
-    + (hazardEnabled ? ` • ${lang === "es" ? "Peligro" : "Hazard"} ${hazardPctNormalized}%` : "")
-    + (riskEnabled ? ` • ${lang === "es" ? "Riesgo" : "Risk"} ${riskPctNormalized}%` : "")
+    + (hazardEnabled ? ` • ${t("builderExtra.hazard")} ${hazardPctNormalized}%` : "")
+    + (riskEnabled ? ` • ${t("builderExtra.risk")} ${riskPctNormalized}%` : "")
     + (materialsMode === "blanket" && Number.isFinite(normalizedMarkupPct) ? ` • ${normalizedMarkupPct}${t("materialsMeta")}` : "")
     + (materialsMode === "itemized"
-      ? ` • ${itemizedMaterialsCount}x ${lang === "es" ? "materiales" : "materials"} • ${money.format(itemizedMaterialsTotal)}`
+      ? ` • ${itemizedMaterialsCount}x ${t("builderExtra.materials")} • ${money.format(itemizedMaterialsTotal)}`
       : " • Blanket materials")
     + (additionalChargesCount > 0
       ? ` • ${additionalChargesCount}x ${t("additionalCharges").toLowerCase()} • ${money.format(additionalChargesSubtotal)}`
@@ -6661,24 +6474,24 @@ export default function EstimateForm(props) {
     || ""
   ).trim();
   const commandSaveStatus = saveNeedsAttention
-    ? (lang === "es" ? "Cambios sin guardar" : "Unsaved changes")
+    ? (t("builderExtra.unsavedChanges"))
     : (Number(state?.meta?.lastSavedAt || 0) > 0
-      ? (lang === "es" ? "Guardado" : "Saved")
-      : (lang === "es" ? "Aún sin guardar" : "Not saved yet"));
+      ? (t("builderExtra.saved"))
+      : (t("builderExtra.notSavedYet")));
   const commandFinancialItems = [
     {
       id: "labor",
-      label: lang === "es" ? "Mano de obra" : "Labor",
+      label: t("builderExtra.labor"),
       value: money.format(fallbackLaborRevenue),
     },
     {
       id: "materials",
-      label: lang === "es" ? "Materiales" : "Materials",
+      label: t("builderExtra.materials2"),
       value: money.format(displayedMaterialsTotal),
     },
     {
       id: "charges",
-      label: lang === "es" ? "Cargos" : "Charges",
+      label: t("builderExtra.charges"),
       value: money.format(additionalChargesSubtotal),
     },
   ];
@@ -6709,7 +6522,6 @@ export default function EstimateForm(props) {
   }), [t, uiDocType]);
 
   const wizardReviewSections = useMemo(() => {
-    const es = lang === "es";
     const dash = "";
     const customerName = String(state?.customer?.name || "").trim();
     const projectName = String(state?.customer?.projectName || "").trim();
@@ -6726,18 +6538,18 @@ export default function EstimateForm(props) {
         stepId: WIZARD_STEP_IDS.CUSTOMER,
         title: wizardTitleFor(WIZARD_STEP_IDS.CUSTOMER),
         rows: [
-          { label: es ? "Cliente" : "Customer", value: customerName || dash },
-          { label: es ? "Teléfono" : "Phone", value: String(state?.customer?.phone || "").trim() || dash },
-          { label: es ? "Correo" : "Email", value: String(state?.customer?.email || "").trim() || dash },
+          { label: t("common.customer"), value: customerName || dash },
+          { label: t("builderReview.phone"), value: String(state?.customer?.phone || "").trim() || dash },
+          { label: t("builderReview.email"), value: String(state?.customer?.email || "").trim() || dash },
         ],
       },
       {
         stepId: WIZARD_STEP_IDS.PROJECT,
         title: wizardTitleFor(WIZARD_STEP_IDS.PROJECT),
         rows: [
-          { label: es ? "Proyecto" : "Project", value: projectName || dash },
-          { label: es ? "Dirección" : "Address", value: projectAddress || dash },
-          { label: es ? "Fecha" : "Date", value: String(state?.job?.date || "").trim() || dash },
+          { label: t("common.project"), value: projectName || dash },
+          { label: t("builderReview.address"), value: projectAddress || dash },
+          { label: t("builderReview.date"), value: String(state?.job?.date || "").trim() || dash },
         ],
       },
     ];
@@ -6747,7 +6559,7 @@ export default function EstimateForm(props) {
       title: wizardTitleFor(WIZARD_STEP_IDS.SCOPE),
       rows: [
         {
-          label: es ? "Alcance" : "Scope",
+          label: t("builderReview.scope"),
           value: scopeText ? (scopeText.length > 160 ? `${scopeText.slice(0, 160)}…` : scopeText) : dash,
         },
       ],
@@ -6758,16 +6570,16 @@ export default function EstimateForm(props) {
         stepId: WIZARD_STEP_IDS.LABOR,
         title: wizardTitleFor(WIZARD_STEP_IDS.LABOR),
         rows: [
-          { label: es ? "Líneas" : "Lines", value: String(laborLineCount) },
-          { label: es ? "Mano de obra base" : "Base labor", value: money.format(laborBase) },
+          { label: t("builderReview.lines"), value: String(laborLineCount) },
+          { label: t("builderReview.baseLabor"), value: money.format(laborBase) },
         ],
       },
       {
         stepId: WIZARD_STEP_IDS.CONDITIONS,
         title: wizardTitleFor(WIZARD_STEP_IDS.CONDITIONS),
         rows: [
-          { label: es ? "Peligro" : "Hazard", value: `${Number.isFinite(hazardPctNormalized) ? hazardPctNormalized : 0}%` },
-          { label: es ? "Riesgo" : "Risk", value: `${Number.isFinite(riskPctNormalized) ? riskPctNormalized : 0}%` },
+          { label: t("builderReview.hazard"), value: `${Number.isFinite(hazardPctNormalized) ? hazardPctNormalized : 0}%` },
+          { label: t("builderReview.risk"), value: `${Number.isFinite(riskPctNormalized) ? riskPctNormalized : 0}%` },
         ],
       },
       {
@@ -6775,20 +6587,20 @@ export default function EstimateForm(props) {
         title: wizardTitleFor(WIZARD_STEP_IDS.MATERIALS),
         rows: [
           {
-            label: es ? "Tipo de entrada" : "Entry type",
+            label: t("materialsMode"),
             value: materialsMode === "itemized"
-              ? (es ? "Detallado" : "Itemized")
-              : (es ? "Global" : "Blanket"),
+              ? (t("materialsModeItemized"))
+              : (t("materialsModeBlanket")),
           },
-          { label: es ? "Total" : "Total", value: money.format(displayedMaterialsTotal) },
+          { label: t("common.total"), value: money.format(displayedMaterialsTotal) },
         ],
       },
       {
         stepId: WIZARD_STEP_IDS.CHARGES,
         title: wizardTitleFor(WIZARD_STEP_IDS.CHARGES),
         rows: [
-          { label: es ? "Líneas" : "Lines", value: String(additionalChargesCount) },
-          { label: es ? "Subtotal" : "Subtotal", value: money.format(additionalChargesSubtotal) },
+          { label: t("builderReview.lines"), value: String(additionalChargesCount) },
+          { label: t("builderReview.subtotal"), value: money.format(additionalChargesSubtotal) },
         ],
       },
       {
@@ -6796,7 +6608,7 @@ export default function EstimateForm(props) {
         title: wizardTitleFor(WIZARD_STEP_IDS.TERMS),
         rows: [
           {
-            label: es ? "Términos y notas" : "Terms & notes",
+            label: t("builderReview.termsNotes"),
             value: termsText ? (termsText.length > 160 ? `${termsText.slice(0, 160)}…` : termsText) : dash,
           },
         ],
@@ -6871,7 +6683,7 @@ export default function EstimateForm(props) {
     <div
       className="pe-builder-lang"
       role="group"
-      aria-label={lang === "es" ? "Idioma del generador" : "Builder language"}
+      aria-label={t("builderExtra.builderLanguage")}
     >
       <button
         type="button"
@@ -6968,59 +6780,59 @@ export default function EstimateForm(props) {
           const chips = uiDocType === "invoice"
             ? [
                 buildChip(
-                  lang === "es" ? "Cliente" : "Customer",
-                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  t("builderExtra.customer"),
+                  hasCustomer ? (t("builderExtra.ready")) : (t("builderExtra.missing")),
                   hasCustomer ? readyTone : warnTone
                 ),
                 buildChip(
-                  lang === "es" ? "Proyecto / trabajo" : "Project / Job",
+                  t("builderExtra.projectJob"),
                   hasProject
-                    ? (lang === "es" ? "Vinculado" : "Linked")
-                    : (hasProjectOrJobContext ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Opcional" : "Optional")),
+                    ? (t("builderExtra.linked"))
+                    : (hasProjectOrJobContext ? (t("builderExtra.ready")) : (t("builderExtra.optional"))),
                   hasProjectOrJobContext ? infoTone : neutralTone
                 ),
                 buildChip(
-                  lang === "es" ? "Montos / líneas" : "Amounts / Lines",
-                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  t("builderExtra.amountsLines"),
+                  hasCosts ? (t("builderExtra.ready")) : (t("builderExtra.missing")),
                   hasCosts ? readyTone : warnTone
                 ),
                 buildChip(
-                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
-                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  t("builderExtra.saveExport"),
+                  canExport ? (t("builderExtra.review")) : (t("builderExtra.pending")),
                   reviewTone
                 ),
               ]
             : [
                 buildChip(
-                  lang === "es" ? "Cliente" : "Customer",
-                  hasCustomer ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  t("builderExtra.customer"),
+                  hasCustomer ? (t("builderExtra.ready")) : (t("builderExtra.missing")),
                   hasCustomer ? readyTone : warnTone
                 ),
                 buildChip(
-                  lang === "es" ? "Proyecto" : "Project",
-                  hasProject ? (lang === "es" ? "Vinculado" : "Linked") : (lang === "es" ? "Opcional" : "Optional"),
+                  t("builderExtra.project"),
+                  hasProject ? (t("builderExtra.linked")) : (t("builderExtra.optional")),
                   hasProject ? infoTone : neutralTone
                 ),
                 buildChip(
-                  lang === "es" ? "Alcance" : "Scope",
-                  hasScope ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  t("builderExtra.scope"),
+                  hasScope ? (t("builderExtra.ready")) : (t("builderExtra.missing")),
                   hasScope ? readyTone : warnTone
                 ),
                 buildChip(
-                  lang === "es" ? "Costos" : "Costs",
-                  hasCosts ? (lang === "es" ? "Listo" : "Ready") : (lang === "es" ? "Falta" : "Missing"),
+                  t("builderExtra.costs"),
+                  hasCosts ? (t("builderExtra.ready")) : (t("builderExtra.missing")),
                   hasCosts ? readyTone : warnTone
                 ),
                 buildChip(
-                  lang === "es" ? "Guardar / Exportar" : "Save / Export",
-                  canExport ? (lang === "es" ? "Revisar" : "Review") : (lang === "es" ? "Pendiente" : "Pending"),
+                  t("builderExtra.saveExport"),
+                  canExport ? (t("builderExtra.review")) : (t("builderExtra.pending")),
                   reviewTone
                 ),
               ];
           return (
             <div
               className="pe-builder-readiness"
-              aria-label={lang === "es" ? "Estado de preparación" : "Builder readiness"}
+              aria-label={t("builderExtra.builderReadiness")}
             >
               <div className="pe-builder-readiness-row">
                 {chips.map(({ label, status, color, bg, border }) => (
@@ -7051,7 +6863,7 @@ export default function EstimateForm(props) {
         <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
           <SectionTitleWithIcon
             icon={<IconCustomer />}
-            title={lang === "es" ? "Identidad del cliente" : "Customer identity"}
+            title={t("builderExtra.customerIdentity")}
             styles={styles}
             stackStyle={{ marginBottom: 0 }}
           />
@@ -7062,9 +6874,7 @@ export default function EstimateForm(props) {
           ) : null}
         </div>
         <div className="pe-task-description" style={{ ...styles.scopeSubtitle, marginBottom: 8 }}>
-          {lang === "es"
-            ? "A quién le estás facturando — selecciona un cliente existente o crea uno. Los detalles del sitio van en Datos del Proyecto."
-            : "Who you're billing — select an existing customer or create one. Job site details go in Project Info."}
+          {t("builderExtra.whoReBillingSelectExistingCustomer")}
         </div>
 
         <div className="pe-customer-layout">
@@ -7218,11 +7028,9 @@ export default function EstimateForm(props) {
         {!(selectedCustomerId && selectedProfile) ? (
           <div className="pe-context-empty">
             <span className="pe-context-empty-mark" aria-hidden="true">C</span>
-            <strong>{lang === "es" ? "Selecciona un cliente" : "Select a customer"}</strong>
+            <strong>{t("builderExtra.selectCustomer")}</strong>
             <span>
-              {lang === "es"
-                ? "El contacto, tipo de cliente y términos aparecerán aquí."
-                : "Contact details, customer type, and payment terms will appear here."}
+              {t("builderExtra.contactDetailsCustomerTypePaymentTerms")}
             </span>
           </div>
         ) : null}
@@ -7235,14 +7043,12 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon
           icon={<IconJobInfo />}
-          title={lang === "es" ? "Definición del trabajo" : "Job definition"}
+          title={t("builderExtra.jobDefinition")}
           styles={styles}
           stackStyle={{ marginBottom: 0 }}
         />
         <div className="pe-task-description" style={styles.scopeSubtitle}>
-          {lang === "es"
-            ? "Nombre del trabajo, dirección del sitio y fecha — aparece en el encabezado del estimado, por separado del cliente."
-            : "Job name, site address, and date — goes on your estimate header, separate from who you're billing."}
+          {t("builderExtra.jobNameSiteAddressDateGoes")}
         </div>
 
         {projectSeedSummary ? (
@@ -7444,7 +7250,7 @@ export default function EstimateForm(props) {
           <div style={{ display: "grid", gap: 2 }}>
             <SectionTitleWithIcon
               icon={<IconSpecialConditions />}
-              title={lang === "es" ? "Espacio de alcance" : "Scope workspace"}
+              title={t("builderExtra.scopeWorkspace")}
               styles={styles}
               stackStyle={{ marginBottom: 0 }}
             />
@@ -7477,7 +7283,7 @@ export default function EstimateForm(props) {
                   checked={invoiceScopeOnPdfEnabled}
                   onChange={(event) => patch("ui.includeInvoiceScopeOnPdf", Boolean(event.target.checked))}
                 />
-                <span>{lang === "es" ? "Incluir alcance del trabajo en el PDF" : "Include Scope of Work on PDF"}</span>
+                <span>{t("builderExtra.includeScopeWorkPdf")}</span>
               </label>
             ) : null}
             <button
@@ -7492,13 +7298,13 @@ export default function EstimateForm(props) {
           </div>
         </div>
         <div className="pe-scope-flow" aria-hidden="true">
-          <span>{lang === "es" ? "Describir" : "Describe"}</span>
+          <span>{t("builderExtra.describe")}</span>
           <i>→</i>
-          <span>{lang === "es" ? "Asistir" : "Assist"}</span>
+          <span>{t("builderExtra.assist")}</span>
           <i>→</i>
-          <span>{lang === "es" ? "Refinar" : "Refine"}</span>
+          <span>{t("builderExtra.refine")}</span>
           <i>→</i>
-          <span>{lang === "es" ? "Alcance final" : "Final scope"}</span>
+          <span>{t("builderExtra.finalScope")}</span>
         </div>
         <>
         <div
@@ -7508,7 +7314,7 @@ export default function EstimateForm(props) {
           <div className="pe-scope-insert-grid pe-scope-template-rail">
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(230,241,248,0.38)" }}>
-                {lang === "es" ? "Mis plantillas" : "Your saved templates"}
+                {t("builderExtra.savedTemplates")}
               </div>
               <select
                 className="pe-input"
@@ -7521,8 +7327,8 @@ export default function EstimateForm(props) {
               >
                 <option value="">
                   {scopeTemplates.length === 0
-                    ? (lang === "es" ? "Ninguna guardada — usa Guardar plantilla abajo" : "None saved — use Save as Template below")
-                    : (lang === "es" ? "Aplicar plantilla guardada…" : "Apply a saved template…")}
+                    ? (t("builderExtra.noneSavedUseSaveAsTemplate"))
+                    : (t("builderExtra.applySavedTemplate"))}
                 </option>
                 {scopeTemplates.map((tmpl) => (
                   <option key={tmpl.id} value={tmpl.id}>{tmpl.name}</option>
@@ -7818,7 +7624,7 @@ export default function EstimateForm(props) {
                 onClick={handleSaveScopeTemplate}
                 title="Save the current work package as a reusable template"
               >
-                {lang === "es" ? "Guardar plantilla" : "Save as Template"}
+                {t("builderExtra.saveAsTemplate")}
               </button>
             </>
           ) : (
@@ -7845,7 +7651,7 @@ export default function EstimateForm(props) {
         <div className="pe-workspace-header pe-labor-header" style={styles.sectionHeaderRow}>
           <SectionTitleWithIcon
             icon={<IconLabor />}
-            title={lang === "es" ? "Plan de cuadrilla" : "Crew plan"}
+            title={t("builderExtra.crewPlan")}
             styles={styles}
             stackStyle={{ marginBottom: 0 }}
           />
@@ -7853,8 +7659,8 @@ export default function EstimateForm(props) {
           {!laborOpen && (
             <div className="pe-muted" style={styles.laborCollapsedMeta}>
               {(laborLines?.length || 0) === 1
-                ? (lang === "es" ? "1 línea" : "1 line")
-                : `${laborLines?.length || 0} ${lang === "es" ? "líneas" : "lines"}`}
+                ? (t("builderExtra.1Line"))
+                : `${laborLines?.length || 0} ${t("builderExtra.lines")}`}
               {" • "}
               {money.format(Number(laborAdjusted) || 0)}
             </div>
@@ -7874,10 +7680,10 @@ export default function EstimateForm(props) {
                 type="button"
                 className="pe-btn pe-btn-ghost"
                 onClick={() => setLaborOpen(true)}
-                title={lang === "es" ? "Expandir" : "Expand"}
+                title={t("builderExtra.expand")}
                 style={styles.scopeCollapseBtn}
               >
-                {lang === "es" ? "Expandir ▾" : "Expand ▾"}
+                {t("builderExtra.expand2")}
               </button>
             )}
           </div>
@@ -7888,9 +7694,7 @@ export default function EstimateForm(props) {
           style={{ ...styles.laborCollapseWrap, transitionDuration: `${COLLAPSE_MS}ms` }}
         >
           <div className="pe-muted pe-task-description pe-labor-guidance" style={{ marginTop: 10, marginBottom: 6 }}>
-            {lang === "es"
-              ? "Usa \"AI Assist\" para generar líneas automáticamente desde tu alcance. También puedes agregar líneas manualmente: selecciona un rol para cargar tarifas de referencia, luego ingresa las horas."
-              : "Use \"AI Assist\" to auto-draft rows from your current scope. You can also add lines manually: select a preset to load reference rates, then enter hours."}
+            {t("builderExtra.useAiAssistAutoDraftRows")}
           </div>
           {laborLines.map((l, i) => {
             const roleOptions = buildLaborRoleOptions(l.label);
@@ -7904,12 +7708,12 @@ export default function EstimateForm(props) {
                 >
                   <div className="pe-grid pe-labor-grid" style={styles.laborLineGrid}>
                   <div style={styles.fieldStack}>
-                    <div style={styles.label}>{lang === "es" ? "Rol" : "Role"}</div>
+                    <div style={styles.label}>{t("builderExtra.role")}</div>
                     <select
                       className="pe-input"
                       value={selectedRoleValue}
                       onChange={(e) => handleLaborRoleSelection(i, e.target.value)}
-                      title={lang === "es" ? "Rol" : "Role"}
+                      title={t("builderExtra.role")}
                       style={{ width: "100%" }}
                     >
                       <option value="">{t("selectRole")}</option>
@@ -7976,23 +7780,23 @@ export default function EstimateForm(props) {
                   {showInternalCostFields ? (
                     <div style={styles.fieldStack}>
                       <div style={styles.label}>
-                        {lang === "es" ? "Tarifa real (interna)" : "True rate (internal)"}
+                        {t("builderExtra.trueRateInternal")}
                         <span
                           className="pe-muted"
                           style={styles.laborLineOptional}
-                          title={lang === "es" ? "Opcional: si está vacío, usa Tarifa" : "Optional: if blank, uses Rate"}
+                          title={t("builderExtra.optionalIfBlankUsesRate")}
                         >
-                          {lang === "es" ? "(opcional)" : "(optional)"}
+                          {t("builderExtra.optional2")}
                         </span>
                       </div>
                       <input
                         className="pe-input"
-                        placeholder={lang === "es" ? "Tarifa interna" : "Internal rate"}
+                        placeholder={t("builderExtra.internalRate")}
                         value={l.internalRate || l.trueRateInternal || ""}
                         onChange={(e) => updateLaborLineAt(i, "internalRate", e.target.value)}
                         onBlur={(e) => updateLaborLineAt(i, "internalRate", normalizeMoneyInput(e.target.value))}
                         inputMode="decimal"
-                        title={lang === "es" ? "Solo interno (no se imprime)" : "Internal only (not printed)"}
+                        title={t("builderExtra.internalOnlyNotPrinted")}
                         disabled={lockInternalCostFields}
                         style={{ width: "100%", opacity: lockInternalCostFields ? 0.72 : 1 }}
                       />
@@ -8003,7 +7807,7 @@ export default function EstimateForm(props) {
                   <div className="pe-labor-line-footer" style={styles.laborLineActions}>
                   <div
                     className="pe-muted"
-                    title={lang === "es" ? "Cantidad en esta línea" : "Headcount on this line"}
+                    title={t("builderExtra.headcountLine")}
                     style={styles.laborQtyLabel}
                   >
                     x{normalizeLaborQtyValue(l?.qty)}
@@ -8019,7 +7823,7 @@ export default function EstimateForm(props) {
                       className="pe-btn pe-btn-ghost"
                       type="button"
                       onClick={() => handleLaborMinus(i)}
-                      title={lang === "es" ? "Disminuir cantidad" : "Decrease quantity"}
+                      title={t("builderExtra.decreaseQuantity")}
                       style={styles.lineDeleteBtn}
                     >
                       −
@@ -8028,7 +7832,7 @@ export default function EstimateForm(props) {
                       className="pe-btn pe-btn-ghost pe-labor-add-circle"
                       type="button"
                       onClick={() => duplicateLaborLine(i)}
-                      title={lang === "es" ? "Duplicar trabajador en esta línea" : "Duplicate laborer on this line"}
+                      title={t("builderExtra.duplicateLaborerLine")}
                       style={styles.lineAddBtn}
                     >
                       +
@@ -8038,7 +7842,7 @@ export default function EstimateForm(props) {
                     className="pe-btn pe-btn-ghost pe-labor-trash-btn"
                     type="button"
                     onClick={() => handleLaborTrash(i)}
-                    title={lang === "es" ? "Eliminar línea" : "Delete line"}
+                    title={t("builderExtra.deleteLine")}
                     style={styles.lineTrashBtn}
                   >
                     <IconTrash />
@@ -8049,7 +7853,7 @@ export default function EstimateForm(props) {
           })}
 
           <div className="pe-row pe-row-slim pe-calculated-total" style={styles.laborBaseRow}>
-            <div className="pe-muted">{lang === "es" ? "Mano de obra base" : "Base labor"}</div>
+            <div className="pe-muted">{t("builderExtra.baseLabor")}</div>
             <div className={`pe-value ${animateLaborBaseTotal ? "value-pulse" : ""}`}>{money.format(laborBase)}</div>
           </div>
         </div>
@@ -8060,10 +7864,10 @@ export default function EstimateForm(props) {
               type="button"
               className="pe-btn pe-btn-ghost"
               onClick={() => setLaborOpen(false)}
-              title={lang === "es" ? "Colapsar" : "Collapse"}
+              title={t("builderExtra.collapse")}
               style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterSecondaryBtn }}
             >
-              {lang === "es" ? "Colapsar" : "Collapse"} ▴
+              {t("builderExtra.collapse")} ▴
             </button>
             <button
               className="pe-btn pe-btn-micro pe-shortcut-tip"
@@ -8072,7 +7876,7 @@ export default function EstimateForm(props) {
               type="button"
               style={{ ...styles.sectionFooterBtn, ...styles.sectionFooterPrimaryBtn }}
             >
-              {lang === "es" ? "+ Mano de obra" : "+ Labor"}
+              {t("builderExtra.labor2")}
             </button>
           </div>
         )}
@@ -8086,14 +7890,12 @@ export default function EstimateForm(props) {
           <div style={{ display: "grid", gap: 2 }}>
             <SectionTitleWithIcon
               icon={<IconSpecialConditions />}
-              title={lang === "es" ? "Ajustes activos" : "Active adjustments"}
+              title={t("builderExtra.activeAdjustments")}
               styles={styles}
               stackStyle={{ marginBottom: 0 }}
             />
             <div className="pe-task-description" style={styles.scopeSubtitle}>
-              {lang === "es"
-                ? "Costo adicional de mano de obra por condiciones del sitio o riesgos del trabajo — se aplica sobre el total de mano de obra, no sobre el alcance ni los materiales."
-                : "Extra labor cost driven by site conditions or job risk — applies on top of your base labor total. Not scope, not materials, not crew hours."}
+              {t("builderExtra.extraLaborCostDrivenBySite")}
             </div>
           </div>
           {!specialConditionsOpen ? (
@@ -8118,9 +7920,7 @@ export default function EstimateForm(props) {
               <div className="pe-adjustment-card" style={styles.fieldStack}>
                 <div style={styles.label}>Hazard / Site Conditions</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  {lang === "es"
-                    ? "Acceso difícil, EPP requerido o peligros conocidos en el sitio — agrega un % a tu total de mano de obra."
-                    : "Tight access, required PPE, or known site hazards — adds a % to your labor total."}
+                  {t("builderExtra.tightAccessRequiredPpeKnownSite")}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.hazardPct ?? "")}
@@ -8155,9 +7955,7 @@ export default function EstimateForm(props) {
               <div className="pe-adjustment-card" style={styles.fieldStack}>
                 <div style={styles.label}>Risk / Uncertainty Buffer</div>
                 <div className="pe-muted" style={styles.specialConditionsHelper}>
-                  {lang === "es"
-                    ? "Condiciones ocultas, planos incompletos o incertidumbre de cronograma — agrega un % a tu total de mano de obra."
-                    : "Hidden conditions, incomplete drawings, or schedule uncertainty — adds a % to your labor total."}
+                  {t("builderExtra.hiddenConditionsIncompleteDrawingsScheduleUncertainty")}
                 </div>
                 <InlineCustomNumberField
                   value={String(state?.labor?.riskPct ?? "")}
@@ -8285,7 +8083,7 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon
           icon={<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path d="M6 6.5h12M6 12h12M6 17.5h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><path d="M16.5 4.8v14.4M12 9.6v7.2" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>}
-          title={lang === "es" ? "Ajustes financieros" : "Financial adjustments"}
+          title={t("builderExtra.financialAdjustments")}
           styles={styles}
         />
         <div className="pe-task-description" style={styles.scopeSubtitle}>
@@ -8361,9 +8159,7 @@ export default function EstimateForm(props) {
             );
           }) : (
             <div className="pe-muted" style={{ fontSize: 13 }}>
-              {lang === "es"
-                ? "Todavia no hay cargos adicionales. Agrega una linea para recargos, permisos, renta de equipo o servicio fuera de horario."
-                : "No additional charges yet. Add a line for rush work, permits, rentals, trip fees, or after-hours service."}
+              {t("builderExtra.noAdditionalChargesYetAddLine")}
             </div>
           )}
         </div>
@@ -8389,19 +8185,17 @@ export default function EstimateForm(props) {
         <div className="pe-divider" style={styles.sectionHeaderDivider} />
         <SectionTitleWithIcon
           icon={<IconSpecialConditions />}
-          title={lang === "es" ? "Detalles para el cliente" : "Customer-facing details"}
+          title={t("builderExtra.customerFacingDetails")}
           styles={styles}
           stackStyle={{ marginBottom: 0 }}
         />
         <div className="pe-task-description" style={styles.scopeSubtitle}>
-          {lang === "es"
-            ? "Exclusiones, condiciones de pago y términos de cronograma — aparecen al final de tu estimado. Usa los accesos rápidos o escribe los tuyos."
-            : "Exclusions, payment terms, and schedule conditions — these print at the bottom of your estimate. Use the quick-inserts or write your own."}
+          {t("builderExtra.exclusionsPaymentTermsScheduleConditionsThese")}
         </div>
         <div className="pe-terms-layout">
         <div className="pe-additional-notes-actions pe-terms-presets" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, marginTop: 10 }}>
           <div className="pe-terms-presets-label">
-            {lang === "es" ? "Inserciones rápidas" : "Quick inserts"}
+            {t("builderExtra.quickInserts")}
           </div>
           {ADDITIONAL_NOTES_SNIPPETS.map((s) => (
             <button
@@ -8473,7 +8267,7 @@ export default function EstimateForm(props) {
             setFinalizationOpen(true);
           }}
           onClear={isEditMode ? onCancelEdit : onClearAll}
-          clearLabel={isEditMode ? (lang === "es" ? "Cancelar edición" : "Cancel Edit") : undefined}
+          clearLabel={isEditMode ? (t("builderExtra.cancelEdit")) : undefined}
           shellChromeVisible={commandDockVisible}
           statusSlot={<CloudBackupInlineStatus style={{ margin: 0, textAlign: "center" }} />}
         />

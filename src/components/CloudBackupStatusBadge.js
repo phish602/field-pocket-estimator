@@ -11,9 +11,11 @@
 // ProjectDetailScreen.js's renderBackupChip.
 
 import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
+import { useLanguage } from "../lib/i18n";
 
 export default function CloudBackupStatusBadge({ style } = {}) {
   const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
+  const { t } = useLanguage();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
   return (
@@ -36,27 +38,27 @@ export default function CloudBackupStatusBadge({ style } = {}) {
       }}
     >
       {productState === CLOUD_PRODUCT_STATE.SYNCING ? (
-        <div style={{ color: "rgba(99,179,237,0.92)" }}>{"Backing up changes..."}</div>
+        <div style={{ color: "rgba(99,179,237,0.92)" }}>{t("cloud.backingUpChanges")}</div>
       ) : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE ? (
         <>
           <div style={{ color: "rgba(253,224,71,0.95)" }}>
-            {"Sync needs attention"}
+            {t("cloud.syncNeedsAttention")}
           </div>
           <div style={{ fontWeight: 500, opacity: 0.75 }}>
-            {"Saved on this device · Sync needs attention"}
+            {t("cloud.inlineNeedsAttention")}
           </div>
         </>
       ) : productState === CLOUD_PRODUCT_STATE.PENDING ? (
         <>
-          <div>{productStatus.pendingReason === "offline" ? "Waiting for connection" : productStatus.pendingReason === "retry" ? "Cloud sync retrying" : "Cloud sync pending"}</div>
-          <div style={{ fontWeight: 500, opacity: 0.75 }}>{productStatus.pendingReason === "offline" ? "Your changes are saved on this device. Sync will continue when you’re back online." : "Your changes are saved on this device and will sync automatically."}</div>
+          <div>{productStatus.pendingReason === "offline" ? t("cloud.waitingForConnection") : productStatus.pendingReason === "retry" ? t("cloud.syncRetrying") : t("cloud.syncPending")}</div>
+          <div style={{ fontWeight: 500, opacity: 0.75 }}>{productStatus.pendingReason === "offline" ? t("cloud.savedOfflineWillContinue") : t("cloud.savedWillSyncAutomatically")}</div>
         </>
       ) : productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE ? (
-        <div style={{ color: "rgba(99,179,237,0.92)" }}>{"Restore"}</div>
+        <div style={{ color: "rgba(99,179,237,0.92)" }}>{t("cloud.restore")}</div>
       ) : productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED ? (
-        <div style={{ color: "rgba(187,247,208,0.9)" }}>{"Cloud connected"}</div>
+        <div style={{ color: "rgba(187,247,208,0.9)" }}>{t("cloud.connected")}</div>
       ) : (
-        <div style={{ color: "rgba(187,247,208,0.95)" }}>{"Cloud backup is up to date."}</div>
+        <div style={{ color: "rgba(187,247,208,0.95)" }}>{t("cloud.backupUpToDate")}</div>
       )}
     </div>
   );

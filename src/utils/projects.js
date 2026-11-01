@@ -529,6 +529,15 @@ const PROJECT_DISPLAY_STATUS_LABELS = {
   completed: "Completed",
   archived: "Archived",
 };
+// Shared-dictionary keys for the same statuses. `label` stays as the English
+// fallback for non-rendering callers; anything user-visible renders labelKey.
+const PROJECT_DISPLAY_STATUS_LABEL_KEYS = {
+  draft: "projects.statusDraft",
+  estimating: "projects.statusEstimating",
+  active: "projects.statusActive",
+  completed: "projects.statusCompleted",
+  archived: "projects.statusArchived",
+};
 
 const OPEN_ESTIMATE_STATUSES = new Set(["draft", "pending", "sent"]);
 const APPROVED_ESTIMATE_STATUSES = new Set(["approved"]);
@@ -553,6 +562,7 @@ export function deriveProjectDisplayStatus({ project = null, estimates = [], inv
     return {
       key: projectStatus,
       label: PROJECT_DISPLAY_STATUS_LABELS[projectStatus] || PROJECT_DISPLAY_STATUS_LABELS.draft,
+      labelKey: PROJECT_DISPLAY_STATUS_LABEL_KEYS[projectStatus] || PROJECT_DISPLAY_STATUS_LABEL_KEYS.draft,
     };
   }
   const estimateStatuses = Array.isArray(estimates) ? estimates.map((entry) => normalizeDocStatusKey(entry)) : [];
@@ -580,6 +590,7 @@ export function deriveProjectDisplayStatus({ project = null, estimates = [], inv
   return {
     key,
     label: PROJECT_DISPLAY_STATUS_LABELS[key] || PROJECT_DISPLAY_STATUS_LABELS.draft,
+    labelKey: PROJECT_DISPLAY_STATUS_LABEL_KEYS[key] || PROJECT_DISPLAY_STATUS_LABEL_KEYS.draft,
   };
 }
 

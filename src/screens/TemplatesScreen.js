@@ -9,6 +9,7 @@ import {
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
 import { useBusinessMutationGuard } from "../lib/BusinessMutationGuardContext";
+import { useLanguage } from "../lib/i18n";
 
 function formatTemplateTimestamp(value) {
   const ts = Number(value || 0);
@@ -43,6 +44,8 @@ function hasBlanketMaterials(template = {}) {
 }
 
 export default function TemplatesScreen({ onOpenBuilder }) {
+  // Language and copy come from the app's one owner (src/lib/i18n).
+  const { t } = useLanguage();
   const [templates, setTemplates] = useState(() => readStoredScopeTemplates());
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
 
@@ -140,12 +143,12 @@ export default function TemplatesScreen({ onOpenBuilder }) {
     <div className="pe-wrap" style={{ display: "grid", gap: 14 }}>
       <div className="pe-builder-bar" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div style={{ minWidth: 0 }}>
-          <h1 className="pe-title screenTitle" style={{ margin: 0 }}>Templates</h1>
+          <h1 className="pe-title screenTitle" style={{ margin: 0 }}>{t("templates.templates")}</h1>
           <div className="pe-muted" style={{ marginTop: 4 }}>
-            Reusable work package templates shared across estimates and invoices.
+            {t("templates.reusableWorkPackageTemplatesSharedAcross")}
           </div>
           <div className="pe-muted" style={{ marginTop: 4 }}>
-            Applying a template updates work content only and does not replace customer or job details.
+            {t("templates.applyingTemplateUpdatesWorkContentOnly")}
           </div>
         </div>
       </div>
@@ -154,10 +157,10 @@ export default function TemplatesScreen({ onOpenBuilder }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(226,236,244,0.72)" }}>
-              Saved Templates
+              {t("templates.savedTemplates")}
             </div>
             <div className="pe-muted" style={{ marginTop: 4 }}>
-              Save templates from the builder, then manage them here.
+              {t("templates.saveTemplatesBuilderThenManageThem")}
             </div>
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(226,236,244,0.78)" }}>
@@ -177,9 +180,9 @@ export default function TemplatesScreen({ onOpenBuilder }) {
               gap: 10,
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 800 }}>No saved templates yet</div>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>{t("templates.noSavedTemplatesYet")}</div>
             <div className="pe-muted">
-              Create a reusable work package in the builder, then use “Save as Template” to keep it for future customers and jobs.
+              {t("templates.createReusableWorkPackageBuilderThen")}
             </div>
           </div>
         ) : (
@@ -203,7 +206,7 @@ export default function TemplatesScreen({ onOpenBuilder }) {
                       <div style={{ fontSize: 16, fontWeight: 800, color: "rgba(236,243,248,0.96)" }}>{template.name}</div>
                       {template.isLegacyScopeOnly ? (
                         <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(251,191,36,0.96)", background: "rgba(251,191,36,0.12)", borderRadius: 999, padding: "3px 8px", border: "1px solid rgba(251,191,36,0.22)" }}>
-                          Scope-only legacy
+                          {t("templates.scopeOnlyLegacy")}
                         </span>
                       ) : null}
                     </div>
@@ -223,14 +226,14 @@ export default function TemplatesScreen({ onOpenBuilder }) {
                       type="button"
                       onClick={() => handleRenameTemplate(template.id)}
                     >
-                      Rename
+                      {t("templates.rename")}
                     </button>
                     <button
                       className="pe-btn pe-btn-ghost"
                       type="button"
                       onClick={() => handleDeleteTemplate(template.id)}
                     >
-                      Delete
+                      {t("templates.delete")}
                     </button>
                   </div>
                 </div>

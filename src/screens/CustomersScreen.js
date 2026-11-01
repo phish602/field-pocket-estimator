@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Field from "../components/Field";
 import { STORAGE_KEYS } from "../constants/storageKeys";
+import { useLanguage } from "../lib/i18n";
 import { DEFAULT_SETTINGS, loadSettings } from "../utils/settings";
 import { computeTotals } from "../estimator/engine";
 import { INVOICE_STATUSES, deriveInvoiceStatus, readStoredInvoices } from "../utils/invoices";
@@ -387,10 +388,6 @@ function TextLine({ children }) {
   return <div style={{ fontSize: 13, opacity: 0.85, lineHeight: 1.25, whiteSpace: "pre-line" }}>{children}</div>;
 }
 
-function labelOf(lang, en, es) {
-  return lang === "es" ? es : en;
-}
-
 function EmptyCustomersIcon() {
   return (
     <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
@@ -454,10 +451,10 @@ const stickyListHeaderStyle = {
 };
 
 const NET_TERMS_OPTIONS = [
-  { value: "DUE_UPON_RECEIPT", labelEn: "Due upon receipt", labelEs: "Pago al recibir" },
-  { value: "NET_15", labelEn: "Net 15", labelEs: "Neto 15" },
-  { value: "NET_30", labelEn: "Net 30", labelEs: "Neto 30" },
-  { value: "NET_CUSTOM", labelEn: "Net custom", labelEs: "Neto personalizado" },
+  { value: "DUE_UPON_RECEIPT", labelKey: "customers.netTermsDueOnReceipt" },
+  { value: "NET_15", labelKey: "customers.netTerms15" },
+  { value: "NET_30", labelKey: "customers.netTerms30" },
+  { value: "NET_CUSTOM", labelKey: "customers.netTermsCustom" },
 ];
 
 const ESTIMATOR_SECTION_TITLE_STACK_STYLE = {
@@ -588,8 +585,6 @@ function deriveCustomerNextAction(account) {
 }
 
 export default function CustomersScreen({
-  lang = "en",
-  t = (k) => k,
   customers,
   setCustomers,
   selectedCustomerId,
@@ -599,7 +594,8 @@ export default function CustomersScreen({
   drilldownIntent = null,
   onDrilldownIntentConsumed,
 }) {
-  const label = (en, es) => labelOf(lang, en, es);
+  // Language and copy come from the app's one owner, not from props.
+  const { lang, t } = useLanguage();
   const { ensureCanMutateBusinessData } = useBusinessMutationGuard();
 
   const [projectChooser, setProjectChooser] = useState(null);
@@ -1099,18 +1095,18 @@ export default function CustomersScreen({
     const type = String(d.type || "residential");
 
     if (type === "commercial") {
-      if (!String(d.companyName || "").trim()) return alert(label("Company name is required.", "Nombre de la compañía es requerido."));
-      if (!String(d.contactName || "").trim()) return alert(label("Primary contact is required.", "Contacto principal es requerido."));
-      if (!String(d.jobsite?.street || "").trim()) return alert(label("Jobsite street is required.", "Calle del sitio es requerida."));
-      if (!String(d.jobsite?.city || "").trim()) return alert(label("Jobsite city is required.", "Ciudad del sitio es requerida."));
-      if (!String(d.jobsite?.state || "").trim()) return alert(label("Jobsite state is required.", "Estado del sitio es requerido."));
-      if (!String(d.jobsite?.zip || "").trim()) return alert(label("Jobsite ZIP is required.", "ZIP del sitio es requerido."));
+      if (!String(d.companyName || "").trim()) return alert(t("customers.companyNameRequired"));
+      if (!String(d.contactName || "").trim()) return alert(t("customers.primaryContactRequired"));
+      if (!String(d.jobsite?.street || "").trim()) return alert(t("customers.jobsiteStreetRequired"));
+      if (!String(d.jobsite?.city || "").trim()) return alert(t("customers.jobsiteCityRequired"));
+      if (!String(d.jobsite?.state || "").trim()) return alert(t("customers.jobsiteStateRequired"));
+      if (!String(d.jobsite?.zip || "").trim()) return alert(t("customers.jobsiteZipRequired"));
     } else {
-      if (!String(d.fullName || "").trim()) return alert(label("Full name is required.", "Nombre completo es requerido."));
-      if (!String(d.resService?.street || "").trim()) return alert(label("Street is required.", "Calle es requerida."));
-      if (!String(d.resService?.city || "").trim()) return alert(label("City is required.", "Ciudad es requerida."));
-      if (!String(d.resService?.state || "").trim()) return alert(label("State is required.", "Estado es requerido."));
-      if (!String(d.resService?.zip || "").trim()) return alert(label("ZIP is required.", "ZIP es requerido."));
+      if (!String(d.fullName || "").trim()) return alert(t("customers.fullNameRequired"));
+      if (!String(d.resService?.street || "").trim()) return alert(t("customers.streetRequired"));
+      if (!String(d.resService?.city || "").trim()) return alert(t("customers.cityRequired"));
+      if (!String(d.resService?.state || "").trim()) return alert(t("customers.stateRequired"));
+      if (!String(d.resService?.zip || "").trim()) return alert(t("customers.zipRequired"));
     }
 
     const nextMissing = {};
@@ -1121,11 +1117,11 @@ export default function CustomersScreen({
     if (Object.keys(nextMissing).length > 0) {
       setMissingRequired(nextMissing);
       const requiredBits = [];
-      if (nextMissing.phone) requiredBits.push(label("phone", "teléfono"));
-      if (nextMissing.email) requiredBits.push(label("email", "correo"));
-      alert(label(
-        `Please add required ${requiredBits.join(" and ")} before saving.`,
-        `Agrega ${requiredBits.join(" y ")} requerid${requiredBits.length > 1 ? "os" : "o"} antes de guardar.`
+      if (nextMissing.phone) requiredBits.push(t("customers.phone"));
+      if (nextMissing.email) requiredBits.push(t("customers.email"));
+      alert(t(
+        requiredBits.length > 1 ? "customers.missingRequiredOther" : "customers.missingRequiredOne",
+        { fields: requiredBits.join(lang === "es" ? " y " : " and ") }
       ));
       return;
     }
@@ -1138,7 +1134,7 @@ export default function CustomersScreen({
     if (safeTermsType === "NET_CUSTOM") {
       const parsed = parseInt(String(d?.netTermsDays ?? "").trim(), 10);
       if (!Number.isFinite(parsed) || parsed < 0 || parsed > 365) {
-        return alert(label("Custom net terms days must be between 0 and 365.", "Los días personalizados deben estar entre 0 y 365."));
+        return alert(t("customers.customNetTermsDaysMustBetween"));
       }
       safeTermsDays = parsed;
     }
@@ -1188,7 +1184,7 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
 
     setMode("list");
-    setToastMessage(label("Customer saved", "Cliente guardado"));
+    setToastMessage(t("customers.customerSaved"));
     setShowToast(true);
 
     // Normal section saves stay in this mounted list. Reuse the existing
@@ -1245,10 +1241,8 @@ export default function CustomersScreen({
       return;
     }
 
-    const ok = window.confirm(label(
-      `Delete Customer?\n\nThis customer has no estimates, invoices, projects, or payments attached.\n\nDeleting removes ${nm} from your customer list.`,
-      `¿Eliminar cliente?\n\nEste cliente no tiene estimados, facturas, proyectos ni pagos asociados.\n\nEliminar quita a ${nm} de tu lista de clientes.`,
-    ));
+    // `nm` is the customer's own name: interpolated, never translated.
+    const ok = window.confirm(t("customers.deleteConfirm", { name: nm }));
     if (!ok) return;
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
@@ -1273,10 +1267,7 @@ export default function CustomersScreen({
     if (!target) return;
     const nm = displayName(target);
 
-    const ok = window.confirm(label(
-      "This Customer Has Business History\n\nThis customer is connected to estimates, invoices, projects, or payments.\n\nTo protect your records, EstiPaid will archive this customer instead of deleting it.\n\nArchived customers are hidden from the active customer list but remain connected to past work.",
-      "Este cliente tiene historial comercial\n\nEste cliente está conectado a estimados, facturas, proyectos o pagos.\n\nPara proteger tus registros, EstiPaid archivará este cliente en lugar de eliminarlo.\n\nLos clientes archivados se ocultan de la lista activa pero permanecen conectados al trabajo anterior.",
-    ));
+    const ok = window.confirm(t("customers.archiveConfirm"));
     if (!ok) return;
     const mutationAccess = await ensureCanMutateBusinessData("local_save");
     if (!mutationAccess?.ok) {
@@ -1293,7 +1284,7 @@ export default function CustomersScreen({
     else setLocalCustomers(next);
     if (String(selectedCustomerId || "") === sid && typeof setSelectedCustomerId === "function") setSelectedCustomerId("");
     window.dispatchEvent(new Event("estipaid:customers-changed"));
-    setToastMessage(label(`${nm} archived`, `${nm} archivado`));
+    setToastMessage(t("customers.archivedToast", { name: nm }));
     setShowToast(true);
   }
 
@@ -1321,7 +1312,7 @@ export default function CustomersScreen({
     if (typeof setCustomers === "function") setCustomers(next);
     else setLocalCustomers(next);
     window.dispatchEvent(new Event("estipaid:customers-changed"));
-    setToastMessage(label(`${nm} restored`, `${nm} restaurado`));
+    setToastMessage(t("customers.restoredToast", { name: nm }));
     setShowToast(true);
   }
 
@@ -1414,12 +1405,12 @@ export default function CustomersScreen({
         <div className="pe-card">
           <div className="pe-company-profile-header pe-utility-panel-header" style={stickyListHeaderStyle}>
             <div className="pe-company-header-title">
-              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Customers", "Clientes")}>{label("Customers", "Clientes")}</h1>
+              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={t("customers.customers")}>{t("customers.customers")}</h1>
             </div>
 
               <div className="pe-company-header-controls">
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
-                  {label("Add Customer", "Agregar cliente")}
+                  {t("customers.addCustomer")}
                 </button>
               </div>
           </div>
@@ -1430,7 +1421,7 @@ export default function CustomersScreen({
                 <div ref={typeaheadWrapRef} style={{ position: "relative", flex: "1 1 280px", minWidth: 0 }}>
                   <input
                     className="pe-input"
-                    placeholder={label("Search name, phone, email, PO, address…", "Buscar nombre, teléfono, correo, PO, dirección…")}
+                    placeholder={t("customers.searchNamePhoneEmailPoAddress")}
                     value={q}
                     onChange={(e) => { setQ(e.target.value); setTypeaheadHidden(false); setHighlightCustomerId(""); }}
                     onKeyDown={(e) => { if (e.key === "Escape") setTypeaheadHidden(true); }}
@@ -1444,7 +1435,7 @@ export default function CustomersScreen({
                     <div
                       id="customer-typeahead-list"
                       role="listbox"
-                      aria-label={label("Matching customers", "Clientes coincidentes")}
+                      aria-label={t("customers.matchingCustomers")}
                       style={{
                         position: "absolute",
                         top: "calc(100% + 6px)",
@@ -1465,8 +1456,8 @@ export default function CustomersScreen({
                       {typeaheadMatches.map((c) => {
                         const cid = String(c?.id || "");
                         const typeText = String(c?.type || "residential") === "commercial"
-                          ? label("Commercial", "Comercial")
-                          : label("Residential", "Residencial");
+                          ? t("customers.commercial")
+                          : t("customers.residential");
                         const contact = phoneEmailLine(c);
                         return (
                           <button
@@ -1512,8 +1503,8 @@ export default function CustomersScreen({
                           cursor: "pointer",
                         }}
                       >
-                        <span style={{ fontWeight: 800, fontSize: 13.5, lineHeight: 1.2 }}>+ {label("Add Customer", "Agregar cliente")}</span>
-                        <span style={{ fontSize: 11.5, color: "rgba(191,219,254,0.72)", lineHeight: 1.3 }}>{label("Add a new customer from this search", "Agregar un nuevo cliente desde esta búsqueda")}</span>
+                        <span style={{ fontWeight: 800, fontSize: 13.5, lineHeight: 1.2 }}>+ {t("customers.addCustomer")}</span>
+                        <span style={{ fontSize: 11.5, color: "rgba(191,219,254,0.72)", lineHeight: 1.3 }}>{t("customers.addNewCustomerFromSearch")}</span>
                       </button>
                     </div>
                   ) : null}
@@ -1526,7 +1517,7 @@ export default function CustomersScreen({
                   onChange={(e) => setShowArchived(e.target.checked)}
                   style={{ width: 15, height: 15, cursor: "pointer" }}
                 />
-                {label("Show archived", "Mostrar archivados")}
+                {t("customers.showArchived")}
                 {archivedCount > 0 ? (
                   <span style={{ opacity: 0.6, fontWeight: 800 }}>({archivedCount})</span>
                 ) : null}
@@ -1549,15 +1540,15 @@ export default function CustomersScreen({
             >
               <div style={{ display: "grid", gap: 6 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(180,196,208,0.56)" }}>
-                  {label("Client account book", "Libro de cuentas de clientes")}
+                  {t("customers.clientAccountBook")}
                 </div>
                 <div style={{ fontSize: 24, fontWeight: 950, letterSpacing: "-0.03em", color: "rgba(239,245,249,0.98)", lineHeight: 1.05 }}>
-                  {label("Account Priority", "Clientes priorizados por atención de cuenta")}
+                  {t("customers.accountPriority")}
                 </div>
                 <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "rgba(215,225,233,0.74)", maxWidth: 760 }}>
                   {customerPortfolioSummary.topAttentionCustomer
-                    ? `${displayName(customerPortfolioSummary.topAttentionCustomer)} ${label("currently carries the highest visible balance due.", "actualmente tiene el mayor saldo visible pendiente.")}`
-                    : label("Use this view to scan account activity, project context, and next account action quickly.", "Usa esta vista para revisar actividad de cuentas, contexto de proyectos y la siguiente acción rápidamente.")}
+                    ? `${displayName(customerPortfolioSummary.topAttentionCustomer)} ${t("customers.currentlyCarriesHighestVisibleBalanceDue")}`
+                    : t("customers.useViewScanAccountActivityProject")}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
@@ -1567,9 +1558,9 @@ export default function CustomersScreen({
                     // a subset, so it stays informational. Its one real action
                     // is releasing an active drill-down back to everything.
                     key: "total-customers",
-                    labelText: label("Visible customers", "Clientes visibles"),
+                    labelText: t("customers.visibleCustomers"),
                     value: String(customerPortfolioSummary.totalCustomers),
-                    detail: `${customerPortfolioSummary.activeAccounts} ${label("active accounts", "cuentas activas")}`,
+                    detail: `${customerPortfolioSummary.activeAccounts} ${t("customers.activeAccounts")}`,
                     color: "rgba(96,165,250,0.86)",
                     border: "rgba(59,130,246,0.2)",
                     resetsFilter: true,
@@ -1577,29 +1568,29 @@ export default function CustomersScreen({
                   {
                     key: "balance-due",
                     drilldown: CUSTOMER_DRILLDOWNS.BALANCE_DUE,
-                    labelText: label("Open balance due", "Saldo pendiente"),
+                    labelText: t("customers.openBalanceDue"),
                     value: moneyUSD(customerPortfolioSummary.balanceDue),
                     detail: customerPortfolioSummary.overdueAccounts > 0
-                      ? `${customerPortfolioSummary.overdueAccounts} ${label("accounts overdue", "cuentas vencidas")}`
-                      : label("No overdue accounts in view", "No hay cuentas vencidas en vista"),
+                      ? `${customerPortfolioSummary.overdueAccounts} ${t("customers.accountsOverdue")}`
+                      : t("customers.noOverdueAccountsView"),
                     color: customerPortfolioSummary.balanceDue > 0 ? "rgba(251,191,36,0.9)" : "rgba(203,213,225,0.78)",
                     border: customerPortfolioSummary.balanceDue > 0 ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.1)",
                   },
                   {
                     key: "projects",
                     drilldown: CUSTOMER_DRILLDOWNS.LINKED_PROJECTS,
-                    labelText: label("Linked projects", "Proyectos vinculados"),
+                    labelText: t("customers.linkedProjects"),
                     value: String(customerPortfolioSummary.linkedProjects),
-                    detail: label("Across visible customer accounts", "En cuentas visibles de clientes"),
+                    detail: t("customers.acrossVisibleCustomerAccounts"),
                     color: "rgba(74,222,128,0.86)",
                     border: "rgba(34,197,94,0.2)",
                   },
                   {
                     key: "open-docs",
                     drilldown: CUSTOMER_DRILLDOWNS.OPEN_DOCUMENTS,
-                    labelText: label("Open document activity", "Actividad de documentos"),
+                    labelText: t("customers.openDocumentActivity"),
                     value: String(customerPortfolioSummary.openDocs),
-                    detail: label("Estimates + unpaid invoices", "Estimados + facturas no pagadas"),
+                    detail: t("customers.estimatesUnpaidInvoices"),
                     color: "rgba(191,219,254,0.84)",
                     border: "rgba(148,163,184,0.18)",
                   },
@@ -1637,7 +1628,7 @@ export default function CustomersScreen({
                       type="button"
                       onClick={() => (canReset ? setMetricFilter("") : toggleMetricFilter(item.drilldown))}
                       aria-pressed={isActive}
-                      aria-label={`${item.labelText}: ${item.value}. ${canReset || isActive ? label("Clear filter", "Quitar filtro") : label("Filter customers", "Filtrar clientes")}`}
+                      aria-label={`${item.labelText}: ${item.value}. ${canReset || isActive ? t("customers.clearFilter") : t("customers.filterCustomers")}`}
                       style={{
                         ...cardStyle,
                         textAlign: "left",
@@ -1657,12 +1648,12 @@ export default function CustomersScreen({
               {metricFilter ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingBottom: 8 }}>
                   <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(180,196,208,0.6)" }}>
-                    {label("Showing", "Mostrando")}
+                    {t("customers.showing")}
                   </span>
                   <button
                     type="button"
                     onClick={() => setMetricFilter("")}
-                    aria-label={label("Clear dashboard filter", "Quitar filtro del panel")}
+                    aria-label={t("customers.clearDashboardFilter")}
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
@@ -1711,16 +1702,16 @@ export default function CustomersScreen({
                 <div style={{ fontWeight: 800, marginBottom: 6 }}>No customers yet</div>
                 <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45, marginBottom: 6 }}>Add your first customer so estimates, invoices, and projects have a billing contact.</div>
                 <button className="pe-btn" type="button" onClick={() => startNew()}>
-                  {label("Add Customer", "Agregar cliente")}
+                  {t("customers.addCustomer")}
                 </button>
               </div>
             ) : String(q || "").trim() && filtered.length === 0 ? (
               <div className="pe-card pe-card-content ep-glass-tile ep-tile-hover" style={{ ...cardBaseStyle, textAlign: "center", padding: 18 }}>
                 <div style={{ fontWeight: 800, marginBottom: 6 }}>
-                  {label("No matching customers", "No hay clientes que coincidan")}
+                  {t("customers.noMatchingCustomers")}
                 </div>
                 <div style={{ fontSize: 13, color: "rgba(230,241,248,0.52)", lineHeight: 1.45 }}>
-                  {label("Try a different name, phone number, email, or project.", "Prueba con otro nombre, teléfono, correo o proyecto.")}
+                  {t("customers.tryDifferentNamePhoneNumberEmail")}
                 </div>
               </div>
             ) : (
@@ -1749,14 +1740,14 @@ export default function CustomersScreen({
                       ? { color: "rgba(74,222,128,0.88)", border: "rgba(34,197,94,0.22)", background: "rgba(34,197,94,0.08)" }
                       : { color: "rgba(96,165,250,0.9)", border: "rgba(59,130,246,0.22)", background: "rgba(59,130,246,0.08)" };
                 const actionLabel = accountAction.key === "resolve-overdue"
-                  ? label("Resolve Overdue", "Siguiente acción: resolver vencidos")
+                  ? t("customers.resolveOverdue")
                   : accountAction.key === "collect-balance"
-                    ? label("Collect Balance", "Siguiente acción: cobrar saldo")
+                    ? t("customers.collectBalance")
                     : accountAction.key === "review-active-work"
-                      ? label("Active Work", "Siguiente acción: revisar trabajo activo")
+                      ? t("customers.activeWork")
                       : accountAction.key === "review-open-docs"
-                        ? label("Open Docs", "Siguiente acción: revisar documentos abiertos")
-                        : label("Update Account", "Siguiente acción: actualizar cuenta");
+                        ? t("customers.openDocs")
+                        : t("customers.updateAccount");
 
                 return (
                   <div
@@ -1801,15 +1792,15 @@ export default function CustomersScreen({
                         <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                           <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", lineHeight: 1.15 }}>{displayName(c)}</div>
                           <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75 }}>
-                            {String(c?.type || "residential") === "commercial" ? label("Commercial", "Comercial") : label("Residential", "Residencial")}
+                            {String(c?.type || "residential") === "commercial" ? t("customers.commercial") : t("customers.residential")}
                           </div>
-                          {active ? <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>{label("Selected", "Seleccionado")}</div> : null}
+                          {active ? <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.85 }}>{t("customers.selected")}</div> : null}
                           {isArchived ? (
                             <span
                               data-customer-archived-badge={id}
                               style={{ padding: "3px 9px", borderRadius: 999, border: "1px solid rgba(148,163,184,0.35)", background: "rgba(148,163,184,0.14)", color: "rgba(203,213,225,0.85)", fontSize: 10.5, fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase" }}
                             >
-                              {label("Archived", "Archivado")}
+                              {t("customers.archived")}
                             </span>
                           ) : null}
                         </div>
@@ -1823,7 +1814,7 @@ export default function CustomersScreen({
                           </span>
                           {toNum(kpi.amountPaid || 0) > 0 ? (
                             <span style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(34,197,94,0.2)", background: "rgba(34,197,94,0.08)", color: "rgba(74,222,128,0.88)", fontSize: 10.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
-                              {moneyUSD(kpi.amountPaid)} {label("paid", "pagado")}
+                              {moneyUSD(kpi.amountPaid)} {t("customers.paid")}
                             </span>
                           ) : null}
                         </div>
@@ -1832,17 +1823,17 @@ export default function CustomersScreen({
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
                             {toNum(kpi.overdueInvoiceCount || 0) > 0 ? (
                               <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.22)", color: "rgba(239,68,68,0.88)", fontSize: 10.5, fontWeight: 700 }}>
-                                {toNum(kpi.overdueInvoiceCount || 0) === 1 ? label("1 overdue", "1 vencida") : `${toNum(kpi.overdueInvoiceCount || 0)} ${label("overdue", "vencidas")}`}
+                                {toNum(kpi.overdueInvoiceCount || 0) === 1 ? t("customers.1Overdue") : `${toNum(kpi.overdueInvoiceCount || 0)} ${t("customers.overdue")}`}
                               </span>
                             ) : null}
                             {toNum(kpi.balanceDue || 0) > 0 ? (
                               <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "rgba(245,158,11,0.84)", fontSize: 10.5, fontWeight: 700 }}>
-                                {moneyUSD(kpi.balanceDue)} {label("due", "pendiente")}
+                                {moneyUSD(kpi.balanceDue)} {t("customers.due")}
                               </span>
                             ) : null}
                             {toNum(meta.activeProjectCount || 0) > 0 ? (
                               <span style={{ padding: "2px 8px", borderRadius: 6, background: "rgba(72,187,120,0.08)", border: "1px solid rgba(72,187,120,0.2)", color: "rgba(72,187,120,0.82)", fontSize: 10.5, fontWeight: 700 }}>
-                                {toNum(meta.activeProjectCount || 0)} {toNum(meta.activeProjectCount || 0) === 1 ? label("active project", "proyecto activo") : label("active projects", "proyectos activos")}
+                                {toNum(meta.activeProjectCount || 0)} {toNum(meta.activeProjectCount || 0) === 1 ? t("customers.activeProject") : t("customers.activeProjects")}
                               </span>
                             ) : null}
                           </div>
@@ -1854,8 +1845,8 @@ export default function CustomersScreen({
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                               <span style={{ fontSize: 11, fontWeight: 800, opacity: 0.48, letterSpacing: "0.06em", textTransform: "uppercase" }}>
                                 {customerProjectMeta[id].projectCount === 1
-                                  ? label("1 project", "1 proyecto")
-                                  : `${customerProjectMeta[id].projectCount} ${label("projects", "proyectos")}`}
+                                  ? t("customers.1Project")
+                                  : `${customerProjectMeta[id].projectCount} ${t("customers.projects")}`}
                               </span>
                               {customerProjectMeta[id].latestProjectDisplayStatus ? (
                                 <span style={{
@@ -1898,7 +1889,7 @@ export default function CustomersScreen({
                           >
                             <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Revenue", "Ingresos")}
+                                {t("customers.revenue")}
                               </div>
                               <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.revenue || 0)}
@@ -1906,7 +1897,7 @@ export default function CustomersScreen({
                             </div>
                             <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Balance", "Saldo")}
+                                {t("customers.balance")}
                               </div>
                               <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9, fontVariantNumeric: "tabular-nums" }}>
                                 {moneyUSD(customerKpis[id]?.balanceDue || 0)}
@@ -1914,7 +1905,7 @@ export default function CustomersScreen({
                             </div>
                             <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Margin", "Margen")}
+                                {t("customers.margin")}
                               </div>
                               <div className="pe-customer-kpi-value" style={{ fontSize: 14, fontWeight: 800, opacity: 0.9 }}>
                                 {Math.round(toNum(customerKpis[id]?.margin || 0) * 100)}%
@@ -1922,14 +1913,14 @@ export default function CustomersScreen({
                             </div>
                             <div style={{ display: "grid", gap: 3, padding: "9px 10px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.025)" }}>
                               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: 0.4, textTransform: "uppercase" }}>
-                                {label("Docs", "Docs")}
+                                {t("customers.docs")}
                               </div>
                               <div style={{ fontSize: 13, fontWeight: 800, opacity: 0.88, display: "flex", gap: 6, flexWrap: "wrap" }}>
                                 {toNum(customerKpis[id]?.estimateCount || 0) > 0 ? (
-                                  <span>{toNum(customerKpis[id].estimateCount)} {label("est", "est")}</span>
+                                  <span>{toNum(customerKpis[id].estimateCount)} {t("customers.est")}</span>
                                 ) : null}
                                 {toNum(customerKpis[id]?.invoiceCount || 0) > 0 ? (
-                                  <span>{toNum(customerKpis[id].invoiceCount)} {label("inv", "fac")}</span>
+                                  <span>{toNum(customerKpis[id].invoiceCount)} {t("customers.inv")}</span>
                                 ) : null}
                                 {toNum(customerKpis[id]?.estimateCount || 0) === 0 && toNum(customerKpis[id]?.invoiceCount || 0) === 0 ? (
                                   <span style={{ opacity: 0.5 }}>—</span>
@@ -1950,28 +1941,28 @@ export default function CustomersScreen({
                               data-customer-restore={id}
                               style={{ width: "100%", background: "rgba(74,222,128,0.14)", border: "1px solid rgba(74,222,128,0.32)", color: "rgba(187,247,208,0.96)" }}
                             >
-                              {label("Restore Customer", "Restaurar cliente")}
+                              {t("customers.restoreCustomer")}
                             </button>
                             <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
-                              {label("Edit", "Editar")}
+                              {t("customers.edit")}
                             </button>
                           </>
                         ) : (
                           <>
                             <button className="pe-btn" type="button" onClick={() => useCustomer(c)} style={{ width: "100%" }}>
-                              {label("Use", "Usar")}
+                              {t("customers.use")}
                             </button>
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               <button className="pe-btn pe-btn-ghost" type="button" onClick={() => startEdit(c)} style={{ width: "100%" }}>
-                                {label("Edit", "Editar")}
+                                {t("customers.edit")}
                               </button>
                               {hasHistory ? (
                                 <button className="pe-btn pe-btn-ghost" type="button" onClick={() => archiveCustomer(c?.id)} data-customer-archive={id} style={{ width: "100%" }}>
-                                  {label("Archive Customer", "Archivar cliente")}
+                                  {t("customers.archiveCustomer")}
                                 </button>
                               ) : (
                                 <button className="pe-btn pe-btn-ghost" type="button" onClick={() => del(c?.id)} data-customer-delete={id} style={{ width: "100%" }}>
-                                  {label("Delete Customer", "Eliminar cliente")}
+                                  {t("customers.deleteCustomer")}
                                 </button>
                               )}
                             </div>
@@ -2007,18 +1998,18 @@ export default function CustomersScreen({
                               }
                             }}
                           >
-                            {label("Projects", "Proyectos")}
+                            {t("customers.projects2")}
                           </button>
                         ) : null}
                         {projectChooser && projectChooser.customerId === id && projectChooser.empty ? (
                           <div style={{ fontSize: 12, color: "rgba(230,241,248,0.5)", padding: "4px 0" }}>
-                            {label("No linked projects yet.", "Aún no hay proyectos vinculados.")}
+                            {t("customers.noLinkedProjectsYet")}
                           </div>
                         ) : null}
                         {projectChooser && projectChooser.customerId === id && projectChooser.projects?.length > 1 ? (
                           <div style={{ display: "grid", gap: 4, padding: "6px 0 0" }}>
                             <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-                              {label("Choose project", "Elegir proyecto")}
+                              {t("customers.chooseProject")}
                             </div>
                             {projectChooser.projects.map((proj) => (
                               <button
@@ -2040,7 +2031,7 @@ export default function CustomersScreen({
                               style={{ width: "100%", fontSize: 11, opacity: 0.5, padding: "4px 10px" }}
                               onClick={() => setProjectChooser(null)}
                             >
-                              {label("Cancel", "Cancelar")}
+                              {t("customers.cancel")}
                             </button>
                           </div>
                         ) : null}
@@ -2057,7 +2048,7 @@ export default function CustomersScreen({
         <div className="pe-card">
           <div className="pe-company-profile-header">
             <div className="pe-company-header-title">
-              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={label("Edit Customer", "Editar Cliente")}>{label("Edit Customer", "Editar Cliente")}</h1>
+              <h1 className="pe-title pe-builder-title pe-company-title pe-title-reflect" data-title={t("customers.editCustomer")}>{t("customers.editCustomer")}</h1>
             </div>
 
             <div className="pe-company-header-controls">
@@ -2072,10 +2063,10 @@ export default function CustomersScreen({
                   setMode("list");
                 }}
               >
-                {label("Cancel", "Cancelar")}
+                {t("customers.cancel")}
               </button>
               <button className="pe-btn" type="button" onClick={saveDraft}>
-                {label("Save", "Guardar")}
+                {t("customers.save")}
               </button>
             </div>
           </div>
@@ -2083,7 +2074,7 @@ export default function CustomersScreen({
 
             <div className="pe-company-form-inner pe-customer-edit-form">
             <div className="pe-company-form-section">
-              <CustomerSectionHeader title={label("Customer Type", "Tipo de Cliente")} />
+              <CustomerSectionHeader title={t("customers.customerType")} />
               <div className="pe-company-grid-12">
                 <div className="pe-company-col-12">
                   <div className="pe-customer-toggle-row">
@@ -2096,7 +2087,7 @@ export default function CustomersScreen({
                       className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "residential" ? "is-active" : "pe-btn-ghost"}`}
                       aria-pressed={(draft.type || "commercial") === "residential"}
                     >
-                      {label("Residential", "Residencial")}
+                      {t("customers.residential")}
                     </button>
                     <button
                       type="button"
@@ -2107,7 +2098,7 @@ export default function CustomersScreen({
                       className={`pe-btn pe-customer-toggle-segment ${(draft.type || "commercial") === "commercial" ? "is-active" : "pe-btn-ghost"}`}
                       aria-pressed={(draft.type || "commercial") === "commercial"}
                     >
-                      {label("Commercial", "Comercial")}
+                      {t("customers.commercial")}
                     </button>
                   </div>
                 </div>
@@ -2115,12 +2106,12 @@ export default function CustomersScreen({
             </div>
 
             <div className="pe-company-form-section">
-              <CustomerSectionHeader title={label("Billing Preferences", "Preferencias de Facturación")} />
+              <CustomerSectionHeader title={t("customers.billingPreferences")} />
               <div className="pe-company-grid-12">
                 <Field
                   as="select"
                   fieldClassName="pe-company-col-7"
-                  label={label("Net terms", "Términos de pago")}
+                  label={t("customers.netTerms")}
                   value={String(draft.netTermsType || "DUE_UPON_RECEIPT")}
                   onChange={(e) => {
                     const nextType = String(e.target.value || "DUE_UPON_RECEIPT");
@@ -2129,14 +2120,14 @@ export default function CustomersScreen({
                 >
                   {NET_TERMS_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
-                      {label(o.labelEn, o.labelEs)}
+                      {t(o.labelKey)}
                     </option>
                   ))}
                 </Field>
                 {String(draft.netTermsType || "") === "NET_CUSTOM" ? (
                   <Field
                     fieldClassName="pe-company-col-5"
-                    label={label("Custom days", "Días personalizados")}
+                    label={t("customers.customDays")}
                     type="number"
                     inputMode="numeric"
                     min={0}
@@ -2152,7 +2143,7 @@ export default function CustomersScreen({
                 {(draft.type || "residential") === "commercial" ? (
                   <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                     <input type="checkbox" checked={Boolean(draft.poRequired)} onChange={(e) => setDraft((d) => ({ ...d, poRequired: e.target.checked }))} />
-                    <span className="pe-field-helper">{label("PO required", "PO Requerido")}</span>
+                    <span className="pe-field-helper">{t("customers.poRequired")}</span>
                   </label>
                 ) : null}
               </div>
@@ -2161,38 +2152,38 @@ export default function CustomersScreen({
             {(draft.type || "residential") === "commercial" ? (
               <>
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Company", "Compañía")} />
+                  <CustomerSectionHeader title={t("customers.company")} />
                   <div className="pe-company-grid-12">
                     <Field
                       fieldClassName="pe-company-col-12"
-                      label={label("Company name *", "Nombre de la compañía *")}
-                      placeholder={label("Example: Desert Ridge HOA", "Ejemplo: Desert Ridge HOA")}
+                      label={t("customers.companyName")}
+                      placeholder={t("customers.exampleDesertRidgeHoa")}
                       value={draft.companyName}
                       onChange={(e) => setDraft((d) => ({ ...d, companyName: e.target.value }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-7"
-                      label={label("Main contact *", "Contacto principal *")}
-                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
+                      label={t("customers.mainContact")}
+                      placeholder={t("customers.exampleAlexSmith")}
                       value={draft.contactName}
                       onChange={(e) => setDraft((d) => ({ ...d, contactName: e.target.value }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-5"
-                      label={label("Contact title", "Puesto")}
+                      label={t("customers.contactTitle")}
                       value={draft.contactTitle}
                       onChange={(e) => setDraft((d) => ({ ...d, contactTitle: e.target.value }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-5"
-                      label={requirePhone ? label("Phone *", "Teléfono *") : label("Phone", "Teléfono")}
+                      label={requirePhone ? t("customers.phone2") : t("customers.phone3")}
                       labelClassName={phoneFieldMissing ? "pe-company-field-missing-label" : ""}
                       controlClassName={phoneFieldMissing ? "pe-company-field-missing-input" : ""}
-                      errorText={phoneFieldMissing ? label("Phone is required by settings.", "El teléfono es requerido por configuración.") : ""}
+                      errorText={phoneFieldMissing ? t("customers.phoneRequiredBySettings") : ""}
                       type="tel"
                       inputMode="tel"
                       autoComplete="tel"
-                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      placeholder={t("customers.example6025550147")}
                       helperText={hasValidPhoneValue(draft.comPhone) ? validHelperText() : ""}
                       value={draft.comPhone}
                       onChange={(e) => {
@@ -2202,14 +2193,14 @@ export default function CustomersScreen({
                     />
                     <Field
                       fieldClassName="pe-company-col-7"
-                      label={requireEmail ? label("Email *", "Correo *") : label("Email", "Correo")}
+                      label={requireEmail ? t("customers.email2") : t("customers.email3")}
                       labelClassName={emailFieldMissing ? "pe-company-field-missing-label" : ""}
                       controlClassName={emailFieldMissing ? "pe-company-field-missing-input" : ""}
-                      errorText={emailFieldMissing ? label("Email is required by settings.", "El correo es requerido por configuración.") : ""}
+                      errorText={emailFieldMissing ? t("customers.emailRequiredBySettings") : ""}
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder={label("Example: office@desertridgehoa.com", "Ejemplo: oficina@desertridgehoa.com")}
+                      placeholder={t("customers.exampleOfficeDesertridgehoaCom")}
                       helperText={hasValidEmailValue(draft.comEmail) ? validHelperText() : ""}
                       value={draft.comEmail}
                       onChange={(e) => {
@@ -2219,11 +2210,11 @@ export default function CustomersScreen({
                     />
                     <Field
                       fieldClassName="pe-company-col-12"
-                      label={label("AP email", "Correo de Cuentas por Pagar")}
+                      label={t("customers.apEmail")}
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder={label("Example: ap@desertridgehoa.com", "Ejemplo: cuentas@desertridgehoa.com")}
+                      placeholder={t("customers.exampleApDesertridgehoaCom")}
                       value={draft.apEmail}
                       onChange={(e) => setDraft((d) => ({ ...d, apEmail: e.target.value }))}
                     />
@@ -2231,33 +2222,33 @@ export default function CustomersScreen({
                 </div>
 
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Jobsite Address", "Dirección del Sitio")} />
+                  <CustomerSectionHeader title={t("customers.jobsiteAddress")} />
                   <div className="pe-company-grid-12">
                     <Field
                       fieldClassName="pe-company-col-12"
-                      label={label("Address 1 *", "Dirección 1 *")}
+                      label={t("customers.address1")}
                       type="text"
                       autoComplete="street-address"
-                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                      placeholder={t("customers.example1234ECamelbackRdPhoenix")}
                       value={draft.jobsite.street}
                       onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, street: e.target.value } }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-5"
-                      label={label("City *", "Ciudad *")}
+                      label={t("customers.city")}
                       type="text"
                       autoComplete="address-level2"
-                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                      placeholder={t("customers.examplePhoenix")}
                       value={draft.jobsite.city}
                       onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, city: e.target.value } }))}
                     />
                     <div className="pe-field pe-company-col-4">
-                      <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
+                      <FieldLabel>{t("customers.state")}</FieldLabel>
                       <StateSelect value={draft.jobsite.state} onChange={(e) => setDraft((d) => ({ ...d, jobsite: { ...d.jobsite, state: e.target.value } }))} />
                     </div>
                     <Field
                       fieldClassName="pe-company-col-3"
-                      label={label("ZIP *", "ZIP *")}
+                      label={t("customers.zip")}
                       type="text"
                       inputMode="numeric"
                       autoComplete="postal-code"
@@ -2269,40 +2260,40 @@ export default function CustomersScreen({
                 </div>
 
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Billing", "Facturación")} />
+                  <CustomerSectionHeader title={t("customers.billing")} />
                   <div className="pe-company-grid-12">
                     <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                       <input type="checkbox" checked={Boolean(draft.billSameAsJob)} onChange={(e) => setDraft((d) => ({ ...d, billSameAsJob: e.target.checked }))} />
-                      <span className="pe-field-helper">{label("Billing same as jobsite", "Facturación igual al sitio")}</span>
+                      <span className="pe-field-helper">{t("customers.billingSameAsJobsite")}</span>
                     </label>
 
                     {!draft.billSameAsJob ? (
                       <>
                         <Field
                           fieldClassName="pe-company-col-12"
-                          label={label("Address 1", "Dirección 1")}
+                          label={t("customers.address12")}
                           type="text"
                           autoComplete="street-address"
-                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                          placeholder={t("customers.example1234ECamelbackRdPhoenix")}
                           value={draft.billing.street}
                           onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, street: e.target.value } }))}
                         />
                         <Field
                           fieldClassName="pe-company-col-5"
-                          label={label("City", "Ciudad")}
+                          label={t("customers.city2")}
                           type="text"
                           autoComplete="address-level2"
-                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                          placeholder={t("customers.examplePhoenix")}
                           value={draft.billing.city}
                           onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, city: e.target.value } }))}
                         />
                         <div className="pe-field pe-company-col-4">
-                          <FieldLabel>{label("State", "Estado")}</FieldLabel>
-                          <StateSelect value={draft.billing.state} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, state: e.target.value } }))} placeholder={label("State", "Estado")} />
+                          <FieldLabel>{t("customers.state2")}</FieldLabel>
+                          <StateSelect value={draft.billing.state} onChange={(e) => setDraft((d) => ({ ...d, billing: { ...d.billing, state: e.target.value } }))} placeholder={t("customers.state2")} />
                         </div>
                         <Field
                           fieldClassName="pe-company-col-3"
-                          label={label("ZIP", "ZIP")}
+                          label={t("customers.zip2")}
                           type="text"
                           inputMode="numeric"
                           autoComplete="postal-code"
@@ -2318,25 +2309,25 @@ export default function CustomersScreen({
             ) : (
               <>
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Customer", "Cliente")} />
+                  <CustomerSectionHeader title={t("customers.customer")} />
                   <div className="pe-company-grid-12">
                     <Field
                       fieldClassName="pe-company-col-12"
-                      label={label("Full name *", "Nombre completo *")}
-                      placeholder={label("Example: Alex Smith", "Ejemplo: Alex Smith")}
+                      label={t("customers.fullName")}
+                      placeholder={t("customers.exampleAlexSmith")}
                       value={draft.fullName}
                       onChange={(e) => setDraft((d) => ({ ...d, fullName: e.target.value }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-5"
-                      label={requirePhone ? label("Phone *", "Teléfono *") : label("Phone", "Teléfono")}
+                      label={requirePhone ? t("customers.phone2") : t("customers.phone3")}
                       labelClassName={phoneFieldMissing ? "pe-company-field-missing-label" : ""}
                       controlClassName={phoneFieldMissing ? "pe-company-field-missing-input" : ""}
-                      errorText={phoneFieldMissing ? label("Phone is required by settings.", "El teléfono es requerido por configuración.") : ""}
+                      errorText={phoneFieldMissing ? t("customers.phoneRequiredBySettings") : ""}
                       type="tel"
                       inputMode="tel"
                       autoComplete="tel"
-                      placeholder={label("Example: 602-555-0147", "Ejemplo: 602-555-0147")}
+                      placeholder={t("customers.example6025550147")}
                       helperText={hasValidPhoneValue(draft.resPhone) ? validHelperText() : ""}
                       value={draft.resPhone}
                       onChange={(e) => {
@@ -2346,14 +2337,14 @@ export default function CustomersScreen({
                     />
                     <Field
                       fieldClassName="pe-company-col-7"
-                      label={requireEmail ? label("Email *", "Correo *") : label("Email", "Correo")}
+                      label={requireEmail ? t("customers.email2") : t("customers.email3")}
                       labelClassName={emailFieldMissing ? "pe-company-field-missing-label" : ""}
                       controlClassName={emailFieldMissing ? "pe-company-field-missing-input" : ""}
-                      errorText={emailFieldMissing ? label("Email is required by settings.", "El correo es requerido por configuración.") : ""}
+                      errorText={emailFieldMissing ? t("customers.emailRequiredBySettings") : ""}
                       type="email"
                       inputMode="email"
                       autoComplete="email"
-                      placeholder={label("Example: alex.smith@email.com", "Ejemplo: alex.smith@email.com")}
+                      placeholder={t("customers.exampleAlexSmithEmailCom")}
                       helperText={hasValidEmailValue(draft.resEmail) ? validHelperText() : ""}
                       value={draft.resEmail}
                       onChange={(e) => {
@@ -2365,33 +2356,33 @@ export default function CustomersScreen({
                 </div>
 
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Address", "Dirección")} />
+                  <CustomerSectionHeader title={t("customers.address")} />
                   <div className="pe-company-grid-12">
                     <Field
                       fieldClassName="pe-company-col-12"
-                      label={label("Address 1 *", "Dirección 1 *")}
+                      label={t("customers.address1")}
                       type="text"
                       autoComplete="street-address"
-                      placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                      placeholder={t("customers.example1234ECamelbackRdPhoenix")}
                       value={draft.resService.street}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, street: e.target.value } }))}
                     />
                     <Field
                       fieldClassName="pe-company-col-5"
-                      label={label("City *", "Ciudad *")}
+                      label={t("customers.city")}
                       type="text"
                       autoComplete="address-level2"
-                      placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                      placeholder={t("customers.examplePhoenix")}
                       value={draft.resService.city}
                       onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, city: e.target.value } }))}
                     />
                     <div className="pe-field pe-company-col-4">
-                      <FieldLabel>{label("State *", "Estado *")}</FieldLabel>
+                      <FieldLabel>{t("customers.state")}</FieldLabel>
                       <StateSelect value={draft.resService.state} onChange={(e) => setDraft((d) => ({ ...d, resService: { ...d.resService, state: e.target.value } }))} />
                     </div>
                     <Field
                       fieldClassName="pe-company-col-3"
-                      label={label("ZIP *", "ZIP *")}
+                      label={t("customers.zip")}
                       type="text"
                       inputMode="numeric"
                       autoComplete="postal-code"
@@ -2403,40 +2394,40 @@ export default function CustomersScreen({
                 </div>
 
                 <div className="pe-company-form-section">
-                  <CustomerSectionHeader title={label("Billing", "Facturación")} />
+                  <CustomerSectionHeader title={t("customers.billing")} />
                   <div className="pe-company-grid-12">
                     <label className="pe-company-col-12" style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                       <input type="checkbox" checked={Boolean(draft.resBillingSame)} onChange={(e) => setDraft((d) => ({ ...d, resBillingSame: e.target.checked }))} />
-                      <span className="pe-field-helper">{label("Billing same as service", "Facturación igual al servicio")}</span>
+                      <span className="pe-field-helper">{t("customers.billingSameAsService")}</span>
                     </label>
 
                     {!draft.resBillingSame ? (
                       <>
                         <Field
                           fieldClassName="pe-company-col-12"
-                          label={label("Address 1", "Dirección 1")}
+                          label={t("customers.address12")}
                           type="text"
                           autoComplete="street-address"
-                          placeholder={label("Example: 1234 E Camelback Rd, Phoenix AZ", "Ejemplo: 1234 E Camelback Rd, Phoenix AZ")}
+                          placeholder={t("customers.example1234ECamelbackRdPhoenix")}
                           value={draft.resBilling.street}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, street: e.target.value } }))}
                         />
                         <Field
                           fieldClassName="pe-company-col-5"
-                          label={label("City", "Ciudad")}
+                          label={t("customers.city2")}
                           type="text"
                           autoComplete="address-level2"
-                          placeholder={label("Example: Phoenix", "Ejemplo: Phoenix")}
+                          placeholder={t("customers.examplePhoenix")}
                           value={draft.resBilling.city}
                           onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, city: e.target.value } }))}
                         />
                         <div className="pe-field pe-company-col-4">
-                          <FieldLabel>{label("State", "Estado")}</FieldLabel>
-                          <StateSelect value={draft.resBilling.state} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, state: e.target.value } }))} placeholder={label("State", "Estado")} />
+                          <FieldLabel>{t("customers.state2")}</FieldLabel>
+                          <StateSelect value={draft.resBilling.state} onChange={(e) => setDraft((d) => ({ ...d, resBilling: { ...d.resBilling, state: e.target.value } }))} placeholder={t("customers.state2")} />
                         </div>
                         <Field
                           fieldClassName="pe-company-col-3"
-                          label={label("ZIP", "ZIP")}
+                          label={t("customers.zip2")}
                           type="text"
                           inputMode="numeric"
                           autoComplete="postal-code"

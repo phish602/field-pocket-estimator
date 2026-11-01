@@ -9,6 +9,7 @@ import {
   createManualInvoiceDraft,
   duplicateInvoiceDraft,
   normalizeInvoiceRecord,
+  updateManualInvoicePaymentDate,
   updateInvoiceLifecycleStatus,
   validateInvoiceAgainstEstimate,
   writeStoredInvoices,
@@ -52,6 +53,75 @@ function createLinkedInvoice(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("updateManualInvoicePaymentDate", () => {
+  function invoiceWithManualPayment(overrides = {}) {
+    return createLinkedInvoice({
+      id: "inv_payment_date",
+      invoiceNumber: "INV-PAYMENT-DATE",
+      invoiceTotal: 500,
+      total: 500,
+      amountPaid: 125,
+      balanceRemaining: 375,
+      status: "sent",
+      paymentStatus: "partial",
+      lineItems: [{ id: "line_1", description: "Labor", total: 500 }],
+      payments: [{
+        id: "pay_payment_date",
+        amount: 125,
+        paidAt: "2026-08-10",
+        method: "check",
+        note: "Deposit check",
+        order: 0,
+      }],
+      ...overrides,
+    });
+  }
+
+  test("updates only an existing manual payment date", () => {
+    const invoice = invoiceWithManualPayment();
+    const normalizedBefore = normalizeInvoiceRecord(invoice);
+    const result = updateManualInvoicePaymentDate(invoice, "pay_payment_date", "2026-08-11", { nowTs: 1 });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(result.invoice).toEqual(expect.objectContaining({
+      id: "inv_payment_date",
+      invoiceNumber: "INV-PAYMENT-DATE",
+      invoiceTotal: 500,
+      amountPaid: 125,
+      balanceRemaining: 375,
+      status: "sent",
+      paymentStatus: "partial",
+    }));
+    expect(result.invoice.materials).toEqual(normalizedBefore.materials);
+    expect(result.invoice.payments).toEqual([
+      expect.objectContaining({
+        id: "pay_payment_date",
+        amount: 125,
+        method: "check",
+        note: "Deposit check",
+        paidAt: "2026-08-11",
+      }),
+    ]);
+  });
+
+  test("requires the exact existing payment identity without creating another payment", () => {
+    const invoice = invoiceWithManualPayment();
+    const result = updateManualInvoicePaymentDate(invoice, "pay_missing", "2026-08-11");
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "payment_not_found" }));
+    expect(invoice.payments).toHaveLength(1);
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({ id: "pay_payment_date", paidAt: "2026-08-10" }));
+  });
+
+  test("rejects invalid payment dates without mutating the invoice", () => {
+    const invoice = invoiceWithManualPayment();
+    const result = updateManualInvoicePaymentDate(invoice, "pay_payment_date", "2026-02-30");
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "invalid_paid_at" }));
+    expect(invoice.payments[0]).toEqual(expect.objectContaining({ id: "pay_payment_date", paidAt: "2026-08-10" }));
+  });
+});
 
 describe("validateInvoiceAgainstEstimate void invoice exclusion", () => {
   test("void-only linked invoices leave the full approved balance available for a new invoice", () => {

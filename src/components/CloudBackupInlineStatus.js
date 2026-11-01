@@ -10,26 +10,30 @@
 // per surface. Self-gates its own visibility; safe to render unconditionally.
 
 import useCloudBackupStatus, { CLOUD_PRODUCT_STATE } from "../lib/useCloudBackupStatus";
+import { useLanguage } from "../lib/i18n";
 
 export default function CloudBackupInlineStatus({ className, style } = {}) {
   const { isSupabaseReady, hasCompany, userEmail, productState, productStatus } = useCloudBackupStatus();
+  // Both hooks must run before the visibility gates below, or the hook order
+  // changes between renders once this component starts returning early.
+  const { t } = useLanguage();
 
   if (!isSupabaseReady || !userEmail || !hasCompany) return null;
   const text = productState === CLOUD_PRODUCT_STATE.SYNCING
-      ? "Saved on this device · Syncing automatically"
+      ? t("cloud.inlineSyncing")
       : productState === CLOUD_PRODUCT_STATE.SYNC_ISSUE
-        ? "Saved on this device · Sync needs attention"
+        ? t("cloud.inlineNeedsAttention")
         : productState === CLOUD_PRODUCT_STATE.PENDING
           ? productStatus.pendingReason === "offline"
-            ? "Saved on this device · Waiting for connection"
+            ? t("cloud.inlineWaitingConnection")
             : productStatus.pendingReason === "retry"
-              ? "Saved on this device · Retrying cloud sync"
-              : "Saved on this device · Backup pending"
+              ? t("cloud.inlineRetrying")
+              : t("cloud.inlineBackupPending")
           : productState === CLOUD_PRODUCT_STATE.RESTORE_AVAILABLE
-            ? "Restore"
+            ? t("cloud.restore")
             : productState === CLOUD_PRODUCT_STATE.CLOUD_OK
-              ? "Saved on this device · Cloud up to date"
-              : "Cloud connected";
+              ? t("cloud.inlineUpToDate")
+              : t("cloud.connected");
 
   const color = productState === CLOUD_PRODUCT_STATE.CLOUD_OK || productState === CLOUD_PRODUCT_STATE.CLOUD_CONNECTED
     ? "rgba(187,247,208,0.88)"

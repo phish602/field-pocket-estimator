@@ -4,16 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { STORAGE_KEYS } from "../constants/storageKeys";
 import { readStoredProjects, updateProjectMetadata } from "../utils/projects";
 import CloudBackupInlineStatus from "../components/CloudBackupInlineStatus";
+import { useLanguage } from "../lib/i18n";
 
 // Reads the same target key used by ProjectDetailScreen — no separate key needed.
 const DETAIL_TARGET_KEY = "estipaid-project-detail-target-v1";
 
 const STATUS_OPTIONS = [
-  { key: "draft", label: "Draft" },
-  { key: "estimating", label: "Estimating" },
-  { key: "active", label: "Active" },
-  { key: "completed", label: "Completed" },
-  { key: "archived", label: "Archived" },
+  { key: "draft", labelKey: "editproject.draft" },
+  { key: "estimating", labelKey: "editproject.estimating" },
+  { key: "active", labelKey: "editproject.active" },
+  { key: "completed", labelKey: "editproject.completed" },
+  { key: "archived", labelKey: "editproject.archived" },
 ];
 
 const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"];
@@ -91,6 +92,8 @@ function normalizeStatusValue(value) {
 }
 
 export default function EditProjectScreen({ onBack, onSave }) {
+  // Language and copy come from the app's one owner (src/lib/i18n).
+  const { t } = useLanguage();
   const [projectId] = useState(() => {
     try { return String(localStorage.getItem(DETAIL_TARGET_KEY) || "").trim(); } catch { return ""; }
   });
@@ -215,9 +218,9 @@ export default function EditProjectScreen({ onBack, onSave }) {
     return (
       <div style={S.screen}>
         <div style={S.topBar}>
-          <button type="button" style={S.backBtn} onClick={onBack}>← Cancel</button>
+          <button type="button" style={S.backBtn} onClick={onBack}>{t("editproject.cancel")}</button>
         </div>
-        <div style={{ margin: "0 16px", color: "rgba(230,241,248,0.4)", fontSize: 13 }}>Project not found.</div>
+        <div style={{ margin: "0 16px", color: "rgba(230,241,248,0.4)", fontSize: 13 }}>{t("editproject.projectNotFound")}</div>
       </div>
     );
   }
@@ -227,26 +230,26 @@ export default function EditProjectScreen({ onBack, onSave }) {
   return (
     <div style={S.screen}>
       <div style={S.topBar}>
-        <button type="button" style={S.backBtn} onClick={onBack}>← Cancel</button>
+        <button type="button" style={S.backBtn} onClick={onBack}>{t("editproject.cancel")}</button>
       </div>
 
       <div style={S.heroCard}>
-        <div style={S.title}>Edit Project</div>
-        <div style={S.subtitle}>Refine project metadata and continue in the Project Command Center workflow.</div>
+        <div style={S.title}>{t("editproject.editProject")}</div>
+        <div style={S.subtitle}>{t("editproject.refineProjectMetadataContinueProjectCommand")}</div>
       </div>
       <div style={S.workflowHint}>
-        <div style={S.workflowHintTitle}>Next Steps</div>
-        <div style={S.workflowHintCopy}>Saving updates keeps this project aligned with Projects portfolio and Project Detail command controls.</div>
+        <div style={S.workflowHintTitle}>{t("editproject.nextSteps")}</div>
+        <div style={S.workflowHintCopy}>{t("editproject.savingUpdatesKeepsProjectAlignedProjects")}</div>
       </div>
 
       <div style={S.sectionCard}>
-        <div style={S.sectionHeader}>Project</div>
+        <div style={S.sectionHeader}>{t("editproject.project")}</div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Project Name <span style={S.required}>*</span></label>
+          <label style={S.label}>{t("editproject.projectName")}<span style={S.required}>*</span></label>
           <input
             type="text"
             style={S.input}
-            placeholder="e.g. Kitchen Remodel, Roof Repair…"
+            placeholder={t("editproject.eGKitchenRemodelRoofRepair")}
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
             autoFocus
@@ -255,26 +258,26 @@ export default function EditProjectScreen({ onBack, onSave }) {
 
         {customerLabel ? (
           <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-            <div style={S.label}>Linked Customer <span style={S.readOnlyTag}>view only</span></div>
+            <div style={S.label}>{t("editproject.linkedCustomer")}<span style={S.readOnlyTag}>{t("editproject.viewOnly")}</span></div>
             <div style={S.readOnlyField}>{customerLabel}</div>
           </div>
         ) : null}
 
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard }}>
-          <label style={S.label}>Site / Job Address</label>
+          <label style={S.label}>{t("editproject.siteJobAddress")}</label>
           {linkedCustomer && linkedCustomerAddr && !composeSiteAddress(addrStreet, addrCity, addrState, addrZip) ? (
             <button
               type="button"
               style={S.useCustomerAddrBtn}
               onClick={handleUseCustomerAddress}
             >
-              Use customer address
+              {t("editproject.useCustomerAddress")}
             </button>
           ) : null}
           <input
             type="text"
             style={S.input}
-            placeholder="Street address"
+            placeholder={t("editproject.streetAddress")}
             value={addrStreet}
             onChange={(e) => setAddrStreet(e.target.value)}
             autoComplete="street-address"
@@ -283,7 +286,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
             <input
               type="text"
               style={{ ...S.input, flex: 2 }}
-              placeholder="City"
+              placeholder={t("editproject.city")}
               value={addrCity}
               onChange={(e) => setAddrCity(e.target.value)}
               autoComplete="address-level2"
@@ -294,7 +297,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
               onChange={(e) => setAddrState(e.target.value)}
               autoComplete="address-level1"
             >
-              <option value="">State</option>
+              <option value="">{t("editproject.state")}</option>
               {US_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <input
@@ -310,7 +313,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
         </div>
 
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
-          <label style={S.label}>Status</label>
+          <label style={S.label}>{t("editproject.status")}</label>
           <div style={S.statusGrid}>
             {STATUS_OPTIONS.map((opt) => (
               <button
@@ -327,12 +330,12 @@ export default function EditProjectScreen({ onBack, onSave }) {
       </div>
 
       <div style={S.sectionCard}>
-        <div style={S.sectionHeader}>Additional</div>
+        <div style={S.sectionHeader}>{t("editproject.additional")}</div>
         <div style={{ ...S.fieldGroup, ...S.fieldGroupInCard, marginBottom: 0 }}>
-          <label style={S.label}>Notes <span style={S.optional}>(optional)</span></label>
+          <label style={S.label}>{t("editproject.notes")}<span style={S.optional}>(optional)</span></label>
           <textarea
             style={{ ...S.input, ...S.textarea }}
-            placeholder="Scope notes, special instructions…"
+            placeholder={t("editproject.scopeNotesSpecialInstructions")}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={3}
@@ -353,7 +356,7 @@ export default function EditProjectScreen({ onBack, onSave }) {
           disabled={!canSave}
           onClick={handleSave}
         >
-          Save Changes
+          {t("editproject.saveChanges")}
         </button>
         <CloudBackupInlineStatus style={{ marginTop: 8, textAlign: "center" }} />
       </div>
